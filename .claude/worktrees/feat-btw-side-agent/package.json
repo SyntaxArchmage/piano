@@ -1,0 +1,38 @@
+{
+  "name": "piano",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:cli": "vitest run tests/cli",
+    "test:tui": "PIANO_TUI_E2E=1 vitest run tests/tui",
+    "test:tui:smoke": "vitest run tests/tui",
+    "test:workflow": "vitest run tests/workflow",
+    "test:packages": "vitest run packages/*/test",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint packages tests",
+    "run": "tsx packages/cli/src/main.ts",
+    "dev": "tsx packages/cli/src/main.ts",
+    "link:cli": "npm link --workspace @piano/cli",
+    "link:cli:user": "npm_config_prefix=\"$HOME/.local\" npm link --workspace @piano/cli"
+  },
+  "devDependencies": {
+    "@xterm/headless": "^5.5.0",
+    "@eslint/js": "^9.0.0",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^2.1.9",
+    "eslint": "^9.0.0",
+    "node-pty": "^1.1.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -1,0 +1,89 @@
+version: 3
+
+# Cuda-tuning eval-matrix cell: harness=pi, model=gpt-5.6-luna, shape=tournament (race count 3).
+# Same stage pipeline as the gpu-cuda-tuning family twins; only the
+# harness/model/tools lines differ between cells of the matrix.
+workflow:
+  name: gpu-cuda-tuning-tournament-pi-luna
+  nodes:
+    - stage:
+        name: setup
+        worker: cuda-setup
+        harness: pi
+        model: gpt-5.6-luna
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: race
+        entry: profile
+        exit: race          # the tournament region; resolves to its exit leaf `measure`
+        iterations: 10
+        nodes:
+          - stage:
+              name: profile
+              worker: cuda-profile
+              harness: pi
+              model: gpt-5.6-luna
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: iteration.json
+              validate: true
+              from: []
+
+          - stage:
+              name: idea
+              worker: cuda-idea-tournament
+              harness: pi
+              model: gpt-5.6-luna
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: profile.json
+              validate: true
+              from: [profile]
+
+          - tournament:
+              name: race
+              from: [idea]
+              over: idea.strategies
+              count: 3
+              entry: implement
+              exit: measure
+              nodes:
+                - stage:
+                    name: implement
+                    worker: cuda-implement-verify
+                    harness: pi
+                    model: gpt-5.6-luna
+                    thinkingLevel: high
+                    tools: [read, bash, edit, write]
+                    handoff: implementation-inputs.json
+                    validate: true
+                    from: []        # slot entry: this lane's strategy arrives as injected map-item context
+
+                - stage:
+                    name: measure
+                    worker: cuda-benchmark-store
+                    harness: pi
+                    model: gpt-5.6-luna
+                    thinkingLevel: high
+                    tools: [read, bash, edit, write]
+                    handoff: round.json
+                    validate: true
+                    from: [implement]
+
+    - stage:
+        name: summary
+        worker: cuda-summary
+        harness: pi
+        model: gpt-5.6-luna
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: tuning.json
+        validate: true
+        from: [tune]

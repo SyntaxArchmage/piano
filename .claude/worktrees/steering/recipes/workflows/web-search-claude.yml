@@ -1,0 +1,14 @@
+version: 3
+
+# Claude Code's native web-search id is PascalCase. Piano drops --bare for this
+# stage because minimal Claude mode does not attach WebSearch.
+workflow:
+  name: web-search-claude
+  nodes:
+    - stage:
+        name: search
+        worker: basic
+        harness: claude
+        thinkingLevel: high
+        tools: [WebSearch]
+        from: []

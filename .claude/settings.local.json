@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vitest *)",
+      "Bash(codex doctor *)",
+      "Bash(npm ls *)",
+      "Bash(find / -maxdepth 6 -type d -name \"save-token\")",
+      "Bash(pip show *)",
+      "Bash(pkill -f piano-keyprobe)",
+      "Bash(cat)",
+      "Bash(node --check /tmp/piano-keyprobe.mjs)",
+      "Bash(node .claude/skills/edit-issues/scripts/gitlab-issues.mjs list --per-page 10)",
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)",
+      "Bash(git fetch *)",
+      "Read(//home/albert/.piano/runs/20260903T123845-4bdc55/trajectories/**)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(python3 -c 'import json;c=json.load\\(open\\(\"/home/albert/.piano/agent.config.json\"\\)\\);print\\(\"qwen3.8-flash in models:\", \"qwen3.8-flash\" in c.get\\(\"models\", []\\)\\)')",
+      "Read(//home/albert/.piano/runs/**)",
+      "Bash(git log *)",
+      "Read(//home/albert/.claude/projects/-home-albert-workspace-piano--claude-worktrees-fix-workflow-status/b0d9ce54-7628-4cb4-9fb8-eac40be22284/subagents/workflows/**)",
+      "Read(//home/albert/.claude/projects/-home-albert-workspace-piano--claude-worktrees-fix-workflow-status/b0d9ce54-7628-4cb4-9fb8-eac40be22284/subagents/workflows/wf_54b1e4a0-1c6/**)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "atomicviz"
+  ]
+}

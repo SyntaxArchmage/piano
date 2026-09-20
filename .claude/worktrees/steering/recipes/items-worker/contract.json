@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "id": "items-worker",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["demo_stage", "purpose", "primitive", "items", "observation", "next"],
+    "properties": {
+      "demo_stage": { "type": "string", "minLength": 1 },
+      "purpose": { "type": "string", "minLength": 1 },
+      "primitive": { "type": "string", "minLength": 1 },
+      "items": { "type": "array", "minItems": 2, "items": { "type": "object", "required": ["label"], "properties": { "label": { "type": "string", "minLength": 1 } }, "additionalProperties": false } },
+      "observation": { "type": "string", "minLength": 1 },
+      "next": { "type": "string", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "outputs": {
+    "projections": [
+      { "id": "workflow.map-items", "pointer": "/items", "format": "json", "required": true }
+    ]
+  },
+  "example": {
+    "demo_stage": "make-items",
+    "purpose": "provide two visible tournament inputs",
+    "primitive": "tournament over",
+    "items": [{ "label": "alpha" }, { "label": "beta" }],
+    "observation": "two deterministic items are ready",
+    "next": "fanout"
+  }
+}

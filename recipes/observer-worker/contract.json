@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "observer-worker",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["demo_stage", "purpose", "primitive", "action", "observation", "next"],
+    "properties": {
+      "demo_stage": { "type": "string", "minLength": 1 },
+      "purpose": { "type": "string", "minLength": 1 },
+      "primitive": { "type": "string", "minLength": 1 },
+      "action": { "type": "string", "minLength": 1 },
+      "observation": { "type": "string", "minLength": 1 },
+      "next": { "type": "string", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "demo_stage": "inspect",
+    "purpose": "show downstream handoff consumption",
+    "primitive": "from + handoff",
+    "action": "read preparation.json",
+    "observation": "the upstream result was available",
+    "next": "make-items"
+  }
+}

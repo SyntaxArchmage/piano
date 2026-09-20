@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "architecture": "GCU400",
+  "corpus_root": "recipes/shared-skills",
+  "source": {
+    "repository": "kerneldevsuite",
+    "commit": "36c559d465ac7636678e094ccf512cfc5ff61bbe"
+  },
+  "authority_order": [
+    "current workspace source and build metadata",
+    "current toolchain, device, benchmark, and profiler output",
+    "pinned shared reference corpus",
+    "operator-local historical evidence"
+  ],
+  "selection_rule": "Choose exactly one primary domain when documentation is needed and at most one auxiliary domain; open only the files and sections needed for the current claim.",
+  "stages": {
+    "prepare": {
+      "allowed_primary_domains": [
+        "topsop-gcu400-foundation/compute-flow",
+        "topsop-operator-evidence/operator-local"
+      ],
+      "allowed_auxiliary_domains": [
+        "topsop-gcu400-foundation/compute-flow",
+        "topsop-operator-evidence/operator-local"
+      ],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 1,
+      "historical_optimization_policy": "operator-local evidence may provide bounded path/command/dead-end clues only; optimization case studies are forbidden"
+    },
+    "characterize": {
+      "allowed_primary_domains": [
+        "topsop-gcu400-performance/perf-estimation"
+      ],
+      "allowed_auxiliary_domains": [
+        "topsop-gcu400-foundation/compute-flow",
+        "topsop-gcu400-foundation/compute",
+        "topsop-gcu400-foundation/dataflow",
+        "topsop-gcu400-foundation/dte",
+        "topsop-gcu400-foundation/ldst",
+        "topsop-gcu400-foundation/assembly"
+      ],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 1,
+      "historical_optimization_policy": "optimization case studies are forbidden; current raw benchmark/profile/tool output exclusively owns baseline and ceilings"
+    },
+    "tournament-partition": {
+      "allowed_primary_domains": [
+        "topsop-gcu400-performance/optimization",
+        "topsop-gcu400-performance/perf-estimation"
+      ],
+      "allowed_auxiliary_domains": [
+        "topsop-operator-evidence/operator-local"
+      ],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 1,
+      "historical_optimization_policy": "one signature-matched optimization case may suggest lane categories but cannot prove current applicability, speedup, or KEEP"
+    },
+    "analyze": {
+      "allowed_primary_domains": [
+        "topsop-gcu400-foundation/compute-flow",
+        "topsop-gcu400-foundation/compute",
+        "topsop-gcu400-foundation/dataflow",
+        "topsop-gcu400-foundation/scalar",
+        "topsop-gcu400-foundation/dte",
+        "topsop-gcu400-foundation/ldst",
+        "topsop-gcu400-foundation/assembly",
+        "topsop-gcu400-performance/perf-estimation"
+      ],
+      "allowed_auxiliary_domains": [
+        "topsop-gcu400-foundation/compute-flow",
+        "topsop-gcu400-foundation/compute",
+        "topsop-gcu400-foundation/dataflow",
+        "topsop-gcu400-foundation/scalar",
+        "topsop-gcu400-foundation/dte",
+        "topsop-gcu400-foundation/ldst",
+        "topsop-gcu400-foundation/assembly",
+        "topsop-gcu400-performance/perf-estimation",
+        "topsop-gcu400-performance/optimization",
+        "topsop-operator-evidence/operator-local"
+      ],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 1,
+      "historical_optimization_policy": "at most one signature-matched optimization case may be the auxiliary domain and is hypothesis-only"
+    },
+    "implement": {
+      "allowed_primary_domains": [
+        "topsop-gcu400-foundation/compute-flow",
+        "topsop-gcu400-foundation/compute",
+        "topsop-gcu400-foundation/dataflow",
+        "topsop-gcu400-foundation/scalar",
+        "topsop-gcu400-foundation/dte",
+        "topsop-gcu400-foundation/ldst",
+        "topsop-gcu400-foundation/assembly"
+      ],
+      "allowed_auxiliary_domains": [
+        "topsop-gcu400-validation/review",
+        "topsop-gcu400-validation/testing",
+        "topsop-gcu400-validation/debug",
+        "topsop-operator-evidence/operator-local"
+      ],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 1,
+      "historical_optimization_policy": "optimization case studies are forbidden; implement the admitted mechanism, not a historical patch"
+    },
+    "evaluate": {
+      "allowed_primary_domains": [
+        "topsop-gcu400-validation/testing",
+        "topsop-gcu400-performance/perf-estimation"
+      ],
+      "allowed_auxiliary_domains": [
+        "topsop-gcu400-validation/debug",
+        "topsop-gcu400-validation/review",
+        "topsop-gcu400-performance/perf-estimation",
+        "topsop-operator-evidence/operator-local"
+      ],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 1,
+      "historical_optimization_policy": "optimization case studies are forbidden and cannot influence measured comparison or promotion eligibility"
+    },
+    "promote": {
+      "allowed_primary_domains": [
+        "topsop-operator-evidence/operator-local"
+      ],
+      "allowed_auxiliary_domains": [],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 0,
+      "historical_optimization_policy": "historical evidence never overrides current accepted evaluation, threshold, Git, artifact, or state facts"
+    },
+    "summary": {
+      "allowed_primary_domains": [
+        "topsop-operator-evidence/operator-local"
+      ],
+      "allowed_auxiliary_domains": [],
+      "max_primary_domains": 1,
+      "max_auxiliary_domains": 0,
+      "historical_optimization_policy": "historical evidence is output-format context only and never a source for final performance claims"
+    }
+  },
+  "metadata_files": [
+    "recipes/shared-skills/topsop-gcu400-catalog.json",
+    "recipes/shared-skills/topsop-gcu400-import-manifest.json",
+    "recipes/shared-skills/topsop-gcu400-foundation/hardware/gcu400-v1.json"
+  ]
+}

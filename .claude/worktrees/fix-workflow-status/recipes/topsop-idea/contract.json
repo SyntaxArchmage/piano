@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "id": "optimization-proposal",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "Stage-specific topsop idea gate: exactly the optimization-proposal payload expected by the idea stage. Replaces the deprecated multi-mode topsop-optimize contract for idea stages.",
+    "type": "object",
+    "properties": {
+      "strategies": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "bottleneck": {
+              "type": "string"
+            },
+            "technique": {
+              "type": "string"
+            },
+            "rationale": {
+              "type": "string"
+            },
+            "predicted_speedup": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "risk_level": {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "conflicts_with": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "falsification_criterion": {
+              "type": "string"
+            },
+            "mechanism_over_config": {
+              "type": "boolean"
+            },
+            "variable_type": {
+              "enum": [
+                "structural",
+                "config"
+              ]
+            }
+          },
+          "required": [
+            "bottleneck",
+            "id",
+            "predicted_speedup",
+            "rationale",
+            "risk_level",
+            "technique"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1
+      },
+      "already_optimal": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "history_considered": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "research_queries": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "rechecked_premises": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "premise": {
+              "type": "string",
+              "minLength": 1
+            },
+            "invalidated": {
+              "type": "boolean"
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "evidence",
+            "invalidated",
+            "premise"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "strategies"
+    ],
+    "allOf": [
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "strategies": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "required": [
+                  "variable_type"
+                ],
+                "properties": {
+                  "variable_type": {
+                    "const": "structural"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "required": [
+            "rechecked_premises"
+          ],
+          "properties": {
+            "rechecked_premises": {
+              "type": "array",
+              "minItems": 1
+            }
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "strategies": [
+      {
+        "id": "candidate-id",
+        "bottleneck": "memory",
+        "technique": "single 64KB DTE load",
+        "rationale": "wider transfer recovers read bandwidth",
+        "predicted_speedup": 1.1,
+        "risk_level": "low",
+        "falsification_criterion": "latency unchanged within noise -> hypothesis wrong",
+        "mechanism_over_config": false,
+        "variable_type": "config"
+      }
+    ]
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      { "id": "workflow.map-items", "pointer": "/strategies", "format": "json", "required": true }
+    ]
+  }
+}

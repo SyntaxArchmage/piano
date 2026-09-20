@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "id": "gcu400-hardware-v1",
+  "architecture": "GCU400",
+  "source": {
+    "repository": "kerneldevsuite",
+    "commit": "36c559d465ac7636678e094ccf512cfc5ff61bbe",
+    "document": "recipes/shared-skills/topsop-gcu400-foundation/document/compute/libra_sip_arch_spec.md",
+    "sha256": "sha256:aff15b5aa7bd686fceb769254a42d15dd872188b97a2965ba257608850ebefd0"
+  },
+  "authority": {
+    "order": [
+      "current workspace source and CMake",
+      "current toolchain or device output",
+      "this pinned architecture manifest",
+      "operator-local historical evidence"
+    ],
+    "operator_budget_rule": "A kernel allocatable budget must be resolved from the current source or toolchain, scoped to its owner, and must not exceed the physical capacity."
+  },
+  "facts": {
+    "l1_vdmem_physical_capacity_bytes_per_sip": {
+      "value": 917504,
+      "unit": "byte",
+      "semantics": "physical_capacity",
+      "source_sections": [
+        "L1存储空间",
+        "4.4 SIP L1存储和访存能力",
+        "6.2.2.2.2 VDMEM"
+      ]
+    },
+    "l1_sdmem_physical_capacity_bytes_per_sip": {
+      "value": 131072,
+      "unit": "byte",
+      "semantics": "physical_capacity",
+      "source_sections": [
+        "L1存储空间",
+        "4.4 SIP L1存储和访存能力"
+      ]
+    },
+    "sdmem_base_address_offset_bytes_per_sip": {
+      "value": 1572864,
+      "unit": "byte",
+      "semantics": "address_space_offset_not_vdmem_capacity",
+      "source_sections": [
+        "6.2.1.8 Data Shared Space"
+      ]
+    }
+  },
+  "runtime_resolved_facts": [
+    "l1_vdmem_allocatable_budget_bytes",
+    "l1_vdmem_budget_scope_and_owner",
+    "software_threads_per_sip",
+    "imem_budget_bytes",
+    "shared_memory_budget_bytes",
+    "dte_context_budget",
+    "alignment_requirements",
+    "operator_tile_limits"
+  ],
+  "semantic_guards": [
+    "1572864 bytes is the SDMEM base address offset in the cited GCU400 address map, not the physical VDMEM capacity.",
+    "A compiler macro, launch shared-memory value, historical report, or another architecture must not replace the GCU400 physical-capacity fact.",
+    "Per-thread and per-kernel allocatable budgets are current-source facts and may be smaller than 917504 bytes per SIP."
+  ]
+}

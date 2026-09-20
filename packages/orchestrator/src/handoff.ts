@@ -1,0 +1,162 @@
+import { FileSystem } from "@effect/platform";
+import { Effect } from "effect";
+import { randomUUID } from "node:crypto";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { type WorkflowError, workflowError } from "./errors.js";
+import {
+  invocationDirectory,
+  runtimeInstanceId,
+  runtimeInvocationId,
+  type WorkflowRuntimeInvocation,
+} from "./workflow-runtime.js";
+import type { WorkflowWorkspaceBinding } from "./workspace.js";
+import type { WorkerContractReference } from "./contract-snapshot.js";
+import type { ContractProjection } from "@piano/contract";
+
+/** Immutable evidence emitted by the orchestrator after a producer has
+ * completed (and, when requested, passed validation). */
+export interface HandoffProducer {
+  readonly id: string;
+  readonly stageId: string;
+  readonly stage: string;
+  readonly worker: string;
+  readonly instanceId?: string;
+  readonly text: string;
+  readonly sessionId: string;
+  readonly transcriptPath: string;
+  /** Configuration requested by the workflow before provider capability
+   * resolution. Keep it separate from the effective harness values below. */
+  readonly requestedModel?: string;
+  readonly requestedThinkingLevel?: string;
+  readonly model?: string;
+  readonly thinkingLevel?: string;
+  readonly workspace: WorkflowWorkspaceBinding;
+  readonly resultPath?: string;
+  readonly resultPayload?: unknown;
+  /** Named values declared by the producer contract for downstream use. */
+  readonly projections?: readonly ContractProjection[];
+  readonly contract?: WorkerContractReference;
+  readonly recordPath: string;
+}
+
+export interface HandoffMapItem {
+  readonly over: string;
+  readonly index: number;
+  readonly value: unknown;
+}
+
+function mapFsError(path: string, cause: unknown): WorkflowError {
+  return workflowError("schedule", path, String(cause));
+}
+
+function safeRelativePath(
+  base: string,
+  path: string,
+  sourcePath: string,
+): Effect.Effect<string, WorkflowError> {
+  if (path.trim() === "" || isAbsolute(path)) {
+    return Effect.fail(workflowError("compile", sourcePath, "handoff must be a non-empty relative file path"));
+  }
+  const resolved = resolve(base, path);
+  const rel = relative(base, resolved);
+  if (rel === "" || rel === "." || rel.startsWith("..") || isAbsolute(rel)) {
+    return Effect.fail(workflowError("compile", sourcePath, `handoff path "${path}" escapes its invocation directory`));
+  }
+  return Effect.succeed(resolved);
+}
+
+function writeJsonAtomic(
+  path: string,
+  value: unknown,
+): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const temporaryPath = `${path}.${randomUUID()}.tmp`;
+    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
+      Effect.mapError((cause) => mapFsError(path, cause)),
+    );
+    yield* fileSystem.writeFileString(temporaryPath, `${JSON.stringify(value, null, 2)}\n`).pipe(
+      Effect.mapError((cause) => mapFsError(path, cause)),
+    );
+    yield* fileSystem.rename(temporaryPath, path).pipe(
+      Effect.mapError((cause) => mapFsError(path, cause)),
+      Effect.ensuring(fileSystem.remove(temporaryPath).pipe(Effect.ignore)),
+    );
+  });
+}
+
+function handoffRecordPath(runDir: string, invocation: WorkflowRuntimeInvocation): string {
+  return join(invocationDirectory(runDir, invocation), "handoff", "record.json");
+}
+
+/** Persist a producer's accepted result as immutable orchestrator-owned
+ * evidence. Agent code never chooses this path or writes this metadata. */
+export function writeHandoffRecord(
+  runDir: string,
+  invocation: WorkflowRuntimeInvocation,
+  producer: Omit<HandoffProducer, "id" | "stageId" | "instanceId" | "recordPath">,
+): Effect.Effect<HandoffProducer, WorkflowError, FileSystem.FileSystem> {
+  const recordPath = handoffRecordPath(runDir, invocation);
+  const instanceId = runtimeInstanceId(invocation.frames);
+  const record: HandoffProducer = {
+    id: runtimeInvocationId(invocation),
+    stageId: invocation.stageId,
+    ...(instanceId === undefined ? {} : { instanceId }),
+    ...producer,
+    recordPath,
+  };
+  return writeJsonAtomic(recordPath, { version: 1, producer: record }).pipe(
+    Effect.as(record),
+  );
+}
+
+/** Materialize a consumer's ordered workflow context. A configured handoff
+ * file is always scoped below this exact invocation, so loop/map expansion
+ * cannot overwrite a sibling's input even when they use the same DSL path. */
+export function writeHandoffContext(
+  runDir: string,
+  consumer: WorkflowRuntimeInvocation,
+  configuredPath: string,
+  producers: readonly HandoffProducer[],
+  workspace: WorkflowWorkspaceBinding,
+  sourcePath: string,
+): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
+  const base = join(invocationDirectory(runDir, consumer), "handoff-context");
+  return safeRelativePath(base, configuredPath, sourcePath).pipe(
+    Effect.flatMap((contextPath) => writeJsonAtomic(contextPath, {
+      version: 1,
+      consumer: {
+        id: runtimeInvocationId(consumer),
+        stageId: consumer.stageId,
+        stage: consumer.stageName,
+        workspace,
+        ...(runtimeInstanceId(consumer.frames) === undefined
+          ? {}
+          : { instanceId: runtimeInstanceId(consumer.frames) }),
+      },
+      inputs: producers,
+    }).pipe(Effect.as(contextPath))),
+  );
+}
+
+/** Map item values are also orchestrator-owned context. They are injected only
+ * into the map region's entry stage; descendants receive data through normal
+ * explicit handoff files. */
+export function writeMapItemContext(
+  runDir: string,
+  consumer: WorkflowRuntimeInvocation,
+  item: HandoffMapItem,
+  workspace: WorkflowWorkspaceBinding,
+): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
+  const path = join(invocationDirectory(runDir, consumer), "map-item.json");
+  return writeJsonAtomic(path, {
+    version: 1,
+    consumer: {
+      id: runtimeInvocationId(consumer),
+      stageId: consumer.stageId,
+      stage: consumer.stageName,
+      workspace,
+    },
+    item,
+  }).pipe(Effect.as(path));
+}

@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "id": "tournament-optimization-proposal",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["strategies"],
+    "properties": {
+      "strategies": {
+        "type": "array",
+        "minItems": 3,
+        "items": {
+          "type": "object",
+          "required": ["id", "bottleneck", "technique", "rationale", "predicted_speedup", "risk_level"],
+          "properties": {
+            "id": { "type": "string" },
+            "bottleneck": { "type": "string" },
+            "technique": { "type": "string" },
+            "rationale": { "type": "string" },
+            "predicted_speedup": { "type": "number", "exclusiveMinimum": 0 },
+            "risk_level": { "enum": ["low", "medium", "high"] },
+            "conflicts_with": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "already_optimal": {
+        "type": "object",
+        "required": ["reason"],
+        "properties": { "reason": { "type": "string" } },
+        "additionalProperties": false
+      },
+      "history_considered": { "type": "array", "items": { "type": "string" } },
+      "research_queries": { "type": "array", "items": { "type": "string" } }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "strategies": [
+      {
+        "id": "candidate-a",
+        "bottleneck": "memory",
+        "technique": "shared-memory tiling",
+        "rationale": "why this should help",
+        "predicted_speedup": 1.1,
+        "risk_level": "low"
+      },
+      {
+        "id": "candidate-b",
+        "bottleneck": "compute",
+        "technique": "register blocking",
+        "rationale": "why this should help",
+        "predicted_speedup": 1.2,
+        "risk_level": "medium"
+      },
+      {
+        "id": "candidate-c",
+        "bottleneck": "latency",
+        "technique": "load vectorization",
+        "rationale": "why this should help",
+        "predicted_speedup": 1.05,
+        "risk_level": "low"
+      }
+    ]
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      { "id": "workflow.map-items", "pointer": "/strategies", "format": "json", "required": true }
+    ]
+  }
+}

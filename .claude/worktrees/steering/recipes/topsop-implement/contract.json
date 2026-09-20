@@ -1,0 +1,240 @@
+{
+  "version": 1,
+  "id": "topsop-implementation-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "topsop implement gate (kds stage 3/6): the single variable applied + compile result. compiled rounds must carry non-empty changed_files (auto-commit input, ISSUE-017); the deprecated named contract's historical path acceptance is preserved here, while winner-commit enforces the workspace boundary.",
+    "type": "object",
+    "properties": {
+      "status": {
+        "enum": [
+          "compiled",
+          "compile_failed",
+          "blocked"
+        ]
+      },
+      "variable": {
+        "type": "string",
+        "minLength": 1
+      },
+      "diff_summary": {
+        "type": "string",
+        "minLength": 1
+      },
+      "changed_files": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\s*$"
+              },
+              {
+                "type": "string",
+                "pattern": "^/"
+              },
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z]:[/\\\\]"
+              },
+              {
+                "type": "string",
+                "pattern": "(^|/)\\.\\.($|/)"
+              }
+            ]
+          }
+        }
+      },
+      "compile": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "so_commit": {
+            "type": "string"
+          },
+          "so_mtime": {
+            "type": "string"
+          },
+          "diagnostics_path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "passed",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "blocker": {
+        "type": "string",
+        "minLength": 1
+      },
+      "block_scope": {
+        "enum": [
+          "global",
+          "iteration"
+        ]
+      }
+    },
+    "required": [
+      "status",
+      "variable",
+      "diff_summary",
+      "compile"
+    ],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "compiled"
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "required": [
+            "changed_files"
+          ],
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            },
+            "changed_files": {
+              "type": "array",
+              "minItems": 1
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "compile_failed"
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "blocked"
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "required": [
+            "blocker"
+          ],
+          "properties": {
+            "blocker": {}
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "required": [
+            "block_scope"
+          ],
+          "properties": {
+            "block_scope": {}
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "blocked"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "status": "compiled",
+    "variable": "SUBTHREAD_NUM 2->1, kN=32",
+    "diff_summary": "add_add_rms_norm_dte_load_impl.h: single DTE load of 64KB/tile; SUBTHREAD_NUM 2->1; kN=32",
+    "changed_files": [
+      "topsop/lib/kernel/cc_kernel/normalize/sgl_add_add_rms_norm/gcu400/add_add_rms_norm_dte_load_impl.h"
+    ],
+    "compile": {
+      "passed": true,
+      "target": "kernel_normalize_sgl_add_add_rms_norm",
+      "so_commit": "a1b2c3d4",
+      "so_mtime": "2026-08-26 10:11:12 +0800"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": true
+      },
+      {
+        "id": "workflow.block-scope",
+        "pointer": "/block_scope",
+        "format": "string",
+        "required": false
+      },
+      {
+        "id": "workspace.changed-files",
+        "pointer": "/changed_files",
+        "format": "string-list",
+        "required": false
+      },
+      {
+        "id": "build.target",
+        "pointer": "/compile/target",
+        "format": "string",
+        "required": false
+      },
+      {
+        "id": "change.summary",
+        "pointer": "/diff_summary",
+        "format": "string",
+        "required": false
+      }
+    ]
+  }
+}

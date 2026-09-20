@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "id": "summary-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "Stage-specific topsop summary gate: final outcome and progress-record write-back evidence. Replaces the deprecated multi-mode topsop-verify contract for summary stages.",
+    "type": "object",
+    "properties": {
+      "run_id": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      },
+      "outcome": {
+        "enum": [
+          "improved",
+          "neutral",
+          "regressed",
+          "unmeasured",
+          "write_only"
+        ]
+      },
+      "ranking": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "winner": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "progress_record": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "current_status": {
+            "enum": [
+              "implementing",
+              "debugging",
+              "optimizing",
+              "stable"
+            ]
+          },
+          "entry": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "current_status",
+          "entry",
+          "file_path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "run_id",
+      "summary"
+    ],
+    "allOf": [
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "enum": [
+                "improved",
+                "neutral"
+              ]
+            }
+          },
+          "required": [
+            "outcome"
+          ]
+        },
+        "then": {
+          "type": "object",
+          "required": [
+            "progress_record"
+          ],
+          "properties": {
+            "progress_record": {}
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "run_id": "20260829T073054-0a60d1",
+    "summary": "short summary of the run outcome",
+    "outcome": "improved",
+    "ranking": [
+      "candidate-a",
+      "candidate-b"
+    ],
+    "winner": "candidate-a",
+    "progress_record": {
+      "file_path": "topsop/test/unit/sgl/sgl_add_add_rms_norm_test.cc",
+      "current_status": "stable",
+      "entry": "R12: iter-2 2-deep interleave KEEP 158.50us / 2588.51 GB/s | evidence: 20260829T073054-0a60d1 | next: none"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "progress-record.path",
+        "pointer": "/progress_record/file_path",
+        "format": "string",
+        "required": false
+      }
+    ]
+  }
+}

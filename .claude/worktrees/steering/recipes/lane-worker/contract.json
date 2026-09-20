@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "id": "lane-worker",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["demo_stage", "purpose", "primitive", "item", "observation", "next"],
+    "properties": {
+      "demo_stage": { "type": "string", "minLength": 1 },
+      "purpose": { "type": "string", "minLength": 1 },
+      "primitive": { "type": "string", "minLength": 1 },
+      "item": { "type": "object", "required": ["label"], "properties": { "label": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+      "observation": { "type": "string", "minLength": 1 },
+      "next": { "type": "string", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "demo_stage": "lane",
+    "purpose": "show one isolated tournament lane",
+    "primitive": "tournament lane",
+    "item": { "label": "alpha" },
+    "observation": "the lane received one item",
+    "next": "finish"
+  }
+}

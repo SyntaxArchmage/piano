@@ -1,0 +1,102 @@
+version: 3
+
+# Mixed-model tournament variant of gpu-cuda-tuning. The pipeline, region
+# boundaries and lane count are identical to `gpu-cuda-tuning-tournament.yml`;
+# the single difference is that the race's two lane stages pin a *different*
+# model per lane, so the three implement→measure lanes race distinct models
+# against each other rather than three strategies of one model.
+#
+# `model` takes a list here because both stages sit inside the `race`
+# tournament. The list must name exactly one model per lane — the region's
+# `count` — and the loader refuses the workflow otherwise:
+# `[deepseek-v4-flash, qwen3.8-flash, gpt-5.6-luna]` for `count: 3`. Lane `i`
+# runs the `i`-th entry, so lane 1 runs deepseek-v4-flash, lane 2 qwen3.8-flash,
+# lane 3 gpt-5.6-luna. The same model pins a lane's `implement` and `measure`,
+# which keeps a lane's measurement comparable to its own implementation.
+#
+# The stages outside the tournament keep a single `model`, and may omit it
+# entirely so the harness resolves the user's configured default.
+#
+# `race` omits `parallel`, so its three lanes run concurrently (the tournament
+# default). `thinkingLevel` stays explicit: tuning needs deliberate reasoning
+# effort even when the model varies.
+workflow:
+  name: gpu-cuda-tuning-tournament-mixed
+  nodes:
+    - stage:
+        name: setup
+        worker: cuda-setup
+        harness: pi
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: race
+        entry: profile
+        exit: race          # the tournament region; resolves to its exit leaf `measure`
+        iterations: 10
+        nodes:
+          - stage:
+              name: profile
+              worker: cuda-profile
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: iteration.json
+              validate: true
+              from: []
+
+          - stage:
+              name: idea
+              worker: cuda-idea-tournament
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: profile.json
+              validate: true
+              from: [profile]
+
+          - tournament:
+              name: race
+              from: [idea]
+              over: idea.strategies
+              count: 3
+              entry: implement
+              exit: measure
+              nodes:
+                - stage:
+                    name: implement
+                    worker: cuda-implement-verify
+                    harness: pi
+                    model: [deepseek-v4-flash, qwen3.8-flash, gpt-5.6-luna]
+                    thinkingLevel: high
+                    tools: [read, bash, edit, write]
+                    handoff: implementation-inputs.json
+                    validate: true
+                    from: []        # slot entry: this lane's strategy arrives as injected map-item context
+
+                - stage:
+                    name: measure
+                    worker: cuda-benchmark-store
+                    harness: pi
+                    model: [deepseek-v4-flash, qwen3.8-flash, gpt-5.6-luna]
+                    thinkingLevel: high
+                    tools: [read, bash, edit, write]
+                    handoff: round.json
+                    validate: true
+                    from: [implement]
+
+    - stage:
+        name: summary
+        worker: cuda-summary
+        harness: pi
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: tuning.json
+        validate: true
+        from: [tune]

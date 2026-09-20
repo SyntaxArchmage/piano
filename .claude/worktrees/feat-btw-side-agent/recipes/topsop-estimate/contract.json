@@ -1,0 +1,1429 @@
+{
+  "version": 1,
+  "id": "topsop-estimate-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "Deprecated compatibility contract for the former multi-mode topsop estimate worker. New workflows use the stage-specific topsop-theory or topsop-profile worker. The union accepts either legacy shape and retains the shared LLC arithmetic checks.",
+    "type": "object",
+    "properties": {
+      "status": {
+        "enum": [
+          "ready",
+          "timing-only",
+          "blocked"
+        ]
+      },
+      "target_operator": {
+        "type": "string"
+      },
+      "shape": {
+        "type": "string"
+      },
+      "baseline": {
+        "type": "object",
+        "properties": {
+          "kernel_source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "build": {
+            "type": "object",
+            "properties": {
+              "so_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "so_mtime": {
+                "type": "string"
+              },
+              "so_commit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "so_path"
+            ],
+            "additionalProperties": false
+          },
+          "correctness": {
+            "type": "object",
+            "properties": {
+              "target_case_passed": {
+                "type": "boolean"
+              },
+              "full_regression_passed": {
+                "type": "boolean"
+              },
+              "passed_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "full_regression_passed",
+              "target_case_passed"
+            ],
+            "additionalProperties": false
+          },
+          "profile": {
+            "type": "object",
+            "properties": {
+              "kernel_latency_us": {
+                "type": "number"
+              },
+              "llc_read_bandwidth_gbps": {
+                "type": "number"
+              },
+              "llc_write_bandwidth_gbps": {
+                "type": "number"
+              },
+              "llc_rw_sum_gbps": {
+                "type": "number"
+              },
+              "llc_read_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "llc_write_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "sip_1d_efficiency": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "vpd_bottleneck": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "build",
+          "kernel_source"
+        ],
+        "additionalProperties": false
+      },
+      "theory": {
+        "type": "object",
+        "properties": {
+          "read_write_balanced": {
+            "type": "boolean"
+          },
+          "bandwidth_limit_gbps": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "theory_min_us": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "bandwidth_utilization": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "bandwidth_limit_gbps",
+          "bandwidth_utilization",
+          "read_write_balanced",
+          "theory_min_us"
+        ],
+        "additionalProperties": false
+      },
+      "device": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "architecture": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "architecture",
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "metrics": {
+        "type": "object",
+        "properties": {
+          "kernel_latency_us": {
+            "type": "number"
+          },
+          "llc_read_bandwidth_gbps": {
+            "type": "number"
+          },
+          "llc_write_bandwidth_gbps": {
+            "type": "number"
+          },
+          "llc_rw_sum_gbps": {
+            "type": "number"
+          },
+          "sip_1d_efficiency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "sip_2d_efficiency": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "llc_read_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "llc_write_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bandwidth_utilization": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "kernel_latency_us"
+        ],
+        "additionalProperties": false
+      },
+      "vpd": {
+        "type": "object",
+        "properties": {
+          "duration_cycles": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bottleneck": {
+            "enum": [
+              "DTE_BOUND",
+              "COMPUTE_BOUND",
+              "UNKNOWN"
+            ]
+          },
+          "diagnostic": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "self_consistency": {
+        "type": "object",
+        "properties": {
+          "implied_bandwidth_gbps": {
+            "type": "number"
+          },
+          "consistent": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "bottlenecks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "compute",
+                "memory",
+                "occupancy",
+                "launch"
+              ]
+            },
+            "description": {
+              "type": "string"
+            },
+            "evidence": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "description",
+            "evidence",
+            "type"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "analysis": {
+        "type": "string"
+      },
+      "raw_path": {
+        "type": "string",
+        "minLength": 1
+      },
+      "blocker": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "additionalProperties": false,
+    "anyOf": [
+      {
+        "$ref": "#/$defs/theoryReport"
+      },
+      {
+        "$ref": "#/$defs/profileReport"
+      }
+    ],
+    "$defs": {
+      "theoryReport": {
+        "type": "object",
+        "required": [
+          "target_operator"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "const": "blocked"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "required": [
+                "blocker"
+              ],
+              "properties": {
+                "blocker": {}
+              }
+            }
+          },
+          {
+            "if": {
+              "not": {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "status"
+                    ],
+                    "properties": {
+                      "status": {}
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "blocked",
+                          "timing-only"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "then": {
+              "type": "object",
+              "required": [
+                "baseline",
+                "theory"
+              ],
+              "properties": {
+                "baseline": {},
+                "theory": {}
+              }
+            }
+          }
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/properties/status"
+          },
+          "target_operator": {
+            "$ref": "#/properties/target_operator"
+          },
+          "shape": {
+            "$ref": "#/properties/shape"
+          },
+          "baseline": {
+            "$ref": "#/properties/baseline"
+          },
+          "theory": {
+            "$ref": "#/properties/theory"
+          },
+          "blocker": {
+            "$ref": "#/properties/blocker"
+          }
+        }
+      },
+      "profileReport": {
+        "type": "object",
+        "required": [
+          "target_operator",
+          "device",
+          "metrics",
+          "analysis"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "const": "blocked"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "required": [
+                "blocker"
+              ],
+              "properties": {
+                "blocker": {}
+              }
+            }
+          },
+          {
+            "if": {
+              "not": {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "status"
+                    ],
+                    "properties": {
+                      "status": {}
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "blocked",
+                          "timing-only"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "metrics": {
+                  "type": "object",
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "sip_1d_efficiency"
+                      ],
+                      "properties": {
+                        "sip_1d_efficiency": {}
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "sip_2d_efficiency"
+                      ],
+                      "properties": {
+                        "sip_2d_efficiency": {}
+                      }
+                    }
+                  ],
+                  "required": [
+                    "llc_rw_sum_gbps"
+                  ],
+                  "properties": {
+                    "llc_rw_sum_gbps": {}
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/properties/status"
+          },
+          "target_operator": {
+            "$ref": "#/properties/target_operator"
+          },
+          "shape": {
+            "$ref": "#/properties/shape"
+          },
+          "device": {
+            "$ref": "#/properties/device"
+          },
+          "metrics": {
+            "$ref": "#/properties/metrics"
+          },
+          "vpd": {
+            "$ref": "#/properties/vpd"
+          },
+          "self_consistency": {
+            "$ref": "#/properties/self_consistency"
+          },
+          "bottlenecks": {
+            "$ref": "#/properties/bottlenecks"
+          },
+          "analysis": {
+            "$ref": "#/properties/analysis"
+          },
+          "raw_path": {
+            "$ref": "#/properties/raw_path"
+          },
+          "blocker": {
+            "$ref": "#/properties/blocker"
+          }
+        }
+      }
+    },
+    "x-piano-assertions": [
+      {
+        "path": "/theory/read_write_balanced",
+        "message": "read_write_balanced must follow the LLC rule: RD/WR <= 3 and WR/RD <= 3",
+        "when": {
+          "op": "all",
+          "args": [
+            {
+              "op": "any",
+              "args": [
+                {
+                  "op": "not",
+                  "args": [
+                    {
+                      "op": "present",
+                      "args": [
+                        {
+                          "path": "/status"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "eq",
+                  "args": [
+                    {
+                      "path": "/status"
+                    },
+                    "ready"
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/theory"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                }
+              ]
+            },
+            {
+              "op": "gt",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                },
+                0
+              ]
+            },
+            {
+              "op": "gt",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                },
+                0
+              ]
+            }
+          ]
+        },
+        "test": {
+          "op": "eq",
+          "args": [
+            {
+              "path": "/theory/read_write_balanced"
+            },
+            {
+              "op": "all",
+              "args": [
+                {
+                  "op": "lte",
+                  "args": [
+                    {
+                      "op": "divide",
+                      "args": [
+                        {
+                          "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                        },
+                        {
+                          "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                        }
+                      ]
+                    },
+                    3
+                  ]
+                },
+                {
+                  "op": "lte",
+                  "args": [
+                    {
+                      "op": "divide",
+                      "args": [
+                        {
+                          "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                        },
+                        {
+                          "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                        }
+                      ]
+                    },
+                    3
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "path": "/theory/bandwidth_limit_gbps",
+        "message": "bandwidth_limit_gbps must be 3000 for balanced LLC traffic and 2500 otherwise",
+        "when": {
+          "op": "all",
+          "args": [
+            {
+              "op": "any",
+              "args": [
+                {
+                  "op": "not",
+                  "args": [
+                    {
+                      "op": "present",
+                      "args": [
+                        {
+                          "path": "/status"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "eq",
+                  "args": [
+                    {
+                      "path": "/status"
+                    },
+                    "ready"
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/theory"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                }
+              ]
+            },
+            {
+              "op": "gt",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                },
+                0
+              ]
+            },
+            {
+              "op": "gt",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                },
+                0
+              ]
+            }
+          ]
+        },
+        "test": {
+          "op": "eq",
+          "args": [
+            {
+              "path": "/theory/bandwidth_limit_gbps"
+            },
+            {
+              "op": "if",
+              "args": [
+                {
+                  "op": "all",
+                  "args": [
+                    {
+                      "op": "lte",
+                      "args": [
+                        {
+                          "op": "divide",
+                          "args": [
+                            {
+                              "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                            },
+                            {
+                              "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                            }
+                          ]
+                        },
+                        3
+                      ]
+                    },
+                    {
+                      "op": "lte",
+                      "args": [
+                        {
+                          "op": "divide",
+                          "args": [
+                            {
+                              "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                            },
+                            {
+                              "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                            }
+                          ]
+                        },
+                        3
+                      ]
+                    }
+                  ]
+                },
+                3000,
+                2500
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "path": "/theory/bandwidth_utilization",
+        "message": "bandwidth_utilization must equal llc_rw_sum / bandwidth_limit within 0.02",
+        "when": {
+          "op": "all",
+          "args": [
+            {
+              "op": "all",
+              "args": [
+                {
+                  "op": "any",
+                  "args": [
+                    {
+                      "op": "not",
+                      "args": [
+                        {
+                          "op": "present",
+                          "args": [
+                            {
+                              "path": "/status"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "eq",
+                      "args": [
+                        {
+                          "path": "/status"
+                        },
+                        "ready"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "present",
+                  "args": [
+                    {
+                      "path": "/theory"
+                    }
+                  ]
+                },
+                {
+                  "op": "present",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                    }
+                  ]
+                },
+                {
+                  "op": "present",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                    }
+                  ]
+                },
+                {
+                  "op": "gt",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                    },
+                    0
+                  ]
+                },
+                {
+                  "op": "gt",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                    },
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_rw_sum_gbps"
+                }
+              ]
+            }
+          ]
+        },
+        "test": {
+          "op": "lte",
+          "args": [
+            {
+              "op": "abs",
+              "args": [
+                {
+                  "op": "subtract",
+                  "args": [
+                    {
+                      "path": "/theory/bandwidth_utilization"
+                    },
+                    {
+                      "op": "min",
+                      "args": [
+                        {
+                          "op": "divide",
+                          "args": [
+                            {
+                              "path": "/baseline/profile/llc_rw_sum_gbps"
+                            },
+                            {
+                              "op": "if",
+                              "args": [
+                                {
+                                  "op": "all",
+                                  "args": [
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "op": "divide",
+                                          "args": [
+                                            {
+                                              "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                                            },
+                                            {
+                                              "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                                            }
+                                          ]
+                                        },
+                                        3
+                                      ]
+                                    },
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "op": "divide",
+                                          "args": [
+                                            {
+                                              "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                                            },
+                                            {
+                                              "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                                            }
+                                          ]
+                                        },
+                                        3
+                                      ]
+                                    }
+                                  ]
+                                },
+                                3000,
+                                2500
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            0.02
+          ]
+        }
+      },
+      {
+        "path": "/theory/theory_min_us",
+        "message": "theory_min_us must equal (read_bytes + write_bytes) / (bandwidth_limit * 1000) within 3%",
+        "when": {
+          "op": "all",
+          "args": [
+            {
+              "op": "all",
+              "args": [
+                {
+                  "op": "any",
+                  "args": [
+                    {
+                      "op": "not",
+                      "args": [
+                        {
+                          "op": "present",
+                          "args": [
+                            {
+                              "path": "/status"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "op": "eq",
+                      "args": [
+                        {
+                          "path": "/status"
+                        },
+                        "ready"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "present",
+                  "args": [
+                    {
+                      "path": "/theory"
+                    }
+                  ]
+                },
+                {
+                  "op": "present",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                    }
+                  ]
+                },
+                {
+                  "op": "present",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                    }
+                  ]
+                },
+                {
+                  "op": "gt",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                    },
+                    0
+                  ]
+                },
+                {
+                  "op": "gt",
+                  "args": [
+                    {
+                      "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                    },
+                    0
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_read_bytes"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/baseline/profile/llc_write_bytes"
+                }
+              ]
+            }
+          ]
+        },
+        "test": {
+          "op": "lte",
+          "args": [
+            {
+              "op": "abs",
+              "args": [
+                {
+                  "op": "subtract",
+                  "args": [
+                    {
+                      "path": "/theory/theory_min_us"
+                    },
+                    {
+                      "op": "divide",
+                      "args": [
+                        {
+                          "op": "add",
+                          "args": [
+                            {
+                              "path": "/baseline/profile/llc_read_bytes"
+                            },
+                            {
+                              "path": "/baseline/profile/llc_write_bytes"
+                            }
+                          ]
+                        },
+                        {
+                          "op": "multiply",
+                          "args": [
+                            {
+                              "op": "if",
+                              "args": [
+                                {
+                                  "op": "all",
+                                  "args": [
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "op": "divide",
+                                          "args": [
+                                            {
+                                              "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                                            },
+                                            {
+                                              "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                                            }
+                                          ]
+                                        },
+                                        3
+                                      ]
+                                    },
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "op": "divide",
+                                          "args": [
+                                            {
+                                              "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                                            },
+                                            {
+                                              "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                                            }
+                                          ]
+                                        },
+                                        3
+                                      ]
+                                    }
+                                  ]
+                                },
+                                3000,
+                                2500
+                              ]
+                            },
+                            1000
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "multiply",
+              "args": [
+                {
+                  "op": "divide",
+                  "args": [
+                    {
+                      "op": "add",
+                      "args": [
+                        {
+                          "path": "/baseline/profile/llc_read_bytes"
+                        },
+                        {
+                          "path": "/baseline/profile/llc_write_bytes"
+                        }
+                      ]
+                    },
+                    {
+                      "op": "multiply",
+                      "args": [
+                        {
+                          "op": "if",
+                          "args": [
+                            {
+                              "op": "all",
+                              "args": [
+                                {
+                                  "op": "lte",
+                                  "args": [
+                                    {
+                                      "op": "divide",
+                                      "args": [
+                                        {
+                                          "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                                        },
+                                        {
+                                          "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                                        }
+                                      ]
+                                    },
+                                    3
+                                  ]
+                                },
+                                {
+                                  "op": "lte",
+                                  "args": [
+                                    {
+                                      "op": "divide",
+                                      "args": [
+                                        {
+                                          "path": "/baseline/profile/llc_write_bandwidth_gbps"
+                                        },
+                                        {
+                                          "path": "/baseline/profile/llc_read_bandwidth_gbps"
+                                        }
+                                      ]
+                                    },
+                                    3
+                                  ]
+                                }
+                              ]
+                            },
+                            3000,
+                            2500
+                          ]
+                        },
+                        1000
+                      ]
+                    }
+                  ]
+                },
+                0.03
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "path": "/metrics/bandwidth_utilization",
+        "message": "bandwidth_utilization must equal llc_rw_sum / the LLC balance-rule limit within 0.02",
+        "when": {
+          "op": "all",
+          "args": [
+            {
+              "op": "any",
+              "args": [
+                {
+                  "op": "not",
+                  "args": [
+                    {
+                      "op": "present",
+                      "args": [
+                        {
+                          "path": "/status"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "op": "eq",
+                  "args": [
+                    {
+                      "path": "/status"
+                    },
+                    "ready"
+                  ]
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/metrics/llc_read_bandwidth_gbps"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/metrics/llc_write_bandwidth_gbps"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/metrics/llc_rw_sum_gbps"
+                }
+              ]
+            },
+            {
+              "op": "present",
+              "args": [
+                {
+                  "path": "/metrics/bandwidth_utilization"
+                }
+              ]
+            },
+            {
+              "op": "gt",
+              "args": [
+                {
+                  "path": "/metrics/llc_read_bandwidth_gbps"
+                },
+                0
+              ]
+            },
+            {
+              "op": "gt",
+              "args": [
+                {
+                  "path": "/metrics/llc_write_bandwidth_gbps"
+                },
+                0
+              ]
+            }
+          ]
+        },
+        "test": {
+          "op": "lte",
+          "args": [
+            {
+              "op": "abs",
+              "args": [
+                {
+                  "op": "subtract",
+                  "args": [
+                    {
+                      "path": "/metrics/bandwidth_utilization"
+                    },
+                    {
+                      "op": "min",
+                      "args": [
+                        {
+                          "op": "divide",
+                          "args": [
+                            {
+                              "path": "/metrics/llc_rw_sum_gbps"
+                            },
+                            {
+                              "op": "if",
+                              "args": [
+                                {
+                                  "op": "all",
+                                  "args": [
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "op": "divide",
+                                          "args": [
+                                            {
+                                              "path": "/metrics/llc_read_bandwidth_gbps"
+                                            },
+                                            {
+                                              "path": "/metrics/llc_write_bandwidth_gbps"
+                                            }
+                                          ]
+                                        },
+                                        3
+                                      ]
+                                    },
+                                    {
+                                      "op": "lte",
+                                      "args": [
+                                        {
+                                          "op": "divide",
+                                          "args": [
+                                            {
+                                              "path": "/metrics/llc_write_bandwidth_gbps"
+                                            },
+                                            {
+                                              "path": "/metrics/llc_read_bandwidth_gbps"
+                                            }
+                                          ]
+                                        },
+                                        3
+                                      ]
+                                    }
+                                  ]
+                                },
+                                3000,
+                                2500
+                              ]
+                            }
+                          ]
+                        },
+                        1
+                      ]
+                    }
+                  ]
+                }
+              ]
+            },
+            0.02
+          ]
+        }
+      }
+    ]
+  },
+  "example": {
+    "status": "ready",
+    "target_operator": "topssglAddAddRmsNorm",
+    "shape": "[16384,2048]",
+    "device": {
+      "name": "Enflame L600 DEV0",
+      "architecture": "GCU400"
+    },
+    "baseline": {
+      "kernel_source": "topsop/lib/kernel/cc_kernel/normalize/sgl_add_add_rms_norm/gcu400/add_add_rms_norm_dte_load_impl.h",
+      "build": {
+        "so_path": "build/lib/libkernel_normalize_sgl_add_add_rms_norm.so",
+        "so_commit": "f5cc7d281b",
+        "so_mtime": "2026-08-24 16:24:43 +0800"
+      },
+      "correctness": {
+        "target_case_passed": true,
+        "full_regression_passed": true,
+        "passed_count": 24,
+        "total_count": 24
+      },
+      "profile": {
+        "kernel_latency_us": 216.23,
+        "llc_read_bandwidth_gbps": 961.25,
+        "llc_write_bandwidth_gbps": 929.46,
+        "llc_rw_sum_gbps": 1890.71,
+        "llc_read_bytes": 207900000,
+        "llc_write_bytes": 200900000,
+        "sip_1d_efficiency": 0.2832,
+        "vpd_bottleneck": "DTE_BOUND"
+      }
+    },
+    "theory": {
+      "read_write_balanced": true,
+      "bandwidth_limit_gbps": 3000,
+      "theory_min_us": 136.27,
+      "bandwidth_utilization": 0.6302
+    },
+    "metrics": {
+      "kernel_latency_us": 186.05,
+      "llc_read_bandwidth_gbps": 1104.56,
+      "llc_write_bandwidth_gbps": 1085.41,
+      "llc_rw_sum_gbps": 2189.97,
+      "sip_1d_efficiency": 0.3275,
+      "bandwidth_utilization": 0.73
+    },
+    "vpd": {
+      "duration_cycles": 215433,
+      "bottleneck": "DTE_BOUND",
+      "diagnostic": "wait-for-mailbox dominates"
+    },
+    "self_consistency": {
+      "implied_bandwidth_gbps": 2183,
+      "consistent": true
+    },
+    "bottlenecks": [
+      {
+        "type": "memory",
+        "description": "LLC bandwidth bound",
+        "evidence": "bytes / latency ~ measured"
+      }
+    ],
+    "analysis": "read path ~1.1 TB/s + write path ~1.08 TB/s is the practical ceiling",
+    "raw_path": "profiles/iter-000/kernel.json"
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      { "id": "workflow.status", "pointer": "/status", "format": "string", "required": false }
+    ]
+  }
+}

@@ -1,0 +1,318 @@
+{
+  "version": 1,
+  "id": "verification-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "Stage-specific topsop verification gate: compile, run, numeric check, and their consistent verdict. Replaces the deprecated multi-mode topsop-verify contract for verification stages.",
+    "type": "object",
+    "properties": {
+      "artifact": {
+        "type": "string"
+      },
+      "compile": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "stderr": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "run": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "numeric_check": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "tolerance": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "max_error": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "verdict": {
+        "enum": [
+          "pass",
+          "fail"
+        ]
+      },
+      "failure_details": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "artifact",
+      "compile",
+      "run",
+      "numeric_check",
+      "verdict"
+    ],
+    "allOf": [
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "exit_code": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "exit_code": {
+                  "not": {
+                    "const": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "object",
+              "properties": {
+                "exit_code": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "object",
+              "properties": {
+                "exit_code": {
+                  "not": {
+                    "const": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "run": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": false
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "compile": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            },
+            "run": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            },
+            "numeric_check": {
+              "type": "object",
+              "properties": {
+                "passed": {
+                  "const": true
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "const": "pass"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "compile": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "properties": {
+                "numeric_check": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "then": {
+          "type": "object",
+          "properties": {
+            "verdict": {
+              "const": "fail"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "artifact": "topsop/lib/kernel/cc_kernel/normalize/sgl_add_add_rms_norm/gcu400/add_add_rms_norm_dte_load_impl.h",
+    "compile": {
+      "passed": true,
+      "exit_code": 0
+    },
+    "run": {
+      "passed": true,
+      "exit_code": 0
+    },
+    "numeric_check": {
+      "passed": true
+    },
+    "verdict": "pass"
+  },
+  "outputs": {
+    "metrics": []
+  }
+}

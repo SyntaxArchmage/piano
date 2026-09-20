@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.mcp.json
+.piano.runs/
+
+# Local eval/tuning runtime output and scratch probes.
+.tmp-run/
+# Stray GitLab runner cache bundles (object-storage key layout).
+cache/
+evals/workloads/*/workspace/__pycache__/
+evals/workloads/*/workspace/bench/
+evals/workloads/*/workspace/reports/
+evals/workloads/*/workspace/state/
+
+# Only AGENTS/CLAUDE/README are tracked markdown files at repo root.
+/*.md
+!/AGENTS.md
+!/CLAUDE.md
+!/README.md

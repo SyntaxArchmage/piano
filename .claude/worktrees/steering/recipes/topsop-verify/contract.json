@@ -1,0 +1,471 @@
+{
+  "version": 1,
+  "id": "topsop-verify-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "Deprecated compatibility contract for the former multi-mode topsop verify worker. New workflows use the stage-specific topsop-verification or topsop-summary worker. The union accepts either legacy shape.",
+    "type": "object",
+    "properties": {
+      "artifact": {
+        "type": "string"
+      },
+      "compile": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "stderr": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "run": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit_code",
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "numeric_check": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "tolerance": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "max_error": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "passed"
+        ],
+        "additionalProperties": false
+      },
+      "verdict": {
+        "enum": [
+          "pass",
+          "fail"
+        ]
+      },
+      "failure_details": {
+        "type": "string"
+      },
+      "run_id": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      },
+      "outcome": {
+        "enum": [
+          "improved",
+          "neutral",
+          "regressed",
+          "unmeasured",
+          "write_only"
+        ]
+      },
+      "ranking": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "winner": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "progress_record": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "current_status": {
+            "enum": [
+              "implementing",
+              "debugging",
+              "optimizing",
+              "stable"
+            ]
+          },
+          "entry": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "current_status",
+          "entry",
+          "file_path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false,
+    "anyOf": [
+      {
+        "$ref": "#/$defs/verification"
+      },
+      {
+        "$ref": "#/$defs/summary"
+      }
+    ],
+    "$defs": {
+      "verification": {
+        "type": "object",
+        "required": [
+          "artifact",
+          "compile",
+          "run",
+          "numeric_check",
+          "verdict"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "type": "object",
+              "properties": {
+                "compile": {
+                  "type": "object",
+                  "properties": {
+                    "exit_code": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "compile": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "type": "object",
+              "properties": {
+                "compile": {
+                  "type": "object",
+                  "properties": {
+                    "exit_code": {
+                      "not": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "compile": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "object",
+                  "properties": {
+                    "exit_code": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "object",
+                  "properties": {
+                    "exit_code": {
+                      "not": {
+                        "const": 0
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "run": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "type": "object",
+              "properties": {
+                "compile": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                },
+                "run": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                },
+                "numeric_check": {
+                  "type": "object",
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "const": "pass"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "compile": {
+                      "type": "object",
+                      "properties": {
+                        "passed": {
+                          "const": false
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "properties": {
+                        "passed": {
+                          "const": false
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "numeric_check": {
+                      "type": "object",
+                      "properties": {
+                        "passed": {
+                          "const": false
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "verdict": {
+                  "const": "fail"
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "artifact": {},
+          "compile": {},
+          "run": {},
+          "numeric_check": {},
+          "verdict": {}
+        }
+      },
+      "summary": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "summary"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "type": "object",
+              "properties": {
+                "outcome": {
+                  "enum": [
+                    "improved",
+                    "neutral"
+                  ]
+                }
+              },
+              "required": [
+                "outcome"
+              ]
+            },
+            "then": {
+              "type": "object",
+              "required": [
+                "progress_record"
+              ],
+              "properties": {
+                "progress_record": {}
+              }
+            }
+          }
+        ],
+        "properties": {
+          "run_id": {
+            "$ref": "#/properties/run_id"
+          },
+          "summary": {
+            "$ref": "#/properties/summary"
+          },
+          "outcome": {
+            "$ref": "#/properties/outcome"
+          },
+          "ranking": {
+            "$ref": "#/properties/ranking"
+          },
+          "winner": {
+            "$ref": "#/properties/winner"
+          },
+          "progress_record": {
+            "$ref": "#/properties/progress_record"
+          }
+        }
+      }
+    }
+  },
+  "example": {
+    "artifact": "topsop/lib/kernel/cc_kernel/normalize/sgl_add_add_rms_norm/gcu400/add_add_rms_norm_dte_load_impl.h",
+    "compile": {
+      "passed": true,
+      "exit_code": 0
+    },
+    "run": {
+      "passed": true,
+      "exit_code": 0
+    },
+    "numeric_check": {
+      "passed": true
+    },
+    "verdict": "pass",
+    "run_id": "20260829T073054-0a60d1",
+    "summary": "short summary of the run outcome",
+    "outcome": "improved",
+    "ranking": [
+      "candidate-a",
+      "candidate-b"
+    ],
+    "winner": "candidate-a",
+    "progress_record": {
+      "file_path": "topsop/test/unit/sgl/sgl_add_add_rms_norm_test.cc",
+      "current_status": "stable",
+      "entry": "R12: iter-2 2-deep interleave KEEP 158.50us / 2588.51 GB/s | evidence: 20260829T073054-0a60d1 | next: none"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "progress-record.path",
+        "pointer": "/progress_record/file_path",
+        "format": "string",
+        "required": false
+      }
+    ]
+  }
+}

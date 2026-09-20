@@ -1,0 +1,259 @@
+{
+  "version": 1,
+  "id": "topsop-explore-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "description": "topsop explore gate: source call chain + macro architecture design (kds stage 2); ready must carry call_chain and architecture.",
+    "type": "object",
+    "properties": {
+      "status": {
+        "enum": [
+          "ready",
+          "blocked"
+        ]
+      },
+      "call_chain": {
+        "type": "string",
+        "minLength": 1
+      },
+      "architecture": {
+        "type": "object",
+        "properties": {
+          "pipeline": {
+            "type": "string",
+            "minLength": 1
+          },
+          "l1_buffers": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sip_allocation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "variant_selected": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "l1_buffers",
+          "pipeline",
+          "sip_allocation",
+          "variant_selected"
+        ],
+        "additionalProperties": false
+      },
+      "test_entry": {
+        "type": "string",
+        "minLength": 1
+      },
+      "build_target": {
+        "type": "string",
+        "minLength": 1
+      },
+      "reference_ops": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "hardware_constants": {
+        "type": "object",
+        "properties": {
+          "l1_vdmem_bytes_per_sip": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "l1_sdmem_bytes_per_sip": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "l1_imem_bytes_per_sip": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "l2_bytes_per_die": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "vc_budget_per_sip": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "tier_alignment": {
+            "type": "object",
+            "properties": {
+              "qa": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "da": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "va": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "da",
+              "qa",
+              "va"
+            ],
+            "additionalProperties": false
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "l1_imem_bytes_per_sip",
+          "l1_sdmem_bytes_per_sip",
+          "l1_vdmem_bytes_per_sip",
+          "l2_bytes_per_die",
+          "sources",
+          "tier_alignment",
+          "vc_budget_per_sip"
+        ],
+        "additionalProperties": false
+      },
+      "external_mechanism_candidates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "mechanism": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "present_in_source": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "mechanism",
+            "present_in_source",
+            "source"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "blocker": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "ready"
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "not": {
+            "type": "object",
+            "required": [
+              "blocker"
+            ],
+            "properties": {
+              "blocker": {}
+            }
+          },
+          "required": [
+            "call_chain",
+            "architecture"
+          ],
+          "properties": {
+            "call_chain": {},
+            "architecture": {}
+          }
+        }
+      },
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "blocked"
+            }
+          }
+        },
+        "then": {
+          "type": "object",
+          "required": [
+            "blocker"
+          ],
+          "properties": {
+            "blocker": {}
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "status": "ready",
+    "call_chain": "topsatenAddAddRmsNorm (include/topsaten) → topsop/lib/ops/sgl/op_sgl_add_add_rms_norm.cc OpBase → cc_kernel/normalize/sgl_add_add_rms_norm/gcu400/add_add_rms_norm_dte_load_impl.h",
+    "architecture": {
+      "pipeline": "2-stage DTE load + compute: DTE copies x1/x2 to L1, compute normalizes in VACC; single DTE trigger/wait pair per tile",
+      "l1_buffers": "x1/x2/rms buffers at 512B-aligned __local__ slots; 3 x 64KB in 896KB/SIP; no alias; wait before re-trigger",
+      "sip_allocation": "static even across 24 SIPs, base + (id < extra ? 1 : 0)",
+      "variant_selected": "dte_load kN=8/kD=2; kMaxDLen-aligned, no fallback on target case"
+    },
+    "test_entry": "topsop/test/unit/sgl/sgl_add_add_rms_norm_test",
+    "build_target": "kernel_normalize_sgl_add_add_rms_norm",
+    "reference_ops": [
+      "cc_kernel/normalize/add_rms_norm",
+      "cc_kernel/normalize/rms_norm_1d"
+    ],
+    "hardware_constants": {
+      "l1_vdmem_bytes_per_sip": 1572864,
+      "l1_sdmem_bytes_per_sip": 131072,
+      "l1_imem_bytes_per_sip": 131072,
+      "l2_bytes_per_die": 67108864,
+      "vc_budget_per_sip": 11,
+      "tier_alignment": {
+        "qa": 512,
+        "da": 256,
+        "va": 128
+      },
+      "sources": [
+        "CLAUDE.md section 8",
+        ".claude/skills/gcu300-isa-ref/document/isa32_arch_state.md",
+        ".claude/skills/gcu300-dataflow/SKILL.md"
+      ]
+    },
+    "external_mechanism_candidates": [
+      {
+        "mechanism": "official kernel uses block-shared local DTE for gamma",
+        "source": "official commit eb8b65cc5e",
+        "present_in_source": false
+      }
+    ]
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      { "id": "workflow.status", "pointer": "/status", "format": "string", "required": true }
+    ]
+  }
+}

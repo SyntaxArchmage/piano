@@ -1,0 +1,14 @@
+version: 3
+
+# Minimal web-search workflow for the Pi SDK adapter. The stage must declare
+# web_search so Piano mounts its extension against the configured gateway.
+workflow:
+  name: web-search
+  nodes:
+    - stage:
+        name: search
+        worker: basic
+        harness: pi
+        thinkingLevel: high
+        tools: [web_search]
+        from: []

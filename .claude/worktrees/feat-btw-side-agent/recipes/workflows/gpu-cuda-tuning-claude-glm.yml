@@ -1,0 +1,81 @@
+version: 3
+
+# Cuda-tuning eval-matrix cell: harness=claude, model=glm-5.3-flash, shape=serial.
+# Same stage pipeline as the gpu-cuda-tuning family twins; only the
+# harness/model/tools lines differ between cells of the matrix.
+workflow:
+  name: gpu-cuda-tuning-claude-glm
+  nodes:
+    - stage:
+        name: setup
+        worker: cuda-setup
+        harness: claude
+        model: glm-5.3-flash
+        thinkingLevel: high
+        tools: [Read, Bash, Edit, Write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: measure
+        entry: profile
+        exit: measure
+        iterations: 10
+        nodes:
+          - stage:
+              name: profile
+              worker: cuda-profile
+              harness: claude
+              model: glm-5.3-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: iteration.json
+              validate: true
+              from: []
+
+          - stage:
+              name: idea
+              worker: cuda-idea
+              harness: claude
+              model: glm-5.3-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: profile.json
+              validate: true
+              from: [profile]
+
+          - stage:
+              name: implement
+              worker: cuda-implement-verify
+              harness: claude
+              model: glm-5.3-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: implementation-inputs.json
+              validate: true
+              from: [profile, idea]
+
+          - stage:
+              name: measure
+              worker: cuda-benchmark-store
+              harness: claude
+              model: glm-5.3-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: round.json
+              validate: true
+              from: [idea, implement]
+
+    - stage:
+        name: summary
+        worker: cuda-summary
+        harness: claude
+        model: glm-5.3-flash
+        thinkingLevel: high
+        tools: [Read, Bash, Edit, Write]
+        handoff: tuning.json
+        validate: true
+        from: [tune]

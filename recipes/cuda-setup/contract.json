@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "id": "cuda-preparation-report",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "type": "object",
+    "required": ["status", "target", "device", "toolchain"],
+    "properties": {
+      "status": { "enum": ["ready", "blocked"] },
+      "target": {
+        "type": "object",
+        "required": ["operator", "shape", "dtype"],
+        "properties": {
+          "operator": { "type": "string" },
+          "shape": { "type": "string" },
+          "dtype": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "device": {
+        "type": "object",
+        "required": ["name", "architecture"],
+        "properties": {
+          "name": { "type": "string" },
+          "architecture": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "toolchain": {
+        "type": "object",
+        "required": ["compiler", "runtime", "profiler"],
+        "properties": {
+          "compiler": { "type": "string" },
+          "runtime": { "type": "string" },
+          "profiler": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "baseline": {
+        "type": "object",
+        "required": ["custom_kernel"],
+        "properties": {
+          "custom_kernel": { "$ref": "#/$defs/artifactRef" },
+          "reference_metric": { "type": "number" },
+          "custom_metric": { "type": "number" }
+        },
+        "additionalProperties": false
+      },
+      "current_best": { "$ref": "#/$defs/artifactRef" },
+      "state_path": { "type": "string", "minLength": 1 },
+      "blocker": { "type": "string", "minLength": 1 }
+    },
+    "allOf": [
+      {
+        "if": { "type": "object", "properties": { "status": { "const": "ready" } }, "required": ["status"] },
+        "then": {
+          "type": "object",
+          "properties": { "baseline": {}, "current_best": {}, "state_path": {}, "blocker": {} },
+          "required": ["baseline", "current_best", "state_path"],
+          "not": { "type": "object", "properties": { "blocker": {} }, "required": ["blocker"] }
+        }
+      },
+      {
+        "if": { "type": "object", "properties": { "status": { "const": "blocked" } }, "required": ["status"] },
+        "then": { "type": "object", "properties": { "blocker": {} }, "required": ["blocker"] }
+      }
+    ],
+    "$defs": {
+      "artifactRef": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "digest": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "status": "ready",
+    "target": { "operator": "gemm", "shape": "4096x4096x4096", "dtype": "f16" },
+    "device": { "name": "GPU name", "architecture": "architecture" },
+    "toolchain": { "compiler": "compiler", "runtime": "runtime", "profiler": "profiler" },
+    "baseline": {
+      "custom_kernel": { "path": "state/current-best.cu" },
+      "reference_metric": 100,
+      "custom_metric": 50
+    },
+    "current_best": { "path": "state/current-best.cu" },
+    "state_path": "state/tuning-state.json"
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      { "id": "workflow.status", "pointer": "/status", "format": "string", "required": true }
+    ]
+  }
+}

@@ -1,0 +1,83 @@
+version: 3
+
+# Harness-variant twin of gpu-cuda-tuning for evals comparison and manual
+# trials: identical stages, but every stage runs on the claude harness with
+# the proven gateway model deepseek-v4-flash pinned per stage (the harness
+# dimension against gpu-cuda-tuning-qwen, which keeps the claude harness and
+# swaps only the model).
+workflow:
+  name: gpu-cuda-tuning-claude
+  nodes:
+    - stage:
+        name: setup
+        worker: cuda-setup
+        harness: claude
+        model: deepseek-v4-flash
+        thinkingLevel: high
+        tools: [Read, Bash, Edit, Write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: measure
+        entry: profile
+        exit: measure
+        iterations: 10
+        nodes:
+          - stage:
+              name: profile
+              worker: cuda-profile
+              harness: claude
+              model: deepseek-v4-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: iteration.json
+              validate: true
+              from: []
+
+          - stage:
+              name: idea
+              worker: cuda-idea
+              harness: claude
+              model: deepseek-v4-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: profile.json
+              validate: true
+              from: [profile]
+
+          - stage:
+              name: implement
+              worker: cuda-implement-verify
+              harness: claude
+              model: deepseek-v4-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: implementation-inputs.json
+              validate: true
+              from: [profile, idea]
+
+          - stage:
+              name: measure
+              worker: cuda-benchmark-store
+              harness: claude
+              model: deepseek-v4-flash
+              thinkingLevel: high
+              tools: [Read, Bash, Edit, Write]
+              handoff: round.json
+              validate: true
+              from: [idea, implement]
+
+    - stage:
+        name: summary
+        worker: cuda-summary
+        harness: claude
+        model: deepseek-v4-flash
+        thinkingLevel: high
+        tools: [Read, Bash, Edit, Write]
+        handoff: tuning.json
+        validate: true
+        from: [tune]

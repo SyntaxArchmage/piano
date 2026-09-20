@@ -1,0 +1,418 @@
+════════════════════════════════════════════════════════════════════════
+PIANO — 软件 UML 图（ASCII/字符版）                    generated from source
+monorepo: @piano/{cli,evals,orchestrator,workers,harness,contract,
+           trajectory,logging}  + external pi-coding-agent (Pi SDK)
+════════════════════════════════════════════════════════════════════════
+
+图例 (UML 记号说明):
+  A ──▶ B         依赖箭头: A 依赖/调用 B (箭头指向被依赖方)
+  A ──▶ B (横向)  (包图/时序图消息)
+  ◆               组合 composition (owner 持有成员)
+  «record»         TS interface/记录类型  «union» 判别联合  «enum» 枚举
+  │ ▼ ┬ 等         连接线/箭头/接入边框 (┬ = 箭头接入方框上沿)
+  方框三段式 = 名称 / 属性 (字段 : 类型) / 操作 (模块级函数, Effect)
+  (字段后的 ? 表示可选; [] 表示数组; 注释保留原代码语义)
+
+
+══════════════════════════════════════════════════════════════════════
+图 1 · UML 包图（依赖图）— @piano 包 与 外部 pi-coding-agent
+箭头语义：A ──▶ B = A 依赖/调用 B（依赖箭头指向被依赖方，与 UML 一致）
+══════════════════════════════════════════════════════════════════════
+
+
+
+
+
+
+      ┌─────────────────────────────┐                                                               ┌───────────────────────────
+      │ @piano/cli  (bin: piano)      │   ──────────── cli → logging                                  │ @piano/evals
+      │ run · logs · resume · evals │               │                                               │ case.yaml → launch · traje
+      └─────────────────────────────┘               │                                               └───────────────────────────
+                        │                           │                                                              │
+                        │                           │                                                              │
+                        │                           │                                                              │
+                        │                           │                                                              │
+                        ▼                           │                                                              ▼
+      ┌─────────────────┬───────────────────┐       │                                               ┌──────────────┬────────────
+      │ @piano/orchestrator              ────────────│─────────────────────────────────── orch → contracpiano/trajectory
+      │ workflow compile · execute · res─orch → trajectory──────────────────────────────│─────────▶ │ trajectory storage · analy
+      └─────────────────────────────────────┘       │                                   │           └───────────────────────────
+                        │                           │                                   │                          │
+                        │                           │                                   │                          │
+                        │                           │                                   │                          │
+                        │                           │                                   │───────────────────────── │
+                        ▼                           │                                                              ▼
+      ┌─────────────────┬────────────────┐          │                                               ┌──────────────┬───────────┐
+      │ @piano/workers                    │          │                                               │ @piano/contract           │
+      │ adapter: in-process | subprocess │          │                                               │ zod schemas · validation │
+      └──────────────────────────────────┘          │                                               └──────────────────────────┘
+                        │                           │
+                        │                           │
+                        │                           │
+                        │                           │
+                        ▼                           │
+      ┌─────────────────┬──────────────┐            │         ┌──────────────────────────┐
+      │ @piano/harness                  │────────────────────▶ │ pi-coding-agent          │
+      │ pi SDK | pi-cli | claude | dsh │            │         │ external Pi SDK / pi-cli │
+      └────────────────────────────────┘            │         └──────────────────────────┘
+                        │                           │
+                        │                           │
+                        │───────────────────────────│
+                        │
+                        ▼
+      ┌─────────────────┬────────────┐
+      │ @piano/logging                │
+      │ sessions · traces · progress │
+      └──────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+未绘出（避免交叉，完整集合见下表）：cli→{harness,logging}；evals→{orchestrator,
+harness,logging}；orchestrator→{logging}；workers→{logging}。
+
+完整依赖清单（来源：各 packages/*/package.json 的 "dependencies"）
+┌──────────────────────┬──────────────────────────────────────────────┐
+│ package              │ depends on (@piano/* + external runtime)      │
+├──────────────────────┼──────────────────────────────────────────────┤
+│ @piano/cli            │ harness · logging · orchestrator             │
+│ @piano/evals          │ harness · logging · orchestrator · trajectory│
+│ @piano/orchestrator   │ contract · logging · trajectory · workers    │
+│ @piano/workers        │ harness · logging                             │
+│ @piano/harness        │ logging · (runtime: pi-coding-agent SDK/CLI)  │
+│ @piano/trajectory     │ contract                                      │
+│ @piano/contract       │ (zod · ajv — 无内部依赖)                       │
+│ @piano/logging        │ (effect · @effect/platform — 无内部依赖)       │
+└──────────────────────┴──────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════
+图 2A · UML 类图 — 领域模型：workflow DSL → 编译 → 调度
+(piano 为 Effect/函数式代码库：「类」以 «record» 记录型 + 模块函数呈现)
+══════════════════════════════════════════════════════════════════════
+
+
+
+
+
+                     ┌───────────────────────────────────────────┐
+                     │ WorkflowDocument  «record»  (workflow.ts) │
+                     ├───────────────────────────────────────────┤
+                     │ version: 3                                │
+                     │ workflow.name: string                     │
+                     │ workflow.nodes: WorkflowNode[]   ◆        │
+                     ├───────────────────────────────────────────┤
+                     │ parseWorkflow(yaml) → WorkflowDocument    │
+                     │ compileWorkflow(doc) → CompiledWorkflow   │
+                     └───────────────────────────────────────────┘
+                                           │
+                                           │
+                                           │
+                                           │
+        WorkflowNode = 判别联合 «tagged union»：│
+        「nodes: WorkflowNode[]」◆ 组合 0..*，其成员即下方三种节点
+                                           ▼                ▼
+                  ─────────────────────────────────────────────────────────────────────────────────────────────────
+                  │                                               │                                               │
+                  │                                               │                                               │
+                  │                                               │                                               │
+                  │                                               │                                               │
+──────────────────┬──────────────────────┐        ┌───────────────┬────────────────┐             ┌────────────────┬─────────────────
+rkflowStage  «record»                    │        │ WorkflowLoop  «record»         │             │ WorkflowTournament  «record»
+─────────────────────────────────────────┤        ├────────────────────────────────┤             ├──────────────────────────────────
+me · worker · harness: HarnessName       │        │ name · from: string[]          │             │ name · from: string[] · over: 字段
+om: string[]                             │        │ entry · exit · feedback?: 子节点名 │             │ count: number  (并行分支数)
+ndoff?: string  (相对路径)                   │        │ iterations: number             │             │ entry · exit
+lidate?: true | ContractName             │        │ nodes: WorkflowNode[]  ◆ (递归)  │             │ nodes: WorkflowNode[]  ◆ (递归)
+del? · thinkingLevel? · tools?: string[] │        └────────────────────────────────┘             │ exit 按 metric 选赢家 selectWinner()
+gnoff?: boolean                          │                                                       └──────────────────────────────────
+meout?: number  (整段墙钟上限)                 │
+─────────────────────────────────────────┘
+
+                                            │               compileWorkflow(): 区域(loop/tournament) 拍平为叶子级 stage
+                                            │
+                                            │
+                                            │
+                                            ▼
+                       ┌────────────────────┬────────────────────┐
+                       │ CompiledWorkflow  «record»              │
+                       ├─────────────────────────────────────────┤
+                       │ name · sourcePath · autoCommit: boolean │
+                       │ stages: CompiledStage[]  ◆              │
+                       │ regions: WorkflowRegionPlan[]  ◆        │
+                       ├─────────────────────────────────────────┤
+                       │ lower: 区域拍平为叶子 DAG (Kahn 拓扑)            │
+                       └─────────────────────────────────────────┘
+        CompiledWorkflow ◆— stages / regions（组合）
+                                            │
+                                            ▼
+                     ─────────────────────────────────────────────────
+                     │                                               │
+                     │                                               │
+                     │                                               │
+       ┌─────────────┬─────────────┐           ┌─────────────────────┬─────────────────────┐
+       │ CompiledStage  «record»   │           │ WorkflowRegionPlan  «record»              │
+       ├───────────────────────────┤           ├───────────────────────────────────────────┤
+       │ id · stage: WorkflowStage │           │ id · name · kind: "loop" | "map"          │
+       │ regionPath: string[]      │           │ entry · exit · entryStageId · exitStageId │
+       │ dependsOn: string[]       │           │ from: string[] · parentId?                │
+       └───────────────────────────┘           │ iterations? · feedback?   (loop)          │
+                      │                        │ over? · count?           (map)            │
+                      │                        └───────────────────────────────────────────┘
+                      │
+        scheduleWorkflow(): 排序 → ScheduledStage（order 决定执行次序）
+                      │
+                      ▼
+  ┌───────────────────┬───────────────────┐
+  │ ScheduledStage  «record»              │
+  ├───────────────────────────────────────┤
+  │ id · order: number · stage            │
+  │ dependsOn: string[] · regionPath?     │
+  ├───────────────────────────────────────┤
+  │ scheduleWorkflow() → ScheduledStage[] │
+  └───────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+══════════════════════════════════════════════════════════════════════
+图 2B · UML 类图 — 运行期一次 stage 调用的数据流 + 持久化证据
+══════════════════════════════════════════════════════════════════════
+
+
+
+
+
+                ┌────────────────────────────────────────────────────────┐
+                │ WorkflowRuntimeInvocation  «record»                    │
+──────────────────────────────┐──────────────────────────────────────────┤
+timeFrame  «union»            │string · promptIndex: number              │
+──────────────────────────────┤geName: string                            │
+"; regionId; iteration}       │lowRuntimeFrame[]  (loop iter / map slot) │
+;  regionId; slot}   ← 独立演员车道 │──────────────────────────────────────────┘
+──────────────────────────────┘             │
+    ────────────────────────── worker, harness, prompt)   [orchestrator → workers]
+                                            │
+    WorkflowRuntimeInvocation.frames        │
+                                            ▼
+                  ┌─────────────────────────┬──────────────────────────┐
+                  │ WorkerRequest  «record»  (worker.ts)               │
+                  ├────────────────────────────────────────────────────┤
+                  │ stage · worker · prompt · cwd                      │
+                  │ harness?: HarnessName · model? · thinkingLevel?    │
+                  │ contextFilePaths? · skillPaths? · tools?: string[] │
+                  │ continuation?: AgentContinuation · onEvent?        │
+                  └────────────────────────────────────────────────────┘
+                                            │
+          runAgent(WorkerRequest)  [workers → harness 适配器: pi | subprocess]
+                                            │
+                                            │
+                                            ▼
+                        ┌───────────────────┬─────────────────────┐
+                        │ WorkerResult  «record»                  │
+                        ├─────────────────────────────────────────┤
+                        │ stage · worker · text: string           │
+                        │ sessionId · transcriptPath: string      │
+                        │ model? · thinkingLevel? · continuation? │
+                        └─────────────────────────────────────────┘
+                                            │
+          validate(contract) ✓ → 发布 HandoffProducer (record.json + 下游 context)
+                                            │
+                                            │
+                                            ▼
+                    ┌───────────────────────┬────────────────────────┐
+                    │ HandoffProducer  «record» (不可变证据)              │
+                    ├────────────────────────────────────────────────┤
+                    │ id · stageId · stage · worker                  │
+      注：WorkerResult.continuation 存入 resume-state，workflow-resume 据此跨 prompt 续跑同一 actor 会话。
+                    │ workspace: WorkflowWorkspaceBinding            │
+                    │ resultPath? · resultPayload?                   │
+                    │ projections?: ContractProjection[] · contract? │
+                    │ recordPath: string  (record.json)              │
+                    └────────────────────────────────────────────────┘
+                                            │
+          全部证据写入 Session → ~/.piano/runs/<run-id>/…
+                                            │
+                                            │
+                                            ▼
+                        ┌───────────────────┬─────────────────────┐
+                        │ Session  «record»  (logging/session.ts) │
+                        ├─────────────────────────────────────────┤
+                        │ id · traceId · cwd · runDir · root      │
+                        │ log: ILogWriter · trace: ITraceWriter   │
+                        │ trajectory: ITrajectoryWriter           │
+                        └─────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+══════════════════════════════════════════════════════════════════════
+图 3 · UML 时序图 — piano run <workflow.yml> 主流程
+══════════════════════════════════════════════════════════════════════
+
+
+
+      ┌─────┐              ┌──────────┐            ┌──────────────┐             ┌─────────┐               ┌─────────┐       ┌─────────────
+      │ 开发者 │              │ piano CLI │            │ orchestrator │             │ workers │               │ harness │       │ pi-coding-ag
+      └─────┘              └──────────┘            └──────────────┘             └─────────┘               └─────────┘       └─────────────
+        │                       │                         │                         │                         │                     │
+┌─ piano run workflow.yml (一次「prompt 迭代」)                  │                         │                         │                     │
+        │ piano run wf.yml -p "▶"│                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │ loadAndExecuteWorkflow▶)│                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │  createSession → ~/.piano/runs/<run-id>/ · 编译/schedule · signoff 通道      │
+        │                       │                         │                         │                         │                     │
+├─ loop：对每个 (stage × loop-iter × map-slot) 一次 invocation  │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │ executeWorker(stage, …▶ │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │ runAgent(WorkerRequest▶ │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │ session.prompt / 子▶程启
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │  text               │
+        │                       │                         │                         │                         │  ◀───AgentEvent 流   │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │  ◀───────WorkerResult   │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │  alt [结果未通过 contract]：repair 回合（尝试上限=1）→ 重试同一 actor                     │
+        │                       │                         │  写证据：handoff record.json（不可变）· progress.jsonl · trace                   │
+        │                       │  ◀──────状态事件 (TUI 更新)   │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+└─ 结束   │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+    注：harness 可为 in-process（Pi SDK，默认 "pi"）或 subprocess（pi-cli / claude / dsh）；     │                         │                     │
+        signoff 阶段会在 TUI 上暂停并等待人工批准/驳回（驳回则带反馈重试）。         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+        │                       │                         │                         │                         │                     │
+
+
+
+
+

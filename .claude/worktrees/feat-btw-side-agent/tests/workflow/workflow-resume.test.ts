@@ -1,0 +1,115 @@
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { NodeFileSystem } from "@effect/platform-node";
+import { Effect } from "effect";
+import { readWorkflowExecutionContinuation } from "../../packages/orchestrator/src/workflow-resume.js";
+import type { ResumeState } from "../../packages/orchestrator/src/resume-state.js";
+
+function resumeState(overrides: Partial<ResumeState> = {}): ResumeState {
+  return {
+    version: 1,
+    executionId: "run-1",
+    promptIndex: 1,
+    actors: {
+      "run-1/pi/plan": { harness: "pi", sessionId: "sess-a", transcriptPath: "/runs/run-1/plan.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-a", transcriptPath: "/runs/run-1/plan.jsonl" } },
+    },
+    ...overrides,
+  };
+}
+
+async function runDirWithState(state: ResumeState): Promise<string> {
+  const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
+  await writeFile(join(runDir, "resume.json"), `${JSON.stringify(state)}\n`, "utf8");
+  return runDir;
+}
+
+function read(runDir: string, executionId: string) {
+  return Effect.runPromise(
+    readWorkflowExecutionContinuation(runDir, executionId).pipe(Effect.provide(NodeFileSystem.layer)),
+  );
+}
+
+describe("readWorkflowExecutionContinuation", () => {
+  it("keeps the newest accepted turn per actor and counts the turns", async () => {
+    const runDir = await runDirWithState(resumeState({
+      actors: {
+        "run-1/pi/plan": { harness: "pi", sessionId: "sess-new", transcriptPath: "/runs/run-1/plan-new.jsonl", turns: 2, continuation: { harness: "pi", sessionId: "sess-new", transcriptPath: "/runs/run-1/plan-new.jsonl" } },
+        "run-1/pi/build": { harness: "pi", sessionId: "sess-b", transcriptPath: "/runs/run-1/build.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-b", transcriptPath: "/runs/run-1/build.jsonl" } },
+      },
+    }));
+
+    const continuation = await read(runDir, "run-1");
+
+    expect(continuation?.id).toBe("run-1");
+    expect(continuation?.actors.size).toBe(2);
+    expect(continuation?.actors.get("run-1/pi/plan")).toEqual({
+      turns: 2,
+      continuation: { harness: "pi", sessionId: "sess-new", transcriptPath: "/runs/run-1/plan-new.jsonl" },
+    });
+    expect(continuation?.actors.get("run-1/pi/build")?.turns).toBe(1);
+  });
+
+  it("ignores actors without a continuation (staged but not accepted)", async () => {
+    const runDir = await runDirWithState(resumeState({
+      actors: {
+        "run-1/pi/plan": { harness: "pi", sessionId: "sess-a", transcriptPath: "/t.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-a", transcriptPath: "/t.jsonl" } },
+        "run-1/pi/build": { harness: "pi", sessionId: "sess-b", transcriptPath: "/b.jsonl", turns: 1 },
+      },
+    }));
+
+    const continuation = await read(runDir, "run-1");
+
+    expect([...(continuation?.actors.keys() ?? [])]).toEqual(["run-1/pi/plan"]);
+  });
+
+  it("keeps map lanes apart, since the actor key carries the lane", async () => {
+    const runDir = await runDirWithState(resumeState({
+      actors: {
+        "run-1/pi/tune/0": { harness: "pi", sessionId: "sess-0", transcriptPath: "/runs/run-1/tune-0.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-0", transcriptPath: "/runs/run-1/tune-0.jsonl" } },
+        "run-1/pi/tune/1": { harness: "pi", sessionId: "sess-1", transcriptPath: "/runs/run-1/tune-1.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-1", transcriptPath: "/runs/run-1/tune-1.jsonl" } },
+      },
+    }));
+
+    const continuation = await read(runDir, "run-1");
+
+    expect(continuation?.actors.get("run-1/pi/tune/0")?.continuation.sessionId).toBe("sess-0");
+    expect(continuation?.actors.get("run-1/pi/tune/1")?.continuation.sessionId).toBe("sess-1");
+  });
+
+  it("returns undefined when no actors have continuations", async () => {
+    const runDir = await runDirWithState(resumeState({
+      actors: {
+        "run-1/pi/plan": { harness: "pi", sessionId: "sess-a", transcriptPath: "/t.jsonl", turns: 1 },
+      },
+    }));
+
+    expect(await read(runDir, "run-1")).toBeUndefined();
+  });
+
+  it("returns undefined when the run has no resume.json at all", async () => {
+    const empty = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
+    expect(await read(empty, "run-1")).toBeUndefined();
+  });
+
+  it("returns undefined when resume.json is malformed", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
+    await writeFile(join(runDir, "resume.json"), "not valid json\n", "utf8");
+    expect(await read(runDir, "run-1")).toBeUndefined();
+  });
+
+  it("fails with a typed workflow error when resume.json is a directory", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
+    await mkdir(join(runDir, "resume.json"), { recursive: true });
+
+    const exit = await Effect.runPromiseExit(
+      readWorkflowExecutionContinuation(runDir, "run-1").pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error).toMatchObject({ _tag: "WorkflowError", phase: "schedule" });
+    }
+  });
+});

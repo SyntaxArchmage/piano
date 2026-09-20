@@ -1,0 +1,32 @@
+version: 1
+id: gemv-4096
+group: tuning
+prompt: |
+  Implement and optimize a Triton matrix-vector multiplication (GEMV) kernel for
+  a 4096x4096 matrix times a 4096-vector (float32). Write the kernel in
+  `kernel.py`, exposing `run(A, x) -> y`. Optimize for memory-bandwidth
+  utilization. Verify with `python verify.py`.
+command: piano --workflow <workflow> -p <prompt>
+workspace: workspace
+workflow: ../../../recipes/workflows/gpu-triton-tuning.yml
+readout:
+  kind: programmatic
+  compileCommand: "python -c 'import kernel; assert hasattr(kernel, \"run\")'"
+  verifyCommand: "python verify.py"
+  benchmarkCommand: "python verify.py"
+  baselineCommand: "python verify.py"
+  metricPattern: "TFLOPS: ([0-9.]+)"
+  tolerance: 0.001
+metric:
+  name: tflops
+  direction: higher
+workload:
+  operator: gemv
+  shape: "4096x4096 f32"
+  language: python
+  description: Triton GEMV 4096x4096 f32
+tags:
+  - tag: tflops
+    weight: 2
+  - tag: correctness
+    weight: 2

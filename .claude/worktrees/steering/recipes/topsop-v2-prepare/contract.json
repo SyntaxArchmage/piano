@@ -1,0 +1,615 @@
+{
+  "version": 1,
+  "id": "topsop-v2-prepared-workspace",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "type": "object",
+    "properties": {
+      "protocol_version": {
+        "const": 2
+      },
+      "status": {
+        "enum": [
+          "ready",
+          "blocked"
+        ]
+      },
+      "spec": {
+        "type": "object",
+        "properties": {
+          "spec_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workload_fingerprint": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "architecture": {
+            "const": "GCU400"
+          },
+          "operator": {
+            "type": "string",
+            "minLength": 1
+          },
+          "primary_workload_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "workloads": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "role": {
+                  "enum": [
+                    "primary",
+                    "guard"
+                  ]
+                },
+                "shape": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dtype": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "variant": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "target_case": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected_identity": {
+                  "type": "object",
+                  "properties": {
+                    "canonical_json": {
+                      "type": "string",
+                      "pattern": "^\\{"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "canonical_json",
+                    "sha256"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "role",
+                "shape",
+                "dtype",
+                "variant",
+                "target_case",
+                "expected_identity"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "metric": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "kernel_latency_us"
+              },
+              "unit": {
+                "const": "us"
+              },
+              "direction": {
+                "const": "lower"
+              }
+            },
+            "required": [
+              "name",
+              "unit",
+              "direction"
+            ],
+            "additionalProperties": false
+          },
+          "targets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "operator": {
+                  "enum": [
+                    ">=",
+                    "<="
+                  ]
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "metric",
+                "operator",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "allowed_changes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "required": [
+          "spec_id",
+          "workload_fingerprint",
+          "architecture",
+          "operator",
+          "primary_workload_id",
+          "workloads",
+          "metric",
+          "targets",
+          "allowed_changes"
+        ],
+        "additionalProperties": false
+      },
+      "workspace": {
+        "type": "object",
+        "properties": {
+          "root": {
+            "type": "string",
+            "pattern": "^/",
+            "minLength": 1
+          },
+          "head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,64}$"
+          },
+          "diff_digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "dirty": {
+            "type": "boolean"
+          },
+          "state_namespace": {
+            "const": "topsop-v2"
+          },
+          "state_root": {
+            "type": "string",
+            "pattern": "/topsop-v2/"
+          }
+        },
+        "required": [
+          "root",
+          "head",
+          "diff_digest",
+          "dirty",
+          "state_namespace",
+          "state_root"
+        ],
+        "additionalProperties": false
+      },
+      "source_map_ref": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "benchmark_suite": {
+        "type": "object",
+        "properties": {
+          "coverage_mode": {
+            "const": "exact-set"
+          },
+          "build_target": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^(?:test|tests|topsop/test|topsaten/test)/"
+            }
+          },
+          "cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "role": {
+                  "enum": [
+                    "primary",
+                    "guard"
+                  ]
+                },
+                "shape": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "dtype": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "variant": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "target_case": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected_identity": {
+                  "type": "object",
+                  "properties": {
+                    "canonical_json": {
+                      "type": "string",
+                      "pattern": "^\\{"
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "canonical_json",
+                    "sha256"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "id",
+                "role",
+                "shape",
+                "dtype",
+                "variant",
+                "target_case",
+                "expected_identity"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "coverage_mode",
+          "build_target",
+          "source_paths",
+          "cases"
+        ],
+        "additionalProperties": false
+      },
+      "build_plan_ref": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "failure": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "input",
+              "workspace",
+              "source",
+              "build",
+              "device",
+              "correctness",
+              "performance",
+              "state",
+              "internal"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "candidate",
+              "iteration",
+              "run"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "next_action": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "scope",
+          "retryable",
+          "code",
+          "message",
+          "next_action"
+        ],
+        "additionalProperties": false
+      },
+      "state_startup": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "enum": [
+              "initialized",
+              "continued"
+            ]
+          },
+          "state_schema_version": {
+            "const": 1
+          },
+          "state_path": {
+            "type": "string",
+            "pattern": "/topsop-v2/"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "state_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "mode",
+          "state_schema_version",
+          "state_path",
+          "revision"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "initialized"
+                }
+              },
+              "required": [
+                "mode"
+              ]
+            },
+            "then": {
+              "properties": {
+                "revision": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "continued"
+                }
+              },
+              "required": [
+                "mode"
+              ]
+            },
+            "then": {
+              "required": [
+                "state_sha256"
+              ],
+              "properties": {
+                "state_sha256": {}
+              }
+            }
+          }
+        ]
+      }
+    },
+    "required": [
+      "protocol_version",
+      "status"
+    ],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "ready"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "then": {
+          "required": [
+            "spec",
+            "workspace",
+            "source_map_ref",
+            "benchmark_suite",
+            "build_plan_ref",
+            "state_startup"
+          ],
+          "properties": {
+            "spec": {},
+            "workspace": {},
+            "source_map_ref": {},
+            "benchmark_suite": {},
+            "build_plan_ref": {},
+            "state_startup": {}
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "blocked"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "then": {
+          "required": [
+            "failure"
+          ],
+          "properties": {
+            "failure": {}
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "protocol_version": 2,
+    "status": "ready",
+    "spec": {
+      "spec_id": "example-op-main",
+      "workload_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "architecture": "GCU400",
+      "operator": "example_op",
+      "primary_workload_id": "main",
+      "workloads": [
+        {
+          "id": "main",
+          "role": "primary",
+          "shape": "M=2048,N=4096",
+          "dtype": "bf16",
+          "variant": "default",
+          "target_case": "example.case",
+          "expected_identity": {
+            "canonical_json": "{\"architecture\":\"GCU400\",\"dtype\":\"bf16\",\"operator\":\"example_op\",\"shape\":\"M=2048,N=4096\",\"target_case\":\"example.case\",\"variant\":\"default\"}",
+            "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ],
+      "metric": {
+        "name": "kernel_latency_us",
+        "unit": "us",
+        "direction": "lower"
+      },
+      "targets": [
+        {
+          "metric": "llc_rw_sum_gbps",
+          "operator": ">=",
+          "value": 2000
+        }
+      ],
+      "allowed_changes": [
+        "operator",
+        "kernel",
+        "benchmark-test"
+      ]
+    },
+    "workspace": {
+      "root": "/tmp/topsop",
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "diff_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "dirty": false,
+      "state_namespace": "topsop-v2",
+      "state_root": "/tmp/.piano/state/topsop-v2/repo/example-op/workload"
+    },
+    "source_map_ref": {
+      "path": "/tmp/evidence/source-map.json",
+      "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "benchmark_suite": {
+      "coverage_mode": "exact-set",
+      "build_target": "example_test",
+      "source_paths": [
+        "topsop/test/example_test.cc"
+      ],
+      "cases": [
+        {
+          "id": "main",
+          "role": "primary",
+          "shape": "M=2048,N=4096",
+          "dtype": "bf16",
+          "variant": "default",
+          "target_case": "example.case",
+          "expected_identity": {
+            "canonical_json": "{\"architecture\":\"GCU400\",\"dtype\":\"bf16\",\"operator\":\"example_op\",\"shape\":\"M=2048,N=4096\",\"target_case\":\"example.case\",\"variant\":\"default\"}",
+            "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        }
+      ]
+    },
+    "build_plan_ref": {
+      "path": "/tmp/evidence/build-plan.json",
+      "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "state_startup": {
+      "mode": "initialized",
+      "state_schema_version": 1,
+      "state_path": "/tmp/.piano/state/topsop-v2/repo/example-op/workload/state.json",
+      "revision": 0
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": true
+      }
+    ]
+  }
+}

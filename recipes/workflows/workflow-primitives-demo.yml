@@ -1,0 +1,89 @@
+version: 3
+
+# A short, self-narrating workflow for observing Piano primitives. The workers
+# explain their own purpose in the transcript and return worker-owned,
+# contract-validated handoffs. It does not write project source or invent a
+# second Piano log directory.
+workflow:
+  name: workflow-primitives-demo
+  nodes:
+    - stage:
+        name: prepare
+        worker: root-worker
+        harness: pi
+        thinkingLevel: low
+        tools: [write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - stage:
+        name: inspect
+        worker: observer-worker
+        harness: pi
+        thinkingLevel: low
+        tools: [write]
+        handoff: inspection.json
+        validate: true
+        prologue: "Next stage is inspect. Perform one short narration, then write the result once and stop."
+        from: [prepare]
+
+    - loop:
+        name: observe
+        from: [inspect]
+        feedback: report
+        entry: report
+        exit: report
+        iterations: 2
+        nodes:
+          - stage:
+              name: report
+              worker: loop-worker
+              harness: pi
+              thinkingLevel: low
+              tools: [write]
+              handoff: loop-report.json
+              validate: true
+              from: []
+
+    - stage:
+        name: make-items
+        worker: items-worker
+        harness: pi
+        thinkingLevel: low
+        tools: [write]
+        handoff: items.json
+        validate: true
+        prologue: "This is make-items. Announce alpha and beta, write once, and stop."
+        from: [observe]
+
+    - tournament:
+        name: fanout
+        from: [make-items]
+        over: make-items.items
+        count: 2
+        parallel: true
+        entry: lane
+        exit: lane
+        nodes:
+          - stage:
+              name: lane
+              worker: lane-worker
+              harness: pi
+              thinkingLevel: low
+              tools: [write]
+              handoff: lane-result.json
+              validate: true
+              prologue: "This is one fanout lane. Announce the received item, write once, and stop."
+              from: []
+
+    - stage:
+        name: finish
+        worker: summary-worker
+        harness: pi
+        thinkingLevel: low
+        tools: [write]
+        handoff: summary.json
+        validate: true
+        prologue: "This is finish. Summarize accepted handoffs briefly, write once, and stop."
+        from: [fanout, make-items, observe, inspect, prepare]

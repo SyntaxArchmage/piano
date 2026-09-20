@@ -1,0 +1,74 @@
+version: 3
+
+# Triton/Python GPU tuning workflow. Native C++/CUDA cases use the separate
+# gpu-cuda-tuning template; both share the same deterministic stage protocol.
+workflow:
+  name: gpu-triton-tuning
+  nodes:
+    - stage:
+        name: setup
+        worker: triton-setup
+        harness: pi
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: measure
+        entry: profile
+        exit: measure
+        iterations: 30
+        nodes:
+          - stage:
+              name: profile
+              worker: triton-profile
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: iteration.json
+              validate: true
+              from: []
+
+          - stage:
+              name: idea
+              worker: triton-idea
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: profile.json
+              validate: true
+              from: [profile]
+
+          - stage:
+              name: implement
+              worker: triton-implement-verify
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: implementation-inputs.json
+              validate: true
+              from: [profile, idea]
+
+          - stage:
+              name: measure
+              worker: triton-benchmark-store
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: round.json
+              validate: true
+              from: [idea, implement]
+
+    - stage:
+        name: summary
+        worker: triton-summary
+        harness: pi
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: tuning.json
+        validate: true
+        from: [tune]

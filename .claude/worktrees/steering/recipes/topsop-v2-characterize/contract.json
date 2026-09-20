@@ -1,0 +1,595 @@
+{
+  "version": 1,
+  "id": "topsop-v2-baseline-bundle",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "type": "object",
+    "properties": {
+      "protocol_version": {
+        "const": 2
+      },
+      "status": {
+        "enum": [
+          "ready",
+          "blocked"
+        ]
+      },
+      "prepared_ref": {
+        "type": "object",
+        "properties": {
+          "contract_id": {
+            "const": "topsop-v2-prepared-workspace"
+          },
+          "result_path": {
+            "type": "string",
+            "pattern": "^/",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "contract_id",
+          "result_path",
+          "sha256"
+        ],
+        "additionalProperties": false
+      },
+      "workload_fingerprint": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "baseline": {
+        "type": "object",
+        "properties": {
+          "artifact": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "identity": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "identity"
+            ],
+            "additionalProperties": false
+          },
+          "primary_workload_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "metric": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "const": "kernel_latency_us"
+              },
+              "unit": {
+                "const": "us"
+              },
+              "direction": {
+                "const": "lower"
+              },
+              "median": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "samples": {
+                "type": "array",
+                "minItems": 3,
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "raw_samples_ref": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/",
+                    "minLength": 1
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "path",
+                  "sha256"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "name",
+              "unit",
+              "direction",
+              "median",
+              "samples",
+              "raw_samples_ref"
+            ],
+            "additionalProperties": false
+          },
+          "mad": {
+            "type": "number",
+            "minimum": 0
+          },
+          "minimum_improvement": {
+            "type": "number",
+            "minimum": 0
+          },
+          "runtime_cases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "workload_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "target_case": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "expected_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "observed_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "matched": {
+                  "const": true
+                },
+                "evidence_ref": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string",
+                      "pattern": "^/",
+                      "minLength": 1
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^sha256:[0-9a-f]{64}$"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "sha256"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "workload_id",
+                "target_case",
+                "expected_sha256",
+                "observed_sha256",
+                "matched",
+                "evidence_ref"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "correctness_ref": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "profile_ref": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "artifact",
+          "primary_workload_id",
+          "metric",
+          "mad",
+          "minimum_improvement",
+          "runtime_cases",
+          "correctness_ref",
+          "profile_ref"
+        ],
+        "additionalProperties": false
+      },
+      "theory": {
+        "type": "object",
+        "properties": {
+          "memory_floor_us": {
+            "type": "number",
+            "minimum": 0
+          },
+          "compute_1d_floor_us": {
+            "type": "number",
+            "minimum": 0
+          },
+          "compute_2d_floor_us": {
+            "type": "number",
+            "minimum": 0
+          },
+          "limiting_bound": {
+            "enum": [
+              "memory",
+              "compute_1d",
+              "compute_2d",
+              "unknown"
+            ]
+          },
+          "evidence_ref": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "sha256"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "memory_floor_us",
+          "compute_1d_floor_us",
+          "compute_2d_floor_us",
+          "limiting_bound",
+          "evidence_ref"
+        ],
+        "additionalProperties": false
+      },
+      "state": {
+        "type": "object",
+        "properties": {
+          "namespace": {
+            "const": "topsop-v2"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "current_best": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "/topsop-v2/.*/artifacts/rev-[0-9]+/"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "identity": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_commit": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{7,64}$"
+              },
+              "workspace_diff_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "sha256",
+              "identity",
+              "source_commit",
+              "workspace_diff_digest"
+            ],
+            "additionalProperties": false
+          },
+          "startup_mode": {
+            "enum": [
+              "initialized",
+              "continued"
+            ]
+          },
+          "state_schema_version": {
+            "const": 1
+          },
+          "state_path": {
+            "type": "string",
+            "pattern": "/topsop-v2/"
+          },
+          "state_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "workspace_root": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "required": [
+          "namespace",
+          "startup_mode",
+          "state_schema_version",
+          "revision",
+          "current_best",
+          "state_path",
+          "state_sha256",
+          "workspace_root"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "startup_mode": {
+                  "const": "initialized"
+                }
+              },
+              "required": [
+                "startup_mode"
+              ]
+            },
+            "then": {
+              "properties": {
+                "revision": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "failure": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "input",
+              "workspace",
+              "source",
+              "build",
+              "device",
+              "correctness",
+              "performance",
+              "state",
+              "internal"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "candidate",
+              "iteration",
+              "run"
+            ]
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "next_action": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "kind",
+          "scope",
+          "retryable",
+          "code",
+          "message",
+          "next_action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "protocol_version",
+      "status",
+      "prepared_ref"
+    ],
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "ready"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "then": {
+          "required": [
+            "workload_fingerprint",
+            "baseline",
+            "theory",
+            "state"
+          ],
+          "properties": {
+            "workload_fingerprint": {},
+            "baseline": {},
+            "theory": {},
+            "state": {}
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "blocked"
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "then": {
+          "required": [
+            "failure"
+          ],
+          "properties": {
+            "failure": {}
+          }
+        }
+      }
+    ]
+  },
+  "example": {
+    "protocol_version": 2,
+    "status": "ready",
+    "prepared_ref": {
+      "contract_id": "topsop-v2-prepared-workspace",
+      "result_path": "/tmp/run/prepare/result.json",
+      "sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "workload_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "baseline": {
+      "artifact": {
+        "path": "/tmp/.piano/state/topsop-v2/repo/example-op/workload/artifacts/rev-0/libkernel_example.so",
+        "sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "identity": "baseline:aaaaaaaa"
+      },
+      "primary_workload_id": "main",
+      "metric": {
+        "name": "kernel_latency_us",
+        "unit": "us",
+        "direction": "lower",
+        "median": 10.0,
+        "samples": [
+          9.9,
+          10.0,
+          10.1,
+          10.0,
+          10.2
+        ],
+        "raw_samples_ref": {
+          "path": "/tmp/evidence/baseline-samples.json",
+          "sha256": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      },
+      "mad": 0.1,
+      "minimum_improvement": 0.3,
+      "runtime_cases": [
+        {
+          "workload_id": "main",
+          "target_case": "example.case",
+          "expected_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "observed_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "matched": true,
+          "evidence_ref": {
+            "path": "/tmp/evidence/runtime.log",
+            "sha256": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+          }
+        }
+      ],
+      "correctness_ref": {
+        "path": "/tmp/evidence/correctness.json",
+        "sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "profile_ref": {
+        "path": "/tmp/evidence/profile.json",
+        "sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "theory": {
+      "memory_floor_us": 5.0,
+      "compute_1d_floor_us": 7.0,
+      "compute_2d_floor_us": 0.0,
+      "limiting_bound": "compute_1d",
+      "evidence_ref": {
+        "path": "/tmp/evidence/theory.json",
+        "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    "state": {
+      "namespace": "topsop-v2",
+      "startup_mode": "initialized",
+      "state_schema_version": 1,
+      "revision": 0,
+      "current_best": {
+        "path": "/tmp/.piano/state/topsop-v2/repo/example-op/workload/artifacts/rev-0/libkernel_example.so",
+        "sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "identity": "baseline:aaaaaaaa",
+        "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "workspace_diff_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "state_path": "/tmp/.piano/state/topsop-v2/repo/example-op/workload/state.json",
+      "state_sha256": "sha256:1212121212121212121212121212121212121212121212121212121212121212",
+      "workspace_root": "/tmp/topsop"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": true
+      }
+    ]
+  }
+}

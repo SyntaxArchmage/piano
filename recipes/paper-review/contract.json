@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "id": "paper-review",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["first_pass", "verdict", "confidence", "scores", "issues", "next_round_target", "storyline_notes"],
+    "properties": {
+      "first_pass": {
+        "type": "object",
+        "description": "The ninety-second read, recorded before the methodology was opened.",
+        "required": ["believed_claim", "believed_headline", "check_first"],
+        "properties": {
+          "believed_claim": { "type": "string", "minLength": 15 },
+          "believed_headline": { "type": "string", "minLength": 5 },
+          "check_first": { "type": "string", "minLength": 10 },
+          "divergence": { "type": "string", "description": "Where the first pass disagreed with brief.core_claim; empty when it matched." }
+        },
+        "additionalProperties": false
+      },
+      "verdict": {
+        "enum": ["accept", "weak-accept", "borderline", "weak-reject", "reject"]
+      },
+      "confidence": { "type": "integer", "minimum": 1, "maximum": 5 },
+      "scores": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["dimension", "score", "why"],
+          "properties": {
+            "dimension": { "enum": ["novelty", "rigor", "evaluation", "clarity", "reproducibility", "significance"] },
+            "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "why": { "type": "string", "minLength": 15, "description": "Anchored in a section, figure, or table." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "issues": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "severity", "attack", "fix", "would_change_mind"],
+          "properties": {
+            "id": { "type": "string", "minLength": 2 },
+            "severity": { "enum": ["blocker", "major", "minor"] },
+            "attack": { "type": "string", "minLength": 15, "description": "Written as the reviewer would write it." },
+            "evidence": { "type": "string", "description": "The section, figure, or table it points at." },
+            "fix": { "type": "string", "minLength": 10 },
+            "would_change_mind": { "type": "string", "minLength": 10, "description": "What evidence or edit satisfies the attack; an unsatisfiable review cannot be acted on." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "next_round_target": {
+        "type": "object",
+        "required": ["unit", "reason"],
+        "properties": {
+          "unit": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 15 },
+          "evidence_ready": { "type": "boolean", "description": "False when the unit needs evidence that does not exist yet." }
+        },
+        "additionalProperties": false
+      },
+      "storyline_notes": {
+        "type": "string",
+        "minLength": 15,
+        "description": "Where the arc worked and where the paper lost the reader, paragraph by paragraph. The note only a reader can give."
+      }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "first_pass": {
+      "believed_claim": "A single operator grammar plus its harness reaches hand-tuned performance without per-operator code.",
+      "believed_headline": "1.58x over the released baseline on sparse GEMM.",
+      "check_first": "Whether the 1.58x baseline was tuned for the same shapes.",
+      "divergence": "The abstract promises dense and sparse; the introduction's result sentence mentions only sparse, so a reviewer reads the dense claim as unsupported."
+    },
+    "verdict": "weak-reject",
+    "confidence": 4,
+    "scores": [
+      { "dimension": "novelty", "score": 3, "why": "The grammar is a genuine delta over per-operator templates, but §2.3 does not cite the closest recent template DSL, so the reviewer cannot locate the boundary." },
+      { "dimension": "evaluation", "score": 2, "why": "Table 3's baseline uses the shapes from the earlier paper; Fig. 5 shows spread with two points per operator." },
+      { "dimension": "clarity", "score": 4, "why": "§3.2 reads cleanly and the figure captions state claims rather than titles." }
+    ],
+    "issues": [
+      {
+        "id": "R1",
+        "severity": "blocker",
+        "attack": "The evaluation compares against a baseline tuned for a different shape set, so the reported gap is not attributable to the design.",
+        "evidence": "Tab. 3, §5.2",
+        "fix": "Re-run the baseline at the evaluated shapes, or move the comparison to an appendix and restate §5.2's claim.",
+        "would_change_mind": "A same-shape baseline row with the tuning budget stated."
+      },
+      {
+        "id": "R2",
+        "severity": "major",
+        "attack": "The dense-GEMM claim in the abstract is never evaluated; §5 covers sparse only.",
+        "evidence": "Abstract vs §5.1-§5.4",
+        "fix": "Either add the dense evaluation or narrow the abstract to sparse GEMM.",
+        "would_change_mind": "Two dense shapes in Fig. 5, or an abstract that claims sparse only."
+      }
+    ],
+    "next_round_target": {
+      "unit": "§5.2",
+      "reason": "It carries the headline comparison the reviewer attacked first, and its current baseline is not shape-matched.",
+      "evidence_ready": true
+    },
+    "storyline_notes": "§1's tension-to-insight move works in three paragraphs, matching the reference spec. §3.2 lost me at ¶4, where the check taxonomy arrives before the reader knows why any check is needed — the opener has no bridge from §3.1's layout requirement. §5.1 states the result before defining the metric."
+  }
+}

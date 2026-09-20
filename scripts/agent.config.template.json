@@ -1,0 +1,40 @@
+{
+  "harness": "pi",
+  "provider": "enflame",
+  "baseUrl": "https://api.enflame.cn/v1",
+  "model": "deepseek-v4-flash",
+  "apiKey": "CHANGE_ME",
+  "dsh": {
+    "provider": "enflame",
+    "model": "deepseek-v4-flash",
+    "apiKey": "CHANGE_ME",
+    "baseUrl": "https://api.enflame.cn/v1"
+  },
+  "claude": {
+    "model": "deepseek-v4-flash",
+    "authToken": "CHANGE_ME",
+    "baseUrl": "https://api.enflame.cn"
+  },
+  "codex": {
+    "model": "gpt-5.6-luna"
+  },
+  "models": [
+    "deepseek-v4-flash",
+    "deepseek-flash",
+    "deepseek-v4-pro",
+    "glm-5.3-flash",
+    "glm-5.3",
+    "qwen3.8-27b",
+    "qwen3.8-max",
+    "kimi-k3",
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+    "claude-opus-4-6",
+    "claude-opus-4-8",
+    "claude-opus-5"
+  ]
+}

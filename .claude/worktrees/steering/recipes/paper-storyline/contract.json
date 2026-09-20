@@ -1,0 +1,234 @@
+{
+  "version": 1,
+  "id": "paper-storyline",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["context", "round_target", "layer_status", "paragraphs", "gate"],
+    "properties": {
+      "context": {
+        "type": "object",
+        "description": "Everything the rest of the round needs from outside the loop, restated. Inside a loop a stage can only reference its siblings, so this is the only channel by which the brief's venue/claim and the reference spec reach paper-figures, paper-write, paper-audit, paper-review and paper-revise. Copy these values verbatim from the injected brief and calibration results; do not paraphrase and do not omit a field because it seems obvious.",
+        "required": ["core_claim", "venue", "reference_spec_path", "state_dir", "manuscript", "evidence"],
+        "properties": {
+          "core_claim": { "type": "string", "minLength": 20 },
+          "venue": {
+            "type": "object",
+            "required": ["name", "kind", "page_limit", "anonymized"],
+            "properties": {
+              "name": { "type": "string", "minLength": 2 },
+              "kind": { "enum": ["conference", "journal", "workshop", "preprint"] },
+              "page_limit": { "type": "integer", "exclusiveMinimum": 0 },
+              "anonymized": { "type": "boolean" }
+            },
+            "additionalProperties": false
+          },
+          "manuscript": {
+            "type": "object",
+            "required": ["root", "entry", "compile", "figures_dir"],
+            "properties": {
+              "root": { "type": "string", "minLength": 1 },
+              "entry": { "type": "string", "minLength": 1 },
+              "compile": { "type": "string", "minLength": 1 },
+              "figures_dir": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          "reference_spec_path": { "type": "string", "minLength": 1 },
+          "state_dir": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "object",
+            "description": "The brief's evidence block. paper-audit's whole job is comparing a number in the text to the file that produces it, and inside the loop this is the only place it can learn where those files are.",
+            "required": ["code_roots", "datasets", "available_results", "experiment_commands"],
+            "properties": {
+              "code_roots": { "type": "array", "items": { "type": "string" } },
+              "datasets": { "type": "array", "items": { "type": "string" } },
+              "available_results": { "type": "array", "items": { "type": "string" } },
+              "experiment_commands": { "type": "array", "items": { "type": "string" } }
+            },
+            "additionalProperties": false
+          },
+          "contributions": {
+            "type": "array",
+            "description": "The brief's contributions, restated so paper-review can check claim-to-evidence reach without the brief.",
+            "items": {
+              "type": "object",
+              "required": ["id", "statement"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "statement": { "type": "string", "minLength": 10 },
+                "methodology": { "type": "string" },
+                "evaluation": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "figure_directives": {
+        "type": "array",
+        "description": "What paper-figures must change this round. The review's figure findings arrive here and only here: paper-figures reads this array, not the review result, so anything you leave out of it is silently dropped. Empty is a legal value and means the figures need no change this round.",
+        "items": {
+          "type": "object",
+          "required": ["figure", "directive", "why"],
+          "properties": {
+            "figure": { "type": "string", "minLength": 1, "description": "A figure id from the figure set, a fig. number, or a role from the reference spec's figure_grammar when the figure does not exist yet." },
+            "directive": { "type": "string", "minLength": 15, "description": "The change, as an instruction paper-figures can execute." },
+            "why": { "type": "string", "minLength": 10 },
+            "from_issue": { "type": "string", "description": "The review or audit issue id this answers." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "round_target": {
+        "type": "object",
+        "required": ["unit", "kind", "why_now"],
+        "properties": {
+          "unit": { "type": "string", "minLength": 1, "description": "e.g. §3.2, abstract, skeleton, figures" },
+          "kind": { "enum": ["abstract", "intro", "section", "subsection", "figures", "skeleton"] },
+          "why_now": { "type": "string", "minLength": 20, "description": "Why this unit has the largest claim gap this round." },
+          "addresses_issues": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Issue ids from the previous round's review/audit this target responds to."
+          },
+          "blocked_units": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Units with a larger gap that cannot be targeted because their evidence does not exist yet."
+          }
+        },
+        "additionalProperties": false
+      },
+      "layer_status": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["layer", "status"],
+          "properties": {
+            "layer": { "enum": ["L0", "L1", "L2", "L3"] },
+            "status": { "enum": ["confirmed", "pending", "needs-revision"] },
+            "notes": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "paragraphs": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "archetype", "topic_sentence", "reader_knows", "why_here", "evidence", "leads_to"],
+          "properties": {
+            "id": { "type": "string", "minLength": 2, "description": "Unit-scoped id, e.g. §3.2-p4" },
+            "archetype": {
+              "enum": [
+                "problem", "rationale", "mechanism", "contrast", "setup",
+                "result", "interpretation", "validity", "positioning", "bridge"
+              ]
+            },
+            "topic_sentence": { "type": "string", "minLength": 15 },
+            "reader_knows": { "type": "string", "minLength": 10, "description": "Only concepts introduced earlier may appear here." },
+            "why_here": { "type": "string", "minLength": 10, "description": "Why the reader is ready now; must reference what came before." },
+            "evidence": { "type": "string", "minLength": 2, "description": "The number/table/figure/citation backing it. 'none' is refused for a claim." },
+            "leads_to": { "type": "string", "minLength": 5 },
+            "form": { "enum": ["prose", "table", "figure", "equation", "listing"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "gate": {
+        "type": "object",
+        "required": ["opener_motivation", "cross_subsection_bridge", "cross_section_bridge", "reader_model_monotonic", "notes"],
+        "properties": {
+          "opener_motivation": { "type": "boolean" },
+          "cross_subsection_bridge": { "type": "boolean" },
+          "cross_section_bridge": { "type": "boolean" },
+          "reader_model_monotonic": { "type": "boolean" },
+          "notes": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The gaps found (with paragraph ids and the concrete repair), plus the ordering decision and the alternatives rejected. Required even when every check passes."
+          }
+        },
+        "additionalProperties": false
+      },
+      "invariant": {
+        "type": "object",
+        "required": ["orphan_contributions", "orphan_evidence", "dead_methodology"],
+        "properties": {
+          "orphan_contributions": { "type": "array", "items": { "type": "string" } },
+          "orphan_evidence": { "type": "array", "items": { "type": "string" } },
+          "dead_methodology": { "type": "array", "items": { "type": "string" } }
+        },
+        "additionalProperties": false
+      },
+      "state_path": { "type": "string", "description": "The storyline state file this round updated." }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "context": {
+      "core_claim": "A single tile-level operator grammar, co-designed with a validation harness, lets an LLM reach hand-tuned kernel performance on dense and sparse GEMM without a per-operator codebase.",
+      "venue": { "name": "ICPP", "kind": "conference", "page_limit": 11, "anonymized": true },
+      "manuscript": { "root": ".", "entry": "main.tex", "compile": "make", "figures_dir": "figures" },
+      "reference_spec_path": "plan/reference-spec.md",
+      "state_dir": "plan",
+      "evidence": {
+        "code_roots": ["../croqtile-tuner/kernels", "."],
+        "datasets": ["tuning/best_suite", "tuning/perf"],
+        "available_results": ["tuning/best_suite/*/perf.json", "figures/out/*.pdf"],
+        "experiment_commands": ["python3 figures/generate-all.js"]
+      },
+      "contributions": [
+        { "id": "C1", "statement": "A tile-level operator grammar expressive enough to state dense and sparse GEMM in one language.", "methodology": "§3.2", "evaluation": "Fig. 4, §5.2" }
+      ]
+    },
+    "figure_directives": [
+      {
+        "figure": "fig-speedup",
+        "directive": "Add the shape counts under each bar group and a dashed parity line; the current figure reads as a run chart rather than a speedup comparison.",
+        "why": "The reference spec's headline-speedup rule requires a parity reference and the sample count, and R4 says the reader cannot tell what the baseline was measured on.",
+        "from_issue": "R4"
+      }
+    ],
+    "round_target": {
+      "unit": "§3.2",
+      "kind": "subsection",
+      "why_now": "The claim that a tiling error costs a message instead of a hang is the paper's second contribution, and §3.2 currently asserts it without the 353-check taxonomy the reference spec shows in the same position.",
+      "addresses_issues": ["R1", "A3"],
+      "blocked_units": ["§5.2 has a larger gap but its sparse-GEMM figure does not exist yet."]
+    },
+    "layer_status": [
+      { "layer": "L0", "status": "confirmed", "notes": "Claim and C1-C3 copied from brief.json unchanged." },
+      { "layer": "L2", "status": "confirmed", "notes": "Three subsections: co-design premise, static checks, diagnostics." },
+      { "layer": "L3", "status": "confirmed" }
+    ],
+    "paragraphs": [
+      {
+        "id": "§3.2-p1",
+        "archetype": "mechanism",
+        "topic_sentence": "The compiler is co-designed with the harness, so a tile error is reported before the kernel runs.",
+        "reader_knows": "§3.1 established that the grammar is source-to-source; the reader now expects to learn what the compiler does with it.",
+        "why_here": "§3.1 closed by saying the grammar's value depends on what consumes it, so the reader is ready for the consumer.",
+        "evidence": "Contrast with standalone template compilers; the compile-time check count.",
+        "leads_to": "Two concrete capabilities: static checks, then located diagnostics.",
+        "form": "prose"
+      }
+    ],
+    "gate": {
+      "opener_motivation": true,
+      "cross_subsection_bridge": true,
+      "cross_section_bridge": false,
+      "reader_model_monotonic": true,
+      "notes": "§2.3 closes on the cost of a failed launch, which does not yet set up §3's opener; repair by adding a clause to §2.3's closer mapping that cost to the co-design premise. Ordering chosen: mechanism → evidence → consequence; rejected consequence-first because §3.1 already ended on the consumer question."
+    },
+    "invariant": {
+      "orphan_contributions": ["C3 has no evaluation artifact: §5.4 cites a table that was removed in the last revision."],
+      "orphan_evidence": [],
+      "dead_methodology": []
+    },
+    "state_path": "plan/storyline-state.md"
+  }
+}

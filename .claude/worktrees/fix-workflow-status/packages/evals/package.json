@@ -1,0 +1,21 @@
+{
+  "name": "@piano/evals",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@effect/platform": "0.97.1",
+    "@piano/harness": "0.1.0",
+    "@piano/logging": "0.1.0",
+    "@piano/orchestrator": "0.1.0",
+    "@piano/trajectory": "0.1.0",
+    "effect": "3.22.1",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9"
+  }
+}

@@ -1,0 +1,94 @@
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          PIANO — ARCHITECTURE                              │
+│    agent tuning workflows: YAML → DAG → agent stages → durable evidence   │
+└───────────────────────────────────────────────────────────────────────────┘
+
+ ┌──────────────────────────  CLI  (packages/cli)  ──────────────────────────┐
+ │  main.ts · runCli · arg parsing  — one typed Effect program               │
+ │                                                                            │
+ │   ┌─────────────┐ ┌──────────────┐ ┌─────────────┐ ┌───────────────────┐  │
+ │   │  piano (run) │ │ piano logs    │ │ piano resume │ │ piano evals        │  │
+ │   │  -p/--json  │ │ --trace/check│ │ [<run-id>]  │ │ [--case --trials] │  │
+ │   └──────┬──────┘ └──────┬───────┘ └──────┬──────┘ └────────┬──────────┘  │
+ │   session-run.ts  │      │ logs.ts       │ resume.ts        │ evals.ts     │
+ └─────────┼─────────┼──────┴───────────────┴──────┬───────────┼──────────────┘
+           │         │                            │           │
+           │   ┌─────▼─────────────────────────┐  │    ┌──────▼─────────────┐
+           │   │  runSession replay loop       │  │    │  EVALS pkg          │
+           │   │  ┌──────────┐  ┌───────────┐  │  │    │  case.yaml → copy  │
+           │   │  │ TUI      │  │ headless  │  │  │    │  workspace template │
+           │   │  │ (chat,   │  │ JSON line │  │  │    │  → launch `piano`    │
+           │   │  │ status,  │  │ stream    │  │  │    │  → artifact +       │
+           │   │  │ graph,   │  │ (--json)  │  │  │    │  trajectory eval    │
+           │   │  │ pickers) │  └───────────┘  │  │    │  → report/baseline  │
+           │   │  └──────────┘                  │  │    └────────────────────┘
+           │   └───────────────┬───────────────┘  │
+           │                   │ runPrompt        │
+           └───────────────────┼──────────────────┘
+                               │
+                               ▼
+ ┌────────────────────────  ORCHESTRATOR  (packages/orchestrator)  ───────────┐
+ │                                                                            │
+ │  workflow-file.ts      load YAML (v3) + eagerly resolve worker recipes     │
+ │        │                                                                  │
+ │        ▼                                                                  │
+ │  workflow.ts           parse → lower node tree → compile → schedule       │
+ │                        stage | loop×N | map×N  →  leaf DAG (Kahn sort)    │
+ │        │                                                                  │
+ │        ▼                                                                  │
+ │  workflow-execution.ts   THE CORE RUNTIME                                 │
+ │    · runtime plan: loop iterations / map slots (parallel lanes)           │
+ │    · per invocation: context files → executeWorker →                      │
+ │      validate (contract) → repair turn on failure                         │
+ │    · handoff.ts        immutable producer records → consumer contexts     │
+ │    · workspace.ts      shared root | map-slot copies (worktree/snapshot)  │
+ │    · progress.ts       progress.jsonl ledger + progress.json snapshot     │
+ │    · CUDA promotion    KEEP/DISCARD materialization (non-monotonic)       │
+ │    · workflow-resume.ts reopens actor continuations across prompts        │
+ └────────────────────────────┬──────────────────────────────────────────────┘
+                              │ executeWorker(stage, worker, harness, prompt)
+                              ▼
+ ┌────────────────────────  WORKERS  (packages/workers)  ─────────────────────┐
+ │  worker.ts — selects adapter: pi in-process, else subprocess harness      │
+ └────────────────────────────┬──────────────────────────────────────────────┘
+                              │ runAgent
+                              ▼
+ ┌────────────────────────  HARNESS  (packages/harness)  ─────────────────────┐
+ │                                                                            │
+ │   pi.ts (in-process)              subprocess.ts (pi-cli | claude | dsh)    │
+ │   · load Pi SDK module            · spawn <bin> CLI, stream JSON events    │
+ │   · config chain: request →       · same normalized AgentEvent surface     │
+ │     stage → PIANO_PI_* env →                                               │
+ │     ~/.piano/agent.config.json                                             │
+ │   · model runtime + auth                                                   │
+ │   · resource loader: system-prompt.md · agents.md · skills/**/SKILL.md    │
+ │   · session create / open (resume) · event mapping · usage/cost           │
+ └────────────────────────────┬──────────────────────────────────────────────┘
+                              │ prompt + resources → streamed agent events
+                              ▼
+ ┌────────────────────────  PI CODING AGENT  ────────────────────────────────┐
+ │   @earendil-works/pi-coding-agent  (Pi SDK session or CLI subprocess)      │
+ │   model · thinkingLevel (off..max) · tools allowlist · skills · transcript │
+ └────────────────────────────────────────────────────────────────────────────┘
+
+ ┌────────────────────────  EVIDENCE  (packages/logging)  ───────────────────┐
+ │  session.ts createSession → ~/.piano/runs/<run-id>/                        │
+ │   log.jsonl (lifecycle) · trace.jsonl (fn spans) · trajectory.json        │
+ │   progress.jsonl (append-only ledger) · progress.json (monitor snapshot)  │
+ │   executions/<exec>/invocations/<stage>/<iter|slot>/attempts/N/result.json│
+ │   executions/<exec>/handoffs/{contexts,records}/…  (immutable handoffs)   │
+ │   executions/<exec>/actors/<harness>/<stage>/session/*.jsonl  (transcripts)│
+ │   executions/<exec>/workspaces/slots/<key>/  (map lanes)                  │
+ └────────────────────────────────────────────────────────────────────────────┘
+
+ ┌────────────────  CONTRACT (packages/contract)  ─┐   ┌────────────────────┐
+ │  zod schemas: text-response · profile-report ·  │   │  RECIPES (recipes/)│
+ │  optimization-proposal · cuda-round-result ·    │   │  workflows/*.yml   │
+ │  summary-report …  + repair guidance            │   │  <worker>/         │
+ └─────────────────────────────────────────────────┘   │   system-prompt.md │
+                                                        │   agents.md        │
+ ┌──────────────────────────────────────────────────┐   │   skills/<n>/…    │
+ │  CROSS-CUTTING: Effect runtime + @effect/platform│   └────────────────────┘
+ │  FS; everything is a typed Effect, observability │
+ │  via LOG/TRACE (best-effort, never fails a run)  │
+ └──────────────────────────────────────────────────┘

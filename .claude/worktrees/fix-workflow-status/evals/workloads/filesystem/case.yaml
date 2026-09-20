@@ -1,0 +1,24 @@
+# Rationale: instantiates the filesystem-navigation / file-operations category.
+# Grounded in Terminal-Bench's "file operations" domain (create dirs, move
+# files, emit a manifest) and MyClaw `file_ops` / ACUMEN "File Management"
+# (move_file over an existing tree). Graded by asserting the resulting on-disk
+# state matches the spec.
+version: 1
+id: filesystem
+group: agentic
+prompt: |
+  In the current directory you will find a `notes/` folder containing `a.txt`
+  (content: first) and `b.txt` (content: second). Perform these filesystem
+  operations:
+  - create a new folder `archive/`
+  - move both `a.txt` and `b.txt` into `archive/`
+  - create a `manifest.txt` listing the two filenames, one per line (a.txt, b.txt)
+command: piano -p <prompt>
+workspace: workspace
+readout:
+  kind: programmatic
+  compileCommand: "true"
+  verifyCommand: "python3 -c \"import os; assert os.path.isfile('archive/a.txt'); assert os.path.isfile('archive/b.txt'); assert os.path.isfile('manifest.txt'); assert open('manifest.txt').read().split()==['a.txt','b.txt']\""
+tags:
+  - tag: correctness
+    weight: 2

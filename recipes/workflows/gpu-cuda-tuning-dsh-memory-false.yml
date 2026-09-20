@@ -1,0 +1,86 @@
+version: 3
+
+# Memory-disabled CUDA tuning variant: harness=dsh, model=deepseek-v4-flash, serial.
+# It preserves the standard six-stage pipeline and starts every stage turn fresh.
+workflow:
+  name: gpu-cuda-tuning-dsh-memory-false
+  nodes:
+    - stage:
+        name: setup
+        worker: cuda-setup
+        harness: dsh
+        model: deepseek-v4-flash
+        memory: false
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: preparation.json
+        validate: true
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: measure
+        entry: profile
+        exit: measure
+        iterations: 10
+        nodes:
+          - stage:
+              name: profile
+              worker: cuda-profile
+              harness: dsh
+              model: deepseek-v4-flash
+              memory: false
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: iteration.json
+              validate: true
+              from: []
+
+          - stage:
+              name: idea
+              worker: cuda-idea
+              harness: dsh
+              model: deepseek-v4-flash
+              memory: false
+              thinkingLevel: high
+              tools: [read, bash, edit, write, web_search]
+              handoff: profile.json
+              validate: true
+              from: [profile]
+
+          - stage:
+              name: implement
+              worker: cuda-implement-verify
+              harness: dsh
+              model: deepseek-v4-flash
+              memory: false
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: implementation-inputs.json
+              validate: true
+              from: [profile, idea]
+
+          - stage:
+              name: measure
+              worker: cuda-benchmark-store
+              harness: dsh
+              model: deepseek-v4-flash
+              memory: false
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              handoff: round.json
+              validate: true
+              from: [idea, implement]
+
+    - stage:
+        name: summary
+        worker: cuda-summary
+        harness: dsh
+        model: deepseek-v4-flash
+        memory: false
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        handoff: tuning.json
+        validate: true
+        from: [tune]
