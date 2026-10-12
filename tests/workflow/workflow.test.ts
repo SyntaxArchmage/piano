@@ -36,7 +36,7 @@ workflow:
         name: coding
         worker: basic
         harness: dsh
-        model: gpt-5.6-luna
+        model: deepseek-flash
         thinkingLevel: max
         tools: [read, bash, edit, write, web_search]
         from: []
@@ -54,7 +54,7 @@ workflow:
         name: coding
         worker: basic
         harness: claude
-        model: gpt-5.6-luna
+        model: deepseek-flash
         thinkingLevel: max
         tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
         from: []
@@ -474,7 +474,7 @@ describe(" single-stage workflow", () => {
       expect(Exit.isSuccess(result)).toBe(true);
       if (Exit.isSuccess(result)) {
         expect(result.value.workflowPath).toBe(defaultWorkflowTemplatePath);
-        expect(result.value.document.workflow.name).toBe("coding");
+        expect(result.value.document.workflow.name).toBe("coding-pi");
       }
       // The record file is created naming the exact shipped default; a
       // workflow.yml copy never happens.
@@ -991,7 +991,7 @@ describe(" single-stage workflow", () => {
 
     expect(Exit.isSuccess(result)).toBe(true);
     if (!Exit.isSuccess(result)) return;
-    expect(result.value.document.workflow.name).toBe("coding");
+    expect(result.value.document.workflow.name).toBe("coding-pi");
     expect(result.value.workerResources).toBeDefined();
   });
 

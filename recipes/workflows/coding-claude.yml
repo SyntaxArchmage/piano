@@ -6,7 +6,7 @@ workflow:
         name: coding
         worker: basic
         harness: claude
-        model: gpt-5.6-luna
+        model: deepseek-flash
         thinkingLevel: max
         tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
         from: []

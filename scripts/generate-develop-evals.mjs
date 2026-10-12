@@ -31,16 +31,17 @@ const abortedDshModels = new Set([
   "gpt-5.6-terra",
   "claude-sonnet-4-6",
 ]);
-/** Models measured on the abort task's dsh arm alone. They join no other task
- * and no other harness, so a newly published model can be tried against the
- * failure this task reproduces without widening the rest of the matrix. They
- * stay out of `models`, which is the cross-task sweep. */
+/** Models measured on the abort task's dsh arm alone. They stay out of `models`
+ * — the cross-task sweep — so a newly published model can be tried against the
+ * failure this task reproduces without widening the rest of the matrix. This
+ * set reserves a sweep measurement, not the model: a hand-picked cell (the
+ * coding-team case) may select the same id for normal use. */
 const abortedDshOnlyModels = new Set([
   "claude-haiku-4-5-20251001",
   "claude-sonnet-5",
   "deepseek-flash",
 ]);
-const codingTeamCell = { harness: "claude", model: "gpt-5.6-luna", effort: "max", codingTeam: true };
+const codingTeamCell = { harness: "claude", model: "deepseek-flash", effort: "max", codingTeam: true };
 const efforts = ["medium", "max"];
 const tools = {
   pi: "[read, bash, edit, write, find, grep, ls, web_fetch]",

@@ -1,12 +1,12 @@
 version: 3
 workflow:
-  name: coding
+  name: coding-pi
   nodes:
     - stage:
         name: coding
         worker: basic
         harness: pi
-        model: gpt-5.6-luna
+        model: deepseek-flash
         thinkingLevel: max
         tools: [read, bash, edit, write, find, grep, ls, web_search]
         from: []

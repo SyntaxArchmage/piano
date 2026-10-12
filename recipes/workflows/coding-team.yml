@@ -1,69 +1,51 @@
 version: 3
 
-# Repository-grounded architecture -> developer tournament -> review loop.
-# The tournament exit is deliberately metric-bearing: the coding candidate
-# contract exposes test-pass evidence as benchmark/v1, with changed files/LOC
-# used as deterministic secondary tie breakers. Candidates must report those
-# values honestly; source/test tampering is disallowed by the worker contract.
+# Three-step repository-grounded coding workflow:
+# architect -> developer tournament -> review-and-fix.
+# There is intentionally no outer iteration. The tournament exit is metric-
+# bearing: the coding candidate contract exposes test-pass evidence as
+# benchmark/v1, with changed files/LOC used as deterministic secondary tie
+# breakers. The reviewer owns the final fix after inspecting the selected
+# candidate, so the workflow ends with a corrected reviewed workspace.
 workflow:
   name: coding-team
   nodes:
-    - loop:
-        name: team
+    - stage:
+        name: architect
+        worker: coding-architect
+        harness: claude
+        model: mimo-v2.6-pro
+        thinkingLevel: max
+        discuss: true
+        tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
+        handoff: architecture.json
+        validate: true
         from: []
-        feedback: review
-        entry: architect
-        exit: review
-        iterations: 2
+    - tournament:
+        name: candidates
+        from: [architect]
+        over: architect.implementation_plan
+        count: 2
+        entry: implement
+        exit: implement
         nodes:
           - stage:
-              name: architect
-              worker: coding-architect
+              name: implement
+              worker: coding-developer
               harness: claude
-              model: claude-sonnet-4-6
-              thinkingLevel: max
-              # Headless/eval runs receive the deterministic self-decision reply;
-              # keep the primitive enabled so interactive TUI runs can still ask.
-              discuss: true
-              tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
-              handoff: architecture.json
-              validate: true
-              from: []
-          - tournament:
-              name: candidates
-              from: [architect]
-              over: architect.implementation_plan
-              count: 3
-              entry: implement
-              exit: verify
-              nodes:
-                - stage:
-                    name: implement
-                    worker: coding-developer
-                    harness: claude
-                    model: gpt-5.6-luna
-                    thinkingLevel: max
-                    tools: [Read, Bash, Edit, Write, Glob, Grep]
-                    handoff: candidate-input.json
-                    validate: true
-                    from: []
-                - stage:
-                    name: verify
-                    worker: coding-developer
-                    harness: claude
-                    model: gpt-5.6-luna
-                    thinkingLevel: max
-                    tools: [Read, Bash, Edit, Write, Glob, Grep]
-                    handoff: candidate.json
-                    validate: true
-                    from: [implement]
-          - stage:
-              name: review
-              worker: coding-reviewer
-              harness: claude
-              model: gpt-5.6-luna
+              model: deepseek-flash
               thinkingLevel: max
               tools: [Read, Bash, Edit, Write, Glob, Grep]
-              handoff: review-input.json
+              handoff: candidate-input.json
               validate: true
-              from: [candidates]
+              from: []
+    - stage:
+        name: review
+        worker: coding-reviewer
+        harness: claude
+        model: deepseek-flash
+        thinkingLevel: max
+        tools: [Read, Bash, Edit, Write, Glob, Grep]
+        handoff: review-input.json
+        validate: true
+        from: [candidates]

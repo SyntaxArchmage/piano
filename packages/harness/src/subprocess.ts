@@ -1593,6 +1593,21 @@ function claudeResumeId(continuation: AgentContinuation | undefined): string | u
   return native !== undefined && NATIVE_SESSION_ID.test(native) ? native : undefined;
 }
 
+/** The Claude CLI `--effort` label for one portable thinking level.
+ *
+ * Claude Code's own top label is `xhigh`; `max` is accepted as its alias, which
+ * is why the two collapse to one label by default. The mimo models are the
+ * exception: on 2026-10-12 the architect-shaped probe at `--effort max` was
+ * still producing no streamed output after 4-9 minutes, while the same probe at
+ * `--effort xhigh` finished 3/3 in 103-183s and the full coding-team eval then
+ * completed end-to-end in 23 minutes (architect ~13 of them). The top level is
+ * therefore canonicalized per model instead of assuming one label suits every
+ * backend. */
+function claudeEffortLabel(thinking: ThinkingLevel, model: string | undefined): string {
+  if (thinking !== "xhigh" && thinking !== "max") return thinking;
+  return model !== undefined && model.startsWith("mimo") ? "xhigh" : "max";
+}
+
 function claudeArguments(
   request: AgentRequest,
   config: ResolvedHarnessConfig,
@@ -1615,7 +1630,7 @@ function claudeArguments(
   const args = ["--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json"];
   if (request.tools?.some((tool) => CLAUDE_BARE_UNAVAILABLE_TOOLS.includes(tool)) !== true) args.unshift("--bare");
   if (config.model !== undefined) args.push("--model", config.model);
-  if (thinking !== undefined) args.push("--effort", thinking === "xhigh" || thinking === "max" ? "max" : thinking);
+  if (thinking !== undefined) args.push("--effort", claudeEffortLabel(thinking, config.model));
   const resumeId = claudeResumeId(request.continuation);
   if (resumeId !== undefined) args.push("--resume", resumeId);
   const appendix = resourceAppendix(resources, true);

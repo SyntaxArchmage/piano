@@ -1289,6 +1289,41 @@ describe(" subprocess harness", () => {
     }
   });
 
+  it("canonicalizes the claude --effort top label per model", async () => {
+    for (const [model, thinking, effort] of [
+      ["mimo-v2.6-pro", "max", "xhigh"],
+      ["mimo-v2.6-pro", "high", "high"],
+      ["deepseek-flash", "max", "max"],
+    ] as const) {
+      const root = await mkdtemp(join(tmpdir(), "piano-subprocess-claude-effort-"));
+      try {
+        const session = await testSession(root);
+        const binPath = await fakeHarness(root);
+        const argsFile = join(root, "claude-effort-args.txt");
+        const exit = await Effect.runPromiseExit(executeSubprocessAgent("claude", {
+          cwd: root,
+          prompt: "hello",
+          model,
+          thinkingLevel: thinking,
+          sessionDir: join(session.runDir, "subprocess-sessions"),
+        }, {
+          binPath,
+          model,
+          env: { PIANO_FAKE_MODE: "args", PIANO_FAKE_ARGS_FILE: argsFile },
+          retryDelaysMs: [],
+        }).pipe(
+          Effect.provideService(Logging, loggingService(session.log, session.trace)),
+          Effect.provide(NodeFileSystem.layer),
+        ));
+        expect(Exit.isSuccess(exit)).toBe(true);
+        const args = (await readFile(argsFile, "utf8")).trim().split("\n");
+        expect(args[argvIndex(args, "--effort") + 1], `${model}@${thinking}`).toBe(effort);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("invokes the official dsh launcher without Pi CLI flags", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-subprocess-dsh-args-"));
     try {

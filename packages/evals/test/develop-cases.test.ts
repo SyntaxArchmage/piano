@@ -31,13 +31,18 @@ const abortedDshModels = new Set([
   "gpt-5.6-terra",
   "claude-sonnet-4-6",
 ]);
-/** Mirrors the generator's dsh-only abort set: models that appear on the abort
- * task's dsh arm and nowhere else. */
+/** Mirrors the generator's dsh-only abort set: models the generated sweep
+ * places on the abort task's dsh arm and nowhere else. The reservation covers
+ * the sweep, so a hand-picked cell may still select the same id. */
 const abortedDshOnlyModels = new Set([
   "claude-haiku-4-5-20251001",
   "claude-sonnet-5",
   "deepseek-flash",
 ]);
+/** The hand-picked coding-team cell: it names its workflow and model directly
+ * instead of joining a generated sweep, so the sweep-membership rules below do
+ * not constrain it. */
+const handPickedWorkflow = "../../../recipes/workflows/coding-team.yml";
 describe("develop eval cases", () => {
   it("keeps every generated case self-describing and uniquely addressable", async () => {
     const cases = await Effect.runPromise(
@@ -52,7 +57,7 @@ describe("develop eval cases", () => {
       expect(kase.dimensions).toBeDefined();
       expect(kase.id).toBe(`${kase.dimensions!.task}-${kase.dimensions!.harness}-${kase.dimensions!.model}-${kase.dimensions!.effort}`);
       expect(["medium", "max"]).toContain(kase.dimensions!.effort);
-      if (kase.dimensions!.harness !== "pi") {
+      if (kase.dimensions!.harness !== "pi" && kase.workflow !== handPickedWorkflow) {
         const onAbortTask = kase.dimensions!.task === "aborted-subprocess-settlement";
         const model = kase.dimensions!.model;
         expect(
@@ -75,14 +80,14 @@ describe("develop eval cases", () => {
     const cases = await Effect.runPromise(
       loadCases(DEFAULT_EVALS_ROOT, { group: "develop" }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
-    const codingCase = cases.find((kase) => kase.id === "coding-team-questions-claude-gpt-5.6-luna-max");
+    const codingCase = cases.find((kase) => kase.id === "coding-team-questions-claude-deepseek-flash-max");
     expect(codingCase).toMatchObject({
       prompt: expect.stringContaining("discuss primitive"),
       workflow: "../../../recipes/workflows/coding-team.yml",
       dimensions: {
         task: "coding-team-questions",
         harness: "claude",
-        model: "gpt-5.6-luna",
+        model: "deepseek-flash",
         effort: "max",
       },
     });
@@ -131,19 +136,21 @@ describe("develop eval cases", () => {
     }
   });
 
-  it("keeps the dsh-only abort models off every other task", async () => {
+  it("keeps the dsh-only abort models to the abort task's dsh arms in the generated sweep", async () => {
     const cases = await Effect.runPromise(
       loadCases(DEFAULT_EVALS_ROOT, { group: "develop" }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     for (const model of abortedDshOnlyModels) {
-      const modelCases = cases.filter((kase) => kase.dimensions!.model === model);
-      // Exactly the abort task's two dsh arms: no pi arm, and no other task, so
-      // adding a model here cannot widen the rest of the matrix.
-      expect(modelCases.map((kase) => kase.id).sort()).toEqual([
+      const swept = cases.filter((kase) =>
+        kase.dimensions!.model === model && kase.workflow !== handPickedWorkflow);
+      // Exactly the abort task's two dsh arms: no pi arm, and no other swept
+      // task, so adding a model here cannot widen the rest of the matrix. A
+      // hand-picked cell may still select the same id for normal use.
+      expect(swept.map((kase) => kase.id).sort()).toEqual([
         `aborted-subprocess-settlement-dsh-${model}-max`,
         `aborted-subprocess-settlement-dsh-${model}-medium`,
       ]);
-      expect(modelCases.every((kase) => kase.dimensions!.harness === "dsh")).toBe(true);
+      expect(swept.every((kase) => kase.dimensions!.harness === "dsh")).toBe(true);
     }
   });
 });
