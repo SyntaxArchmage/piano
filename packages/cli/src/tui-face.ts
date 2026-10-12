@@ -101,29 +101,30 @@ export function wrapIndented(text: string, width: number): string[] {
 
 // ── Brand art ─────────────────────────────────────────────────────────────────
 
-// Filled piano logo rendered with the same half-block technique as Tuna's fish:
-// each terminal cell represents two vertical pixels, with foreground/background
-// colors preserving the curved silhouette, highlights, keyboard, legs, and pedals.
+// Grand piano in side profile, rendered with the same half-block technique as
+// Tuna's fish: each terminal cell is two vertical pixels, with fg/bg colors
+// keeping the lid curve, keyboard, legs, and gold pedal lyre legible.
+// Palette: l = lid highlight, m = case, d = shadow, w/k = keys, g = pedals,
+// a = accent feet.
 type PianoPixel = " " | "a" | "d" | "m" | "l" | "w" | "k" | "g";
 const PIANO_PIXELS = [
-  "                  aaaaaaaaaaaaaaaaaaaaaaaa          ",
-  "            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa      ",
-  "       aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa    ",
-  "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa   ",
-  "   aaaallllllllllllllllllllllllllllllllllllllaaaaaa  ",
-  "   aaammmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmaaaa  ",
-  "   aaammmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmaa   ",
-  "   aaammmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmaaa   ",
-  "   aaaddddddddddddddddddddddddddddddddddddddaaaa    ",
-  "   aaawwkwwkwwkwwkwwkwwkwwkwwkwwkwwkwwkwwwaaa     ",
-  "   aaawwkwwkwwkwwkwwkwwkwwkwwkwwkwwkwwkwwwaaa     ",
-  "   aaawwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwaaa     ",
-  "   aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa     ",
-  "       aaadddaaa                   aaadddaaa         ",
-  "       aaadddaaa                   aaadddaaa         ",
-  "       aaadddaaa        gg         aaadddaaa         ",
-  "      aaaadddaaaa      gggg       aaaadddaaaa        ",
-  "     aaaaaaaaaaaa     g    g     aaaaaaaaaaaa        ",
+  "                          lllllllllllll            ",
+  "                    llllllmmmmmmmmmmmmmlll         ",
+  "               lllllmmmmmmmmmmmmmmmmmmmmmmlll      ",
+  "           llllmmmmmmmmmmmmmmmmmmmmmmmmmmmmmml     ",
+  "       llllmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmll   ",
+  "    lllmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmml  ",
+  " lmllllllllllllllllllllllllllllllllllllllllllllll  ",
+  " wwkkwkkwwwwkkwkkwkkwwwwkkwkkwwwwkkwkkwkkwwwwkkwwm ",
+  " wwkkwkkwwwwkkwkkwkkwwwwkkwkkwwwwkkwkkwkkwwwwkkww m",
+  " dddddddddddddddddddddddddddddddddddddddddddddddd m",
+  "  dddddddddddddddddddddddddddddddddddddddddddddddm ",
+  "  ddddddddddddddddddddddddddddddddddddddddddddddd  ",
+  "      dddd             g     g           dddd      ",
+  "      dddd             ggggggg           dddd      ",
+  "      dddd             g     g           dddd      ",
+  "      ddd              ggggggg           ddd       ",
+  "      aaa                ggg             aaa       ",
 ] satisfies readonly string[];
 
 function pianoPixelColor(pixel: PianoPixel, background: boolean): string {
@@ -139,12 +140,12 @@ function pianoPixelColor(pixel: PianoPixel, background: boolean): string {
   return rgb === undefined ? RST : `\x1b[${background ? 48 : 38};2;${rgb}m`;
 }
 
-function renderPianoArt(): string[] {
-  const width = Math.max(...PIANO_PIXELS.map((line) => line.length));
+function renderPixelArt(pixels: readonly string[]): string[] {
+  const width = Math.max(...pixels.map((line) => line.length));
   const rows: string[] = [];
-  for (let y = 0; y < PIANO_PIXELS.length; y += 2) {
-    const top = PIANO_PIXELS[y]?.padEnd(width) ?? " ".repeat(width);
-    const bottom = PIANO_PIXELS[y + 1]?.padEnd(width) ?? " ".repeat(width);
+  for (let y = 0; y < pixels.length; y += 2) {
+    const top = pixels[y]?.padEnd(width) ?? " ".repeat(width);
+    const bottom = pixels[y + 1]?.padEnd(width) ?? " ".repeat(width);
     let row = "";
     for (let x = 0; x < width; x += 1) {
       const upper = top[x] as PianoPixel;
@@ -160,14 +161,25 @@ function renderPianoArt(): string[] {
   return rows;
 }
 
-// Compact filled "PIANO" wordmark, sized to balance the instrument above it.
-const PIANO_WORDMARK = [
-  "████   ███   ███   █  █   ███ ",
-  "█  █    █   █   █  ██ █  █   █",
-  "████    █   █████  █ ██  █   █",
-  "█       █   █   █  █  █  █   █",
-  "█      ███  █   █  █  █   ███ ",
-];
+function renderPianoArt(): string[] {
+  return renderPixelArt(PIANO_PIXELS);
+}
+
+// "PIANO" wordmark drawn with the same half-block palette as the instrument:
+// light-slate faces over a gold ground, echoing the lid highlight and pedal
+// lyre so type and logo read as one mark.
+const PIANO_WORDMARK_PIXELS = [
+  "llllll  lllll    ll    ll   ll   lllll",
+  "gggggg  ggggg    gg    gg   gg   ggggg",
+  "ll  ll    ll    ll ll  lll  ll  ll  ll",
+  "gg  gg    gg    gg gg  ggg  gg  gg  gg",
+  "llllll    ll   llllll  ll l ll  ll  ll",
+  "gggggg    gg   gggggg  gg g gg  gg  gg",
+  "ll        ll   ll  ll  ll  lll  ll  ll",
+  "gg        gg   gg  gg  gg  ggg  gg  gg",
+  "ll      lllll  ll  ll  ll   ll   lllll",
+  "gg      ggggg  gg  gg  gg   gg   ggggg",
+] satisfies readonly string[];
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -184,7 +196,7 @@ export function buildFacePage(columns = 80): string {
     boxBlank(BOX_W, pad),
     ...renderPianoArt().map((line) => boxRow(centerLine(line), BOX_W, pad)),
     boxBlank(BOX_W, pad),
-    ...PIANO_WORDMARK.map((line) => boxRow(centerLine(`${th.accent}${line}${RST}`), BOX_W, pad)),
+    ...renderPixelArt(PIANO_WORDMARK_PIXELS).map((line) => boxRow(centerLine(line), BOX_W, pad)),
     boxBlank(BOX_W, pad),
     row(`${th.primary}Piano: A Programmable Agent Workflow System.${RST}`),
     boxBlank(BOX_W, pad),
