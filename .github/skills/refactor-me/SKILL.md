@@ -1,6 +1,6 @@
 ---
 name: refactor-me
-description: "Use when the developer wants a deliberate, multi-item refactoring campaign on a named scope of this TypeScript codebase — not a single bounded fix and not a diff review: survey the scope and write a ranked proposal list to REFACTOR.md, each item naming the cost it removes and the observable surface it must not change, decide every item one at a time with the developer, then implement the approved items as small behavior-preserving steps until the list is done and the file is cleared."
+description: "Run a multi-item refactoring campaign; staged in REFACTOR.md."
 ---
 
 # Refactor Me
@@ -75,20 +75,10 @@ Rules:
 ## Phase 2 — discuss, item by item
 
 1. Present one proposal card per item — the `REFACTOR.md` slots restated as prose — then ask exactly one question: 做 / 不做 / 改范围 / 先补测试再做, plus free text. Put the options in the question text itself; the widget is a convenience.
-2. Ask through whatever question channel exists:
-
-| Harness | Tool | Shape |
-| --- | --- | --- |
-| Claude Code | `AskUserQuestion` | single-select widget, ≤4 options |
-| dsh | `ask_user_question` | field-for-field identical to the above |
-| Cursor | `AskQuestion` | single-select widget |
-| pi | `discuss` | free-text question, free-text answer |
-| headless or none | — | write every item with 裁决: 待议, report the count, stop |
-
-3. Paste the returned string into `裁决` verbatim, including free text typed instead of an option, then write the verdict and `理由` beside it. Do not paraphrase the answer.
-4. Accept `停` (write state and end now), `先放着` (`暂缓`), `展开` (re-present with deeper evidence and re-ask), `拆出 P1a/P1b` (split the item, re-ask the parts). Reversing an earlier decision re-opens that item; nothing is applied yet, so revising is free.
-5. A batch answer like 都做 is valid only after it is echoed back as the exact numbered list and confirmed once. An amended scope rewrites the item's `位置/步骤/检查` before it becomes `已准`.
-6. When the discussion surfaces a general design position, fold it into `TASTE.md` with 出处 (`出处: 2026-10-13 P1`) and cite it in later items.
+2. Paste the returned string into `裁决` verbatim, including free text typed instead of an option, then write the verdict and `理由` beside it. Do not paraphrase the answer.
+3. Accept `停` (write state and end now), `先放着` (`暂缓`), `展开` (re-present with deeper evidence and re-ask), `拆出 P1a/P1b` (split the item, re-ask the parts). Reversing an earlier decision re-opens that item; nothing is applied yet, so revising is free.
+4. A batch answer like 都做 is valid only after it is echoed back as the exact numbered list and confirmed once. An amended scope rewrites the item's `位置/步骤/检查` before it becomes `已准`.
+5. When the discussion surfaces a general design position, fold it into `TASTE.md` with 出处 (`出处: 2026-10-13 P1`) and cite it in later items.
 
 ## Phase 3 — implement
 

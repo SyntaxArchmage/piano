@@ -1,6 +1,6 @@
 ---
 name: speedup-me
-description: "Use when the developer wants a deliberate, multi-item wall-clock speedup campaign on this repository's workflow runtime — not a behavior-preserving refactor and not a diff review: establish a measured baseline from run artifacts (trace.jsonl, log.jsonl, trajectory streams), rank proposals in SPEEDUP.md by named time bucket and Amdahl share with measured-or-labeled-estimate evidence, settle every item with the developer one at a time — including larger levers such as parallelizing scopes, backgrounding bookkeeping, extending workflow YAML backward-compatibly, or reshaping recipe topology — then implement the approved items measuring before and after each until the list is done and the file is cleared."
+description: "Run a measured wall-clock speedup campaign; staged in SPEEDUP.md."
 ---
 
 # Speedup Me
@@ -93,15 +93,6 @@ Rules:
 ## Phase 2 — discuss, item by item
 
 1. One proposal card per item, restated as prose, then exactly one question: 做 / 不做 / 改范围 / 先测再做, plus free text. Put the options in the question text itself.
-
-| Harness | Tool | Shape |
-| --- | --- | --- |
-| Claude Code | `AskUserQuestion` | single-select widget, ≤4 options |
-| dsh | `ask_user_question` | field-for-field identical to the above |
-| Cursor | `AskQuestion` | single-select widget |
-| pi | `discuss` | free-text question, free-text answer |
-| headless or none | — | write every item with 裁决: 待议, report the count, stop |
-
 2. Paste the returned string into `裁决` verbatim, verdict and `理由` beside it. Accept `停` (write state, end), `先放着` (`暂缓`), `展开` (deeper evidence, re-ask), `拆出 P1a/P1b`.
 3. **Behavior-change classes are settled as requirements**, question by question; one card may need a short series, each answer recorded in `理由`:
    - **顺序保证** — which completion order may independent nodes/slots/`log.jsonl` events have? Today it is stable serial order per scope. If order stops being guaranteed, say what the TUI and evals may now see out of order.

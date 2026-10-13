@@ -1,6 +1,6 @@
 ---
 name: review-me
-description: "Use when the developer wants to review a code change without losing flow: audit a working-tree diff or a commit range, narrate only the runtime flow the change actually touches as linear steps with concrete values, settle everything that needs no human judgement, present the rest one decision at a time, record the outcome in REVIEW.md, then apply the approved decisions in a second phase and clear the file."
+description: "Review a diff one decision at a time; decisions land in REVIEW.md."
 ---
 
 # Review Me
