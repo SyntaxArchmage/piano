@@ -337,7 +337,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 
 - 证据：`grep -rn "signoff" recipes/` → 0 命中；只在 `docs/proposals/07-prompt-skill-evolution.md`、`docs/proposals/worker-before-after-primitives.md`、`docs/uml-ascii-diagrams.txt` 里提到。
 - 影响：这是一个**实现完整、测试完整、但对用户不可达**的能力；调优用户想用必须自己写 YAML。
-- 建议：至少在一个调优类 workflow 里示范（例如 cuda/topsop 的关键 stage 或 coding-team 的 review stage），或在 PRD/README 里给出明确的"如何开启"。
+- 建议：至少在一个调优类 workflow 里示范（例如 cuda 调优的关键 stage 或 coding-team 的 review stage），或在 PRD/README 里给出明确的"如何开启"。
 
 ### 6.5 steering 能力差异不可见（已出范围）
 

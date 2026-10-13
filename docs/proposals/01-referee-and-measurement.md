@@ -318,10 +318,6 @@ samples 的精确重算值）。同期 `48d2f15` 在 `agents.md` 里明确"best/
 `cuda-implement-verify` 只做数值校验（对 reference 的 allclose 类检查），
 这正是 arXiv:2606.20128 批评的对象——固定 shape 的 allclose 会放过真实 bug。
 
-顺带一提，PIANO 的 `topsop` 流**已经有**一条相近的证据通路：在 KEEP/DISCARD 边界轮
-（|regression_pp| 在 1-5pp 内）或设备指标无法归因瓶颈时，measure 会额外跑
-`ophal asm --arch 400` 并把 `topsop-asm-report` 带进下一轮 idea。这是 CUDA 锦标赛没有的能力。
-
 #### 机制
 
 两个层次，按成本递增：
@@ -338,7 +334,7 @@ samples 的精确重算值）。同期 `48d2f15` 在 `agents.md` 里明确"best/
 #### PIANO 落点
 
 - 短期：case 契约增加"确定性要求"字段；measure 上报一致性证据。
-- 中期：把 topsop 的 asm 边界轮通路推广到 CUDA 锦标赛（同一句 incentive：
+- 中期：在 CUDA 锦标赛加入 asm/产物层差分通路（同一句 incentive：
   "边界轮 + 无法归因瓶颈时才触发"，成本可控）。
 
 #### 证据
@@ -351,7 +347,7 @@ samples 的精确重算值）。同期 `48d2f15` 在 `agents.md` 里明确"best/
 
 #### 风险
 
-- 差分验证要重跑，成本直接叠加；建议只在**边界轮**或**约束敏感 case** 触发（topsop 已有先例）。
+- 差分验证要重跑，成本直接叠加；建议只在**边界轮**或**约束敏感 case** 触发。
 
 ## 6. 落地顺序与验收
 

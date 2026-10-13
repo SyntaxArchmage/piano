@@ -275,8 +275,8 @@ solver  → 确认修补后仍接受合法解（防止修过头）
   是否用 cuBLASLt autotune、是否允许 CUDA Graph），并把它当作受 contract snapshot 保护的
   不可变事实。**这是 case 侧的事，不是工作流侧的事**，但它决定了工作流分数的意义。
 - **双筛**：在 grader 里同时记录"相对库"与"相对 roofline"两个比值。
-  注意：这正是 PIANO 相对强的地方——`topsop-theory` 已经在算 roofline（见 `04`-M4），
-  而 CUDA 锦标赛没有。
+  注意：这正是 PIANO 目前缺少的一项——roofline 利用率还没有进入 CUDA 锦标赛
+  （见 `04`-M4 的 baseline 阶段提案）。
 
 #### 证据
 

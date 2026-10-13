@@ -9,13 +9,13 @@ const execFileAsync = promisify(execFile);
 
 /** ISSUE-017: orchestrator-owned winner auto-commit. When a workflow opts into
  * `autoCommit`, the loop executor stages and commits each KEEP round's
- * `changed_files` into the caller workspace with the kds topsop-commit
+ * `changed_files` into the caller workspace with a structured winner-commit
  * template (no push). All git work here is strictly additive on explicit
  * paths (`git add -- <file>`), never `git add -A`, so pre-existing user
  * changes and untracked run artifacts are never swept into a winner commit.
  * Commit failures are non-fatal: auto-commit is bookkeeping and must not kill
- * a long tuning run (kds §4.5.1 / CLAUDE.md §3.1). On failure the staged paths
- * are unstaged again so a failed commit cannot poison later rounds' reverts. */
+ * a long tuning run. On failure the staged paths are unstaged again so a
+ * failed commit cannot poison later rounds' reverts. */
 
 const WINNER_COMMIT_SOURCE: Source = {
   module: "orchestrator",
@@ -34,7 +34,7 @@ function porcelainPath(line: string): string | undefined {
 /** Snapshot the workspace's dirty files (tracked modifications, staged
  * changes, and untracked files) at run start. Auto-commit later subtracts
  * this set from each round's `changed_files` so user / other-task changes are
- * never swept into a winner commit (kds §4.5.4 / CLAUDE.md §6). Never fails:
+ * never swept into a winner commit. Never fails:
  * a non-git / unavailable workspace simply yields an empty snapshot and the
  * per-round commit then reports its own warning. */
 export function snapshotDirtyFiles(
@@ -71,19 +71,18 @@ export function safeChangedFiles(
   return kept;
 }
 
-/** Extract the open ticket id from a mission prompt, kds topsop-commit
- * `(TR-xxxx)` slot. Topsop tickets look like `TOPSOP-21673`. */
+/** Extract the open ticket id from a mission prompt, e.g. `TR-21673`. */
 const TICKET_PATTERN = /[A-Z]{2,6}-\d+/u;
 export function extractTicket(text: string): string | undefined {
   return TICKET_PATTERN.exec(text)?.[0];
 }
 
 export interface WinnerCommitMessageInput {
-  /** topsop-commit `[Type]`; perf KEEP rounds default to Feature. */
+  /** Commit message `[Type]`; perf KEEP rounds default to Feature. */
   readonly type?: string;
   /** Open ticket id; extracted from the mission prompt when available. */
   readonly ticket?: string;
-  /** Operator being tuned, e.g. `topssglAddAddRmsNorm`. */
+  /** Operator being tuned, e.g. `gemm`. */
   readonly operator: string;
   readonly iteration: number;
   /** Why this change exists (round hypothesis). */
@@ -92,7 +91,7 @@ export interface WinnerCommitMessageInput {
   readonly solution: string;
   /** Verification evidence line (profile + regression + verify status). */
   readonly test: string;
-  /** topsop-commit Impact area; defaults to `4.0 ops`. */
+  /** Commit message Impact area; defaults to `ops`. */
   readonly impactArea?: string;
 }
 
@@ -101,14 +100,14 @@ export interface WinnerCommitMessage {
   readonly body: string;
 }
 
-/** kds topsop-commit template (topsop_400.mdc §Commit message 格式): subject
- * `[Type](TR-xxxx) Topsop: <subject≤50>` plus Root Cause / Solution / Test /
- * Impact area / Fix status body. All-English, subject line ≤50 chars so a
- * Gerrit push would accept it. Pure — unit-testable without a git repo. */
+/** Winner-commit template: subject `[Type](ticket): <subject≤50>` plus
+ * Root Cause / Solution / Test / Impact area / Fix status body. All-English,
+ * subject line ≤50 chars so a review push would accept it. Pure —
+ * unit-testable without a git repo. */
 export function buildCommitMessage(input: WinnerCommitMessageInput): WinnerCommitMessage {
   const type = input.type ?? "Feature";
   const ticket = input.ticket ?? "no-ticket";
-  const prefix = `[${type}](${ticket}) Topsop: `;
+  const prefix = `[${type}](${ticket}): `;
   const head = `${input.operator} R${input.iteration}`;
   // Gerrit rejects subject lines over 50 chars; trim the operator descriptor
   // (never the fixed prefix) to fit.
@@ -123,7 +122,7 @@ export function buildCommitMessage(input: WinnerCommitMessageInput): WinnerCommi
     "Test:",
     `    ${input.test.replace(/\r?\n/gu, " ")}`,
     "Impact area:",
-    `    ${input.impactArea ?? "4.0 ops"}`,
+    `    ${input.impactArea ?? "ops"}`,
     "Fix status:",
     "    done",
   ].join("\n");
@@ -149,8 +148,8 @@ function gitErrorDetails(error: unknown): string {
 }
 
 /** Stage `files` (explicit paths only) and commit them into `cwd`'s git repo
- * with the topsop-commit message, then verify with `git log -1 --name-only`
- * (kds §4.5.5 提交后核对). Never fails: every git error becomes a warning log
+ * with the winner-commit message, then verify with `git log -1 --name-only`.
+ * Never fails: every git error becomes a warning log
  * so an auto-commit hiccup cannot take down the tuning run. */
 export function commitRoundFiles(
   cwd: string,

@@ -1,7 +1,7 @@
 # 00 — 调研原始记录（transcript 存档）
 
 > **编辑说明（非原文）**：本文是 2026-09-11 那次"上网调研算子调优论文/方案并与 PIANO 对照"的
-> **回复原文存档，逐字保留未做删改**。`01`-`07` 各模块文档是从这份原始记录整理、扩写、
+> **回复原文存档（内部标识已脱敏，其余逐字保留）**。`01`-`07` 各模块文档是从这份原始记录整理、扩写、
 > 并补上代码证据之后的产物；本文件用于保留最初的完整版（含当时给出的维度对比表、
 > 文献分组、以及最初版本的优化方向清单），便于回溯"结论是怎么来的"。
 > 原文中的文件名、行号、commit 均为当时核实的状态。
@@ -13,7 +13,7 @@
 
 ---
 
-我把两边都读完了。先说一个**命名澄清**：仓库里并不存在 `topsop-tuning-tournament`。实际存在的是两条流 —— 顺序单变量版 `recipes/workflows/topsop-tuning.yml`（8 轮，profile→idea→implement→verify→measure）和锦标赛版 `recipes/workflows/gpu-cuda-tuning-tournament.yml`（10 轮，每轮 `idea` 出 3 个策略 → `race` 3 条 lane 并发→ 单一 metric 裁判选出 winner）。下面按你的意图，以**锦标赛版为对照主体**，顺序版仅在它更接近某个论文机制时提及。如果你的对象是别的，告诉我。
+我把两边都读完了。仓库里有两条调优流 —— 顺序版 `recipes/workflows/gpu-cuda-tuning.yml`（10 轮，profile→idea→implement→measure）和锦标赛版 `recipes/workflows/gpu-cuda-tuning-tournament.yml`（10 轮，每轮 `idea` 出 3 个策略 → `race` 3 条 lane 并发→ 单一 metric 裁判选出 winner）。下面以**锦标赛版为对照主体**，顺序版仅在它更接近某个论文机制时提及。如果你的对象是别的，告诉我。
 
 ---
 
@@ -93,7 +93,7 @@
 | **测量保真** | 默认 3 lane 并发同卡；单次采样 | 锁频、清 L2、隔离子进程、重复采样、policy-gated、deterministic guard | **默认架构性引入测量争用**，且噪声直接变成拒收决定 |
 | **预算/保真度** | 每 lane 都跑完整 implement+verify+measure | coarse-to-fine、代理模型、early-exit、动态 GPU 池 | 无分级、无提前淘汰、无代理 |
 | **抽象层/搜索空间** | 固定"手写自定义 kernel" | HIERA 实现空间选择、FACT/CuTeGen/CUTLASS 模式组合、μCUTLASS DSL、MKEvolve 模块级分解融合 | 无实现空间选择、无组合/模板化参数搜索层 |
-| **SOL/headroom** | **topsop 流有**（`topsop-theory`：roofline 上限、`theory_min_us`、`bandwidth_utilization`），CUDA 锦标赛**完全没有** | SOL 驱动引导+预算+停机+识别 gaming | 已有能力未迁移到锦标赛 |
+| **SOL/headroom** | 锦标赛流**完全没有** roofline 上限 / 理论最小耗时字段 | SOL 驱动引导+预算+停机+识别 gaming | 待引入 SOL 引导 |
 | **反作弊** | prompt 禁库调用 + 不可变 harness + 数值校验 | 对抗攻防 loop、隐藏分布、SOL 侧信道、显存指标 | 无 hidden/held-out、无显存/侧信道检查 |
 | **泛化** | 只测 case 固定 shape | unseen-configuration 协议、生产 trace 加权 shape | 单配置过拟合不可见 |
 | **停止判据** | 固定 10 轮 | plateau 触发、budget-aware、达标早停 | 无停滞检测、无预算感知 |
@@ -120,8 +120,8 @@
 风险：(ii) 触碰 PRD 已裁定的语义，必须显式讨论。
 
 **A3. 用已有 DSL 表达"轮内汇总 + 停滞检测"**
-建议：loop 内加第 4 个节点 `aggregate`（`from: [race]`）并把 `exit` 改为 `aggregate`、`feedback: aggregate` —— **纯 DSL，不改引擎**。它同时是 A2 的聚合点、D9 的 plateau 判据点（连续 N 轮 `admitted-not-carried` 就产 `CONVERGED`，与 topsop 流已有的 `CONVERGED` 语义对齐）。
-依据：KernelArc 的 plateau-triggered drafting；topsop 流 §9 单变量循环已有"收敛/next_variable: null"先例。
+建议：loop 内加第 4 个节点 `aggregate`（`from: [race]`）并把 `exit` 改为 `aggregate`、`feedback: aggregate` —— **纯 DSL，不改引擎**。它同时是 A2 的聚合点、D9 的 plateau 判据点（连续 N 轮 `admitted-not-carried` 就产 `CONVERGED`）。
+依据：KernelArc 的 plateau-triggered drafting。
 
 **A4. advisor/reference 密度**
 依据：Harness Engineering 明确"Agent-Assisted 稳定优于 Full-Agent"，expert 方向 + 高质量 reference + workload context 仍是关键；EGG 的专家两阶段分解。
@@ -144,7 +144,7 @@
 
 **B4. SOL 迁移到锦标赛**
 依据：SOLAR、SOL-ExecBench 的 SOL Score、μCUTLASS 的 SOL 引导预算与 gaming 识别。
-建议：把 topsop 的 `topsop-theory` 思路（roofline ceiling、`theory_min_us`、`bandwidth_utilization`）引入 CUDA 锦标赛作为 `baseline` 阶段：驱动 (a) 候选预算，(b) `CONVERGED` 判据（利用率已贴近上限就停），(c) gaming 识别。注意 `cuda-profile/agents.md` 已声明可能出现 `timing-only`（无硬件计数器）—— 需要 fallback。
+建议：在 CUDA 锦标赛引入 roofline 上限思路（理论最小耗时 ceiling、带宽利用率估计）作为 `baseline` 阶段：驱动 (a) 候选预算，(b) `CONVERGED` 判据（利用率已贴近上限就停），(c) gaming 识别。注意 `cuda-profile/agents.md` 已声明可能出现 `timing-only`（无硬件计数器）—— 需要 fallback。
 
 **B5. 反作弊与泛化评测**
 依据：hacker-fixer loop（62%→0%）、KernelBench-Verified（四分布 + TF32 基线 + 显存）、Correctness Illusion（固定 shape allclose 放过 9/9 bug）、Gaming Without an Attacker（30% 不迁移；held-out 只在不可枚举轴有效）、AgentKernelArena（unseen 配置）。

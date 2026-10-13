@@ -77,127 +77,9 @@ describe("validateContract", () => {
   });
 });
 
-describe("topsop-asm-report (ISSUE-011)", () => {
-  it("is a known contract name", () => {
-    expect(isContractName("topsop-asm-report")).toBe(true);
-  });
-
-  it("accepts a full asm report with all optional evidence fields", () => {
-    const result = validateContract("topsop-asm-report", {
-      status: "ready",
-      target_operator: "topssglAddAddRmsNorm",
-      asm_source: "lib/op/.../add_add_rms_norm_dte_load_impl.h",
-      assembly_bottleneck_points: [
-        { type: "slot", description: "VLIW slots half idle", evidence: "3 of 6 slots issue" },
-        { type: "pipeline_stall", description: "DTE wait drains compute", evidence: "mailbox wait per tile" },
-      ],
-      slot_utilization: 0.5,
-      bank_conflict: { detected: false },
-      register_pressure: 40,
-      estimated_cycles: 159685,
-      analysis: "scheduling, not bandwidth",
-      raw_path: "asm/iter-002/current-best.s",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts a minimal ready report with only analysis", () => {
-    const result = validateContract("topsop-asm-report", {
-      status: "ready",
-      target_operator: "topssglAddAddRmsNorm",
-      analysis: "inner loop slot-bound",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects a blocked report without a blocker", () => {
-    const result = validateContract("topsop-asm-report", {
-      status: "blocked",
-      target_operator: "topssglAddAddRmsNorm",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts a blocked report with a blocker", () => {
-    const result = validateContract("topsop-asm-report", {
-      status: "blocked",
-      target_operator: "topssglAddAddRmsNorm",
-      blocker: "ophal asm failed: compile_commands.json missing",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects a ready report with neither analysis nor bottleneck points", () => {
-    const result = validateContract("topsop-asm-report", {
-      status: "ready",
-      target_operator: "topssglAddAddRmsNorm",
-      asm_source: "lib/op/.../add_add_rms_norm_dte_load_impl.h",
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe("topsop-round-result asm_report (ISSUE-011)", () => {
-  const baseRound = {
-    iteration: 2,
-    variable: "pass2-pass1-row-interleave-2deep",
-    hypothesis: "interleave pass2 over pass1 to hide DTE wait",
-    decision: "DISCARD",
-    candidate: { path: "lib/op/.../add_add_rms_norm_dte_load_impl.h" },
-    current_best: { path: "lib/op/.../add_add_rms_norm_dte_load_impl.h" },
-    verification: { compile_passed: true, verify_passed: true, report_path: "reports/verify.json" },
-    profile: {
-      kernel_latency_us: 159.88,
-      llc_read_bandwidth_gbps: 1318.68,
-      llc_write_bandwidth_gbps: 1265.66,
-      llc_rw_sum_gbps: 2584.34,
-      sip_1d_efficiency: 0.34,
-      profile_path: "profiles/iter-002/kernel.json",
-    },
-    regression_pp: -3.2,
-    promotion: { promoted: false, resulting_best: { path: "lib/op/.../add_add_rms_norm_dte_load_impl.h" }, reason: "boundary regression, check asm" },
-    next_variable: "reduce DTE wait slots",
-    records: { round_path: "rounds/iter-002.json", state_path: "state/tuning-state.json" },
-  };
-
-  it("accepts a boundary measured round carrying asm_report", () => {
-    const result = validateContract("topsop-round-result", {
-      ...baseRound,
-      asm_report: {
-        status: "ready",
-        target_operator: "topssglAddAddRmsNorm",
-        analysis: "VLIW slot-bound, not bandwidth",
-        estimated_cycles: 159685,
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("still accepts a round with no asm_report (default round unaffected)", () => {
-    const result = validateContract("topsop-round-result", baseRound);
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects a failed round carrying asm_report", () => {
-    const result = validateContract("topsop-round-result", {
-      ...baseRound,
-      decision: "COMPILE_FAIL",
-      verification: { compile_passed: false, verify_passed: false },
-      profile: undefined,
-      regression_pp: undefined,
-      asm_report: {
-        status: "ready",
-        target_operator: "topssglAddAddRmsNorm",
-        analysis: "should not appear on failed round",
-      },
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
 describe("summary-report progress_record (ISSUE-012)", () => {
   const progressRecord = {
-    file_path: "topsop/test/unit/sgl/sgl_add_add_rms_norm_test.cc",
+    file_path: "tests/unit/regression_test.cc",
     current_status: "stable",
     entry: "R12: iter-2 2-deep interleave KEEP 158.50us / 2588.51 GB/s | evidence: 20260829T073054-0a60d1 | next: none",
   };
@@ -261,32 +143,32 @@ describe("summary-report progress_record (ISSUE-012)", () => {
   });
 });
 
-describe("topsop-implementation-report changed_files (ISSUE-017)", () => {
+describe("implementation-report changed_files (ISSUE-017)", () => {
   const baseImpl = {
     status: "compiled",
     variable: "pass2-pass1-row-interleave-2deep",
     diff_summary: "interleave pass2 over pass1; kernel + bench updated",
-    compile: { passed: true, target: "topssglAddAddRmsNorm", so_commit: "90487eb6fa", so_mtime: "2026-08-31T00:00:00Z" },
+    compile: { passed: true, target: "gemm", so_commit: "90487eb6fa", so_mtime: "2026-08-31T00:00:00Z" },
   };
 
   it("accepts a compiled implementation carrying a non-empty changed_files", () => {
-    const result = validateContract("topsop-implementation-report", {
+    const result = validateContract("implementation-report", {
       ...baseImpl,
       changed_files: [
-        "topsop/lib/kernel/cc_kernel/sgl/add_add_rms_norm/add_add_rms_norm_kernel.tops",
-        "topsop/lib/kernel/cc_kernel/sgl/add_add_rms_norm/add_add_rms_norm_host.tops",
+        "src/kernel.cc",
+        "src/host.cc",
       ],
     });
     expect(result.success).toBe(true);
   });
 
   it("rejects a compiled implementation without changed_files", () => {
-    const result = validateContract("topsop-implementation-report", baseImpl);
+    const result = validateContract("implementation-report", baseImpl);
     expect(result.success).toBe(false);
   });
 
   it("rejects a compiled implementation with an empty changed_files list", () => {
-    const result = validateContract("topsop-implementation-report", {
+    const result = validateContract("implementation-report", {
       ...baseImpl,
       changed_files: [],
     });
@@ -294,28 +176,28 @@ describe("topsop-implementation-report changed_files (ISSUE-017)", () => {
   });
 
   it("rejects a changed_files path that escapes the workspace", () => {
-    const result = validateContract("topsop-implementation-report", {
+    const result = validateContract("implementation-report", {
       ...baseImpl,
-      changed_files: ["topsop/lib/kernel/ok.tops", "../outside.tops"],
+      changed_files: ["src/kernel.cc", "../outside.cc"],
     });
     expect(result.success).toBe(false);
   });
 
   it("rejects an absolute changed_files path", () => {
-    const result = validateContract("topsop-implementation-report", {
+    const result = validateContract("implementation-report", {
       ...baseImpl,
-      changed_files: ["/absolute/outside.tops"],
+      changed_files: ["/absolute/outside.cc"],
     });
     expect(result.success).toBe(false);
   });
 
   it("allows a blocked implementation to omit changed_files", () => {
-    const result = validateContract("topsop-implementation-report", {
+    const result = validateContract("implementation-report", {
       status: "blocked",
-      variable: "r7-dte-3-level-pipeline",
-      diff_summary: "DTE 3-level pipeline violates hardware contract",
-      compile: { passed: false, target: "topssglAddAddRmsNorm" },
-      blocker: "DTE 3-level pipeline violates hardware contract",
+      variable: "r7-three-level-pipeline",
+      diff_summary: "three-level pipeline violates the hardware contract",
+      compile: { passed: false, target: "gemm" },
+      blocker: "three-level pipeline violates the hardware contract",
       block_scope: "iteration",
     });
     expect(result.success).toBe(true);
@@ -327,8 +209,8 @@ describe("optimization-proposal variable_type + rechecked_premises (ISSUE-014)",
     strategies: [{
       id: "structural-candidate",
       bottleneck: "compute",
-      technique: "double-buffer the DTE load to hide wait",
-      rationale: "hide DTE wait under compute after pass merge",
+      technique: "double-buffer the load to hide the wait",
+      rationale: "hide the transfer wait under compute after pass merge",
       predicted_speedup: 1.2,
       risk_level: "medium",
       falsification_criterion: "latency unchanged → wait not the bottleneck",
@@ -337,7 +219,7 @@ describe("optimization-proposal variable_type + rechecked_premises (ISSUE-014)",
     }],
   };
   const recheck = [{
-    premise: "read rate ~1.1 TB/s is a DTE/L3 hard ceiling",
+    premise: "read rate ~1.1 TB/s is an L3 hard ceiling",
     invalidated: true,
     evidence: "F32MIX remove re-widening flips VPD to COMPUTE_BOUND at 1234.94 GB/s",
   }];
@@ -397,14 +279,14 @@ describe("optimization-proposal variable_type + rechecked_premises (ISSUE-014)",
   });
 });
 
-describe("topsop-round-result variable_type (ISSUE-014)", () => {
+describe("round-result variable_type (ISSUE-014)", () => {
   const baseRound = {
     iteration: 3,
-    variable: "double-buffer-dte",
-    hypothesis: "hide DTE wait under compute",
+    variable: "double-buffer",
+    hypothesis: "hide the transfer wait under compute",
     decision: "KEEP",
-    candidate: { path: "lib/op/.../add_add_rms_norm_dte_load_impl.h" },
-    current_best: { path: "lib/op/.../add_add_rms_norm_dte_load_impl.h" },
+    candidate: { path: "src/kernel.cc" },
+    current_best: { path: "src/kernel.cc" },
     verification: { compile_passed: true, verify_passed: true },
     profile: {
       kernel_latency_us: 150.0,
@@ -412,13 +294,13 @@ describe("topsop-round-result variable_type (ISSUE-014)", () => {
       profile_path: "profiles/iter-003/kernel.json",
     },
     regression_pp: 2.5,
-    promotion: { promoted: true, resulting_best: { path: "lib/op/.../add_add_rms_norm_dte_load_impl.h" }, reason: "keep" },
+    promotion: { promoted: true, resulting_best: { path: "src/kernel.cc" }, reason: "keep" },
     next_variable: null,
     records: { round_path: "rounds/iter-003.json", state_path: "state/tuning-state.json" },
   };
 
   it("accepts a round carrying variable_type = structural", () => {
-    const result = validateContract("topsop-round-result", {
+    const result = validateContract("round-result", {
       ...baseRound,
       variable_type: "structural",
     });
@@ -426,88 +308,14 @@ describe("topsop-round-result variable_type (ISSUE-014)", () => {
   });
 
   it("accepts a round with no variable_type (optional)", () => {
-    const result = validateContract("topsop-round-result", baseRound);
+    const result = validateContract("round-result", baseRound);
     expect(result.success).toBe(true);
   });
 
   it("rejects an invalid variable_type value", () => {
-    const result = validateContract("topsop-round-result", {
+    const result = validateContract("round-result", {
       ...baseRound,
       variable_type: "mechanism",
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-describe("topsop-explore-report hardware_constants + external_mechanism_candidates (ISSUE-015/018)", () => {
-  const baseExplore = {
-    status: "ready",
-    call_chain: "topsatenAddAddRmsNorm → op_sgl_add_add_rms_norm.cc → add_add_rms_norm_dte_load_impl.h",
-    architecture: {
-      pipeline: "2-stage DTE load + compute",
-      l1_buffers: "x1/x2/rms at 512B-aligned __local__, 3 × 64KB in 896KB/SIP",
-      sip_allocation: "static even across 24 SIPs",
-      variant_selected: "dte_load kN=8/kD=2, kMaxDLen-aligned",
-    },
-    test_entry: "topsop/test/unit/sgl/sgl_add_add_rms_norm_test",
-    build_target: "kernel_normalize_sgl_add_add_rms_norm",
-  };
-
-  it("accepts a ready report carrying hardware_constants", () => {
-    const result = validateContract("topsop-explore-report", {
-      ...baseExplore,
-      hardware_constants: {
-        l1_vdmem_bytes_per_sip: 1572864,
-        l1_sdmem_bytes_per_sip: 131072,
-        l1_imem_bytes_per_sip: 131072,
-        l2_bytes_per_die: 67108864,
-        vc_budget_per_sip: 11,
-        tier_alignment: { qa: 512, da: 256, va: 128 },
-        sources: ["CLAUDE.md §8", ".claude/skills/gcu300-isa-ref/document/isa32_arch_state.md"],
-      },
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects hardware_constants without sources (来源路径必须提供，禁止全盘搜索)", () => {
-    const result = validateContract("topsop-explore-report", {
-      ...baseExplore,
-      hardware_constants: {
-        l1_vdmem_bytes_per_sip: 1572864,
-        l1_sdmem_bytes_per_sip: 131072,
-        l1_imem_bytes_per_sip: 131072,
-        l2_bytes_per_die: 67108864,
-        vc_budget_per_sip: 11,
-        tier_alignment: { qa: 512, da: 256, va: 128 },
-      },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts a ready report without hardware_constants (optional field)", () => {
-    const result = validateContract("topsop-explore-report", baseExplore);
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts external_mechanism_candidates listing a mechanism absent from current source", () => {
-    const result = validateContract("topsop-explore-report", {
-      ...baseExplore,
-      external_mechanism_candidates: [{
-        mechanism: "官方用 block-shared local DTE 搬 gamma",
-        source: "官方实现 eb8b65cc5e",
-        present_in_source: false,
-      }],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects an external_mechanism_candidate missing present_in_source", () => {
-    const result = validateContract("topsop-explore-report", {
-      ...baseExplore,
-      external_mechanism_candidates: [{
-        mechanism: "官方用 block-shared local DTE 搬 gamma",
-        source: "官方实现 eb8b65cc5e",
-      }],
     });
     expect(result.success).toBe(false);
   });

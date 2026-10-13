@@ -13,9 +13,9 @@ describe("winner commit path guard", () => {
   });
 
   it("keeps ordinary workspace-relative paths", () => {
-    expect(safeChangedFiles(["src/kernel.tops", "src\\kernel.tops"], new Set())).toEqual([
-      "src/kernel.tops",
-      "src\\kernel.tops",
+    expect(safeChangedFiles(["src/kernel.cc", "src\\kernel.cc"], new Set())).toEqual([
+      "src/kernel.cc",
+      "src\\kernel.cc",
     ]);
   });
 });

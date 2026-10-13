@@ -44,10 +44,10 @@ the request, the stage, `PIANO_PI_MODEL`, and finally
 ## Workflow templates
 
 `workflows/` contains source templates, not mutable live workflows. Piano's
-default run loads `workflows/topsop-tuning.yml` directly from the installed
+default run loads `workflows/coding-pi.yml` directly from the installed
 templates — nothing is copied into `~/.piano/`. The default is recorded under
 the `workflow` key of `~/.piano/config.json`: `builtin:<template>` (for
-example `builtin:topsop-tuning` or `builtin:coding-pi`) means that shipped
+example `builtin:coding-pi` or `builtin:paper-writing`) means that shipped
 template, while a file path — set by the TUI picker or by editing the config
 — selects that workflow from then on. A missing config is created on the
 first default run, naming the current default, and a legacy config without
@@ -230,18 +230,6 @@ For schemas that intentionally tolerate extra worker fields, the root-level
 unknown object properties on a cloned payload before strict validation. It does
 not mutate the original worker payload; schema-declared `additionalProperties`
 rules still control properties that are explicitly handled by the schema.
-
-The canonical topsop workflow uses nine stage-specific worker contracts:
-`topsop-setup-env` (environment and build credentials), `topsop-explore`
-(source and architecture facts), `topsop-theory` (baseline and theoretical
-ceiling), `topsop-profile` (per-round profiling), `topsop-idea` (one-variable
-proposal), `topsop-implement` (apply and compile it), `topsop-verification`
-(correctness), `topsop-measure` (benchmark and KEEP/DISCARD decision), and
-`topsop-summary` (final result and progress record). The tuning loop uses the
-last five loop roles from profile through measure; the older multi-mode
-`topsop-estimate`, `topsop-optimize`, and `topsop-verify` workers remain
-available for existing workflows during the deprecation window, but new
-workflows should not use their union contracts.
 
 The CUDA profile contract accepts `ready`, `timing-only`, or `blocked`. A
 timing-only result may contain only measured timing/derived bandwidth and must

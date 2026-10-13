@@ -95,13 +95,13 @@ command and shortcut.
 ### Run a task from the CLI
 
 For a non-interactive task, pass a prompt with `-p`. Piano uses its default
-workflow — the topsop tuning flow (`recipes/workflows/topsop-tuning.yml`),
-loaded directly from the installed templates. The default is recorded in
-`~/.piano/config.json` under `workflow`: `builtin:<template>` (for example
-`builtin:topsop-tuning`) means that shipped template, and a workflow you
-select (in the TUI picker) records its path and becomes the default for
-later runs. When the record is missing it is created and reported on the
-first default run:
+workflow — the plain coding-agent template
+(`recipes/workflows/coding-pi.yml`), loaded directly from the installed
+templates. The default is recorded in `~/.piano/config.json` under
+`workflow`: `builtin:<template>` (for example `builtin:coding-pi`) means
+that shipped template, and a workflow you select (in the TUI picker)
+records its path and becomes the default for later runs. When the record is
+missing it is created and reported on the first default run:
 
 ```bash
 piano -p "write a haiku about a piano"
@@ -281,22 +281,6 @@ and a final summary:
 ```bash
 piano --workflow recipes/workflows/gpu-cuda-tuning.yml -p "optimize the gemm"
 ```
-
-#### GCU / Topsop
-
-`topsop-tuning.yml` is the built-in workflow for a GCU/Topsop operator
-repository. It prepares and explores the operator, establishes a performance
-model, then iterates through profile → idea → implement → verify → measure
-before producing a tuning summary. Run it from the target operator workspace
-and point at the Piano checkout:
-
-```bash
-piano --workflow /path/to/piano/recipes/workflows/topsop-tuning.yml \
-  -p "tune this GCU operator"
-```
-
-The GCU/Topsop template commits accepted rounds in that operator repository,
-so use a branch you are comfortable changing.
 
 `gpu-triton-tuning.yml` is the equivalent starting point for Python/Triton
 workloads. The workflows directory also ships harness/model variants of the

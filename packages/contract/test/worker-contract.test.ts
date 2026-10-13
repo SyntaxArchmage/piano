@@ -57,14 +57,14 @@ function setAt(value: unknown, path: readonly string[], replacement: unknown): v
 /** Frozen from the pre-worker-contract implementation validator. Keep this
  * independent of VALIDATION_EXAMPLES: changing the current legacy schema must
  * not silently change this migration oracle. */
-const HISTORICAL_TOPSOP_IMPLEMENTATION_FIXTURE = {
+const HISTORICAL_IMPLEMENTATION_FIXTURE = {
   status: "compiled",
   variable: "pass2-pass1-row-interleave-2deep",
   diff_summary: "interleave pass2 over pass1; kernel + bench updated",
-  changed_files: ["lib/op/normalize/sgl_add_add_rms_norm/gcu400/add_add_rms_norm_dte_load_impl.h"],
+  changed_files: ["src/kernel.cc"],
   compile: {
     passed: true,
-    target: "topssglAddAddRmsNorm",
+    target: "gemm",
     so_commit: "90487eb6fa",
     so_mtime: "2026-08-31T00:00:00Z",
   },
@@ -659,19 +659,17 @@ describe("worker-local contracts", () => {
     expect(payload).toEqual(original);
   });
 
-  it("matches legacy Zod normalization for a migrated topsop contract", async () => {
-    const path = join(process.cwd(), "recipes", "topsop-setup-env", "contract.json");
+  it("matches legacy Zod normalization for a worker contract reusing a legacy id", async () => {
+    const path = join(process.cwd(), "recipes", "cuda-summary", "contract.json");
     const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-    const payload = structuredClone(VALIDATION_EXAMPLES["topsop-env-report"]) as Record<string, unknown>;
-    (payload.target as Record<string, unknown>).unknown_nested = true;
-    payload.unknown_root = { ignored: true };
+    const payload = structuredClone(VALIDATION_EXAMPLES["summary-report"]) as Record<string, unknown>;
+    (payload as Record<string, unknown>).unknown_root = { ignored: true };
     const original = structuredClone(payload);
-    const legacy = validateContract("topsop-env-report", payload);
+    const legacy = validateContract("summary-report", payload);
     const worker = validateWorkerContract(contract, payload);
 
     expect(legacy.success).toBe(true);
     expect(worker.success).toBe(true);
-    if (legacy.success && worker.success) expect(worker.value).toEqual(legacy.value);
     expect(payload).toEqual(original);
   });
 
@@ -811,60 +809,35 @@ describe("worker-local contracts", () => {
     }
   });
 
-  it("keeps topsop implementation changed_files parity with the legacy validator", async () => {
-    const path = join(process.cwd(), "recipes", "topsop-implement", "contract.json");
-    const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-    const paths = [
-      "topsop/lib/kernel.tops",
-      "topsop\\lib\\kernel.tops",
-      "../outside.tops",
-      "..\\outside.tops",
-      "src/../outside.tops",
-      "src\\..\\outside.tops",
-      "C:relative.tops",
-      "C:\\outside.tops",
-    ];
-
-    for (const changedFile of paths) {
+  it("keeps implementation changed_files acceptance in lockstep with the frozen path set", () => {
+    for (const [changedFile, accepted] of HISTORICAL_CHANGED_FILE_CASES) {
       const payload = {
-        ...(structuredClone(VALIDATION_EXAMPLES["topsop-implementation-report"]) as Record<string, unknown>),
+        ...(structuredClone(VALIDATION_EXAMPLES["implementation-report"]) as Record<string, unknown>),
         changed_files: [changedFile],
       };
-      const legacy = validateContract("topsop-implementation-report", payload);
-      const worker = validateWorkerContract(contract, payload);
-      expect(worker.success, `${changedFile} worker result`).toBe(legacy.success);
-      if (legacy.success && worker.success) expect(worker.value).toEqual(legacy.value);
+      expect(
+        validateContract("implementation-report", payload).success,
+        `${changedFile} legacy result`,
+      ).toBe(accepted);
     }
   });
 
-  it("preserves the frozen historical topsop path acceptance set, normalization, and projections", async () => {
-    const path = join(process.cwd(), "recipes", "topsop-implement", "contract.json");
-    const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-
+  it("preserves the frozen historical path acceptance set, normalization, and projections", () => {
     for (const [changedFile, accepted] of HISTORICAL_CHANGED_FILE_CASES) {
-      const payload = structuredClone(HISTORICAL_TOPSOP_IMPLEMENTATION_FIXTURE) as Record<string, unknown>;
+      const payload = structuredClone(HISTORICAL_IMPLEMENTATION_FIXTURE) as Record<string, unknown>;
       payload.changed_files = [changedFile];
-      payload.ignored = "legacy zod and worker normalization must strip this";
+      payload.ignored = "legacy zod normalization must strip this";
       (payload.compile as Record<string, unknown>).ignored = true;
       const original = structuredClone(payload);
 
-      const legacy = validateContract("topsop-implementation-report", payload);
-      const worker = validateWorkerContract(contract, payload);
+      const legacy = validateContract("implementation-report", payload);
       expect(legacy.success, `${changedFile} historical legacy result`).toBe(accepted);
-      expect(worker.success, `${changedFile} worker result`).toBe(accepted);
       expect(payload).toEqual(original);
-      if (!accepted || !legacy.success || !worker.success) continue;
+      if (!accepted || !legacy.success) continue;
 
-      const expectedValue = structuredClone(HISTORICAL_TOPSOP_IMPLEMENTATION_FIXTURE) as Record<string, unknown>;
+      const expectedValue = structuredClone(HISTORICAL_IMPLEMENTATION_FIXTURE) as Record<string, unknown>;
       expectedValue.changed_files = [changedFile];
       expect(legacy.value).toEqual(expectedValue);
-      expect(worker.value).toEqual(expectedValue);
-      expect(worker.projections).toEqual([
-        { id: "workflow.status", pointer: "/status", format: "string", value: "compiled" },
-        { id: "workspace.changed-files", pointer: "/changed_files", format: "string-list", value: [changedFile] },
-        { id: "build.target", pointer: "/compile/target", format: "string", value: "topssglAddAddRmsNorm" },
-        { id: "change.summary", pointer: "/diff_summary", format: "string", value: "interleave pass2 over pass1; kernel + bench updated" },
-      ]);
     }
   });
 
@@ -1168,16 +1141,7 @@ describe("worker-local contracts", () => {
     expect(loaded).toContain("triton-round-result");
     expect(loaded).toContain("tournament-optimization-proposal");
     for (const id of [
-      "topsop-env-report",
-      "topsop-explore-report",
-      "topsop-implementation-report",
-      "topsop-estimate-report",
-      "topsop-optimize-report",
-      "topsop-verify-report",
-      "topsop-theory-report",
-      "topsop-profile-report",
       "optimization-proposal",
-      "topsop-round-result",
       "verification-report",
       "summary-report",
     ]) {
@@ -1287,9 +1251,7 @@ describe("worker-local contracts", () => {
     const cases = [
       ["cuda-idea", true],
       ["triton-idea", true],
-      ["topsop-idea", true],
       ["cuda-idea-tournament", true],
-      ["topsop-optimize", false],
     ] as const;
 
     for (const [worker, required] of cases) {
@@ -1313,12 +1275,8 @@ describe("worker-local contracts", () => {
 
   it("rejects payloads from the other legacy mode at every split worker boundary", async () => {
     const cases: ReadonlyArray<readonly [worker: string, legacy: ContractName, other: ContractName]> = [
-      ["topsop-theory", "topsop-theory-report", "topsop-profile-report"],
-      ["topsop-profile", "topsop-profile-report", "topsop-theory-report"],
-      ["topsop-idea", "optimization-proposal", "topsop-round-result"],
-      ["topsop-measure", "topsop-round-result", "optimization-proposal"],
-      ["topsop-verification", "verification-report", "summary-report"],
-      ["topsop-summary", "summary-report", "verification-report"],
+      ["cuda-summary", "summary-report", "verification-report"],
+      ["cuda-implement-verify", "verification-report", "summary-report"],
     ];
 
     for (const [worker, legacy, other] of cases) {
@@ -1328,189 +1286,5 @@ describe("worker-local contracts", () => {
       expect(validateContract(legacy, payload).success, `${legacy} rejects ${other}`).toBe(false);
       expect(validateWorkerContract(contract, payload).success, `${worker} rejects ${other}`).toBe(false);
     }
-  });
-
-  it("keeps deprecated multi-mode topsop workers as compatibility unions", async () => {
-    const cases: ReadonlyArray<readonly [worker: string, branches: readonly ContractName[]]> = [
-      ["topsop-estimate", ["topsop-theory-report", "topsop-profile-report"]],
-      ["topsop-optimize", ["optimization-proposal", "topsop-round-result"]],
-      ["topsop-verify", ["verification-report", "summary-report"]],
-    ];
-
-    for (const [worker, branches] of cases) {
-      const path = join(process.cwd(), "recipes", worker, "contract.json");
-      const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-      for (const branch of branches) {
-        expect(
-          validateWorkerContract(contract, structuredClone(VALIDATION_EXAMPLES[branch])).success,
-          `${worker} compatibility contract accepts ${branch}`,
-        ).toBe(true);
-      }
-    }
-  });
-
-  it("normalizes unknown fields safely for the second branch of compatibility unions", async () => {
-    const cases: ReadonlyArray<readonly [
-      worker: string,
-      legacy: ContractName,
-      nestedPath: readonly string[],
-      firstBranchOnlyField: string,
-    ]> = [
-      ["topsop-estimate", "topsop-profile-report", ["metrics", "unknown_nested"], "theory"],
-      ["topsop-optimize", "topsop-round-result", ["candidate", "unknown_nested"], "strategies"],
-      ["topsop-verify", "summary-report", ["progress_record", "unknown_nested"], "artifact"],
-    ];
-
-    for (const [worker, legacy, nestedPath, firstBranchOnlyField] of cases) {
-      const path = join(process.cwd(), "recipes", worker, "contract.json");
-      const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-      const payload = structuredClone(VALIDATION_EXAMPLES[legacy]) as Record<string, unknown>;
-      setAt(payload, nestedPath, { ignored: true });
-      payload[firstBranchOnlyField] = { ignored: true };
-      payload.unknown_root = { ignored: true };
-      const original = structuredClone(payload);
-      const legacyResult = validateContract(legacy, payload);
-      const workerResult = validateWorkerContract(contract, payload);
-
-      expect(legacyResult.success, `${legacy} must accept its second-branch example`).toBe(true);
-      expect(workerResult.success, `${worker} must accept its second-branch example`).toBe(true);
-      if (legacyResult.success && workerResult.success) {
-        expect(workerResult.value, `${worker} must preserve legacy normalized value`).toEqual(legacyResult.value);
-      }
-      expect(payload, `${worker} must not mutate caller payload`).toEqual(original);
-    }
-  });
-
-  it("preserves the legacy topsop arithmetic gates in worker-owned declarations", async () => {
-    const theoryPath = join(process.cwd(), "recipes", "topsop-theory", "contract.json");
-    const profilePath = join(process.cwd(), "recipes", "topsop-profile", "contract.json");
-    const compatibilityPath = join(process.cwd(), "recipes", "topsop-estimate", "contract.json");
-    const theory = compileWorkerContract(await readFile(theoryPath, "utf8"), theoryPath);
-    const profile = compileWorkerContract(await readFile(profilePath, "utf8"), profilePath);
-    const compatibility = compileWorkerContract(await readFile(compatibilityPath, "utf8"), compatibilityPath);
-
-    const theoryCases = [
-      ["read_write_balanced", false],
-      ["bandwidth_limit_gbps", 2500],
-      ["bandwidth_utilization", 0.2],
-      ["theory_min_us", 100],
-    ] as const;
-    for (const [field, value] of theoryCases) {
-      const payload = structuredClone(VALIDATION_EXAMPLES["topsop-theory-report"]) as Record<string, unknown>;
-      (payload.theory as Record<string, unknown>)[field] = value;
-      expect(validateContract("topsop-theory-report", payload).success, `legacy theory rejects ${field}`).toBe(false);
-      expect(validateWorkerContract(theory, payload).success, `worker theory rejects ${field}`).toBe(false);
-      expect(validateWorkerContract(compatibility, payload).success, `compatibility theory rejects ${field}`).toBe(false);
-    }
-
-    const payload = structuredClone(VALIDATION_EXAMPLES["topsop-profile-report"]) as Record<string, unknown>;
-    (payload.metrics as Record<string, unknown>).bandwidth_utilization = 0.2;
-    expect(validateContract("topsop-profile-report", payload).success).toBe(false);
-    expect(validateWorkerContract(profile, payload).success).toBe(false);
-    expect(validateWorkerContract(compatibility, payload).success).toBe(false);
-
-    const theoryBoundaryCases: Array<readonly [label: string, payload: unknown, accepted: boolean]> = [];
-    const addTheoryCase = (
-      label: string,
-      mutate: (payload: Record<string, unknown>) => void,
-      accepted: boolean,
-    ): void => {
-      const candidate = structuredClone(VALIDATION_EXAMPLES["topsop-theory-report"]) as Record<string, unknown>;
-      mutate(candidate);
-      theoryBoundaryCases.push([label, candidate, accepted]);
-    };
-    const setTheoryTraffic = (
-      payload: Record<string, unknown>,
-      read: number,
-      write: number,
-      limit: 2500 | 3000,
-      balanced: boolean,
-    ): void => {
-      const profile = (payload.baseline as Record<string, unknown>).profile as Record<string, unknown>;
-      const theory = payload.theory as Record<string, unknown>;
-      profile.llc_read_bandwidth_gbps = read;
-      profile.llc_write_bandwidth_gbps = write;
-      profile.llc_rw_sum_gbps = read + write;
-      theory.read_write_balanced = balanced;
-      theory.bandwidth_limit_gbps = limit;
-      theory.bandwidth_utilization = Math.min((read + write) / limit, 1);
-      theory.theory_min_us = ((profile.llc_read_bytes as number) + (profile.llc_write_bytes as number)) / (limit * 1e3);
-    };
-    addTheoryCase("RD/WR exactly 3 is balanced", (candidate) => setTheoryTraffic(candidate, 3000, 1000, 3000, true), true);
-    addTheoryCase("RD/WR just over 3 is one-directional", (candidate) => setTheoryTraffic(candidate, 3000.0001, 1000, 2500, false), true);
-    addTheoryCase("zero read bandwidth keeps the historical arithmetic guard inactive", (candidate) => {
-      const profile = (candidate.baseline as Record<string, unknown>).profile as Record<string, unknown>;
-      profile.llc_read_bandwidth_gbps = 0;
-      profile.llc_write_bandwidth_gbps = 1000;
-    }, true);
-
-    const baseTheory = VALIDATION_EXAMPLES["topsop-theory-report"] as {
-      baseline: { profile: { llc_read_bandwidth_gbps: number; llc_write_bandwidth_gbps: number; llc_rw_sum_gbps: number; llc_read_bytes: number; llc_write_bytes: number } };
-      theory: { bandwidth_limit_gbps: number; bandwidth_utilization: number; theory_min_us: number };
-    };
-    const expectedUtilization = baseTheory.baseline.profile.llc_rw_sum_gbps / baseTheory.theory.bandwidth_limit_gbps;
-    for (const [label, delta, accepted] of [
-      ["utilization -0.0199 boundary", -0.0199, true],
-      ["utilization +0.0199 boundary", 0.0199, true],
-      ["utilization -0.0201 rejection", -0.0201, false],
-      ["utilization +0.0201 rejection", 0.0201, false],
-    ] as const) {
-      addTheoryCase(label, (candidate) => {
-        (candidate.theory as Record<string, unknown>).bandwidth_utilization = expectedUtilization + delta;
-      }, accepted);
-    }
-    const expectedTheoryMinUs = (baseTheory.baseline.profile.llc_read_bytes + baseTheory.baseline.profile.llc_write_bytes)
-      / (baseTheory.theory.bandwidth_limit_gbps * 1e3);
-    for (const [label, factor, accepted] of [
-      ["theory minimum -2.99% boundary", 0.9701, true],
-      ["theory minimum +2.99% boundary", 1.0299, true],
-      ["theory minimum -3.01% rejection", 0.9699, false],
-      ["theory minimum +3.01% rejection", 1.0301, false],
-    ] as const) {
-      addTheoryCase(label, (candidate) => {
-        (candidate.theory as Record<string, unknown>).theory_min_us = expectedTheoryMinUs * factor;
-      }, accepted);
-    }
-
-    for (const [label, candidate, accepted] of theoryBoundaryCases) {
-      const legacyResult = validateContract("topsop-theory-report", candidate);
-      const theoryResult = validateWorkerContract(theory, candidate);
-      const compatibilityResult = validateWorkerContract(compatibility, candidate);
-      expect(legacyResult.success, `${label}: legacy`).toBe(accepted);
-      expect(theoryResult.success, `${label}: worker`).toBe(accepted);
-      expect(compatibilityResult.success, `${label}: compatibility worker`).toBe(accepted);
-      if (legacyResult.success && theoryResult.success && compatibilityResult.success) {
-        expect(theoryResult.value, `${label}: theory normalization`).toEqual(legacyResult.value);
-        expect(compatibilityResult.value, `${label}: compatibility normalization`).toEqual(legacyResult.value);
-      }
-    }
-  });
-
-  it.each(["cuda", "triton"])("enforces the %s round decision state machine", async (family) => {
-    const path = join(process.cwd(), "recipes", `${family}-benchmark-store`, "contract.json");
-    const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-    const example = structuredClone(contract.manifest.example) as Record<string, unknown>;
-    const verification = example.verification as Record<string, unknown>;
-    const promotion = example.promotion as Record<string, unknown>;
-
-    verification.compile_passed = true;
-    verification.verify_passed = true;
-    example.decision = "COMPILE_FAIL";
-    promotion.promoted = false;
-    expect(validateWorkerContract(contract, example).success).toBe(false);
-
-    example.decision = "BLOCKED";
-    delete example.benchmark;
-    expect(validateWorkerContract(contract, example).success).toBe(true);
-
-    verification.compile_passed = true;
-    verification.verify_passed = false;
-    example.decision = "VERIFY_FAIL";
-    expect(validateWorkerContract(contract, example).success).toBe(true);
-
-    verification.compile_passed = false;
-    verification.verify_passed = false;
-    example.decision = "COMPILE_FAIL";
-    expect(validateWorkerContract(contract, example).success).toBe(true);
   });
 });

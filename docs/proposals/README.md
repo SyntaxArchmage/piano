@@ -4,17 +4,13 @@
 PIANO 现有工作流逐维度对照，按**模块**拆成 7 篇文档，每篇独立可读，讲清"这个模块该往哪改、为什么、
 落在哪个文件、有什么风险"。
 
-## 0. 先澄清一个命名
+## 0. 先澄清对照主体
 
-仓库里**不存在** `topsop-tuning-tournament`。实际有两类可比的流：
-
-| 流 | 文件 | 形状 |
-|---|---|---|
-| 顺序单变量调优 | `recipes/workflows/topsop-tuning.yml` | 8 轮，每轮 `profile → idea → implement → verify → measure`，measure 出 `KEEP/DISCARD/CONVERGED` |
-| 锦标赛调优（本提案集主体） | `recipes/workflows/gpu-cuda-tuning-tournament.yml` | 10 轮，每轮 `profile → idea` 出 3 个策略 → `race` 3 条 lane 并发 → 单一 metric 裁判选 winner |
-
-顺序版在"停机判据 / roofline 引导 / asm 证据"上比锦标赛版更成熟（见 `04`、`01`-M6）；
-锦标赛版在"并发候选 + 自动裁判"上更强。两边的能力互有缺口，这正是提案的主要来源。
+本文档集以锦标赛调优流为对照主体：`recipes/workflows/gpu-cuda-tuning-tournament.yml`
+（10 轮，每轮 `profile → idea` 出 3 个策略 → `race` 3 条 lane 并发 → 单一 metric 裁判选 winner）。
+仓库同时提供顺序版 `recipes/workflows/gpu-cuda-tuning.yml`（10 轮，每轮
+`profile → idea → implement → measure`），仅在它更接近某个论文机制时按需引用。
+两边的能力互有缺口，这正是提案的主要来源。
 
 ## 1. 术语速查
 
@@ -25,7 +21,7 @@ PIANO 现有工作流逐维度对照，按**模块**拆成 7 篇文档，每篇�
 | **admission / 准入** | 跨轮闸门：候选必须**严格改进同一 metric 身份**才被 carry，否则 `admitted-not-carried` |
 | **carry / consolidation** | 引擎只排序；由 winner **自己的 worker** 在父 scope 应用冻结 delta，引擎只做一次只读 diff gate |
 | **referee 身份** | `name + unit + direction` 三元组；身份变了直接拒（`metric-identity-changed`） |
-| **SOL** | Speed-of-Light，硬件理论上限（roofline）。`topsop-theory` 已在算，CUDA 锦标赛还没有 |
+| **SOL** | Speed-of-Light，硬件理论上限（roofline）。CUDA 锦标赛还没有利用它 |
 
 ## 2. PIANO 基线（对照基准，全部有代码证据）
 
@@ -98,7 +94,7 @@ PIANO 现有工作流逐维度对照，按**模块**拆成 7 篇文档，每篇�
 | 优先级 | 事项 | 文档 | 为什么排这里 |
 |---|---|---|---|
 | **P0** | 测量重复采样 + 噪声带判据 | `01`-M1/M2 | 直接决定每轮决策对不对；当前架构性缺陷 |
-| **P0** | plateau 检测 + `aggregate` 节点 + `CONVERGED` | `04`-M3 | 纯 DSL 可做，不动引擎；补齐与 topsop 流的能力差 |
+| **P0** | plateau 检测 + `aggregate` 节点 + `CONVERGED` | `04`-M3 | 纯 DSL 可做，不动引擎 |
 | **P1** | 败者 lane 摘要回流下一轮 | `02`-M1 | 已有 `selection.jsonl` 却没消费者，属"便宜的大收益" |
 | **P1** | 预算口径 + 保真度分级 | `04`-M1/M6 | 决定长跑成本能不能控 |
 | **P1** | 反作弊与 held-out 评测设定 | `05` | 决定"我们证明的是不是真的" |

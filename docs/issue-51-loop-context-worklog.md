@@ -4,7 +4,7 @@ Bug: multi-iteration loop stages share one actor session and the Pi SDK's
 compaction was hard-disabled in Piano's spawn paths, so context accumulates
 until the model window ceiling; the repair retry reopens the same full session
 and hits the same wall (`stopReason:"length"`, empty reply) → `run.failed`.
-Evidence run: `20260902T112939-fe2248` (topsop-tuning, iterations=20, died at
+Evidence run: `20260902T112939-fe2248` (tuning workflow, iterations=20, died at
 25/104; r5 attempt 1+2 both empty).
 
 ## Goal checklist (AND)
@@ -53,8 +53,8 @@ Issue scope: "A / B 二选一或组合，C 必做"。Chosen: **B + C. A rejected
   pi.ts:647-661 → AgentEvent → log/trace + TUI, with existing coverage
   (pi.test.ts:835+, events.test.ts:192+). Verified, no change needed.
 - Residual risk accepted: across-iteration recall then depends on SDK
-  compaction-summary quality; only L4 (20-round topsop real run) can prove it
-  on real hardware.
+  compaction-summary quality; only L4 (a 20-round real tuning run) can prove it
+  in practice.
 
 ## Concurrency note
 
@@ -91,8 +91,8 @@ tests/workflow/workflow-execution.test.ts`; `npx vitest run`;
 
 ## Outstanding
 
-- Issue acceptance "L4": 20-round topsop-tuning real rerun to terminal state
-  (needs the GPU test machine; run `piano run` against the topsop workflow with
+- Issue acceptance "L4": 20-round real tuning rerun to terminal state
+  (needs the GPU test machine; run `piano run` against a tuning workflow with
   `iterations: 20` and confirm completion or earlyStop, never `run.failed`).
 - A (loop frames in the actor key) deliberately NOT implemented — B bounds the
   session; A would overturn a documented design and its test. Revisit only if

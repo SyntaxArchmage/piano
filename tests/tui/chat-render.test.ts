@@ -343,14 +343,14 @@ describe("TranscriptView", () => {
       });
       return chatArea.render(80).join("\n");
     };
-    const setupLine = renderSpawn("setup-env", "topsop-setup-env", "deepseek-v4-flash");
-    const ideaLine = renderSpawn("idea", "topsop-idea", "deepseek-v4-flash");
+    const setupLine = renderSpawn("setup-env", "tuning-setup", "deepseek-v4-flash");
+    const ideaLine = renderSpawn("idea", "tuning-idea", "deepseek-v4-flash");
     // The stage worker name rides the tag, and the model follows in brackets.
-    expect(setupLine).toContain("setup-env · topsop-setup-env");
+    expect(setupLine).toContain("setup-env · tuning-setup");
     expect(setupLine).toContain("[deepseek-v4-flash]");
     // The tag color is theme-aware and deterministic per stage id.
     expect(setupLine).toContain(stageTagColor(darkTheme, "setup-env"));
-    const repeatLine = renderSpawn("setup-env", "topsop-setup-env", "deepseek-v4-flash");
+    const repeatLine = renderSpawn("setup-env", "tuning-setup", "deepseek-v4-flash");
     expect(repeatLine).toContain(stageTagColor(darkTheme, "setup-env"));
     expect(stageTagColor(darkTheme, "setup-env")).not.toBe(stageTagColor(darkTheme, "idea"));
     expect(setupLine).not.toBe(ideaLine);

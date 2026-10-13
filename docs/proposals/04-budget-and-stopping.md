@@ -9,9 +9,9 @@
    贵的是完整 benchmark + profiling + 边界 shape 验证。
 3. **停机判据（stopping）**：什么时候不跑了。
 
-在 PIANO 里，这三件事的现状是：预算 = 固定 `iterations`（锦标赛 10、topsop 8）；
-保真度 = **每个 lane 都跑完整流程**；停机 = **跑满轮数**（`topsop-tuning.yml` 的注释明确写了
-"the loop runs its fixed `iterations` cap; the only early termination is a terminal block"）。
+在 PIANO 里，这三件事的现状是：预算 = 固定 `iterations`（10）；
+保真度 = **每个 lane 都跑完整流程**；停机 = **跑满轮数**（循环没有提前退出，
+唯一的提前终止是 terminal block）。
 
 ## 1. 它用来干嘛
 
@@ -35,25 +35,18 @@
 `packages/orchestrator/src/workflow.ts` 对 `timeout` 的定义是"whole-stage wall-clock cap，
 超出则 stage 失败"——目的是"guards against a single runaway agent tool call
 (e.g. a filesystem-wide `find`) blocking the whole run with no recovery point"。
-`topsop-tuning.yml` 的注释更直白：
-
-> Stage `timeout` (seconds) is a generous wall-clock safety net, **not a budget**:
-> the enflame gateway's first-token latency can legitimately reach ~2h (idea once ~5h),
-> so caps exist only to bound an indefinite hang.
+这个上限只用于兜住无限挂起，不是预算。
 
 所以"预算"这个概念在 PIANO 里**不存在**。而有意思的是：**成本数据是齐全的**——
 `token-usage.jsonl` 和 `duration.jsonl` 全量落盘（`packages/trajectory/src/recorders.ts`），
 `TokenUsageRecorder` 还处理了"多次累积快照合并"的细节。
 **数据在，判决不用。**
 
-**洞察 2：PIANO 已经有 `CONVERGED` 语义，但它只是报告，不是控制。**
+**洞察 2：PIANO 有"收敛"的语义，没有"收敛"的控制信号。**
 
-`recipes/workflows/topsop-tuning.yml` 的注释：
-
-> The measure stage emits `CONVERGED` + `next_variable: null` when the evidence shows
-> the target is unreachable, and the summary synthesizes the final convergence conclusion.
-
-注意"the loop runs its fixed `iterations` cap"——**CONVERGED 不会提前结束循环**。
+合约层已经定义过 `CONVERGED` + `next_variable: null` 的轮裁决语义
+（`packages/contract/src/schemas.ts` 保留该 schema 及其一致性校验），
+但当前没有任何 shipped workflow 消费它，循环也不会因为 `CONVERGED` 提前结束。
 这是一个很干净的现状：语义已经有了（worker 能判断"这个目标不可达"），
 缺的只是"把这个判断变成控制信号"。这是一次**引擎能力**补充，不是评测能力补充。
 
@@ -75,14 +68,13 @@ and search often stalls early"*——这三条 PIANO 全都有。
 只用轮数会出现"10 轮但 60 小时"或"10 轮但 2 小时"这两种完全不同的东西。**建议以 wall clock 为主口径、
 token 为副口径，轮数为上限**（而非唯一判据）。
 
-**洞察 5：SOL 引导能同时服务预算与停机，而且 PIANO 已经有一半。**
+**洞察 5：SOL 引导能同时服务预算与停机。**
 
-`topsop-theory` 已经在算理论上限：注释写明
-"按 LLC 平衡判定式产出 `topsop-theory-report`"，
-要求 `read_write_balanced`、3000/2500 GB/s 上限、`theory_min_us`、`bandwidth_utilization`
-**互相一致**，且"contract 会校验这些算术关系"。
+合约层已经定义过这一形态的 schema：`read_write_balanced`、`theory_min_us`、
+`bandwidth_utilization` 等字段**互相一致**，且契约校验这些算术关系
+（`packages/contract/src/schemas.ts`）。
 
-而 CUDA 锦标赛**完全没有**这一层。这是"已建好的能力没有迁移"，属最划算的一类改进。
+而 CUDA 锦标赛**完全没有**这一层。把 roofline 分析做成 baseline 阶段，属最划算的一类改进。
 
 ## 3. 影响效果的关键因素
 
@@ -91,8 +83,8 @@ token 为副口径，轮数为上限**（而非唯一判据）。
 | **预算口径** | 口径错 → 优化目标错（省钱变成省轮数） | 只有轮数 |
 | **分级阈值** | 太严→杀掉有希望的候选（假阴性）；太松→省不下钱 | 无分级 |
 | **粗筛的可靠性** | 粗筛漏掉的候选再也不会回来 | 无 |
-| **停滞判据** | 判据太敏感→过早停；太钝→白跑 | 无（`CONVERGED` 只是文本） |
-| **SOL 可达性** | 目标本身不可达时必须能识别并停 | topsop 有，CUDA 无 |
+| **停滞判据** | 判据太敏感→过早停；太钝→白跑 | 无（没有停滞检测） |
+| **SOL 可达性** | 目标本身不可达时必须能识别并停 | CUDA 流无 |
 | **计数器可用性** | 无硬件计数器时 roofline 只能走 `timing-only` | `recipes/cuda-profile/agents.md` 已声明此限制 |
 | **是否允许"没结论"** | 停机后总结必须能诚实说"未收敛" | `summary` 已有"如实报告"取向 |
 
@@ -103,7 +95,7 @@ token 为副口径，轮数为上限**（而非唯一判据）。
 | M1 | 保真度分级 + policy gate | 契约 + recipe | 新增分级定义 | P1 |
 | M2 | 达标早停 | 引擎（与 M3 同一机制） | 终止判据 | P3 |
 | M3 | plateau 检测 + `CONVERGED` 控制化 | **DSL（可纯 DSL 起步）** + 引擎 | 聚合节点 | **P0** |
-| M4 | SOL 引导（迁移 topsop-theory） | recipe（新增 baseline stage） | profile 能力 | P3 |
+| M4 | SOL 引导（新增 baseline stage） | recipe | profile 能力 | P3 |
 | M5 | 代理模型 / 性能预测 | 离线模型 | 训练数据 | P4 |
 | M6 | 多轨预算口径 | 引擎 + 报表 | 无（数据已有） | P1 |
 
@@ -187,7 +179,7 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
 |---|---|
 | 达标 | winner 达到 case 声明的目标（加速比阈值 / SOL 占比） |
 | 收敛 | M3 的 plateau 判据 |
-| 不可达 | worker 报 `CONVERGED` + `next_variable: null`（topsop 已有此语义） |
+| 不可达 | worker 报 `CONVERGED` + `next_variable: null`（合约层已有此语义） |
 
 #### 证据
 
@@ -214,8 +206,8 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
 > `selection.jsonl` 的 regression-guard 记录（`admitted-not-carried`）已有 reason 文本，
 > 但跨 iter 无计数/聚合，长跑时"连续未改进"不易察觉。
 
-而 `topsop-tuning.yml` 已经把语义写好了：`CONVERGED` + `next_variable: null`。
-**两件事今天都不产生控制效果。**
+而合约层已经把语义写好了：`CONVERGED` + `next_variable: null`
+（`packages/contract/src/schemas.ts`）。**两件事今天都不产生控制效果。**
 
 #### 机制（分两级，第一级不需要改引擎）
 
@@ -251,7 +243,7 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
 
 这一步的收益：plateau 被**显式记录**、被 `summary` 读到、被报表统计到，
 并且它天然是 `02`-M1（lane 摘要聚合）的落点。**不需要改引擎**——`loop.exit` 与 `loop.feedback`
-都已经是"直接子节点名字"，`topsop-tuning.yml` 用的就是这个形状（`exit: measure` / `feedback: measure`，
+都已经是"直接子节点名字"，`gpu-cuda-tuning.yml` 用的就是这个形状（`exit: measure` / `feedback: measure`，
 两者都是普通 stage）。改动是一个新 recipe + 一个新 worker/契约。
 
 （注意：tournament 自己的裁判由它**内部**的 `exit: measure` 决定，与 loop 的 `exit` 是两层；
@@ -259,7 +251,7 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
 
 **第二级：引擎支持"循环提前退出"。**
 
-`topsop-tuning.yml` 的注释说明现状"the only early termination is a terminal block"。
+现状是：循环唯一的提前终止是 terminal block。
 要让 `CONVERGED` 真正结束循环，需要引擎新增一种**非错误性的终止信号**
 （与 `blocked` 区分：blocked 是失败，CONVERGED 是成功到达结论）。
 
@@ -269,7 +261,7 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
 #### 证据
 
 - KernelArc（arXiv:2608.17071）：**plateau-triggered drafting**——停滞被检测后触发新动作。
-- `topsop-tuning.yml`：`CONVERGED` + `next_variable: null` 已是既有语义（未控制化）。
+- 合约层：`CONVERGED` + `next_variable: null` 已是既有语义（未控制化）。
 - μCUTLASS + SOL：对近 SOL 的问题**降优先级**，是"该少花力气"的判断形态。
 - KernelBrain：承认 "search often stalls early" 并把资源重分配作为核心机制。
 
@@ -284,7 +276,7 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
 
 ---
 
-### M4 — SOL 引导（把 topsop-theory 迁移到 CUDA 锦标赛）
+### M4 — SOL 引导（给 CUDA 锦标赛加 baseline 阶段）
 
 #### Motivation
 
@@ -299,12 +291,13 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
    这句话对 PIANO 特别重要：PIANO 的防作弊主要靠 prompt 规则（禁库调用）+ 数值校验，
    缺一个**物理侧的信道**（"这个速度在物理上可能吗"）。
 
-而 PIANO 已经有现成的能力：`topsop-theory` 阶段的 SKILL 已经要求产出 roofline 上限
-（`theory_min_us`、`bandwidth_utilization`、`read_write_balanced`）且**契约会校验算术一致性**。
+而这条路在合约层已有实践：roofline 上限（`theory_min_us`、`bandwidth_utilization`、
+`read_write_balanced`）的 schema 与算术一致性校验都在
+（`packages/contract/src/schemas.ts`）。
 
 #### 机制
 
-在 CUDA 锦标赛的 `setup` 之后加一个 `baseline`/`theory` 阶段（与 topsop 的 `theory` 同形）：
+在 CUDA 锦标赛的 `setup` 之后加一个 `baseline`/`theory` 阶段：
 
 - 输出：`theory_min_us`、`bandwidth_utilization`、`compute_utilization`、`headroom`、
   以及 SOL Score（相对硬件上限已闭合的比例，SOL-ExecBench 的定义）。
@@ -323,7 +316,7 @@ SpecGen（arXiv:2606.17518）的做法：**当某个候选达到终止判据时�
   SOL Score 量化"相对硬件 SOL 上界闭合了多少"，并配套沙箱 harness 与反作弊静态检查。
 - μCUTLASS + SOL（arXiv:2603.29010）：SOL 估计 headroom 引导与预算搜索、降优先级、
   识别 gaming；省 19-43% token 保 ≥95% geomean，最优策略 1.68x 效率增益。
-- `topsop-theory`（仓库内）：已有 roofline 与一致性校验的实践。
+- `packages/contract/src/schemas.ts`（仓库内）：已有 roofline 与一致性校验的实践。
 
 #### 风险
 
@@ -369,8 +362,8 @@ GPU Forecasters（arXiv:2605.31464）的核心主张：LLM 可以作为**选择�
 
 #### Motivation
 
-见洞察 4。只按轮数计预算会掩盖两种极端：一轮可能 6 小时（`idea` 的 enflame 网关首 token
-可达 ~2h，`topsop-tuning.yml` 注释记录过 idea 一次跑到 ~5h），也可能几分钟。
+见洞察 4。只按轮数计预算会掩盖两种极端：一轮可能长达数小时
+（模型首 token 延迟与重试可以把单次 stage 拖到几小时），也可能几分钟。
 "10 轮"不等于"可控的成本"。
 
 而且成本数据**已经在收集**：`token-usage.jsonl`（含 `reported`/`delta`/`reset` 与合并逻辑）、
@@ -422,7 +415,7 @@ arXiv:2608.17071（KernelArc）、arXiv:2606.26383（SOLAR）、arXiv:2603.19173
 arXiv:2603.29010（μCUTLASS+SOL）、arXiv:2606.26453（KernelPro）、arXiv:2605.31464（GPU Forecasters）、
 arXiv:2608.25570（KOPE）、arXiv:2606.29823（Trellis/KernelEvolve）
 
-内部依据：`recipes/workflows/topsop-tuning.yml` 与 `gpu-cuda-tuning-tournament.yml` 的头部注释、
+内部依据：`recipes/workflows/gpu-cuda-tuning.yml` 与 `gpu-cuda-tuning-tournament.yml` 的头部注释、
 `packages/orchestrator/src/workflow.ts`（`timeout` 定义）、
 `packages/trajectory/src/recorders.ts`（token/duration recorder）、
 `docs/workflow-trajectory-evaluation-prd.md` §20、`docs/WORKLOG-TOURNAMENT-2026-09-04.md`

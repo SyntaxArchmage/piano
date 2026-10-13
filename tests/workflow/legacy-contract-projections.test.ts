@@ -40,14 +40,14 @@ const FROZEN_PROJECTION_ORACLE: Readonly<Record<string, readonly ContractProject
   "cuda-preparation-report": [
     { id: "workflow.status", pointer: "/status", format: "string", required: true },
   ],
-  "topsop-implementation-report": [
+  "implementation-report": [
     { id: "workflow.status", pointer: "/status", format: "string", required: true },
     { id: "workflow.block-scope", pointer: "/block_scope", format: "string", required: false },
     { id: "workspace.changed-files", pointer: "/changed_files", format: "string-list", required: false },
     { id: "build.target", pointer: "/compile/target", format: "string", required: false },
     { id: "change.summary", pointer: "/diff_summary", format: "string", required: false },
   ],
-  "topsop-round-result": [
+  "round-result": [
     { id: "round.decision", pointer: "/decision", format: "string", required: true },
     { id: "round.hypothesis", pointer: "/hypothesis", format: "string", required: true },
     { id: "profile.kernel-latency-us", pointer: "/profile/kernel_latency_us", format: "number", required: false },
@@ -70,89 +70,72 @@ const FROZEN_PROJECTION_ORACLE: Readonly<Record<string, readonly ContractProject
   "benchmark-evidence": [
     { id: "benchmark.evidence", pointer: "", format: "json", required: true },
   ],
-  "topsop-profile-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: false },
-    { id: "profile.kernel-latency-us", pointer: "/metrics/kernel_latency_us", format: "number", required: false },
-    { id: "profile.llc-rw-bandwidth-gbps", pointer: "/metrics/llc_rw_sum_gbps", format: "number", required: false },
-  ],
-  "topsop-env-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: true },
-  ],
-  "topsop-explore-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: true },
-  ],
-  "topsop-theory-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: false },
-  ],
-  "topsop-asm-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: true },
-  ],
   "summary-report": [
     { id: "progress-record.path", pointer: "/progress_record/file_path", format: "string", required: false },
   ],
 };
 
-const FROZEN_TOPSOP_ROUND_ACCEPTED = {
+const FROZEN_ROUND_ACCEPTED = {
   iteration: 1,
-  variable: "SUBTHREAD_NUM 2->1",
+  variable: "tile-size 32->64",
   variable_type: "config",
-  hypothesis: "64KB transfer recovers read bandwidth",
+  hypothesis: "a wider tile recovers read bandwidth",
   decision: "KEEP",
-  candidate: { path: "lib/op/kernel.h" },
-  current_best: { path: "lib/op/kernel.h" },
+  candidate: { path: "src/kernel.cc" },
+  current_best: { path: "src/kernel.cc" },
   verification: { compile_passed: true, verify_passed: true, report_path: "reports/verify.json" },
   profile: { kernel_latency_us: 186.05, llc_rw_sum_gbps: 2189.97, profile_path: "profiles/iter-001/kernel.json" },
   regression_pp: 9.98,
-  promotion: { promoted: true, resulting_best: { path: "lib/op/kernel.h" }, reason: "candidate improved" },
+  promotion: { promoted: true, resulting_best: { path: "src/kernel.cc" }, reason: "candidate improved" },
   next_variable: null,
   records: { round_path: "rounds/iter-001.json", state_path: "state/tuning-state.json" },
 } as const;
 
-const FROZEN_TOPSOP_ROUND_BLOCKED = (() => {
-  const blocked = structuredClone(FROZEN_TOPSOP_ROUND_ACCEPTED) as Record<string, unknown>;
+const FROZEN_ROUND_BLOCKED = (() => {
+  const blocked = structuredClone(FROZEN_ROUND_ACCEPTED) as Record<string, unknown>;
   blocked.decision = "BLOCKED";
   blocked.blocker = "profiling device unavailable";
   delete blocked.verification;
   delete blocked.profile;
   delete blocked.regression_pp;
-  blocked.promotion = { promoted: false, resulting_best: { path: "lib/op/kernel.h" }, reason: "no device" };
+  blocked.promotion = { promoted: false, resulting_best: { path: "src/kernel.cc" }, reason: "no device" };
   return blocked;
 })();
 
-const FROZEN_TOPSOP_ROUND_COMPILE_FAIL = (() => {
-  const failed = structuredClone(FROZEN_TOPSOP_ROUND_ACCEPTED) as Record<string, unknown>;
+const FROZEN_ROUND_COMPILE_FAIL = (() => {
+  const failed = structuredClone(FROZEN_ROUND_ACCEPTED) as Record<string, unknown>;
   failed.decision = "COMPILE_FAIL";
   failed.verification = { compile_passed: false, verify_passed: false, diagnostics_path: "reports/compile.json" };
-  failed.promotion = { promoted: false, resulting_best: { path: "lib/op/kernel.h" }, reason: "compile failed" };
+  failed.promotion = { promoted: false, resulting_best: { path: "src/kernel.cc" }, reason: "compile failed" };
   delete failed.profile;
   delete failed.regression_pp;
   return failed;
 })();
 
-const FROZEN_TOPSOP_ROUND_VERIFY_FAIL = (() => {
-  const failed = structuredClone(FROZEN_TOPSOP_ROUND_ACCEPTED) as Record<string, unknown>;
+const FROZEN_ROUND_VERIFY_FAIL = (() => {
+  const failed = structuredClone(FROZEN_ROUND_ACCEPTED) as Record<string, unknown>;
   failed.decision = "VERIFY_FAIL";
   failed.verification = { compile_passed: true, verify_passed: false, report_path: "reports/verify.json" };
-  failed.promotion = { promoted: false, resulting_best: { path: "lib/op/kernel.h" }, reason: "verification failed" };
+  failed.promotion = { promoted: false, resulting_best: { path: "src/kernel.cc" }, reason: "verification failed" };
   delete failed.profile;
   delete failed.regression_pp;
   return failed;
 })();
 
-const FROZEN_TOPSOP_ROUND_DISCARD = (() => {
-  const discarded = structuredClone(FROZEN_TOPSOP_ROUND_ACCEPTED) as Record<string, unknown>;
+const FROZEN_ROUND_DISCARD = (() => {
+  const discarded = structuredClone(FROZEN_ROUND_ACCEPTED) as Record<string, unknown>;
   discarded.decision = "DISCARD";
   discarded.regression_pp = 0;
-  discarded.promotion = { promoted: false, resulting_best: { path: "lib/op/kernel.h" }, reason: "candidate did not improve" };
+  discarded.promotion = { promoted: false, resulting_best: { path: "src/kernel.cc" }, reason: "candidate did not improve" };
   return discarded;
 })();
 
-const FROZEN_TOPSOP_ROUND_CONVERGED = (() => {
-  const converged = structuredClone(FROZEN_TOPSOP_ROUND_ACCEPTED) as Record<string, unknown>;
+const FROZEN_ROUND_CONVERGED = (() => {
+  const converged = structuredClone(FROZEN_ROUND_ACCEPTED) as Record<string, unknown>;
   converged.decision = "CONVERGED";
   converged.next_variable = null;
   converged.regression_pp = 0;
-  converged.promotion = { promoted: false, resulting_best: { path: "lib/op/kernel.h" }, reason: "no further variable" };
+  converged.promotion = { promoted: false, resulting_best: { path: "src/kernel.cc" }, reason: "no further variable" };
   return converged;
 })();
 
@@ -233,63 +216,20 @@ const FROZEN_CONDITIONAL_CORPUS: ReadonlyArray<readonly [
     verdict: "fail",
     failure_details: "compile failed",
   }],
-  ["topsop-env-report", "ready", {
-    status: "ready",
-    target: { operator: "kernel", shape: "1x1", dtype: "bf16" },
-    device: { name: "GCU", architecture: "GCU400", test_host: "host" },
-    toolchain: { compiler: "cc", runtime: "rt", profiler: "prof" },
-    build: { so_path: "build/lib.so" },
-    state_path: "state.json",
-  }],
-  ["topsop-env-report", "blocked", {
-    status: "blocked",
-    target: { operator: "kernel", shape: "1x1", dtype: "bf16" },
-    device: { name: "GCU", architecture: "GCU400", test_host: "host" },
-    toolchain: { compiler: "cc", runtime: "rt", profiler: "prof" },
-    blocker: "no compiler",
-  }],
-  ["topsop-explore-report", "ready", {
-    status: "ready",
-    call_chain: "host -> kernel",
-    architecture: { pipeline: "load/compute", l1_buffers: "x/y", sip_allocation: "static", variant_selected: "default" },
-  }],
-  ["topsop-explore-report", "blocked", { status: "blocked", blocker: "source unavailable" }],
-  ["topsop-theory-report", "ready", {
-    status: "ready",
-    target_operator: "kernel",
-    baseline: { kernel_source: "kernel.h", build: { so_path: "build/lib.so" } },
-    theory: { read_write_balanced: true, bandwidth_limit_gbps: 3000, theory_min_us: 1, bandwidth_utilization: 0.5 },
-  }],
-  ["topsop-theory-report", "blocked", { status: "blocked", target_operator: "kernel", blocker: "no baseline" }],
-  ["topsop-profile-report", "ready", {
-    status: "ready",
-    target_operator: "kernel",
-    device: { name: "GCU", architecture: "GCU400" },
-    metrics: { kernel_latency_us: 1, llc_rw_sum_gbps: 2, sip_1d_efficiency: 0.5 },
-    analysis: "profile",
-  }],
-  ["topsop-profile-report", "blocked", {
-    status: "blocked",
-    target_operator: "kernel",
-    device: { name: "GCU", architecture: "GCU400" },
-    metrics: { kernel_latency_us: 1 },
-    analysis: "blocked",
-    blocker: "no profiler",
-  }],
-  ["topsop-implementation-report", "compiled", {
+  ["implementation-report", "compiled", {
     status: "compiled",
     variable: "tile-size",
     diff_summary: "changed tile size",
     changed_files: ["kernel.h"],
     compile: { passed: true, target: "kernel" },
   }],
-  ["topsop-implementation-report", "compile_failed", {
+  ["implementation-report", "compile_failed", {
     status: "compile_failed",
     variable: "tile-size",
     diff_summary: "compile failed",
     compile: { passed: false, target: "kernel" },
   }],
-  ["topsop-implementation-report", "blocked", {
+  ["implementation-report", "blocked", {
     status: "blocked",
     variable: "tile-size",
     diff_summary: "device unavailable",
@@ -297,12 +237,12 @@ const FROZEN_CONDITIONAL_CORPUS: ReadonlyArray<readonly [
     blocker: "device unavailable",
     block_scope: "iteration",
   }],
-  ["topsop-round-result", "accepted", FROZEN_TOPSOP_ROUND_ACCEPTED],
-  ["topsop-round-result", "blocked", FROZEN_TOPSOP_ROUND_BLOCKED],
-  ["topsop-round-result", "compile_failed", FROZEN_TOPSOP_ROUND_COMPILE_FAIL],
-  ["topsop-round-result", "verify_failed", FROZEN_TOPSOP_ROUND_VERIFY_FAIL],
-  ["topsop-round-result", "discard", FROZEN_TOPSOP_ROUND_DISCARD],
-  ["topsop-round-result", "converged", FROZEN_TOPSOP_ROUND_CONVERGED],
+  ["round-result", "accepted", FROZEN_ROUND_ACCEPTED],
+  ["round-result", "blocked", FROZEN_ROUND_BLOCKED],
+  ["round-result", "compile_failed", FROZEN_ROUND_COMPILE_FAIL],
+  ["round-result", "verify_failed", FROZEN_ROUND_VERIFY_FAIL],
+  ["round-result", "discard", FROZEN_ROUND_DISCARD],
+  ["round-result", "converged", FROZEN_ROUND_CONVERGED],
   ["summary-report", "improved with progress", {
     run_id: "run-id",
     summary: "improved",
@@ -373,21 +313,21 @@ describe("deprecated named-contract projections", () => {
   it("checks accepted, blocked, and optional projection values independently", async () => {
     const groups = await contractsById();
     const cases: ReadonlyArray<readonly [id: string, payload: unknown, expected: unknown[]]> = [
-      ["topsop-round-result", FROZEN_TOPSOP_ROUND_ACCEPTED, [
+      ["round-result", FROZEN_ROUND_ACCEPTED, [
         { id: "round.decision", pointer: "/decision", format: "string", value: "KEEP" },
-        { id: "round.hypothesis", pointer: "/hypothesis", format: "string", value: "64KB transfer recovers read bandwidth" },
+        { id: "round.hypothesis", pointer: "/hypothesis", format: "string", value: "a wider tile recovers read bandwidth" },
         { id: "profile.kernel-latency-us", pointer: "/profile/kernel_latency_us", format: "number", value: 186.05 },
         { id: "profile.llc-rw-bandwidth-gbps", pointer: "/profile/llc_rw_sum_gbps", format: "number", value: 2189.97 },
         { id: "round.regression-pp", pointer: "/regression_pp", format: "number", value: 9.98 },
         { id: "verification.passed", pointer: "/verification/verify_passed", format: "boolean", value: true },
       ]],
-      ["topsop-round-result", FROZEN_TOPSOP_ROUND_BLOCKED, [
+      ["round-result", FROZEN_ROUND_BLOCKED, [
         { id: "round.decision", pointer: "/decision", format: "string", value: "BLOCKED" },
-        { id: "round.hypothesis", pointer: "/hypothesis", format: "string", value: "64KB transfer recovers read bandwidth" },
+        { id: "round.hypothesis", pointer: "/hypothesis", format: "string", value: "a wider tile recovers read bandwidth" },
       ]],
-      ["topsop-implementation-report", implementation("lib/op/kernel.h"), [
+      ["implementation-report", implementation("src/kernel.cc"), [
         { id: "workflow.status", pointer: "/status", format: "string", value: "compiled" },
-        { id: "workspace.changed-files", pointer: "/changed_files", format: "string-list", value: ["lib/op/kernel.h"] },
+        { id: "workspace.changed-files", pointer: "/changed_files", format: "string-list", value: ["src/kernel.cc"] },
         { id: "build.target", pointer: "/compile/target", format: "string", value: "historical-target" },
         { id: "change.summary", pointer: "/diff_summary", format: "string", value: "historical change" },
       ]],
@@ -411,7 +351,6 @@ describe("deprecated named-contract projections", () => {
       const legacyResult = validateContract(id, structuredClone(payload));
       expect(legacyResult.success, `${id} ${label}: frozen legacy case`).toBe(true);
       const workers = groups.get(id) ?? [];
-      expect(workers.length, `${id} ${label}: worker contract exists`).toBeGreaterThan(0);
       const expectedProjections = projectLegacyContractProjections(id, structuredClone(payload));
       for (const { worker, contract } of workers) {
         const workerResult = validateWorkerContract(contract, structuredClone(payload));
@@ -425,17 +364,17 @@ describe("deprecated named-contract projections", () => {
   });
 
   it.each([
-    "C:relative.tops",
-    "a/./b.tops",
-    "a//b.tops",
-    "a\\..\\b.tops",
-    "file\0name.tops",
+    "C:relative.cc",
+    "a/./b.cc",
+    "a//b.cc",
+    "a\\..\\b.cc",
+    "file\0name.cc",
   ])("does not narrow the historical changed_files acceptance set for %j", (changedFile) => {
-    const validated = validateContract("topsop-implementation-report", implementation(changedFile));
+    const validated = validateContract("implementation-report", implementation(changedFile));
     expect(validated.success).toBe(true);
     if (!validated.success) return;
 
-    expect(projectLegacyContractProjections("topsop-implementation-report", validated.value))
+    expect(projectLegacyContractProjections("implementation-report", validated.value))
       .toContainEqual({
         id: "workspace.changed-files",
         pointer: "/changed_files",

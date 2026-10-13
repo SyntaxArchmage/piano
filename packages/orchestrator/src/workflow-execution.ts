@@ -2392,7 +2392,7 @@ export function executeWorkflow(
     }
     // ISSUE-017: opt-in per-workflow winner auto-commit. Snapshot the dirty
     // files at run start so each round's commit never sweeps in pre-existing
-    // user / other-task changes (kds §4.5.4 / CLAUDE.md §6).
+    // user / other-task changes.
     const autoCommit = compiled.autoCommit === true;
     const preExistingDirty = autoCommit
       ? yield* snapshotDirtyFiles(sharedWorkspace.cwd)
@@ -4226,7 +4226,7 @@ export function executeWorkflow(
       return stages.filter((result) => result.projections?.some((projection) => projection.id === id) === true);
     }
 
-    /** ISSUE-017: extract topsop-commit facts for one KEEP round. Every value
+    /** ISSUE-017: extract winner-commit facts for one KEEP round. Every value
      * comes from an explicit producer-contract projection; resultPayload is
      * retained for audit/handoff compatibility but is never inspected here.
      * Returns no facts when the round was not a KEEP or produced no changed
@@ -4260,7 +4260,7 @@ export function executeWorkflow(
         dirty,
       );
       if (files.length === 0) return {};
-      const operator = projectionString(implementation, "build.target") ?? "topsop-op";
+      const operator = projectionString(implementation, "build.target") ?? "operator";
       const latency = projectionNumber(measure, "profile.kernel-latency-us")?.toFixed(2);
       const rw = projectionNumber(measure, "profile.llc-rw-bandwidth-gbps")?.toFixed(2);
       const regressionValue = projectionNumber(measure, "round.regression-pp");
@@ -4287,7 +4287,7 @@ export function executeWorkflow(
       };
     }
 
-    /** Commit one KEEP round's winner files with the topsop-commit template
+    /** Commit one KEEP round's winner files with the winner-commit template
      * (no push). Never fails — see `commitRoundFiles`. */
     function commitRoundWinner(
       stages: readonly InternalStageResult[],
@@ -4311,8 +4311,8 @@ export function executeWorkflow(
     }
 
     /** ISSUE-017: follow-up commit for the summary stage's progress-record
-     * write-back (kds §4.6 / the user's timing decision keeps progress records
-     * separate from per-round source commits). `[Docs]` type. */
+     * write-back (progress records stay separate from per-round source
+     * commits). `[Docs]` type. */
     function commitSummaryProgressRecord(
       stages: readonly InternalStageResult[],
       prompt: string,
@@ -4342,12 +4342,12 @@ export function executeWorkflow(
       return commitRoundFiles(cwd, files, buildCommitMessage({
         type: "Docs",
         ...(ticket === undefined ? {} : { ticket }),
-        operator: "topsop",
+        operator: "tuning",
         iteration: 0,
         hypothesis: "progress record write-back after tuning summary",
         solution: `record the run outcome at ${filePath}`,
-        test: "topsop tuning run",
-        impactArea: "topsop",
+        test: "tuning run",
+        impactArea: "ops",
       }));
     }
 

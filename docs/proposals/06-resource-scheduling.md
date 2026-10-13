@@ -307,9 +307,7 @@ never alter the verifier or timing harness"（`recipes/cuda-benchmark-store/agen
 #### 证据
 
 - SOL-ExecBench（arXiv:2603.19173）：clock locking + L2 clearing + isolated subprocess + 反作弊静态检查。
-- `docs/topsop-tuning/v1/topsop-setup-env-config-guard.md`：一个 PIANO 内部的先例——
-  "环境配置解析错"导致 worker 静默走错 target。
-  本方法的思想是同一类：**把环境当成需要验证的前提，而不是假设**。
+- 本方法的思想：**把环境当成需要验证的前提，而不是假设**。
 
 #### 风险
 
@@ -377,4 +375,4 @@ arXiv:2608.02611（KernelBrain）、arXiv:2606.05080（AutoLab）
 `packages/orchestrator/src/workflow-execution.ts:3591`（`concurrency`）、
 `recipes/workflows/gpu-cuda-tuning-tournament.yml` 与 `-serial.yml` 的头部注释、
 `docs/WORKLOG-TOURNAMENT-2026-09-04.md`（并发现场与 poller 缺陷）、
-`docs/topsop-tuning/v1/topsop-setup-env-config-guard.md`、`packages/harness/src/harness-home.ts`
+`packages/harness/src/harness-home.ts`

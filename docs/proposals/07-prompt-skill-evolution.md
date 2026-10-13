@@ -51,16 +51,14 @@ profiling 流程与晋升规则。
 这说明 PIANO 的架构取向是对的，**差距在"reference 与 workload context 的供给"上**，
 而不在架构上。
 
-**洞察 2：PIANO 自己已经踩过"rules ≠ behavior"这个坑，并且诚实地记下来了。**
+**洞察 2：静态规则 ≠ 行为（rules ≠ behavior），这是本模块最重要的内部依据。**
 
-`docs/topsop-tuning/v1/topsop-setup-env-config-guard.md` 里有一段结论，是本模块最重要的内部依据：
+PIANO 自己踩过这个坑，教训有两条：
 
 > 静态断言只证明"守卫在"，不能证明"agent 遵守"（**rules≠behavior**）；
 > 行为证明只有 e2e 能给出，但它重，所以做成特殊用例而非默认测试。
 
-同一个文档还记录了 workaround 的缺陷：
-
-> 依赖 agent 记住并遵守规则（rules≠behavior，靠 e2e 兜底）
+> 依赖 agent 记住并遵守规则（rules≠behavior，靠 e2e 兜底）本身就是一种脆弱的 workaround。
 
 这对本模块有两个含义：
 (a) **往 prompt 里加规则是最弱的一种干预**——需要行为层验证才成立；
@@ -265,7 +263,7 @@ PIANO 的基础设施其实已经够用——`docs/deep-dive-notes/worker-total-
 pi-cli 走 `--skill <dir>`、pi SDK 走 `<workflow_skill path=...>` 块注入。
 如果这些注入在 transcript 里有痕迹，就可以做**静态审计**：
 "这个 run 里，注入的 skill 被引用/被执行了吗？"
-这与 `docs/topsop-tuning/v1/topsop-setup-env-config-guard.md` 的"静态断言 + 行为 e2e"两层沉淀是同一种思路。
+这与洞察 2 的"静态断言 + 行为 e2e"两层沉淀是同一种思路。
 
 **(b) 学习循环（后做）**：按 SkillEvolver 的形态——
 "先部署，再从失败中提炼"——需要一个**跨 run 的失败收集器**（依赖 `02`-M5），
@@ -279,7 +277,6 @@ pi-cli 走 `--skill <dir>`、pi SDK 走 `<workflow_skill path=...>` 块注入。
   并显式定义了 overfit audit（含 silent bypass）。
 - daVinci-kernel（arXiv:2606.16497）：技能只在"执行验证确认可复现加速"后入库；
   技能选择 agent 用 BM25 + LLM reranking 检索。
-- `docs/topsop-tuning/v1/topsop-setup-env-config-guard.md`（内部）：rules≠behavior 的实证与三层沉淀。
 
 #### 风险
 
@@ -410,7 +407,6 @@ arXiv:2606.29082（EFT）、arXiv:2603.21465（DRTriton）、arXiv:2607.04454（
 arXiv:2604.01489（CuTeGen）、arXiv:2605.16819（AgentKernelArena）
 
 内部依据：`docs/deep-dive-notes/worker-total-prompt.md`、
-`docs/topsop-tuning/v1/topsop-setup-env-config-guard.md`（rules≠behavior）、
 `recipes/cuda-idea-tournament/agents.md` 与 `contract.json`、
 `recipes/cuda-profile/agents.md`、`recipes/cuda-summary/agents.md`、
 `docs/workflow-trajectory-evaluation-prd.md`（recorder 体系）

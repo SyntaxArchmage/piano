@@ -22,14 +22,14 @@ const LEGACY_PROJECTIONS: Readonly<Record<ContractName, readonly ContractProject
   "cuda-preparation-report": [
     { id: "workflow.status", pointer: "/status", format: "string", required: true },
   ],
-  "topsop-implementation-report": [
+  "implementation-report": [
     { id: "workflow.status", pointer: "/status", format: "string", required: true },
     { id: "workflow.block-scope", pointer: "/block_scope", format: "string", required: false },
     { id: "workspace.changed-files", pointer: "/changed_files", format: "string-list", required: false },
     { id: "build.target", pointer: "/compile/target", format: "string", required: false },
     { id: "change.summary", pointer: "/diff_summary", format: "string", required: false },
   ],
-  "topsop-round-result": [
+  "round-result": [
     { id: "round.decision", pointer: "/decision", format: "string", required: true },
     { id: "round.hypothesis", pointer: "/hypothesis", format: "string", required: true },
     // BLOCKED legacy rounds still require decision and hypothesis, but omit
@@ -57,23 +57,6 @@ const LEGACY_PROJECTIONS: Readonly<Record<ContractName, readonly ContractProject
   "implementation-record": [],
   "tournament-results": [],
   "verification-report": [],
-  "topsop-profile-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: false },
-    { id: "profile.kernel-latency-us", pointer: "/metrics/kernel_latency_us", format: "number", required: false },
-    { id: "profile.llc-rw-bandwidth-gbps", pointer: "/metrics/llc_rw_sum_gbps", format: "number", required: false },
-  ],
-  "topsop-env-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: true },
-  ],
-  "topsop-explore-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: true },
-  ],
-  "topsop-theory-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: false },
-  ],
-  "topsop-asm-report": [
-    { id: "workflow.status", pointer: "/status", format: "string", required: true },
-  ],
   "summary-report": [
     { id: "progress-record.path", pointer: "/progress_record/file_path", format: "string", required: false },
   ],
@@ -99,7 +82,7 @@ export function legacyContractProjectionDeclarations(
 
 /** Project legacy payloads through the same package-owned core used by
  * validate:true worker contracts. Optional declarations preserve legacy
- * conditional payloads, notably BLOCKED topsop rounds. */
+ * conditional payloads, notably BLOCKED rounds. */
 export function projectLegacyContractProjections(
   contractId: ContractName,
   payload: unknown,

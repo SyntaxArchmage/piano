@@ -145,7 +145,7 @@ export interface WorkflowDocument {
     readonly name: string;
     /** Orchestrator-owned winner auto-commit (ISSUE-017): when true, the loop
      * executor commits each KEEP round's `changed_files` to the caller
-     * workspace using the topsop-commit template (no push). Default false —
+     * workspace using the winner-commit template (no push). Default false —
      * opt-in per workflow, so generic workflows are unaffected. */
     readonly autoCommit?: boolean;
     readonly nodes: readonly WorkflowNode[];

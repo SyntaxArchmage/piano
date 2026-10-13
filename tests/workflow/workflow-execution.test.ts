@@ -8,12 +8,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
 import { Cause, Effect, Exit, Option } from "effect";
 import { describe, expect, it } from "vitest";
-import {
-  compileWorkerContract,
-  projectContractProjections,
-  validateWorkerContract,
-  type ContractProjection,
-} from "@piano/contract";
+import { projectContractProjections } from "@piano/contract";
 import {
   createSession,
   Logging,
@@ -509,7 +504,7 @@ workflow:
               name: implement
               worker: basic
               handoff: implementation-inputs.json
-              validate: topsop-implementation-report
+              validate: implementation-report
               from: [profile]
           - stage:
               name: measure
@@ -2422,7 +2417,7 @@ workflow:
               variable: "var-device",
               diff_summary: "device gone",
               compile: { passed: false, target: "kernel" },
-              blocker: "GCU device is not available",
+              blocker: "device is not available",
               block_scope: "global",
             }));
           } else if (stage === "summary") {
@@ -4395,6 +4390,7 @@ workflow:
       await writeFile(join(root, "workflow.yml"), VALIDATE_WORKFLOW);
       const result = await Effect.runPromiseExit(loadAndExecuteWorkflow({
         root,
+        workflowPath: join(root, "workflow.yml"),
         runDir: session.runDir,
         executionId: "missing-validate",
         cwd: root,
@@ -6259,13 +6255,13 @@ workflow:
               name: implement
               worker: basic
               handoff: implementation-inputs.json
-              validate: topsop-implementation-report
+              validate: implementation-report
               from: []
           - stage:
               name: measure
               worker: basic
               handoff: round.json
-              validate: topsop-round-result
+              validate: round-result
               from: [implement]
     - stage:
         name: summary
@@ -6279,33 +6275,33 @@ workflow:
     const implementation = kind === "changed-files"
       ? `          - stage:
               name: implement-a
-              worker: topsop-implement
-              validate: true
+              worker: basic
+              validate: implementation-report
               from: []
           - stage:
               name: implement-b
-              worker: topsop-implement
-              validate: true
+              worker: basic
+              validate: implementation-report
               from: [implement-a]
           - stage:
               name: measure
-              worker: topsop-measure
-              validate: true
+              worker: basic
+              validate: round-result
               from: [implement-b]`
       : `          - stage:
               name: implement
-              worker: topsop-implement
-              validate: true
+              worker: basic
+              validate: implementation-report
               from: []
           - stage:
               name: measure-a
-              worker: topsop-measure
-              validate: true
+              worker: basic
+              validate: round-result
               from: [implement]
           - stage:
               name: measure-b
-              worker: topsop-measure
-              validate: true
+              worker: basic
+              validate: round-result
               from: [measure-a]`;
     const entry = kind === "changed-files" ? "implement-a" : "implement";
     const exit = kind === "changed-files" ? "measure" : "measure-b";
@@ -6325,8 +6321,8 @@ workflow:
 ${implementation}
     - stage:
         name: summary
-        worker: topsop-summary
-        validate: true
+        worker: basic
+        validate: summary-report
         from: [tune]
 `;
   }
@@ -6375,31 +6371,33 @@ ${implementation}
   /** Mock agentRunner for the minimal tune loop: implement writes the winner
    * source file + changed_files; measure decides KEEP on even rounds and
    * DISCARD on odd rounds; summary writes the progress-record file. */
-  function topsopTuneRunner(repo: string): AgentRunner {
+  function tuneRunner(repo: string): AgentRunner {
     return (request) => Effect.promise(async () => {
       const stage = stageId(request);
       const path = validationPath(request);
       await mkdir(dirname(path), { recursive: true });
       if (stage === "tune.decoy") {
-        // Deliberately contains topsop-shaped fields, but its worker contract
-        // declares no projections. autoCommit must not discover these by
+        // Deliberately carries implementation-shaped fields the decoy's
+        // contract does not declare. autoCommit must not discover these by
         // inspecting resultPayload.
         await writeFile(path, JSON.stringify({
           status: "timing-only",
           target_operator: "decoy",
           device: { name: "decoy", architecture: "decoy" },
           metrics: { kernel_latency_us: 1 },
+          bottlenecks: [{ type: "memory", description: "decoy", evidence: "none" }],
           analysis: "decoy profile",
+          changed_files: ["should-not-commit.cc"],
         }));
       } else if (/^tune\.implement(?:-[ab])?$/u.test(stage)) {
         const iteration = iterationOf(request);
-        await writeFile(join(repo, `kernel-r${iteration}.tops`), `// r${iteration}\n`);
+        await writeFile(join(repo, `kernel-r${iteration}.cc`), `// r${iteration}\n`);
         await writeFile(path, JSON.stringify({
           status: "compiled",
           variable: `var-${iteration}`,
           diff_summary: `applied change ${iteration}`,
-          changed_files: [`kernel-r${iteration}.tops`],
-          compile: { passed: true, target: "topssglAddAddRmsNorm", so_commit: "abc123" },
+          changed_files: [`kernel-r${iteration}.cc`],
+          compile: { passed: true, target: "gemm", so_commit: "abc123" },
         }));
       } else if (/^tune\.measure(?:-[ab])?$/u.test(stage)) {
         const iteration = iterationOf(request);
@@ -6409,21 +6407,21 @@ ${implementation}
           variable: `var-${iteration}`,
           hypothesis: `hide DTE wait for variable ${iteration}`,
           decision: keep ? "KEEP" : "DISCARD",
-          candidate: { path: `kernel-r${iteration}.tops` },
+          candidate: { path: `kernel-r${iteration}.cc` },
           current_best: { path: "state/current-best.py" },
           verification: { compile_passed: true, verify_passed: true },
           profile: { kernel_latency_us: 158.5 + iteration, llc_rw_sum_gbps: 2588.51 },
           regression_pp: keep ? 1.5 : -0.5,
           promotion: keep
-            ? { promoted: true, resulting_best: { path: `kernel-r${iteration}.tops` }, reason: "improved" }
+            ? { promoted: true, resulting_best: { path: `kernel-r${iteration}.cc` }, reason: "improved" }
             : { promoted: false, resulting_best: { path: "state/current-best.py" }, reason: "regressed" },
           next_variable: "next",
           records: { round_path: `rounds/iter-${String(iteration).padStart(3, "0")}.json`, state_path: "state/tuning-state.json" },
         }));
       } else if (/^summary(?:-[ab])?$/u.test(stage)) {
         const progressFile = stage === "summary"
-          ? "topsop/test/unit/sgl/sgl_test.cc"
-          : `topsop/test/unit/sgl/sgl_test-${stage.at(-1)}.cc`;
+          ? "tests/unit/regression_test.cc"
+          : `tests/unit/regression_test-${stage.at(-1)}.cc`;
         await mkdir(dirname(join(repo, progressFile)), { recursive: true });
         await writeFile(join(repo, progressFile), "// header\nR8: iter-2 winner\n");
         await writeFile(path, JSON.stringify({
@@ -6483,7 +6481,7 @@ workflow:
           - stage:
               name: implement
               worker: basic
-              validate: topsop-implementation-report
+              validate: implementation-report
               from: []
           - stage:
               name: measure
@@ -6570,24 +6568,24 @@ workflow:
         runDir: session.runDir,
         executionId: "auto-commit",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm TOPSOP-1234",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
       }));
       // Initial + round-0 KEEP + round-2 KEEP + summary [Docs] follow-up.
       expect((await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" })).stdout.trim().split("\n")).toHaveLength(4);
       const log = await gitLog(repo);
-      // KEEP rounds commit their winner file with the topsop-commit subject.
-      expect(log).toContain("[Feature](TOPSOP-1234) Topsop: ");
-      expect(log).toContain("kernel-r0.tops");
-      expect(log).toContain("kernel-r2.tops");
+      // KEEP rounds commit their winner file with the winner-commit subject.
+      expect(log).toContain("[Feature](TR-1234): ");
+      expect(log).toContain("kernel-r0.cc");
+      expect(log).toContain("kernel-r2.cc");
       // The DISCARD round produced no commit at all.
-      expect(log).not.toContain("kernel-r1.tops");
+      expect(log).not.toContain("kernel-r1.cc");
       // The pre-existing user change never entered any commit.
       expect(log).not.toContain("user-preexisting.md");
       // Summary progress record committed as a [Docs] follow-up.
-      expect(log).toContain("[Docs](TOPSOP-1234) Topsop: ");
-      expect(log).toContain("topsop/test/unit/sgl/sgl_test.cc");
-      // The latest (summary follow-up) body follows the topsop-commit template.
+      expect(log).toContain("[Docs](TR-1234): ");
+      expect(log).toContain("tests/unit/regression_test.cc");
+      // The latest (summary follow-up) body follows the winner-commit template.
       const message = (await execFileAsync("git", ["-C", repo, "log", "-1", "--format=%B"], { encoding: "utf8" })).stdout;
       expect(message).toContain("Root Cause:");
       expect(message).toContain("Solution:");
@@ -6613,13 +6611,13 @@ workflow:
         runDir: session.runDir,
         executionId: "ambiguous-changed-files",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm TOPSOP-1234",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
       }));
 
       const log = await gitLog(repo);
-      expect(log).not.toContain("kernel-r0.tops");
-      expect(log).toContain("topsop/test/unit/sgl/sgl_test.cc");
+      expect(log).not.toContain("kernel-r0.cc");
+      expect(log).toContain("tests/unit/regression_test.cc");
       const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       expect(runLog).toContain('"event":"auto.commit.skipped"');
       expect(runLog).toContain('"severity":"warn"');
@@ -6644,13 +6642,13 @@ workflow:
         runDir: session.runDir,
         executionId: "ambiguous-decision",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm TOPSOP-1234",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
       }));
 
       const log = await gitLog(repo);
-      expect(log).not.toContain("kernel-r0.tops");
-      expect(log).toContain("topsop/test/unit/sgl/sgl_test.cc");
+      expect(log).not.toContain("kernel-r0.cc");
+      expect(log).toContain("tests/unit/regression_test.cc");
       const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       expect(runLog).toContain('"event":"auto.commit.skipped"');
       expect(runLog).toContain('"severity":"warn"');
@@ -6675,14 +6673,14 @@ workflow:
         runDir: session.runDir,
         executionId: "ambiguous-progress-record",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm TOPSOP-1234",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
       }));
 
       const log = await gitLog(repo);
-      expect(log).toContain("kernel-r0.tops");
-      expect(log).not.toContain("sgl_test-a.cc");
-      expect(log).not.toContain("sgl_test-b.cc");
+      expect(log).toContain("kernel-r0.cc");
+      expect(log).not.toContain("regression_test-a.cc");
+      expect(log).not.toContain("regression_test-b.cc");
       const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       expect(runLog).toContain('"event":"auto.commit.skipped"');
       expect(runLog).toContain('"reason":"ambiguous projection producers"');
@@ -6699,7 +6697,7 @@ workflow:
     try {
       const workflow = AUTO_COMMIT_LOOP_WORKFLOW.replace(
         "          - stage:\n              name: implement",
-        "          - stage:\n              name: decoy\n              worker: topsop-estimate\n              validate: true\n              from: []\n          - stage:\n              name: implement",
+        "          - stage:\n              name: decoy\n              worker: basic\n              validate: profile-report\n              from: []\n          - stage:\n              name: implement",
       ).replace("        entry: implement", "        entry: decoy")
         .replace("              from: []\n          - stage:\n              name: measure", "              from: [decoy]\n          - stage:\n              name: measure");
       await writeFile(join(root, "auto.yml"), workflow);
@@ -6711,8 +6709,8 @@ workflow:
         runDir: session.runDir,
         executionId: "auto-commit-projections",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm TOPSOP-1234",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
       }));
       const decoy = result.stages.find((stage) => stage.stageId === "tune.decoy");
       const implementation = result.stages.find((stage) => stage.stageId === "tune.implement");
@@ -6730,11 +6728,11 @@ workflow:
         expect.objectContaining({ id: "round.hypothesis" }),
       ]));
       const log = await gitLog(repo);
-      expect(log).toContain("kernel-r0.tops");
+      expect(log).toContain("kernel-r0.cc");
 
       // The new worker path and deprecated named path feed the exact same
       // projection shape/IDs, while an undeclared payload yields nothing.
-      const legacy = projectLegacyContractProjections("topsop-round-result", {
+      const legacy = projectLegacyContractProjections("round-result", {
         iteration: 0,
         variable: "x",
         hypothesis: "h",
@@ -6751,7 +6749,7 @@ workflow:
       ], { decision: "KEEP", hypothesis: "h" });
       expect(legacy.filter((projection) => ["round.decision", "round.hypothesis"].includes(projection.id)))
         .toEqual(worker);
-      const blockedLegacy = projectLegacyContractProjections("topsop-round-result", {
+      const blockedLegacy = projectLegacyContractProjections("round-result", {
         iteration: 0,
         variable: "blocked-variable",
         hypothesis: "blocked hypothesis",
@@ -6776,179 +6774,12 @@ workflow:
     }
   });
 
-  it("runs all nine canonical topsop stage workers through validate:true projections and persists accepted payloads", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-canonical-projections-"));
-    try {
-      const stages = [
-        { stageId: "setup-env", worker: "topsop-setup-env", contractId: "topsop-env-report" },
-        { stageId: "explore", worker: "topsop-explore", contractId: "topsop-explore-report" },
-        { stageId: "theory", worker: "topsop-theory", contractId: "topsop-theory-report" },
-        { stageId: "profile", worker: "topsop-profile", contractId: "topsop-profile-report" },
-        { stageId: "idea", worker: "topsop-idea", contractId: "optimization-proposal" },
-        { stageId: "implement", worker: "topsop-implement", contractId: "topsop-implementation-report" },
-        { stageId: "verification", worker: "topsop-verification", contractId: "verification-report" },
-        { stageId: "measure", worker: "topsop-measure", contractId: "topsop-round-result" },
-        { stageId: "summary", worker: "topsop-summary", contractId: "summary-report" },
-      ] as const;
-      await writeFile(join(root, "canonical.yml"), `version: 3
-workflow:
-  name: canonical-topsop-nine-stages
-  nodes:
-    - stage:
-        name: setup-env
-        worker: topsop-setup-env
-        validate: true
-        from: []
-    - stage:
-        name: explore
-        worker: topsop-explore
-        handoff: setup-env.json
-        validate: true
-        from: [setup-env]
-    - stage:
-        name: theory
-        worker: topsop-theory
-        handoff: explore.json
-        validate: true
-        from: [explore]
-    - stage:
-        name: profile
-        worker: topsop-profile
-        handoff: theory.json
-        validate: true
-        from: [theory]
-    - stage:
-        name: idea
-        worker: topsop-idea
-        handoff: profile.json
-        validate: true
-        from: [profile]
-    - stage:
-        name: implement
-        worker: topsop-implement
-        handoff: idea.json
-        validate: true
-        from: [idea]
-    - stage:
-        name: verification
-        worker: topsop-verification
-        handoff: implement.json
-        validate: true
-        from: [implement]
-    - stage:
-        name: measure
-        worker: topsop-measure
-        handoff: verification.json
-        validate: true
-        from: [verification]
-    - stage:
-        name: summary
-        worker: topsop-summary
-        handoff: measure.json
-        validate: true
-        from: [measure]
-`);
-      const session = await testSession(root);
-      const expectedResults = new Map<string, {
-        readonly input: unknown;
-        readonly accepted: unknown;
-        readonly projections: readonly ContractProjection[];
-      }>();
-      for (const stage of stages) {
-        const path = join(process.cwd(), "recipes", stage.worker, "contract.json");
-        const source = await readFile(path, "utf8");
-        const contract = compileWorkerContract(source, path);
-        expect(contract.manifest.id, `${stage.worker} must carry its expected contract id`).toBe(stage.contractId);
-        const validated = validateWorkerContract(contract, contract.manifest.example);
-        expect(validated.success, `${stage.worker} example must validate`).toBe(true);
-        if (!validated.success) throw validated.error;
-        expectedResults.set(stage.stageId, {
-          input: contract.manifest.example,
-          accepted: validated.value,
-          projections: validated.projections,
-        });
-      }
-      const calls: AgentRequest[] = [];
-      const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "canonical.yml"),
-        runDir: session.runDir,
-        executionId: "canonical-projections",
-        cwd: root,
-        prompt: "run every canonical topsop stage for TOPSOP-1234",
-        agentRunner: (request) => Effect.promise(async () => {
-          calls.push(request);
-          const stage = stageId(request);
-          const expected = expectedResults.get(stage);
-          if (expected === undefined) throw new Error(`missing frozen example for ${stage}`);
-          const resultPath = validationPath(request);
-          await mkdir(dirname(resultPath), { recursive: true });
-          await writeFile(resultPath, JSON.stringify(expected.input));
-          return {
-            sessionId: `canonical-${stage}`,
-            transcriptPath: `/tmp/canonical-${stage}.jsonl`,
-            text: `${stage} completed`,
-            continuation: continuation(`canonical-${stage}`),
-          };
-        }),
-      }));
-
-      const progress = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n")
-        .map((line) => JSON.parse(line) as {
-          invocationId: string;
-          stageId: string;
-          resultPayload?: unknown;
-          projections?: readonly { id: string; value: unknown }[];
-        });
-      expect(calls.map(stageId)).toEqual(stages.map((stage) => stage.stageId));
-      for (const call of calls) {
-        expectWholeWorkflowTask(call, "run every canonical topsop stage for TOPSOP-1234");
-      }
-      expect(result.stages.map((stage) => stage.stageId)).toEqual(stages.map((stage) => stage.stageId));
-      expect(progress).toHaveLength(stages.length);
-
-      for (const expected of stages) {
-        const stage = result.stages.find((candidate) => candidate.stageId === expected.stageId);
-        expect(stage, `${expected.stageId} must execute`).toBeDefined();
-        expect(stage).toMatchObject({
-          worker: expected.worker,
-          contract: { id: expected.contractId },
-        });
-        const expectedResult = expectedResults.get(expected.stageId)!;
-        const acceptedPayload = stage!.resultPayload;
-        expect(acceptedPayload, `${expected.stageId} accepted payload`).toEqual(expectedResult.accepted);
-        expect(stage!.projections ?? [], `${expected.stageId} stage projections`).toEqual(expectedResult.projections);
-        const stageProjections = expectedResult.projections;
-        const handoff = JSON.parse(await readFile(stage!.handoffRecordPath, "utf8")) as {
-          producer?: {
-            resultPayload?: unknown;
-            projections?: readonly { id: string; value: unknown }[];
-          };
-        };
-        const progressRecord = progress.find((entry) => entry.invocationId === stage!.id);
-        expect(progressRecord, `${expected.stageId} must have one progress record`).toBeDefined();
-
-        // Stage result, immutable producer record, and append-only progress
-        // evidence must expose one contract projection surface.
-        expect(handoff.producer?.projections ?? [], `${expected.stageId} handoff projections`).toEqual(stageProjections);
-        expect(progressRecord?.projections ?? [], `${expected.stageId} progress projections`).toEqual(stageProjections);
-
-        // Both durable stores must retain the payload accepted after validate:true.
-        expect(handoff.producer?.resultPayload, `${expected.stageId} handoff payload`).toEqual(acceptedPayload);
-        expect(progressRecord?.resultPayload, `${expected.stageId} progress payload`).toEqual(acceptedPayload);
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it("unstages and surfaces the real stderr when a commit-msg hook rejects the winner commit", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-reject-"));
     try {
       await writeFile(join(root, "auto.yml"), AUTO_COMMIT_LOOP_WORKFLOW);
       const repo = await initRepo(root);
-      // Reject every commit from here on via stderr, like the real topsop
+      // Reject every commit from here on via stderr, like a real hook
       // commit-msg hook does when the ticket is missing (L4-2round evidence).
       const hookDir = join(root, "hooks");
       await mkdir(hookDir, { recursive: true });
@@ -6961,8 +6792,8 @@ workflow:
         runDir: session.runDir,
         executionId: "auto-commit-reject",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm, no ticket in mission",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm, no ticket in mission",
+        agentRunner: tuneRunner(repo),
       }));
       // Initial commit only: both KEEP rounds and the [Docs] follow-up were rejected.
       const log = (await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" })).stdout;
@@ -6973,7 +6804,7 @@ workflow:
       const staged = (await execFileAsync("git", ["-C", repo, "diff", "--cached", "--name-only"], { encoding: "utf8" })).stdout;
       expect(staged.trim()).toBe("");
       const porcelain = (await execFileAsync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" })).stdout;
-      expect(porcelain).toContain("?? kernel-r0.tops");
+      expect(porcelain).toContain("?? kernel-r0.cc");
       expect(porcelain).not.toMatch(/^A /mu);
       // The warning carries the hook's stderr, not Effect's generic wrapper text.
       const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
@@ -6997,13 +6828,13 @@ workflow:
         runDir: session.runDir,
         executionId: "no-auto-commit",
         cwd: repo,
-        prompt: "tune topssglAddAddRmsNorm TOPSOP-1234",
-        agentRunner: topsopTuneRunner(repo),
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
       }));
       const log = (await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" })).stdout;
       expect(log.trim().split("\n")).toHaveLength(1);
       expect(log).toContain("initial");
-      expect(log).not.toContain("Topsop:");
+      expect(log).not.toContain("[Feature]");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
