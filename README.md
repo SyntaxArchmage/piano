@@ -882,7 +882,7 @@ the case `CHEAT` and prevents acceptance. Add `--details` only when you need
 the per-case process output.
 
 The `develop` group contains two repository bug-fix tasks plus a focused
-`coding-team-questions` case. The latter runs `recipes/workflows/coding-team.yml`
+`coding-team-questions` case. The latter runs `recipes/workflows/team-claude.yml`
 and checks that the architect resolves both supervisor questions before the
 implementation tournament. The generated bug-fix workflows each have one
 `coding` stage with the `basic` worker. Pi covers all configured models at

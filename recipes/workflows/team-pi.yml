@@ -1,23 +1,23 @@
 version: 3
 
-# Three-step repository-grounded coding workflow:
+# Three-step repository-grounded coding workflow (pi harness):
 # architect -> developer tournament -> review-and-fix.
-# There is intentionally no outer iteration. The tournament exit is metric-
-# bearing: the coding candidate contract exposes test-pass evidence as
-# benchmark/v1, with changed files/LOC used as deterministic secondary tie
-# breakers. The reviewer owns the final fix after inspecting the selected
-# candidate, so the workflow ends with a corrected reviewed workspace.
+# The pi sibling of team-claude.yml; only the harness-specific tool names
+# and mounting differ. `discuss` is a pi-only custom tool: it must appear in
+# the stage's tools list or the discuss flag mounts nothing. The tournament
+# exit is metric-bearing (coding-candidate benchmark/v1), and the reviewer
+# owns the final fix after inspecting the selected candidate.
 workflow:
-  name: coding-team
+  name: team-pi
   nodes:
     - stage:
         name: architect
         worker: coding-architect
-        harness: claude
+        harness: pi
         model: mimo-v2.6-pro
         thinkingLevel: max
         discuss: true
-        tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
+        tools: [read, bash, edit, write, find, grep, ls, web_search, discuss]
         handoff: architecture.json
         validate: true
         from: []
@@ -32,20 +32,20 @@ workflow:
           - stage:
               name: implement
               worker: coding-developer
-              harness: claude
+              harness: pi
               model: deepseek-flash
               thinkingLevel: max
-              tools: [Read, Bash, Edit, Write, Glob, Grep]
+              tools: [read, bash, edit, write, find, grep, ls]
               handoff: candidate-input.json
               validate: true
               from: []
     - stage:
         name: review
         worker: coding-reviewer
-        harness: claude
+        harness: pi
         model: deepseek-flash
         thinkingLevel: max
-        tools: [Read, Bash, Edit, Write, Glob, Grep]
+        tools: [read, bash, edit, write, find, grep, ls]
         handoff: review-input.json
         validate: true
         from: [candidates]

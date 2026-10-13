@@ -1,0 +1,50 @@
+version: 3
+
+# Three-step repository-grounded coding workflow (dsh harness):
+# architect -> developer tournament -> review-and-fix.
+# The dsh sibling of team-claude.yml. dsh headless spawns with its preset's
+# own tool mount, so the stage tools list documents intent and is validated
+# against dsh's native ids; `ask_user_question` is dsh's question channel.
+# The tournament exit is metric-bearing (coding-candidate benchmark/v1), and
+# the reviewer owns the final fix after inspecting the selected candidate.
+workflow:
+  name: team-dsh
+  nodes:
+    - stage:
+        name: architect
+        worker: coding-architect
+        harness: dsh
+        model: mimo-v2.6-pro
+        thinkingLevel: max
+        tools: [read, bash, edit, write, glob, grep, web_search, ask_user_question]
+        handoff: architecture.json
+        validate: true
+        from: []
+    - tournament:
+        name: candidates
+        from: [architect]
+        over: architect.implementation_plan
+        count: 2
+        entry: implement
+        exit: implement
+        nodes:
+          - stage:
+              name: implement
+              worker: coding-developer
+              harness: dsh
+              model: deepseek-flash
+              thinkingLevel: max
+              tools: [read, bash, edit, write, glob, grep]
+              handoff: candidate-input.json
+              validate: true
+              from: []
+    - stage:
+        name: review
+        worker: coding-reviewer
+        harness: dsh
+        model: deepseek-flash
+        thinkingLevel: max
+        tools: [read, bash, edit, write, glob, grep]
+        handoff: review-input.json
+        validate: true
+        from: [candidates]

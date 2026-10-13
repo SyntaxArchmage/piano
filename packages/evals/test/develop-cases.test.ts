@@ -42,7 +42,7 @@ const abortedDshOnlyModels = new Set([
 /** The hand-picked coding-team cell: it names its workflow and model directly
  * instead of joining a generated sweep, so the sweep-membership rules below do
  * not constrain it. */
-const handPickedWorkflow = "../../../recipes/workflows/coding-team.yml";
+const handPickedWorkflow = "../../../recipes/workflows/team-claude.yml";
 describe("develop eval cases", () => {
   it("keeps every generated case self-describing and uniquely addressable", async () => {
     const cases = await Effect.runPromise(
@@ -83,7 +83,7 @@ describe("develop eval cases", () => {
     const codingCase = cases.find((kase) => kase.id === "coding-team-questions-claude-deepseek-flash-max");
     expect(codingCase).toMatchObject({
       prompt: expect.stringContaining("discuss primitive"),
-      workflow: "../../../recipes/workflows/coding-team.yml",
+      workflow: "../../../recipes/workflows/team-claude.yml",
       dimensions: {
         task: "coding-team-questions",
         harness: "claude",

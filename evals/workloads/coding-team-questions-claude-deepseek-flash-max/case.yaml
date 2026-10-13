@@ -15,7 +15,7 @@ prompt: |
 command: piano --workflow <workflow> -p <prompt>
 prepareCommand: npm install --ignore-scripts --no-audit --no-fund
 workspace: ../../workspaces/coding-team-questions.tar.gz
-workflow: ../../../recipes/workflows/coding-team.yml
+workflow: ../../../recipes/workflows/team-claude.yml
 readout:
   kind: programmatic
   compileCommand: "npm run typecheck"
