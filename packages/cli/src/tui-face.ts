@@ -129,16 +129,34 @@ const PIANO_PIXELS = [
 
 function pianoPixelColor(pixel: PianoPixel, background: boolean): string {
   if (pixel === "a") return background ? accentBg() : th.accent;
-  const rgb = {
-    d: "17;24;39",
-    m: "51;65;85",
-    l: "148;163;184",
-    w: "248;250;252",
-    k: "15;23;42",
-    g: "251;191;36",
-  }[pixel as Exclude<PianoPixel, " " | "a">];
+  // Pixel palette follows the shell: the dark shell gets the light lacquer
+  // piano; the light shell gets a darker lacquer so keys and rim stay visible
+  // on white instead of dissolving into it.
+  const palette = th.variant === "light" ? LIGHT_PIXEL_RGB : DARK_PIXEL_RGB;
+  const rgb = palette[pixel as Exclude<PianoPixel, " " | "a">];
   return rgb === undefined ? RST : `\x1b[${background ? 48 : 38};2;${rgb}m`;
 }
+
+/** Lacquer colours for a dark shell (light piano, bright keys). */
+const DARK_PIXEL_RGB = {
+  d: "17;24;39",
+  m: "51;65;85",
+  l: "148;163;184",
+  w: "248;250;252",
+  k: "15;23;42",
+  g: "251;191;36",
+} as const;
+
+/** Lacquer colours for a light shell (darker piano, keys stay a visible step
+ * off the white canvas). */
+const LIGHT_PIXEL_RGB = {
+  d: "15;23;42",
+  m: "51;65;85",
+  l: "100;116;139",
+  w: "226;232;240",
+  k: "15;23;42",
+  g: "180;130;20",
+} as const;
 
 function renderPixelArt(pixels: readonly string[]): string[] {
   const width = Math.max(...pixels.map((line) => line.length));

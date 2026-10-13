@@ -1,5 +1,7 @@
 // ── Themes ────────────────────────────────────────────────────────────────────
 
+import { stdin, stdout } from "node:process";
+
 /** Contrast class a theme was built for. The mission and `/btw`'s side screen
  * each have their own palette, but both must stay legible on the same shell, so
  * a side palette is selected by the contrast class of the theme it replaces. */
@@ -113,11 +115,11 @@ export const lightTheme: PianoTheme = {
   variant: "light",
   accent: "\x1b[38;2;139;0;0m", // #8b0000 — dark red, readable on white
   primary: "\x1b[30m",
-  // A dark gray (bright-black #808080 is too washed out on white) so hints and
-  // examples keep enough contrast against a light terminal.
-  dim: "\x1b[38;2;90;90;90m",
-  success: "\x1b[32m",
-  error: "\x1b[31m",
+  // Dark gray (#404040) so hints and examples clear 4.5:1 against white —
+  // the previous #5a5a5a sat at 2.7:1 and read as washed out.
+  dim: "\x1b[38;2;64;64;64m",
+  success: "\x1b[38;2;0;110;0m",   // dark green — the palette green was 2:1 on white
+  error: "\x1b[38;2;160;20;20m",   // dark red — the palette red was 2.6:1 on white
   bold: "\x1b[1m",
   // A barely-darker-than-white strip so the bar reads on a white shell.
   barBg: "\x1b[48;2;235;235;235m",
@@ -126,26 +128,26 @@ export const lightTheme: PianoTheme = {
   userBg: "\x1b[48;2;230;226;240m",
   userText: "\x1b[30m",
   toolTitle: "\x1b[38;2;139;0;0m",
-  toolCommand: "\x1b[38;2;0;107;154m",
-  toolSection: "\x1b[38;2;83;97;108m",
-  toolOutput: "\x1b[38;2;90;90;90m",
-  outputKey: "\x1b[38;2;0;107;154m",
-  outputString: "\x1b[38;2;80;120;40m",
-  outputNumber: "\x1b[38;2;154;103;0m",
-  outputLiteral: "\x1b[38;2;120;60;150m",
-  outputPunct: "\x1b[38;2;120;120;120m",
-  outputAdded: "\x1b[38;2;80;120;40m",
-  outputRemoved: "\x1b[38;2;170;30;30m",
-  outputMetric: "\x1b[38;2;154;103;0m",
-  outputLabel: "\x1b[38;2;90;90;90m",
-  mdHeading: "\x1b[38;2;154;103;0m",
+  toolCommand: "\x1b[38;2;0;70;110m",
+  toolSection: "\x1b[38;2;50;60;70m",
+  toolOutput: "\x1b[38;2;64;64;64m",
+  outputKey: "\x1b[38;2;0;70;110m",
+  outputString: "\x1b[38;2;40;80;20m",
+  outputNumber: "\x1b[38;2;110;60;0m",
+  outputLiteral: "\x1b[38;2;90;30;120m",
+  outputPunct: "\x1b[38;2;62;62;62m",
+  outputAdded: "\x1b[38;2;40;80;20m",
+  outputRemoved: "\x1b[38;2;140;20;20m",
+  outputMetric: "\x1b[38;2;110;60;0m",
+  outputLabel: "\x1b[38;2;64;64;64m",
+  mdHeading: "\x1b[38;2;110;60;0m",
   mdLink: "\x1b[38;2;0;68;136m",
   mdCode: "\x1b[38;2;139;0;0m",
-  mdCodeBlock: "\x1b[38;2;88;110;54m",
-  mdCodeBlockBorder: "\x1b[38;2;150;150;150m",
-  mdQuote: "\x1b[38;2;90;90;90m",
-  mdQuoteBorder: "\x1b[38;2;150;150;150m",
-  mdHr: "\x1b[38;2;150;150;150m",
+  mdCodeBlock: "\x1b[38;2;50;70;20m",
+  mdCodeBlockBorder: "\x1b[38;2;62;62;62m",
+  mdQuote: "\x1b[38;2;64;64;64m",
+  mdQuoteBorder: "\x1b[38;2;62;62;62m",
+  mdHr: "\x1b[38;2;62;62;62m",
   mdListBullet: "\x1b[38;2;139;0;0m",
   // Sign-off review block: the panel is self-contained, so the white shell
   // gets the same very dark purple fill and light lavender text as the dark
@@ -161,10 +163,10 @@ export const lightTheme: PianoTheme = {
 
 /**
  * Fallback theme for when the background could not be detected (OSC-11 fails
- * on tmux/ssh terminals, which are dark). Uses the terminal's default
- * foreground (`\x1b[39m`) for text and a fixed dark-gray bar background, so
- * both stay legible on the dark shells where this fallback is actually hit —
- * rather than reverse-video, which was meant to read on any background.
+ * on tmux/ssh). Uses the terminal's default foreground and background for
+ * every role, so text stays readable on either a light or a dark shell — the
+ * previous fixed dark-gray bar was illegible under a light default foreground.
+ * The status bar loses its filled strip and reads as a plain text row.
  */
 export const highContrastTheme: PianoTheme = {
   variant: "high-contrast",
@@ -174,8 +176,8 @@ export const highContrastTheme: PianoTheme = {
   success: "\x1b[32m",
   error: "\x1b[31m",
   bold: "\x1b[1m",
-  barBg: "\x1b[48;2;48;48;48m", // fixed dark gray — the fallback is hit on tmux/ssh (dark) terminals
-  userBg: "\x1b[48;2;60;62;90m", // fixed indigo slate — this fallback is hit on tmux/ssh (dark) terminals
+  barBg: "\x1b[49m", // default background — readable on light and dark shells
+  userBg: "\x1b[7m",  // reverse video: a block that works on either canvas
   userText: "\x1b[39m",
   toolTitle: "\x1b[33m",
   toolCommand: "\x1b[36m",
@@ -200,8 +202,8 @@ export const highContrastTheme: PianoTheme = {
   mdHr: "\x1b[2m\x1b[39m",
   mdListBullet: "\x1b[33m",
   // Sign-off review block: the panel carries its own fixed colours (very dark
-  // purple fill, purple outline, light lavender text), so the fallback — hit on
-  // tmux/ssh dark terminals — shows the same bordered panel as the real themes.
+  // purple fill, purple outline, light lavender text), so the fallback shows
+  // the same bordered panel as the real themes.
   signoffBorder: "\x1b[38;2;176;142;222m", // #b08ede — purple outline
   signoffBg: "\x1b[48;2;33;26;61m",        // #211a3d — very dark purple fill
   signoffTitle: "\x1b[1m\x1b[38;2;244;238;255m",
@@ -285,10 +287,58 @@ export function themeFromEnv(env: Record<string, string | undefined>): PianoThem
   return null;
 }
 
+/**
+ * Ask the terminal for its background colour via OSC-11 and resolve a theme
+ * from the reply. Returns `null` when the terminal does not answer in time
+ * (tmux/ssh without passthrough, dumb terminals) — the caller then falls back
+ * to the env-only path.
+ *
+ * The query is `\x1b]11;?\x07`; most modern terminals answer with
+ * `\x1b]11;rgb:RRRR/GGGG/BBBB\x07` which `parseBackgroundQuery` understands.
+ */
+export function queryBackgroundColor(timeoutMs = 200): Promise<string | null> {
+  return new Promise((resolve) => {
+    if (!stdin.isTTY || !stdout.isTTY) return resolve(null);
+    const onData = (chunk: Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const hex = parseBackgroundQuery(text);
+      if (hex !== null) finish(hex);
+    };
+    const finish = (hex: string | null) => {
+      clearTimeout(timer);
+      stdin.off("data", onData);
+      // Restore the mode we found; the TUI sets raw itself when it starts.
+      if (wasRaw !== undefined && stdin.setRawMode) stdin.setRawMode(wasRaw);
+      resolve(hex);
+    };
+    const wasRaw = stdin.isRaw ?? false;
+    if (stdin.setRawMode) stdin.setRawMode(true);
+    stdin.on("data", onData);
+    // OSC-11 background colour query (BEL-terminated).
+    stdout.write("\x1b]11;?\x07");
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    timer.unref?.();
+  });
+}
+
+/**
+ * Full theme resolution: explicit env override first, then the detected
+ * terminal background, then the dark-oriented fallback (which is where tmux
+ * and ssh land when OSC-11 is unavailable).
+ */
+export function resolveTheme(
+  env: Record<string, string | undefined> = process.env,
+  backgroundHex: string | null = null,
+): PianoTheme {
+  const fromEnv = themeFromEnv(env);
+  if (fromEnv !== null) return fromEnv;
+  if (backgroundHex !== null) return themeForLuminance(luminance(backgroundHex));
+  return highContrastTheme;
+}
 
 /** Resolve the configured theme from environment hints without terminal I/O. */
 export function detectTheme(env: Record<string, string | undefined> = process.env): PianoTheme {
-  return themeFromEnv(env) ?? highContrastTheme;
+  return resolveTheme(env, null);
 }
 
 // ── `/btw` side screen ────────────────────────────────────────────────────────
@@ -340,15 +390,17 @@ const SIDE_IDENTITY: Record<PianoThemeVariant, SideIdentity> = {
     warm: "\x1b[38;2;138;90;0m",       // #8a5a00
     mdLink: "\x1b[38;2;15;95;104m",    // #0f5f68
   },
-  // The fallback is hit on tmux/ssh (dark) terminals, so it gets the same fixed
-  // teal treatment the mission's fallback gets in fixed gray.
+  // The fallback is hit when the background is unknown, so the side screen
+  // also leans on default foreground/background rather than a fixed dark fill.
+  // Reverse video keeps the bar a visible strip on either canvas and marks it
+  // as the side's own surface next to the mission's plain default-background bar.
   "high-contrast": {
     accent: "\x1b[36m",
-    primary: "\x1b[38;2;227;253;255m",
+    primary: "\x1b[39m",
     dim: "\x1b[2m\x1b[36m",
-    barBg: "\x1b[48;2;0;44;52m",
-    userBg: "\x1b[48;2;0;62;72m",
-    userText: "\x1b[97m",
+    barBg: "\x1b[7m",
+    userBg: "\x1b[7m",
+    userText: "\x1b[39m",
     warm: "\x1b[93m",
     mdLink: "\x1b[36m",
   },

@@ -28,7 +28,7 @@ import { AskQuestion, type AskQuestionAnswer, type AskQuestionSpec, type AskQues
 import { runSignoffDialog, signoffDecisionText } from "./signoff.js";
 import { runDiscussDialog } from "./discuss.js";
 import { buildFacePage, setTheme } from "./tui-face.js";
-import { detectTheme, sideTheme, RST, type PianoTheme } from "./theme.js";
+import { resolveTheme, queryBackgroundColor, sideTheme, RST, type PianoTheme } from "./theme.js";
 import { buildSideBanner, renderSideFooter, sideFooterRunToken } from "./side-screen.js";
 import { TrajectoryPanel } from "./trajectory-panel.js";
 import { renderStatusPanel } from "./status-panel.js";
@@ -444,9 +444,12 @@ export function runTui(
   if (deps.terminal === undefined && (!stdin.isTTY || !stdout.isTTY)) {
     return Effect.fail(new TuiError({ operation: "terminal", message: "an interactive terminal is required" }));
   }
-  return Effect.try({
-    try: () => {
-      const theme = detectTheme();
+  return Effect.tryPromise({
+    try: async () => {
+      // OSC-11 background probe first so a light shell gets the light palette
+      // even without PIANO_THEME/COLORFGBG; env still wins when set.
+      const bgHex = await queryBackgroundColor();
+      const theme = resolveTheme(process.env, bgHex);
       setTheme(theme);
       const terminal = deps.terminal ?? new ProcessTerminal();
       const terminalResize: ResizeHandlerRef = { current: () => {} };
