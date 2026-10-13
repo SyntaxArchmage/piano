@@ -66,10 +66,10 @@ Modules down, dimensions across. A dimension is 品味 · 留空 · 防御, plus
 ## 全局
 
 ### 品味
-- 抽象时机: 只在实际出现第二个实现时抽接口。不为假想需求留接口。 `出处: AGENTS.md #10`
+- 抽象时机: 只在实际出现第二个实现时抽接口。不为假想需求留接口。 `出处: AGENTS.md #7`
 
 ### 防御
-- 边界: 不信任上游。一切外部输入先校验再落库。 `出处: AGENTS.md #8`
+- 边界: 不信任上游。一切外部输入先校验再落库。 `出处: AGENTS.md #5`
 
 ## packages/orchestrator
 
@@ -84,7 +84,7 @@ Keep it small by rewriting:
 
 - Keep an entry only while it would change a future decision.
 - Rewrite the cell on every update; drop any line the new statement replaces.
-- Add a 出处 when one exists (`出处: AGENTS.md #10`, `出处: 2026-10-13 R2`).
+- Add a 出处 when one exists (`出处: AGENTS.md #7`, `出处: 2026-10-13 R2`).
 - On first creation, seed from `AGENTS.md` and `CLAUDE.md`; those rules are already design positions. Where a repository rule and a taste entry disagree, follow the repository rule and record the disagreement as a review item.
 
 ## Phase 1 — review

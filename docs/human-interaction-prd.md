@@ -444,7 +444,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 - **不引入 Claude `AskUserQuestion` 的原生适配** —— §3.2 已用实测排除（它在 print 模式下根本不存在，allow-list 也无法加回）。
 - **不做 steering**（§1.3）。
 - 不支持在同一 TUI 里并行跑两个 workflow —— 这是 `/btw` 被设计成"侧边 agent，不是第二个 run"的前提。
-- 不改动 `signoff` / `discuss` DSL 字段名（只考虑新增）。旧 `signoff: true` 是替换还是双模式并存，需在实施前明确（AGENTS.md 第 8 条：迁移边界要显式）。
+- 不改动 `signoff` / `discuss` DSL 字段名（只考虑新增）。旧 `signoff: true` 是替换还是双模式并存，需在实施前明确（AGENTS.md 第 5 条：迁移边界要显式）。
 - 不重写 steering 通道的契约设计（与本文档范围无关，且其测试完备，值得原样保留）。
 
 ---
