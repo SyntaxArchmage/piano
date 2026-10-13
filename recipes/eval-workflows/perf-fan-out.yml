@@ -1,0 +1,36 @@
+version: 3
+workflow:
+  name: perf-fan-out
+  nodes:
+    - stage:
+        name: left
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: []
+    - stage:
+        name: mid
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: []
+    - stage:
+        name: right
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: []
+    - stage:
+        name: joined
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [left, mid, right]

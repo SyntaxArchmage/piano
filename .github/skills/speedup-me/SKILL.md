@@ -30,6 +30,7 @@ Buckets are exhaustive and disjoint; attribute an overlap to the earlier bucket.
 | 外部等待 | backoff 睡眠、GPU/网络/人的输入 | `log.jsonl` retry 事件的 delay；无 span 覆盖的存活 gap |
 
 - The baseline is a run artifact, not a feeling. Pin a concrete `~/.piano/runs/<id>` (disk map: `docs/deep-dive-notes/workflow-run-artifacts.md`) and its shape — recipe · harness · model · machine. Every before/after pair uses the same shape; a mismatched pair is not evidence.
+- **The perf eval suite is the before/after instrument.** `piano evals --group workflow-perf` runs five topologies (serial chain, fan-out, loop, handoff chain, DAG) and emits `runtime_overhead_ms` per case — wall clock minus LLM inference. Use it for every measurement; do not reinvent the harness. To decompose a single run by bucket: `node scripts/evals/runtime-metric.mjs <runsRoot>`.
 - Rollups are cheap: `jq` over `log.jsonl`/`trace.jsonl`, or a scratch tsx script (precedent: `packages/evals/src/driver.ts` reconstructs stage timings from `log.jsonl`). Temporary instrumentation and scratch rollups are allowed; commit them only if they earn a permanent home.
 - `[估算]` is allowed where measurement is infeasible: write the assumption and the arithmetic 占比 × (1 − 1/因子), and badge the item. An estimate that could have been measured is a method failure.
 
@@ -81,7 +82,7 @@ Rules:
 1. Resume first: if `SPEEDUP.md` exists with `待议`/`进行` items, continue from it instead of re-surveying.
 2. **Fix the scope** as concrete paths plus the run shape. If the developer named a symptom ("stage X takes forever", "the tournament run stalls"), localize it into buckets before proposing. Read `CLAUDE.md`/`AGENTS.md`, `ARCHITECTURE.txt`, and `TASTE.md` when it exists.
 3. **Check `git status` first.** A file with uncommitted user changes is out of scope unless the developer explicitly includes it. Never stash, reset, or clean.
-4. **Establish the baseline before any proposal.** Compute per-bucket sums for the pinned run and attribute the top buckets to `path:line` from reads you actually performed. No run artifact for the shape → run the recipe once, or proceed `[估算]`-only and say so in the map.
+4. **Establish the baseline before any proposal.** Run `piano evals --group workflow-perf` and record the five `runtime_overhead_ms` values. Compute per-bucket sums for the pinned run and attribute the top buckets to `path:line` from reads you actually performed. No run artifact for the shape → run the recipe once, or proceed `[估算]`-only and say so in the map.
 5. **Ask what the developer already did by hand.** Agents backgrounding slow actions with detached scripts is the strongest evidence a programmatic lever exists. Record it as a candidate with the manual saving as its first estimate.
 6. **Classify every candidate's change class:** 纯内部 / 顺序或失败语义变化 / 崩溃丢失面变化 / YAML 语义扩展 / recipes 拓扑变化 / 质量换速度. The class decides what phase 2 must settle.
 7. **What qualifies:** a share of a few percent of the pinned wall clock, or a fixed step cost dominated by a constant (backoff policy, per-turn spawn), or a lever that unblocks a larger share. **What does not:** micro-optimizations off the measured path, speculative concurrency for code not serialized in practice, anything defended only by "should be faster".
@@ -126,7 +127,7 @@ The runtime has no fire-and-forget work today, so backgrounding is a capability 
 
 1. Work items in `SPEEDUP.md` order; finish a `进行` item before the next. Re-verify every anchor against the current tree first; a broken anchor returns the item to `待议`.
 2. Larger levers are allowed and expected: 并行化 · 流水线 · 背景化 · 批量化 · 进程复用 · 缓存 · 减少轮次 · YAML 语义扩展（向后兼容）· recipes 拓扑重构 · 永久基准. One lever per step; the only difference between the before and after measurement is the item itself.
-3. **Measure after every item** — same artifact, same run shape, same machine. Numbers do not move beyond noise → `已回退`: revert the change and record the null measurement in the card. A null result is a deliverable, not a failure.
+3. **Measure after every item** — run `piano evals --group workflow-perf` and compare `runtime_overhead_ms` against the baseline. Same run shape, same machine. Numbers do not move beyond noise → `已回退`: revert the change and record the null measurement in the card. A null result is a deliverable, not a failure.
 4. Gate before any commit-capable unit: `npm run typecheck && npm test`, plus `npm run lint` unless the developer narrowed it. Focused runs: `npx vitest run tests/<path>`, `npm run test:workflow|test:packages|test:cli`. The `real-*.e2e.test.ts` and `PIANO_TUI_E2E` suites are not the per-step check — name the check actually used in `检查`.
 5. A red step is never carried forward: return to the last green state, fix or re-propose, rerun the same check. Never destructive git; never reset user work. One coherent commit per item; commit messages carry no AI attribution (the hook rejects it); never push unless asked; never commit `SPEEDUP.md`.
 6. Two hats: a bug or contract fix found while speeding becomes a new `待议` proposal; only approval moves it into scope. An item that grows bigger than proposed → stop, rewrite with the new evidence, fresh decision.

@@ -1,6 +1,6 @@
 ---
 name: review-me
-description: "Use when the developer wants to review a code change without losing flow: audit a working-tree diff or a commit range, narrate only the runtime flow the change actually touches as linear steps with concrete values, settle everything that needs no human judgement, present the rest one decision at a time through the harness question tool, record the outcome in REVIEW.md, then apply the approved decisions in a second phase and clear the file."
+description: "Use when the developer wants to review a code change without losing flow: audit a working-tree diff or a commit range, narrate only the runtime flow the change actually touches as linear steps with concrete values, settle everything that needs no human judgement, present the rest one decision at a time, record the outcome in REVIEW.md, then apply the approved decisions in a second phase and clear the file."
 ---
 
 # Review Me
@@ -20,7 +20,7 @@ The job: replace the developer's call-stack tracing and linearisation work with 
 
 ### `REVIEW.md` (repo root)
 
-Session state, phase-2 handoff, and the questionnaire when no question channel exists. A complete file looks like this:
+Session state and the phase-2 handoff. A complete file looks like this:
 
 ```markdown
 # REVIEW
@@ -186,22 +186,12 @@ How to write each slot:
 
 ## The question channel
 
-Put the options in the question text itself. The widget is a convenience; the labels carry the meaning.
+One question per item. Put the options in the question text itself. Ask it and record the answer.
 
-| Harness | Tool | Shape |
-| --- | --- | --- |
-| Claude Code | `AskUserQuestion` | single-select widget, ≤4 options |
-| dsh | `ask_user_question` | field-for-field identical to the above |
-| Cursor | `AskQuestion` | single-select widget |
-| pi | `discuss` | free-text question, free-text answer |
-| headless or none | — | see below |
-
-- Ask one question per item, with the widget's options in the same order as the item's own 丙 / 甲 / 乙.
-- Paste the returned string into `REVIEW.md` 理由 verbatim, including free text typed instead of an option, then write the recorded verdict beside it.
-- Accept 先放着 (record 裁决: 待定) and 停 (end the session) as answers. Record them in `REVIEW.md`; phase 2 treats them like 待答.
+- The answer is evidence: paste it into `REVIEW.md` 理由 verbatim, including free text typed instead of an option, then write the recorded verdict beside it.
+- Accept 先放着 (record 裁决: 待定) and 停 (end the session) as answers.
 - Accept 重开 R1 to re-open a decided item and present it again. Nothing is applied yet during phase 1, so revising is free.
 - Quote any free-text answer that states a general position into `REVIEW.md` 理由; it becomes a `TASTE.md` entry at the transition.
-- With no channel available: write every item into `REVIEW.md` with 裁决: 待答, report the count, and stop. Phase 2 starts only on decided items.
 
 ## Transition — end of phase 1
 

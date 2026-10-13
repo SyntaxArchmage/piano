@@ -1,0 +1,52 @@
+version: 3
+workflow:
+  name: perf-dag
+  nodes:
+    - stage:
+        name: root
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: []
+    - stage:
+        name: branch-a
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [root]
+    - stage:
+        name: branch-b
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [root]
+    - stage:
+        name: leaf-ab
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [branch-a, branch-b]
+    - stage:
+        name: branch-c
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [leaf-ab]
+    - stage:
+        name: leaf-c
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [branch-c]

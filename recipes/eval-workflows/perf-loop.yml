@@ -1,0 +1,44 @@
+version: 3
+workflow:
+  name: perf-loop
+  nodes:
+    - loop:
+        name: tune
+        from: []
+        iterations: 3
+        entry: entry
+        exit: measure
+        feedback: measure
+        nodes:
+          - stage:
+              name: entry
+              worker: basic
+              harness: pi
+              model: deepseek-flash
+              thinkingLevel: low
+              tools: [read, write]
+              from: []
+          - stage:
+              name: body
+              worker: basic
+              harness: pi
+              model: deepseek-flash
+              thinkingLevel: low
+              tools: [read, write]
+              from: [entry]
+          - stage:
+              name: measure
+              worker: basic
+              harness: pi
+              model: deepseek-flash
+              thinkingLevel: low
+              tools: [read, write]
+              from: [body]
+    - stage:
+        name: summary
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [tune]

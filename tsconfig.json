@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@piano/logging": ["packages/logging/src/index.ts"],
       "@piano/orchestrator": ["packages/orchestrator/src/index.ts"],

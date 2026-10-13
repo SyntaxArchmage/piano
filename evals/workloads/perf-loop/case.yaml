@@ -1,0 +1,27 @@
+version: 1
+id: perf-loop
+group: workflow-perf
+dimensions:
+  task: perf-loop
+  harness: pi
+  model: deepseek-flash
+  effort: medium
+prompt: "Reply with OK."
+command: piano --workflow <workflow> -p <prompt>
+workspace: ../../workspaces/perf-empty
+workflow: ../../../recipes/eval-workflows/perf-loop.yml
+readout:
+  kind: programmatic
+  compileCommand: "true"
+  verifyCommand: "true"
+  benchmarkCommand: "node runtime-metric.mjs"
+  baselineCommand: "node runtime-metric.mjs"
+  metricPattern: "runtime_overhead_ms: ([0-9.]+)"
+metric:
+  name: runtime_overhead_ms
+  direction: lower
+tags:
+  - tag: wall-clock
+    weight: 3
+  - tag: orchestration
+    weight: 1

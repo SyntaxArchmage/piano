@@ -1,0 +1,44 @@
+version: 3
+workflow:
+  name: perf-serial-chain
+  nodes:
+    - stage:
+        name: s1
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: []
+    - stage:
+        name: s2
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [s1]
+    - stage:
+        name: s3
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [s2]
+    - stage:
+        name: s4
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [s3]
+    - stage:
+        name: s5
+        worker: basic
+        harness: pi
+        model: deepseek-flash
+        thinkingLevel: low
+        tools: [read, write]
+        from: [s4]
