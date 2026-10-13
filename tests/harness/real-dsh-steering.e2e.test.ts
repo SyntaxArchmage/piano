@@ -20,7 +20,10 @@ import {
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
-const realModel = process.env.PIANO_REAL_MODEL ?? "deepseek-v4-flash";
+// The LLM service is the one the developer configured: the model resolves
+// through the same path a real mission uses, never a literal this file
+// guesses. PIANO_REAL_MODEL stays as an explicit one-off override.
+const realModel = process.env.PIANO_REAL_MODEL ?? resolveHarnessConfig("dsh").model;
 const REAL_TASK_TIMEOUT_MS = 360_000;
 
 describe.skipIf(!runReal)(" real dsh steering", () => {

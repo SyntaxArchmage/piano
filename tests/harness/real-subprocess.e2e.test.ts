@@ -14,7 +14,14 @@ import {
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
-const realModel = process.env.PIANO_REAL_MODEL ?? "deepseek-v4-flash";
+// The run goes to the LLM service the developer configured: the model is
+// resolved through the same path a real mission uses (`resolveHarnessConfig`
+// reading the user's agent.config.json), never a literal this file guesses.
+// PIANO_REAL_MODEL stays as an explicit one-off override for another model on
+// that same service.
+function realModelFor(harness: HarnessName): string | undefined {
+  return process.env.PIANO_REAL_MODEL ?? resolveHarnessConfig(harness).model;
+}
 // A real tool turn can spend several minutes in provider-side queueing even
 // when the health request is fast. Keep it bounded, but do not make the
 // acceptance gate narrower than the observed native dsh latency.
@@ -35,6 +42,7 @@ async function filesUnder(root: string): Promise<readonly string[]> {
 
 describe.skipIf(!runReal)(" real subprocess harness acceptance", () => {
   for (const harness of ["dsh", "claude", "codex"] as const satisfies readonly HarnessName[]) {
+    const realModel = realModelFor(harness);
     it(`${harness} completes the real artifact task with ${realModel}`, async () => {
       const workspace = await mkdtemp(join(tmpdir(), `piano-real-${harness}-workspace-`));
       const scopeRoot = await mkdtemp(join(tmpdir(), `piano-real-${harness}-scope-`));
@@ -103,6 +111,7 @@ describe.skipIf(!runReal)(" real subprocess harness acceptance", () => {
   // plugin in CI, with a fake agent that can only answer from the session it was
   // handed. This tier is the ground truth for that one: it is what shows the
   // fake's contract still matches the launcher's.
+  const realModel = realModelFor("dsh");
   it(`dsh completes turn one and resumes the same actor for turn two with ${realModel}`, async () => {
     const workspace = await mkdtemp(join(tmpdir(), "piano-real-dsh-resume-workspace-"));
     const scopeRoot = await mkdtemp(join(tmpdir(), "piano-real-dsh-resume-scope-"));

@@ -3,10 +3,11 @@
 //
 // Two things such a test needs, and it is easy to get only one of them:
 //
-//  1. a throwaway HOME carrying the developer's own model credentials. The
-//     repo template is backfilled with `~/.piano/agent.config.json` so the
+//  1. a throwaway HOME carrying the developer's own model credentials, so the
 //     mission bootstrap never regenerates the developer's real harness home
-//     while a live run is using it.
+//     while a live run is using it. The config is copied verbatim: the run must
+//     reach the same LLM service the developer's own missions use, and the
+//     shipped template only holds placeholders.
 //  2. a per-test `PIANO_HARNESS_HOME_ROOT`. `vitest.config.ts` points the WHOLE
 //     suite at one scratch harness home, so an isolated HOME alone still races
 //     every other real-harness test for the same generated home. This half is
@@ -18,9 +19,6 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const templatePath = fileURLToPath(new URL("../../scripts/agent.config.template.json", import.meta.url));
 
 export interface IsolatedRealHome {
   /** Pass this to `startTui` as its first argument. */
@@ -29,18 +27,17 @@ export interface IsolatedRealHome {
   readonly env: NodeJS.ProcessEnv;
 }
 
-/** A throwaway HOME with the template backfilled from the developer's real
- * `~/.piano/agent.config.json`, plus the env that keeps its harness home its
- * own. Only valid with working model credentials, so callers gate on
+/** A throwaway HOME holding a verbatim copy of the developer's real
+ * `agent.config.json`, plus the env that keeps its harness home its own. Only
+ * valid with working model credentials, so callers gate on
  * `PIANO_HARNESS_REAL_E2E=1`. */
 export async function isolatedRealHome(prefix = "piano-real-pty-home-"): Promise<IsolatedRealHome> {
   const home = await mkdtemp(join(tmpdir(), prefix));
   await mkdir(join(home, ".piano"), { recursive: true });
-  const merged = {
-    ...JSON.parse(await readFile(templatePath, "utf8")) as Record<string, unknown>,
-    ...JSON.parse(await readFile(join(process.env.HOME ?? "", ".piano", "agent.config.json"), "utf8")) as Record<string, unknown>,
-  };
-  await writeFile(join(home, ".piano", "agent.config.json"), `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  const configuredPath = process.env.PIANO_USER_AGENT_CONFIG
+    ?? join(process.env.HOME ?? "", ".piano", "agent.config.json");
+  const configured = JSON.parse(await readFile(configuredPath, "utf8")) as Record<string, unknown>;
+  await writeFile(join(home, ".piano", "agent.config.json"), `${JSON.stringify(configured, null, 2)}\n`, { mode: 0o600 });
   return {
     home,
     env: { HOME: home, PIANO_HARNESS_HOME_ROOT: join(home, ".piano", "harness") },

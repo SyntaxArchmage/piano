@@ -961,9 +961,14 @@ native harnesses are installed and authenticated, opt into the real test
 explicitly:
 
 ```bash
-PIANO_HARNESS_REAL_E2E=1 PIANO_REAL_MODEL=deepseek-v4-flash \
+PIANO_HARNESS_REAL_E2E=1 \
   npm test -- --run tests/harness/real-subprocess.e2e.test.ts
 ```
+
+Every arm resolves its LLM service from the same `agent.config.json` a real
+mission reads, so the run goes to the configured endpoint and model.
+`PIANO_REAL_MODEL=<id>` points a one-off run at a different model on that same
+service.
 
 This makes real Claude, dsh, and Codex calls, creates and reads a proof file in an
 isolated temporary workspace, and checks the exact bytes, tool events, usage,

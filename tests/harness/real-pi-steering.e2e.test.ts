@@ -10,11 +10,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { describe, expect, it } from "vitest";
-import { executeAgent, createSteeringChannel, resolveHarnessConfig, type AgentEvent } from "../../packages/harness/src/index.js";
+import { executeAgent, createSteeringChannel, prepareHarnessHomes, resolveHarnessConfig, type AgentEvent } from "../../packages/harness/src/index.js";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
-const realModel = process.env.PIANO_REAL_MODEL ?? "deepseek-v4-flash";
+// The LLM service is the one the developer configured: the model resolves
+// through the same path a real mission uses, never a literal this file
+// guesses. PIANO_REAL_MODEL stays as an explicit one-off override.
+const realModel = process.env.PIANO_REAL_MODEL ?? resolveHarnessConfig("pi").model;
 const configPath = `${process.env.HOME}/.piano/agent.config.json`;
 
 describe.skipIf(!runReal)(" real pi steering", () => {
@@ -27,6 +30,12 @@ describe.skipIf(!runReal)(" real pi steering", () => {
       // Same resolution path production uses — the pi registry's provider id
       // for the gateway model, never a guessed literal.
       const config = { ...resolveHarnessConfig("pi"), model: realModel };
+      // ...and the same generated home a real mission runs in: the Pi SDK
+      // resolves the model from Piano's own registry, regenerated from this
+      // config, instead of the developer's native ~/.pi install.
+      const homes = await Effect.runPromise(
+        prepareHarnessHomes({ rootDir: join(root, "harness"), configs: { pi: config } }),
+      );
       const channel = createSteeringChannel();
       const events: AgentEvent[] = [];
       // Several tool calls keep the turn open long enough to steer mid-loop.
@@ -38,6 +47,7 @@ describe.skipIf(!runReal)(" real pi steering", () => {
         steering: channel,
         onEvent: (event) => events.push(event),
       }, {
+        agentDir: homes.agentOptions.agentDir,
         ...(config.provider === undefined ? {} : { provider: config.provider }),
         model: realModel,
         ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),

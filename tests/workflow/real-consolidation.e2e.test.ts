@@ -21,7 +21,13 @@ import {
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
-const realModel = process.env.PIANO_REAL_MODEL ?? "deepseek-v4-flash";
+// The one real turn per acceptance goes to the LLM service the developer
+// configured: the model resolves through the same path a real mission uses,
+// never a literal this file guesses. PIANO_REAL_MODEL stays as an explicit
+// one-off override for another model on that same service.
+function realModelFor(harness: HarnessName): string | undefined {
+  return process.env.PIANO_REAL_MODEL ?? resolveHarnessConfig(harness).model;
+}
 // A single real provider turn (the winner consolidation) plus real filesystem
 // merges can spend minutes queued at the provider. Bind loosely, but not wider
 // than a generous single-turn budget plus one repair cycle.
@@ -128,8 +134,10 @@ describe.skipIf(!runReal)(" real-model tournament winner consolidation (§6)", (
           createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
         );
 
-        // Real harness settings for the single genuine consolidation turn. Its
-        // model stays fixed so the acceptance is deterministic on this harness.
+        // Real harness settings for the single genuine consolidation turn, on
+        // the developer's configured model (PIANO_REAL_MODEL can point the
+        // acceptance at a different one for a one-off run).
+        const realModel = realModelFor(harness);
         const config = { ...resolveHarnessConfig(harness), model: realModel };
         const homes = await Effect.runPromise(prepareHarnessHomes({
           rootDir: scopeRoot,
@@ -309,6 +317,7 @@ workflow:
       const session = await Effect.runPromise(
         createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
+      const realModel = realModelFor(harness);
       const config = { ...resolveHarnessConfig(harness), model: realModel };
       const homes = await Effect.runPromise(prepareHarnessHomes({
         rootDir: scopeRoot,

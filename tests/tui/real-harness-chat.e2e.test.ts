@@ -2,6 +2,7 @@ import { afterEach, describe, it } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { resolveHarnessConfig } from "../../packages/harness/src/index.js";
 import { startTui, type TuiSession } from "./pty.js";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
@@ -42,6 +43,10 @@ describe.skipIf(!runReal)(" real harness chat area", () => {
   });
 
   for (const harness of ["dsh", "claude"] as const) {
+    // The spawn marker shows the model the mission resolved. The TUI is pointed
+    // at the developer's own config (`PIANO_USER_AGENT_CONFIG` below), so the
+    // expectation resolves through the same path instead of a literal.
+    const model = process.env.PIANO_REAL_MODEL ?? resolveHarnessConfig(harness).model;
     it(`${harness} streams normalized output into the real chat area`, async () => {
       const root = await mkdtemp(join(tmpdir(), `piano-${harness}-chat-`));
       roots.push(root);
@@ -57,7 +62,7 @@ describe.skipIf(!runReal)(" real harness chat area", () => {
       session.key("Enter");
       await waitFor(session, (screen) =>
         screen.includes("READY") &&
-        screen.includes("↳ respond · basic  [deepseek-v4-flash]"),
+        screen.includes(`↳ respond · basic  [${model}]`),
       `${harness} chat output and normalized spawn marker`);
     }, 150_000);
   }

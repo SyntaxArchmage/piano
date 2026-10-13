@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
 const entrypoint = fileURLToPath(new URL("../../packages/cli/bin/piano.mjs", import.meta.url));
-const templatePath = fileURLToPath(new URL("../../scripts/agent.config.template.json", import.meta.url));
 const roots: string[] = [];
 
 async function readJson(path: string): Promise<Record<string, unknown>> {
@@ -305,12 +304,14 @@ describe.skipIf(!runReal)("basic workflow TUI/headless real parity", () => {
     const home = join(root, "home");
     await mkdir(join(home, ".piano"), { recursive: true });
     // A mission's model registry is generated from Piano's own config alone; the
-    // harness's native install is never read. So the parity home needs a
-    // provider endpoint in `agent.config.json`, and backfills it from the
-    // shipped template when the developer's config predates that field.
+    // harness's native install is never read. The parity home therefore carries
+    // a verbatim copy of the developer's `agent.config.json`, so headless and
+    // TUI runs reach the same LLM service as their own missions. The shipped
+    // template is not backfilled: its values are placeholders, and a missing key
+    // must surface as unconfigured rather than as a placeholder endpoint.
     await writeFile(
       join(home, ".piano", "agent.config.json"),
-      `${JSON.stringify({ ...await readJson(templatePath), ...await readJson(join(homedir(), ".piano", "agent.config.json")) }, null, 2)}\n`,
+      `${JSON.stringify(await readJson(process.env.PIANO_USER_AGENT_CONFIG ?? join(homedir(), ".piano", "agent.config.json")), null, 2)}\n`,
       { encoding: "utf8", mode: 0o600 },
     );
     await mkdir(join(home, ".piano", "runs"), { recursive: true });

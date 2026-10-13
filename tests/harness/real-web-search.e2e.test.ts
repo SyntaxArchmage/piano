@@ -15,7 +15,6 @@ const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
 const RUN_TIMEOUT_MS = 360_000;
 const ARM_TIMEOUT_MS = 300_000;
 const entrypoint = fileURLToPath(new URL("../../packages/cli/bin/piano.mjs", import.meta.url));
-const templatePath = fileURLToPath(new URL("../../scripts/agent.config.template.json", import.meta.url));
 const recipesDir = fileURLToPath(new URL("../../recipes/workflows", import.meta.url));
 
 const ARMS = [
@@ -51,13 +50,16 @@ function textValue(value: unknown): string {
   return "";
 }
 
+/** Copy the developer's own provider configuration into a disposable HOME,
+ * verbatim: the child must resolve the same LLM service a real mission would.
+ * Nothing is backfilled from the shipped template — its values are
+ * placeholders, and an unconfigured key has to surface as unconfigured rather
+ * than as a request to a placeholder endpoint. */
 async function createRealHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), "piano-web-real-home-"));
   await mkdir(join(home, ".piano", "runs"), { recursive: true });
-  const template = JSON.parse(await readFile(templatePath, "utf8")) as JsonRecord;
   const configuredPath = process.env.PIANO_USER_AGENT_CONFIG ?? join(homedir(), ".piano", "agent.config.json");
-  const configured = JSON.parse(await readFile(configuredPath, "utf8")) as JsonRecord;
-  const config: JsonRecord = { ...template, ...configured };
+  const config = JSON.parse(await readFile(configuredPath, "utf8")) as JsonRecord;
   if (process.env.PIANO_REAL_MODEL !== undefined) config.model = process.env.PIANO_REAL_MODEL;
   await writeFile(join(home, ".piano", "agent.config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   return home;

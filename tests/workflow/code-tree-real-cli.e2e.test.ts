@@ -13,7 +13,6 @@ const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
 const RUN_TIMEOUT_MS = 360_000;
 const entrypoint = fileURLToPath(new URL("../../packages/cli/bin/piano.mjs", import.meta.url));
 const workflowPath = fileURLToPath(new URL("../../recipes/workflows/coding-pi.yml", import.meta.url));
-const templatePath = fileURLToPath(new URL("../../scripts/agent.config.template.json", import.meta.url));
 const sourceRoot = fileURLToPath(new URL("../..", import.meta.url));
 const userPrompt = "print the code tree of this folder";
 
@@ -97,14 +96,14 @@ async function seedWorkspace(workspace: string): Promise<void> {
 }
 
 /** Copy the user's provider configuration into a disposable HOME. The child
- * must resolve config from this copy so the test never mutates ~/.piano. */
+ * must resolve config from this copy so the test never mutates ~/.piano, and it
+ * is copied verbatim so the run reaches the same LLM service a real mission
+ * uses — the shipped template holds placeholders, never a fallback endpoint. */
 async function createRealHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), "piano-code-tree-real-home-"));
   await mkdir(join(home, ".piano", "runs"), { recursive: true });
-  const template = await readJson(templatePath);
   const configuredPath = process.env.PIANO_USER_AGENT_CONFIG ?? join(homedir(), ".piano", "agent.config.json");
-  const configured = await readJson(configuredPath);
-  const config: JsonRecord = { ...template, ...configured };
+  const config = await readJson(configuredPath);
   if (process.env.PIANO_REAL_MODEL !== undefined) config.model = process.env.PIANO_REAL_MODEL;
   await writeFile(join(home, ".piano", "agent.config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   return home;
