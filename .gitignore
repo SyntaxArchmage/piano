@@ -8,6 +8,8 @@ coverage/
 
 # Local eval/tuning runtime output and scratch probes.
 .tmp-run/
+# Agent worktree checkouts live beside the repo, never inside it.
+.claude/worktrees/
 # Stray GitLab runner cache bundles (object-storage key layout).
 cache/
 evals/workloads/*/workspace/__pycache__/
