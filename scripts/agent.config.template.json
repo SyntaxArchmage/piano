@@ -1,19 +1,19 @@
 {
   "harness": "pi",
-  "provider": "enflame",
-  "baseUrl": "https://api.enflame.cn/v1",
+  "provider": "example-provider",
+  "baseUrl": "https://api.example.com/v1",
   "model": "deepseek-v4-flash",
   "apiKey": "CHANGE_ME",
   "dsh": {
-    "provider": "enflame",
+    "provider": "example-provider",
     "model": "deepseek-v4-flash",
     "apiKey": "CHANGE_ME",
-    "baseUrl": "https://api.enflame.cn/v1"
+    "baseUrl": "https://api.example.com/v1"
   },
   "claude": {
     "model": "deepseek-v4-flash",
     "authToken": "CHANGE_ME",
-    "baseUrl": "https://api.enflame.cn"
+    "baseUrl": "https://api.example.com"
   },
   "codex": {
     "model": "gpt-5.6-luna"

@@ -25,12 +25,12 @@ export {
 } from "./pi.js";
 export {
   agentConfigPath,
+  defaultAgentConfigPath,
   configuredWorkflowHarness,
   describeHarness,
   HARNESS_NAMES,
   isHarnessName,
   resolveHarnessConfig,
-  resolveHarnessThinkingLevel,
   resolveSupportedModels,
   type HarnessDescriptor,
   type HarnessName,

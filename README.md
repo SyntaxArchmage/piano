@@ -141,27 +141,27 @@ adapter environment (`PIANO_PI_PROVIDER` / `PIANO_PI_API_KEY` and their
 root-level `provider`/`model`/`apiKey` fields double as the `pi` section (they
 predate per-adapter nesting).
 
-Example `~/.piano/agent.config.json` (this is exactly what
-`scripts/agent.config.template.json` ships; Piano never prints configured
+Example `~/.piano/agent.config.json` (the same shape as
+`scripts/agent.config.template.json`; Piano never prints configured
 values, and a `CHANGE_ME` placeholder is treated as unset):
 
 ```json
 {
   "harness": "pi",
-  "provider": "enflame",
-  "baseUrl": "https://api.enflame.cn/v1",
+  "provider": "example-provider",
+  "baseUrl": "https://api.example.com/v1",
   "model": "deepseek-v4-flash",
   "apiKey": "CHANGE_ME",
   "dsh": {
-    "provider": "enflame",
+    "provider": "example-provider",
     "model": "deepseek-v4-flash",
     "apiKey": "CHANGE_ME",
-    "baseUrl": "https://api.enflame.cn/v1"
+    "baseUrl": "https://api.example.com/v1"
   },
   "claude": {
     "model": "deepseek-v4-flash",
     "authToken": "CHANGE_ME",
-    "baseUrl": "https://api.enflame.cn"
+    "baseUrl": "https://api.example.com"
   },
   "models": [
     "deepseek-v4-flash",
@@ -944,8 +944,10 @@ provider/model configuration are checked.
 
 ### `piano doctor --model [<model>|all] [--harness <pi|pi-cli|claude|dsh|codex>]`
 
-Fetch the OpenAI-compatible model list from the configured base URL (or
-`https://api.enflame.cn/v1/models` by default) and print the advertised models.
+Fetch the OpenAI-compatible model list from the configured base URL and print
+the advertised models. There is no built-in endpoint: an install that
+configures no `baseUrl` reports `unconfigured` instead of probing a hardcoded
+site.
 When a model name is supplied, send one minimal completion request for that
 model through the selected adapter — `pi` (the in-process SDK adapter) by
 default, or `pi-cli`, `claude`, `dsh`, or `codex` with `--harness`. `all` sweeps every

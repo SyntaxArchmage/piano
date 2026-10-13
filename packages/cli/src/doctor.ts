@@ -31,8 +31,6 @@ import {
 } from "@piano/logging";
 import { CliArgumentError } from "./errors.js";
 
-export const ENFLAME_API_BASE_URL = "https://api.enflame.cn/v1";
-export const ENFLAME_MODELS_ENDPOINT = "https://api.enflame.cn/v1/models";
 export const doctorUsage =
   "usage: piano doctor --harness <pi|pi-cli|claude|dsh|codex|all> | piano doctor --model [<model>|all] [--harness <pi|pi-cli|claude|dsh|codex>]";
 
@@ -278,12 +276,12 @@ function endpointFor(baseUrl: string): string {
   }
 }
 
-function apiBaseUrl(deps: DoctorCommandDeps): string {
-  return deps.modelEndpoint ?? deps.modelConfig?.baseUrl ?? ENFLAME_API_BASE_URL;
-}
-
-function modelEndpoint(deps: DoctorCommandDeps): string {
-  return endpointFor(apiBaseUrl(deps));
+/** The configured OpenAI-compatible base URL, from the same resolution every
+ * harness uses. There is deliberately no built-in default: an install that
+ * configures nothing gets an `unconfigured` report, never a silent request to
+ * a hardcoded third-party site. */
+function apiBaseUrl(deps: DoctorCommandDeps): string | undefined {
+  return deps.modelEndpoint ?? deps.modelConfig?.baseUrl;
 }
 
 function errorMessage(cause: unknown): string {
@@ -491,11 +489,20 @@ async function probeModels(
   harness: HarnessName = "pi",
 ): Promise<ModelDoctorReport> {
   const config = deps.modelConfig ?? (deps.harnessConfig ?? resolveHarnessConfig)(harness);
-  const endpoint = modelEndpoint({ ...deps, modelConfig: config });
   const fetchModelList = deps.fetch ?? globalThis.fetch;
   if (requestedModel !== undefined) {
     return probeModel(harness, requestedModel, config, deps);
   }
+  const baseUrl = apiBaseUrl({ ...deps, modelConfig: config });
+  if (baseUrl === undefined) {
+    return {
+      status: "unconfigured",
+      endpoint: "",
+      models: [],
+      reason: `model endpoint is not configured — set "baseUrl" in ${agentConfigPath()}`,
+    };
+  }
+  const endpoint = endpointFor(baseUrl);
   try {
     const response = await fetchModelList(endpoint, {
       headers: modelRequestHeaders(config),

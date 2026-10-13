@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ThinkingLevel } from "./events.js";
+import { THINKING_LEVELS, type ThinkingLevel } from "./events.js";
 
 /** The available adapter names are closed so an unavailable provider cannot silently
  * turn into a different provider. `pi` is the in-process SDK adapter; the other
@@ -31,6 +31,9 @@ export interface ResolvedHarnessConfig {
    * is passed through verbatim so an unsupported one fails at the harness with
    * its own message instead of being silently coerced here. */
   readonly toolsMode?: string;
+  /** Reasoning effort, resolved with the same precedence as model/provider so a
+   * level configured once applies to every adapter that can honor it. */
+  readonly thinkingLevel?: ThinkingLevel;
 }
 
 export interface HarnessDescriptor {
@@ -61,8 +64,13 @@ function record(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+/** The default user-config path. `agentConfigPath` lets an env override swap
+ * it per process, so every reader that needs a path goes through the function
+ * and nothing hardcodes the literal twice. */
+export const defaultAgentConfigPath = join(homedir(), ".piano", "agent.config.json");
+
 export function agentConfigPath(): string {
-  return process.env.PIANO_USER_AGENT_CONFIG ?? join(homedir(), ".piano", "agent.config.json");
+  return process.env.PIANO_USER_AGENT_CONFIG ?? defaultAgentConfigPath;
 }
 
 function configuredFile(): ConfigRecord {
@@ -226,6 +234,9 @@ export function resolveHarnessConfig(
     ?? envValue(harness, "TOOLS_MODE")
     ?? stringValue(nested.toolsMode)
     ?? (harness === "dsh" ? "native" : undefined);
+  const thinkingLevel = thinkingLevelValue(overrides.thinkingLevel)
+    ?? thinkingLevelValue(envValue(harness, "THINKING_LEVEL"))
+    ?? thinkingLevelValue(nested.thinkingLevel);
   return {
     ...(provider === undefined ? {} : { provider }),
     ...(model === undefined ? {} : { model }),
@@ -237,16 +248,15 @@ export function resolveHarnessConfig(
     ...(homePath === undefined ? {} : { homePath }),
     ...(profile === undefined ? {} : { profile }),
     ...(toolsMode === undefined ? {} : { toolsMode }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
   };
 }
 
-export function resolveHarnessThinkingLevel(
-  harness: HarnessName,
-  requested: ThinkingLevel | undefined,
-): ThinkingLevel | undefined {
-  if (requested !== undefined) return requested;
-  const value = envValue(harness, "THINKING_LEVEL");
-  return value !== undefined && (['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as readonly string[]).includes(value)
+/** Keep only a level the portable vocabulary actually defines; anything else
+ * (typo, unsupported native value) resolves as unset rather than reaching a
+ * harness as an opaque argument. */
+function thinkingLevelValue(value: unknown): ThinkingLevel | undefined {
+  return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value)
     ? value as ThinkingLevel
     : undefined;
 }

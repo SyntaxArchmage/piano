@@ -92,17 +92,17 @@ describe(" harness configuration boundary", () => {
     const path = join(root, "agent.config.json");
     try {
       await writeFile(path, JSON.stringify({
-        provider: "enflame",
+        provider: "example-provider",
         model: "deepseek-v4-flash",
         apiKey: "secret-key",
-        baseUrl: "https://api.enflame.cn/v1",
+        baseUrl: "https://api.example.com/v1",
       }), "utf8");
       vi.stubEnv("PIANO_USER_AGENT_CONFIG", path);
       expect(resolveHarnessConfig("pi")).toMatchObject({
-        provider: "enflame",
+        provider: "example-provider",
         model: "deepseek-v4-flash",
         apiKey: "secret-key",
-        baseUrl: "https://api.enflame.cn/v1",
+        baseUrl: "https://api.example.com/v1",
       });
     } finally {
       vi.unstubAllEnvs();
@@ -116,7 +116,7 @@ describe(" harness configuration boundary", () => {
     try {
       await writeFile(path, JSON.stringify({
         deepseek: {
-          provider: "enflame",
+          provider: "example-provider",
           model: "qwen3.8-27b",
           apiKey: "secret-key",
           bin: "pi",
@@ -124,7 +124,7 @@ describe(" harness configuration boundary", () => {
       }), "utf8");
       vi.stubEnv("PIANO_USER_AGENT_CONFIG", path);
       expect(resolveHarnessConfig("dsh")).toMatchObject({
-        provider: "enflame",
+        provider: "example-provider",
         model: "qwen3.8-27b",
         apiKey: "secret-key",
         binPath: "dsh",
@@ -140,7 +140,7 @@ describe(" harness configuration boundary", () => {
     const root = await mkdtemp(join(tmpdir(), "piano-dsh-tools-mode-"));
     const path = join(root, "agent.config.json");
     try {
-      await writeFile(path, JSON.stringify({ dsh: { provider: "enflame" } }), "utf8");
+      await writeFile(path, JSON.stringify({ dsh: { provider: "example-provider" } }), "utf8");
       vi.stubEnv("PIANO_USER_AGENT_CONFIG", path);
       // dsh reads its tool presentation from the process environment, so an
       // unset value would make a mission's tool surface ambient. `native` is
@@ -152,11 +152,37 @@ describe(" harness configuration boundary", () => {
         expect(resolveHarnessConfig(harness).toolsMode).toBeUndefined();
       }
 
-      await writeFile(path, JSON.stringify({ dsh: { provider: "enflame", toolsMode: "code" } }), "utf8");
+      await writeFile(path, JSON.stringify({ dsh: { provider: "example-provider", toolsMode: "code" } }), "utf8");
       expect(resolveHarnessConfig("dsh").toolsMode).toBe("code");
       vi.stubEnv("PIANO_DSH_TOOLS_MODE", "both");
       expect(resolveHarnessConfig("dsh").toolsMode).toBe("both");
       expect(resolveHarnessConfig("dsh", { toolsMode: "native" }).toolsMode).toBe("native");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves thinkingLevel from the section and the environment, one source for every adapter", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-thinking-config-"));
+    const path = join(root, "agent.config.json");
+    try {
+      await writeFile(path, JSON.stringify({
+        claude: { thinkingLevel: "high" },
+        pi: { thinkingLevel: "low" },
+        dsh: { provider: "example-provider", thinkingLevel: "not-a-level" },
+      }), "utf8");
+      vi.stubEnv("PIANO_USER_AGENT_CONFIG", path);
+      // The configured level is what every consumer reads: the subprocess
+      // adapters pass it as argv, the SDK adapter as the session option.
+      expect(resolveHarnessConfig("claude").thinkingLevel).toBe("high");
+      expect(resolveHarnessConfig("pi").thinkingLevel).toBe("low");
+      // An unusable value resolves as unset rather than reaching a harness.
+      expect(resolveHarnessConfig("dsh").thinkingLevel).toBeUndefined();
+      // An explicit request or environment still wins over the file.
+      vi.stubEnv("PIANO_CLAUDE_THINKING_LEVEL", "minimal");
+      expect(resolveHarnessConfig("claude").thinkingLevel).toBe("minimal");
+      expect(resolveHarnessConfig("claude", { thinkingLevel: "max" }).thinkingLevel).toBe("max");
     } finally {
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
@@ -217,7 +243,7 @@ describe(" harness configuration boundary", () => {
       // a cryptic `model-not-found`.
       await writeFile(path, JSON.stringify({
         harness: "pi",
-        provider: "enflame",
+        provider: "example-provider",
         model: "deepseek-v4-flash",
         apiKey: "secret-key",
         deepseek: { baseUrl: "http://127.0.0.1:8787" },
@@ -228,11 +254,11 @@ describe(" harness configuration boundary", () => {
       // The gateway is a fallback, never a shadow: an explicit root or
       // environment baseUrl wins.
       await writeFile(path, JSON.stringify({
-        provider: "enflame",
-        baseUrl: "https://api.enflame.cn/v1",
+        provider: "example-provider",
+        baseUrl: "https://api.example.com/v1",
         deepseek: { baseUrl: "http://127.0.0.1:8787" },
       }), "utf8");
-      expect(resolveHarnessConfig("pi").baseUrl).toBe("https://api.enflame.cn/v1");
+      expect(resolveHarnessConfig("pi").baseUrl).toBe("https://api.example.com/v1");
       vi.stubEnv("PIANO_PI_BASE_URL", "https://env.example/v1");
       expect(resolveHarnessConfig("pi").baseUrl).toBe("https://env.example/v1");
     } finally {
@@ -263,7 +289,7 @@ describe(" harness configuration boundary", () => {
       for (const [harness, configured, expected] of cases) {
         const section = harness === "pi-cli" ? "piCli" : harness;
         await writeFile(path, JSON.stringify({
-          harness, provider: "enflame", apiKey: "secret-key", [section]: { baseUrl: configured },
+          harness, provider: "example-provider", apiKey: "secret-key", [section]: { baseUrl: configured },
         }), "utf8");
         vi.stubEnv("PIANO_USER_AGENT_CONFIG", path);
         expect(resolveHarnessConfig(harness as "pi" | "pi-cli" | "dsh" | "claude").baseUrl).toBe(expected);
@@ -282,7 +308,7 @@ describe(" harness configuration boundary", () => {
     );
     expect(template).toMatchObject({
       harness: "pi",
-      provider: "enflame",
+      provider: "example-provider",
       model: "deepseek-v4-flash",
       // The placeholder is the sentinel the resolver ignores, so a fresh
       // install reports "unconfigured" instead of sending a bogus credential.

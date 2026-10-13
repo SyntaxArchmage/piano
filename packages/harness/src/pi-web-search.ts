@@ -10,7 +10,6 @@ export const PI_WEB_SEARCH_TOOL_NAME = "web_search";
 /** The path handed to pi-cli's `--extension` option. */
 export const piWebSearchExtensionPath = fileURLToPath(import.meta.url);
 
-const DEFAULT_SEARCH_MODEL = "deepseek-v4-flash";
 const DEFAULT_API_VERSION = "2023-06-01";
 const DEFAULT_MAX_TOKENS = 4096;
 const DEFAULT_MAX_USES = 5;
@@ -20,6 +19,9 @@ export interface PiWebSearchOptions {
   /** Anthropic-messages base; the request is sent to `{baseUrl}/messages`. */
   readonly baseUrl?: string;
   readonly apiKey?: string;
+  /** The configured model. Required: the search runs against the same gateway
+   * route as chat, so a hardcoded fallback model could name one the gateway
+   * does not serve. */
   readonly model?: string;
 }
 
@@ -78,8 +80,10 @@ export async function runPiWebSearch(
   signal?: AbortSignal,
 ): Promise<string> {
   const baseUrl = options.baseUrl?.trim().replace(/\/+$/u, "");
-  if (baseUrl === undefined || baseUrl === "" || options.apiKey === undefined || options.apiKey === "") {
-    throw new Error("web_search is not configured: the harness endpoint or API key is missing");
+  const model = options.model?.trim();
+  if (baseUrl === undefined || baseUrl === "" || options.apiKey === undefined || options.apiKey === ""
+    || model === undefined || model === "") {
+    throw new Error("web_search is not configured: the configured endpoint, API key, or model is missing");
   }
 
   const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
@@ -95,7 +99,7 @@ export async function runPiWebSearch(
       accept: "application/json",
     },
     body: JSON.stringify({
-      model: options.model ?? DEFAULT_SEARCH_MODEL,
+      model,
       max_tokens: DEFAULT_MAX_TOKENS,
       messages: [{
         role: "user",
@@ -166,4 +170,5 @@ export function webSearchExtensionFactory(options: PiWebSearchOptions) {
 export default webSearchExtensionFactory({
   baseUrl: process.env.PI_BASE_URL,
   apiKey: process.env.PI_API_KEY,
+  model: process.env.PI_MODEL,
 });

@@ -13,7 +13,6 @@ import { dshModelPatchPath, dshResumeOverlayPath, DSH_RESUME_SESSION_ENV, dshWeb
 import {
   agentConfigPath,
   resolveHarnessConfig,
-  resolveHarnessThinkingLevel,
   type HarnessName,
   type ResolvedHarnessConfig,
 } from "./harness-config.js";
@@ -2094,6 +2093,7 @@ function childEnv(
   } else {
     if (config.baseUrl !== undefined) env.PI_BASE_URL = config.baseUrl;
     if (config.apiKey !== undefined) env.PI_API_KEY = secret(config.apiKey);
+    if (config.model !== undefined) env.PI_MODEL = config.model;
   }
   return env;
 }
@@ -2391,8 +2391,13 @@ function runSubprocessAttempt(
     homePath: options.homePath,
     profile: options.profile,
   };
-  const config = resolveHarnessConfig(harness, requestedConfig);
-  const thinking = resolveHarnessThinkingLevel(harness, request.thinkingLevel ?? options.thinkingLevel);
+  const config = resolveHarnessConfig(harness, {
+    ...requestedConfig,
+    thinkingLevel: request.thinkingLevel ?? options.thinkingLevel,
+  });
+  // One resolution feeds argv, the model catalog, and the spawn event, so the
+  // level a stage configures is the level the harness receives.
+  const thinking = config.thinkingLevel;
   const sourcePath = config.binPath
     ?? (harness === "claude" ? "claude" : harness === "dsh" ? "dsh" : harness === "codex" ? "codex" : "pi");
   return Effect.gen(function* () {

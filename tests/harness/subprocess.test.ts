@@ -1410,7 +1410,7 @@ describe(" subprocess harness", () => {
       const session = await testSession(root);
       const binPath = await fakeHarness(root);
       const configPath = join(root, "agent.config.json");
-      await writeFile(configPath, JSON.stringify({ dsh: { provider: "enflame" } }));
+      await writeFile(configPath, JSON.stringify({ dsh: { provider: "example-provider" } }));
       vi.stubEnv("PIANO_USER_AGENT_CONFIG", configPath);
       const dshHome = await dshHomeFixture(root);
       const offPath = dshWebSearchOffPatchPath(dshHome);
@@ -1447,7 +1447,7 @@ describe(" subprocess harness", () => {
       const session = await testSession(root);
       const binPath = await fakeHarness(root);
       const configPath = join(root, "agent.config.json");
-      await writeFile(configPath, JSON.stringify({ dsh: { provider: "enflame" } }));
+      await writeFile(configPath, JSON.stringify({ dsh: { provider: "example-provider" } }));
       vi.stubEnv("PIANO_USER_AGENT_CONFIG", configPath);
       const dshHome = join(root, "dsh-home");
       const argsFile = join(root, "dsh-args.txt");

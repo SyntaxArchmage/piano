@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AgentError, agentError } from "./errors.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
-import { agentConfigPath, resolveHarnessConfig } from "./harness-config.js";
+import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";
 import {
   AGENT_RETRY_DELAYS_MS,
@@ -216,12 +216,6 @@ interface PiSessionEvent {
   readonly isError?: unknown;
 }
 
-interface PiConfig {
-  readonly provider?: string;
-  readonly model?: string;
-  readonly apiKey?: string;
-  readonly thinkingLevel?: ThinkingLevel;
-}
 
 const MIN_PI_VERSION = "0.84.0";
 const MAX_SDK_LOAD_RETRIES = 2;
@@ -233,7 +227,7 @@ const TRANSIENT_SDK_ERROR_CODES = new Set([
   "EAGAIN", "EBUSY", "EINTR", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "EPIPE",
 ]);
 let sdkRootCache: string | undefined;
-export const defaultPiConfigPath = join(homedir(), ".piano", "agent.config.json");
+export const defaultPiConfigPath = defaultAgentConfigPath;
 const AGENT_SOURCE: Source = { module: "harness", file: "pi.ts", function: "executeAgent" };
 const LOAD_SOURCE: Source = { module: "harness", file: "pi.ts", function: "loadSdk" };
 const RUNTIME_SOURCE: Source = { module: "harness", file: "pi.ts", function: "createModelRuntime" };
@@ -395,19 +389,6 @@ export function piAvailable(): boolean {
   }
 }
 
-function readPiConfig(): PiConfig {
-  try {
-    const value = JSON.parse(readFileSync(defaultPiConfigPath, "utf8")) as Record<string, unknown>;
-    return {
-      ...(configuredString(value.provider) === undefined ? {} : { provider: configuredString(value.provider) }),
-      ...(configuredString(value.model) === undefined ? {} : { model: configuredString(value.model) }),
-      ...(configuredString(value.apiKey) === undefined || value.apiKey === "CHANGE_ME" ? {} : { apiKey: configuredString(value.apiKey) }),
-      ...(configuredThinkingLevel(value.thinkingLevel) === undefined ? {} : { thinkingLevel: configuredThinkingLevel(value.thinkingLevel) }),
-    };
-  } catch {
-    return {};
-  }
-}
 
 function providerForModel(runtime: PiModelRuntime, modelId: string): string | undefined {
   const providers = new Set(
@@ -422,9 +403,6 @@ function providerForModel(runtime: PiModelRuntime, modelId: string): string | un
   return providers.size === 1 ? [...providers][0] : undefined;
 }
 
-function configuredString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
-}
 
 function configuredThinkingLevel(value: unknown): ThinkingLevel | undefined {
   return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value)
@@ -1015,20 +993,21 @@ function runPiAttempt(
       injected: options.sdk !== undefined,
     });
     const usePianoConfig = options.usePianoConfig !== false;
-    const config = usePianoConfig ? readPiConfig() : {};
+    // The same one-resolution path `doctor`, the generated model registry, and
+    // the subprocess adapters use. Reading `agent.config.json` a second time
+    // here is how the SDK adapter could silently disagree with the registry it
+    // was handed, so this path shares the central resolver instead.
+    const overrides: ResolvedHarnessConfig = {
+      ...(request.provider ?? options.provider) === undefined ? {} : { provider: request.provider ?? options.provider },
+      ...(request.model ?? options.model) === undefined ? {} : { model: request.model ?? options.model },
+      ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
+      ...(request.thinkingLevel ?? options.thinkingLevel) === undefined ? {} : { thinkingLevel: request.thinkingLevel ?? options.thinkingLevel },
+    };
+    const config: ResolvedHarnessConfig = usePianoConfig ? resolveHarnessConfig("pi", overrides) : overrides;
     const agentDir = options.agentDir ?? join(homedir(), ".pi", "agent");
-    const configuredProvider = configuredString(request.provider)
-      ?? configuredString(options.provider)
-      ?? (usePianoConfig ? configuredString(process.env.PIANO_PI_PROVIDER) : undefined)
-      ?? (usePianoConfig ? config.provider : undefined);
-    const modelId = configuredString(request.model)
-      ?? configuredString(options.model)
-      ?? (usePianoConfig ? configuredString(process.env.PIANO_PI_MODEL) : undefined)
-      ?? (usePianoConfig ? config.model : undefined);
-    const requestedThinkingLevel = request.thinkingLevel
-      ?? options.thinkingLevel
-      ?? (usePianoConfig ? configuredThinkingLevel(process.env.PIANO_PI_THINKING_LEVEL) : undefined)
-      ?? (usePianoConfig ? config.thinkingLevel : undefined);
+    const configuredProvider = config.provider;
+    const modelId = config.model;
+    const requestedThinkingLevel = config.thinkingLevel;
     if (request.thinkingLevel !== undefined && configuredThinkingLevel(request.thinkingLevel) === undefined) {
       return yield* Effect.fail(new AgentError({
         kind: "resource-unavailable",
@@ -1056,13 +1035,11 @@ function runPiAttempt(
           : `Pi SDK could not resolve a provider for model ${modelId}`,
       }));
     }
-    const apiKey = options.apiKey ?? (usePianoConfig
-      ? process.env.PIANO_PI_API_KEY ?? config.apiKey
-      : undefined);
-    // Endpoint for failure attribution; `resolveHarnessConfig` carries the
-    // same resolution the model registry was generated from, so the two
-    // cannot disagree about where the request went.
-    const endpoint = usePianoConfig ? resolveHarnessConfig("pi").baseUrl : undefined;
+    const apiKey = config.apiKey;
+    // Endpoint for failure attribution; the resolved config carries the same
+    // resolution the model registry was generated from, so the two cannot
+    // disagree about where the request went.
+    const endpoint = usePianoConfig ? config.baseUrl : undefined;
     if (apiKey !== undefined) {
       yield* TRACE(
         { ...RUNTIME_SOURCE, function: "setRuntimeApiKey" },
@@ -1144,7 +1121,7 @@ function runPiAttempt(
         settingsManager: sdk.SettingsManager.inMemory({ retry: { enabled: true, maxRetries: SDK_API_MAX_RETRIES } }),
         noExtensions: true,
         ...(request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) === true
-          ? { extensionFactories: [webSearchExtensionFactory({ baseUrl: endpoint, apiKey })] }
+          ? { extensionFactories: [webSearchExtensionFactory({ baseUrl: endpoint, apiKey, model: modelId })] }
           : {}),
         noSkills: true,
         noThemes: true,

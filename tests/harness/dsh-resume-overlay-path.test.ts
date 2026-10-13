@@ -18,9 +18,11 @@ describe("dsh resume overlay module resolution", () => {
       const overlay = await readFile(overlayPath, "utf8");
       const moduleName = /^\s+name:\s+(\S+)\s*$/mu.exec(overlay)?.[1];
 
-      expect(moduleName).toBe("./resume-runner.mjs");
-      // dsh resolves a ./ plugin name from the active profile's base URL.
-      const resolvedModulePath = resolve(dirname(dshResumeRunnerPath(homes.paths.dsh)), moduleName!);
+      // dsh resolves a patch row's `name` against the directory the patch file
+      // sits in, so the overlay climbs from `patches/` back to the runner under
+      // the headless profile — where the runner's bare dsh imports resolve.
+      expect(moduleName).toBe("../profiles/headless/resume-runner.mjs");
+      const resolvedModulePath = resolve(dirname(overlayPath), moduleName!);
       expect(dshResumeRunnerPath(homes.paths.dsh)).toBe(resolvedModulePath);
       expect(await readFile(resolvedModulePath, "utf8")).toContain("agents.resume");
     } finally {

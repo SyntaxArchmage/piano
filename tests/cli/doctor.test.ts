@@ -54,12 +54,30 @@ describe(" doctor harness report", () => {
     expect(output[0]).not.toContain("secret-key");
   });
 
+  it("reports unconfigured without any request when no model endpoint is configured", async () => {
+    const output: string[] = [];
+    let fetched = false;
+    await Effect.runPromise(doctorCommand(["--model"], {
+      modelConfig: {},
+      fetch: async () => {
+        fetched = true;
+        return new Response("{}", { status: 200 });
+      },
+      write: (line) => output.push(line),
+    }));
+    // There is no built-in fallback endpoint: an unconfigured install must not
+    // send a request anywhere, and must say what to configure instead.
+    expect(fetched).toBe(false);
+    expect(output[0]).toContain("[WARN] models: unconfigured");
+    expect(output[0]).toContain("baseUrl");
+  });
+
   it("routes a selected model through the Pi SDK probe", async () => {
     const output: string[] = [];
     let selectedModel = "";
     let selectedProvider = "";
     await Effect.runPromise(doctorCommand(["--model", "selected-model"], {
-      modelConfig: { provider: "enflame", apiKey: "secret-key" },
+      modelConfig: { provider: "example-provider", apiKey: "secret-key" },
       probePi: async (model, config) => {
         selectedModel = model;
         selectedProvider = config.provider ?? "";
@@ -68,7 +86,7 @@ describe(" doctor harness report", () => {
       write: (line) => output.push(line),
     }));
     expect(selectedModel).toBe("selected-model");
-    expect(selectedProvider).toBe("enflame");
+    expect(selectedProvider).toBe("example-provider");
     expect(output).toEqual(["[PASS] model: selected-model responded successfully"]);
   });
 
@@ -91,7 +109,7 @@ describe(" doctor harness report", () => {
     const sdk: PiModule = {
       ModelRuntime: {
         create: async () => ({
-          getModels: () => [{ provider: "enflame", id: "selected-model" }],
+          getModels: () => [{ provider: "example-provider", id: "selected-model" }],
           getModel: (provider: string, model: string) => {
             resolvedProvider = provider;
             resolvedModel = model;
@@ -154,7 +172,7 @@ describe(" doctor harness report", () => {
     const readySdkOutput: string[] = [];
     await Effect.runPromise(doctorCommand(["--harness", "pi"], {
       sdkAvailable: async () => true,
-      harnessConfig: () => ({ provider: "enflame", model: "selected-model" }),
+      harnessConfig: () => ({ provider: "example-provider", model: "selected-model" }),
       write: (line) => readySdkOutput.push(line),
     }));
     expect(readySdkOutput).toEqual(["[PASS] pi: ready — Pi SDK and model configuration are available"]);
@@ -162,7 +180,7 @@ describe(" doctor harness report", () => {
     const subprocessOutput: string[] = [];
     await Effect.runPromise(doctorCommand(["--harness", "pi-cli"], {
       harnessConfig: () => ({
-        provider: "enflame",
+        provider: "example-provider",
         model: "selected-model",
         apiKey: "secret-key",
         binPath: "pi-test",
@@ -181,7 +199,7 @@ describe(" doctor harness report", () => {
     const output: string[] = [];
     const probed: string[] = [];
     await Effect.runPromise(doctorCommand(["--model", "all"], {
-      modelConfig: { provider: "enflame", apiKey: "secret-key" },
+      modelConfig: { provider: "example-provider", apiKey: "secret-key" },
       supportedModels: () => ["deepseek-v4-flash", "qwen3.8-max", "gpt-5.6-luna"],
       probePi: async (model, config) => {
         probed.push(`${model}@${config.provider ?? ""}`);
@@ -198,9 +216,9 @@ describe(" doctor harness report", () => {
       write: (line) => output.push(line),
     }));
     expect(probed).toEqual([
-      "deepseek-v4-flash@enflame",
-      "qwen3.8-max@enflame",
-      "gpt-5.6-luna@enflame",
+      "deepseek-v4-flash@example-provider",
+      "qwen3.8-max@example-provider",
+      "gpt-5.6-luna@example-provider",
     ]);
     expect(output[0]?.split("\n")).toEqual([
       "[PASS] model: deepseek-v4-flash responded successfully",
@@ -254,7 +272,7 @@ describe(" doctor harness report", () => {
     let probedHarness = "";
     let probedModel = "";
     await Effect.runPromise(doctorCommand(["--model", "qwen3.8-max", "--harness", "dsh"], {
-      harnessConfig: () => ({ provider: "enflame", model: "configured-model", binPath: "dsh" }),
+      harnessConfig: () => ({ provider: "example-provider", model: "configured-model", binPath: "dsh" }),
       probePi: async (model) => {
         throw new Error(`the SDK adapter must not answer for dsh: ${model}`);
       },
@@ -273,7 +291,7 @@ describe(" doctor harness report", () => {
 
     const failing: string[] = [];
     await Effect.runPromise(doctorCommand(["--model", "qwen3.8-max", "--harness", "dsh"], {
-      harnessConfig: () => ({ provider: "enflame", binPath: "dsh" }),
+      harnessConfig: () => ({ provider: "example-provider", binPath: "dsh" }),
       probeSubprocess: async () => ({ status: "unavailable", reason: "real health request failed" }),
       write: (line) => failing.push(line),
     }));

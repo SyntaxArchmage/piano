@@ -23,13 +23,13 @@ describe("Piano-owned harness configuration home", () => {
     // read into its own home: another provider, another model, a stored secret.
     const originalRegistry = `${JSON.stringify({
       providers: {
-        enflame: {
+        "example-provider": {
           baseUrl: "https://user.example/v1",
           models: [{ id: "user-only-model" }],
         },
       },
     }, null, 2)}\n`;
-    const originalAuth = '{"enflame":{"key":"user-stored-secret"}}\n';
+    const originalAuth = '{"example-provider":{"key":"user-stored-secret"}}\n';
     const originalClaude = '{"theme":"user"}\n';
     const originalDsh = "agent-default-model:\n  provider: user-provider\n  model: user-model\n";
     try {
@@ -49,7 +49,7 @@ describe("Piano-owned harness configuration home", () => {
         configs: {
           pi: {
             homePath: userPi,
-            provider: "enflame",
+            provider: "example-provider",
             model: "deepseek-v4-flash",
             apiKey: "pi-secret",
             baseUrl: "https://api.example/v1",
@@ -57,7 +57,7 @@ describe("Piano-owned harness configuration home", () => {
           claude: { homePath: userClaude, model: "qwen3.8-27b", apiKey: "claude-secret" },
           dsh: {
             homePath: userDsh,
-            provider: "enflame",
+            provider: "example-provider",
             model: "qwen3.8-27b",
             apiKey: "dsh-secret",
             baseUrl: "http://127.0.0.1:8787/v1",
@@ -92,9 +92,9 @@ describe("Piano-owned harness configuration home", () => {
       const registry = JSON.parse(observed.registry) as {
         providers: Record<string, { baseUrl: string; models: readonly { id: string }[] }>;
       };
-      expect(Object.keys(registry.providers)).toEqual(["enflame"]);
-      expect(registry.providers.enflame!.baseUrl).toBe("https://api.example/v1");
-      expect(registry.providers.enflame!.models).toEqual([
+      expect(Object.keys(registry.providers)).toEqual(["example-provider"]);
+      expect(registry.providers["example-provider"]!.baseUrl).toBe("https://api.example/v1");
+      expect(registry.providers["example-provider"]!.models).toEqual([
         { id: "deepseek-v4-flash" },
         { id: "qwen3.8-max" },
         { id: "claude-opus-5" },
@@ -102,7 +102,7 @@ describe("Piano-owned harness configuration home", () => {
 
       // dsh gets Piano's provider and model, with the credential left as an
       // environment reference.
-      expect(observed.dsh).toContain('"enflame"');
+      expect(observed.dsh).toContain('"example-provider"');
       expect(observed.dsh).toContain('"qwen3.8-27b"');
       expect(observed.dsh).toContain("PIANO_DSH_API_KEY");
       expect(observed.dsh).toContain("web-search-deepseek:");
@@ -141,7 +141,7 @@ describe("Piano-owned harness configuration home", () => {
         rootDir: homeRoot,
         configs: {
           dsh: {
-            provider: "enflame",
+            provider: "example-provider",
             model: "qwen3.8-27b",
             apiKey: "dsh-secret",
             baseUrl: "http://127.0.0.1:8787/v1",
@@ -170,14 +170,14 @@ describe("Piano-owned harness configuration home", () => {
       // overlay: one file per reachable model, each naming only its own.
       const patch = await readFile(dshModelPatchPath(homes.paths.dsh, "vendor/namespaced-model"), "utf8");
       expect(patch).toContain("- id: agent-default-model");
-      expect(patch).toContain('provider: "enflame"');
+      expect(patch).toContain('provider: "example-provider"');
       expect(patch).toContain('model: "vendor/namespaced-model"');
       // Every catalog entry is selectable, and an id carrying a separator stays
       // inside the generated directory instead of escaping it.
       expect((await readdir(join(homes.paths.dsh, "patches"))).sort()).toEqual([
         "deepseek-v4-flash.patch.yml",
-        "qwen3.8-27b.patch.yml",
         "piano-resume.patch.yml",
+        "qwen3.8-27b.patch.yml",
         "vendor%2Fnamespaced-model.patch.yml",
         "web-search-off.yml",
       ]);
@@ -205,7 +205,7 @@ describe("Piano-owned harness configuration home", () => {
       // own argument parsing rather than a second parser Piano would maintain.
       const overlay = await readFile(dshResumeOverlayPath(homes.paths.dsh), "utf8");
       expect(overlay).toContain("- id: headless-runner\n  disabled: true");
-      expect(overlay).toContain("name: ./resume-runner.mjs");
+      expect(overlay).toContain("name: ../profiles/headless/resume-runner.mjs");
       expect(overlay).not.toContain("headless-startup");
 
       // The overlay reaches back into the profile tree, where the runner's
@@ -237,7 +237,7 @@ describe("Piano-owned harness configuration home", () => {
     try {
       const configured = await read({
         rootDir: homeRoot,
-        configs: { pi: { provider: "enflame", baseUrl: "https://api.example/v1" } },
+        configs: { pi: { provider: "example-provider", baseUrl: "https://api.example/v1" } },
         models: ["qwen3.8-max"],
       });
       expect(configured).toContain("qwen3.8-max");
@@ -247,7 +247,7 @@ describe("Piano-owned harness configuration home", () => {
       // resolving after the configuration that justified it was removed.
       const withoutEndpoint = await read({
         rootDir: homeRoot,
-        configs: { pi: { provider: "enflame" } },
+        configs: { pi: { provider: "example-provider" } },
         models: ["qwen3.8-max"],
       });
       expect(JSON.parse(withoutEndpoint)).toEqual({ providers: {} });
@@ -261,7 +261,7 @@ describe("Piano-owned harness configuration home", () => {
 
       const withoutModels = await read({
         rootDir: homeRoot,
-        configs: { pi: { provider: "enflame", baseUrl: "https://api.example/v1" } },
+        configs: { pi: { provider: "example-provider", baseUrl: "https://api.example/v1" } },
         models: [],
       });
       expect(JSON.parse(withoutModels)).toEqual({ providers: {} });
@@ -275,7 +275,7 @@ describe("Piano-owned harness configuration home", () => {
     const homeRoot = join(root, "home");
     const options = {
       rootDir: homeRoot,
-      configs: { pi: { provider: "enflame", baseUrl: "https://api.example/v1" } },
+      configs: { pi: { provider: "example-provider", baseUrl: "https://api.example/v1" } },
       models: ["deepseek-v4-flash", "qwen3.8-max"],
     };
     try {
@@ -289,7 +289,7 @@ describe("Piano-owned harness configuration home", () => {
       const registry = JSON.parse(await readFile(join(homes[0]!.paths.pi, "models.json"), "utf8")) as {
         providers: Record<string, { models: readonly { id: string }[] }>;
       };
-      expect(registry.providers.enflame!.models).toEqual([
+      expect(registry.providers["example-provider"]!.models).toEqual([
         { id: "deepseek-v4-flash" },
         { id: "qwen3.8-max" },
       ]);
