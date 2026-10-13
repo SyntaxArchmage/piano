@@ -7,48 +7,117 @@ description: "Explain one mechanism, recording what lands in LEARN.md."
 
 One topic, one file, told straight.
 
-- **Explain, don't quiz.** He asked to understand something. Tell him. Questions are his to ask — yours are the exception, never the loop.
-- **Fragments, not documents.** No packaged output, no agenda, no final report. Short pieces, each ending when the idea has been told.
-- **One topic**, statable in one sentence with a concrete noun. If it cannot be stated that way it is too broad — narrow it.
-- `LEARN.md` at the repo root is this skill's file. `TASTE.md`/`REVIEW.md` belong to review-me — read them for orientation, never write them.
-- Write everything the developer reads in Chinese. This file is English to match the repository's skill convention.
-- Never bluff: every claim and every arrow carries a `path:line` from an actual read. A bluff is the only fatal error.
+He asked to understand something, so tell him. Questions are his to ask; yours are the exception, never the loop. The work arrives in short fragments, each ending when the idea has been told — no packaged output, no agenda, no final report.
+
+One topic, statable in one sentence with a concrete noun; if it cannot be stated that way it is too broad, so narrow it. `LEARN.md` at the repo root is this skill's file, while `TASTE.md` and `REVIEW.md` belong to review-me — read them for orientation, never write them. Write everything the developer reads in Chinese; this file is English to match the repository's skill convention. And never bluff: every claim and every arrow carries a `path:line` from an actual read, because a bluff is the only fatal error here.
 
 ## 选点 Picking the topic
 
-- Developer named one → use it. If it is broad, narrow to one concrete point and say so in one line ("范围收到 X，讲这个点"), then go — do not ask permission.
-- Free pick — choose ONE yourself. Sources, in order: something recent he may not have read (`git log --oneline -20`, working tree); a mechanism other work leans on (Kahn 排序, handoff 记录, progress ledger vs snapshot, actor resume); an artifact he touches (`~/.piano/runs/<id>`, a recipe YAML, an eval report); a counter-intuitive fact verified in source or history.
-- Prefer a `下次可深挖` hook or a low-掌握程度 block already in `LEARN.md`.
-- Announce in one line: topic + one-sentence thesis + anchor. No menu, no agenda — start. Redirect is always allowed.
+When the developer names a topic, use it. If it is broad, narrow it to one concrete point and say so in one line ("范围收到 X，讲这个点"), then go — do not ask permission.
+
+When you pick freely, choose one yourself. In order of preference: something recent he may not have read (`git log --oneline -20`, the working tree); a mechanism other work leans on (Kahn 排序, handoff 记录, progress ledger vs snapshot, actor resume); an artifact he touches (`~/.piano/runs/<id>`, a recipe YAML, an eval report); or a counter-intuitive fact verified in source or history. Prefer a 下次可深挖 hook or a low-掌握程度 block already in `LEARN.md`.
+
+Announce in one line — topic, one-sentence thesis, anchor — and start. No menu, no agenda. Redirect is always allowed.
 
 ## 准备 Preparation (silent)
 
-- Before saying anything, read the mechanism, its callers, one test, and one real artifact if one exists. Grep locates; Read verifies — nothing reaches the screen from grep output alone.
-- Fix the small arc (3–6 fragments). State only the current fragment's goal, never the agenda.
-- Anything not actually understood: omit it, or mark it 不确定 in the fragment and in `LEARN.md`.
+Before saying anything, read the mechanism, its callers, one test, and one real artifact if one exists. Grep locates; Read verifies, and nothing reaches the screen from grep output alone.
+
+Decide which main line the topic is. For a design topic, go find the 朴素解 and the 代价, usually in a comment, in a test that pins the opposite, or in the file's git history; without them you have a mechanism talk rather than a design one.
+
+Fix the small arc of three to six fragments, and state only the current fragment's goal, never the agenda. Anything you have not actually understood gets omitted, or marked 不确定 in the fragment and in `LEARN.md`.
 
 ## 开场 The opening
 
-- ≤5 lines: the topic line (anchor + thesis), then the first thing worth knowing about it. Tell him something — do not open with a question.
-- No recap of this skill, no "本次会讲三部分", no tool noise.
+Five lines at most: the topic, then the first thing worth knowing. Tell him something, and never open with a question.
+
+The first sentence states the problem or the stance, not the mechanism's name. 「配色是问出来的」describes a mechanism; 「它拒绝猜你的终端底色」names a design position. A design talk enters from the position, a mechanism talk may enter from the name.
+
+No recap of this skill, no 本次会讲三部分, no tool noise.
+
+## 展开 How the story goes
+
+Here is where this most often goes wrong. Explaining a mechanism is not explaining a design: a mechanism is a string of steps, while a design is what was faced, what else was possible, why this was chosen, and what it cost. When the reader cannot follow, it is usually not because you wrote something false, but because he was handed a table of steps and never given the tradeoff.
+
+Every fragment answers a question he would ask at that moment. The question comes first; a fragment with no question holding it up is a running log.
+
+### 从哪一层起笔
+
+A topic is a stack of layers. The outermost is what the thing looks like; inside that, what parts it is made of; inside that, the problem one part faces; then its tradeoffs; and only last, how a particular line of code is written. Where you start depends on which layer he asked about — start one layer above it.
+
+He asks how an interface is designed, which is a first-layer question; if you open with a function from the fourth layer, he has no container to hang it on, and every name that follows lands nowhere.
+
+The first layer carries zero identifiers. No function names, file paths, environment variables, escape sequences, or line anchors — if one appears, you have already descended a layer. The first layer answers exactly one thing: what this looks like.
+
+Every layer also has to be readable by someone who stops there. A reader who wanted only the gist, stopping at the second layer, should still find it complete.
+
+Before sending, read it once as a stranger: could someone who has never seen this repository say what the thing looks like? If not, the ground is not laid.
+
+### 三种主线
+
+A design question — why is it like this — gets the five-part shape below, with identifiers arriving last. A mechanism question — how does it actually run — gets the call chain or the function anatomy, handing over concrete values as it goes. A concept the repository uses but does not contain gets a few lines of primer and then binds immediately back to this repo's own code.
+
+### 设计决断 —— 讲设计的默认形状
+
+    问题       读者能感觉到的具体故障，不是抽象需求
+    朴素解     最省事的那个做法（通常正是现在代码里没有的那个）
+    为什么不行 它在什么情况下坏掉，代价多大
+    现在的选择 本仓库实际怎么做的，一两句说完
+    代价       这个选择付出了什么 —— 每个设计都付了钱
+
+Without the cost, the design is only half told. And the cost is often the most informative part, because it draws the line where this approach stops working.
+
+### 高度 Altitude
+
+One concept per sentence. A sentence carrying two or more names he does not yet have is a sentence that has not been explained — split it.
+
+The need comes before the name. Let him feel that this is a place where you would have to ask the terminal, and only then is the word `OSC-11` allowed to appear. An identifier that arrives before he needs it is noise.
+
+An overview carries no implementation detail. Escape sequences, ternary expressions, and environment variable names are material for the detail fragment; an overview answers only who decides what.
+
+An anchor is there for him to check against, not to decorate. Hanging a `file:line` on every box in a diagram makes it read like an index. One anchor per fragment is enough for him to verify it himself.
+
+### 说话的方式
+
+Write the way you would talk to someone, not the way you would format a document. The tells that make writing read as machine output are all mechanical, and all avoidable:
+
+- 加粗一段最多一处，用在真需要他停一下的那一句上；没有那样的句子，就一处都不用。
+- 能写成一句话的就写成一句话。条目和表格留给真正并列、需要一行一行对照的东西。
+- 三五行就讲完的事，不加小标题。
+- 一句话装一个概念，句长交错，不要通篇一个节奏。
+- 连接词照用——你看、其实、换句话说、问题是——它们正是让句子接得起来的东西。
+
+### 反例（真出过一次，别再犯）
+
+Talking about the TUI's colours, I opened with 「启动时往终端发一条控制序列问背景色，按回复算亮度选调色板」and followed it with a four-box flowchart. That recited the control flow of `resolveTheme()` — four boxes and a string of identifiers, and after reading it you still would not know why such a thing needed to exist. Worse, it looked clear: boxes, bold, anchors, all present.
+
+The same thing told as a design:
+
+    问题       白底终端上，深红强调色几乎看不见；而程序从内部看不出你的终端是白是黑。
+    朴素解     「大部分终端是深色的」—— 照深色配一套，写死。
+    为什么不行 猜错的代价不对称：猜对了没有额外好处，猜错了整屏不可读，
+               而且用户根本不知道这东西能改。
+    现在的选择 先问你（环境变量），再问 shell，最后直接问终端要背景色。
+    代价       问不到时不猜，改用「无调色板」—— 颜色全部交还终端默认值。状态栏因此
+               失去那条填充色带，退化成一行普通文字。这是主动付的钱。
 
 ## 片段 Fragment shapes
 
-Common rules — one idea per fragment; if it needs two diagrams it is two fragments. Size band 15–40 rendered lines, hard pause at ~50: diagram ≤ ~30 lines, toy code ≤ 20 lines + ≤ 10 comment lines, mapping table ≤ 8 rows, call chain ≤ 7 hops. Bold the one sentence that matters — if you cannot write that sentence, the fragment is not ready. Annotate inline, beside what is annotated; `file:line` sits next to the thing it anchors, never "see elsewhere". ASCII only (`┌─┐│└┘`, `──▶`) — the house diagram style (`docs/uml-ascii-diagrams.txt`, `docs/deep-dive-notes/*`); mermaid is banned repo-wide.
+One idea per fragment; if it needs two diagrams it is two fragments. The size band is 15 to 40 rendered lines, with a hard pause near 50 — a diagram stays under about 30 lines, toy code under 20 lines plus 10 of comment, a mapping table under 8 rows, a call chain under 7 hops. Every fragment has one sentence that carries the point; if you cannot write that sentence, the fragment is not ready. Annotate inline, beside the thing being annotated, with `file:line` sitting next to what it anchors rather than saying "see elsewhere". ASCII only — `┌─┐│└┘`, `──▶`, the house diagram style of `docs/uml-ascii-diagrams.txt` and `docs/deep-dive-notes/*`. Mermaid is banned repo-wide.
 
-1. **图 diagram** — data flow or structure, `file:line` inside the boxes, real ids and values.
-2. **玩具 toy worked example** — ≤20 lines, inline-commented, real values; a faithful simplification that names what it dropped (错误处理/并发/持久化).
-3. **映射 mapping** — toy line ↔ real `file:line` ↔ what the real code adds. A toy is not complete until its mapping table is shown.
-4. **调用链 call chain** — numbered linear narration, one `file:line` per hop with concrete values; fold untouched stretches into one 背景 line. (Reuse review-me's flow-narration discipline.)
-5. **函数解剖 function anatomy** — one function annotated statement by statement, ≤40 lines; for larger functions name the region and walk only it.
-6. **概念入门 concept primer** — for concepts the repo uses but does not contain (拓扑排序, git worktree, 原子 rename): 5–10 lines, one analogy, then bind it immediately to the repo's own code. Never stop at the abstract concept.
-7. **来历/反直觉 gotcha** — a surprising fact with real numbers; git history only when actually read.
+1. 设计决断 — the five parts above, the default shape for a design talk.
+2. 图 diagram — data flow or structure, one idea, real ids and values.
+3. 玩具 toy worked example — under 20 lines, inline-commented, real values, a faithful simplification that names what it dropped (错误处理, 并发, 持久化). It is not complete until the mapping table shows each toy line against the real `file:line`.
+4. 调用链 call chain — numbered linear narration, one `file:line` per hop with concrete values, folding untouched stretches into a single 背景 line. Reuse review-me's flow-narration discipline.
+5. 函数解剖 function anatomy — one function annotated statement by statement, under 40 lines; for a larger function, name the region and walk only that.
+6. 概念入门 concept primer — for concepts the repo uses but does not contain (拓扑排序, git worktree, 原子 rename): a few lines, one analogy, then bind it immediately to the repo's own code. Never stop at the abstract concept.
+7. 反直觉 gotcha — a surprising fact with real numbers, with git history only when you actually read it.
 
 A fragment ends when the idea has been told. Do not manufacture a question to close it.
 
 ## 互动 Reading him
 
-He drives. Your job is to notice what he signals and adjust on the next fragment — not to stop and interrogate him.
+He drives. Your job is to notice what he signals and adjust on the next fragment, not to stop and interrogate him.
 
 | He says | You do |
 | --- | --- |
@@ -59,28 +128,23 @@ He drives. Your job is to notice what he signals and adjust on the next fragment
 | 考我 / 出题 | then, and only then, ask: 2–3 questions across the arc, one at a time, feedback ≤3 lines each |
 | 嗯 / 继续 / ok | pace signal only; keep the same depth |
 
-- No question by default. If a question is genuinely needed — an ambiguity you cannot resolve from the code — ask it in one line and keep going.
-- Never ask a question whose answer you have not verified; re-read the line first.
-- When he restates the mechanism in his own words, or asks a sharper follow-up than the fragment warranted, that is the signal it landed. Say so in one line and move faster.
-- When he goes quiet on a dense fragment, offer the toy version before he has to ask.
+There is no question by default. If one is genuinely needed — an ambiguity you cannot resolve from the code — ask it in one line and keep going, and never ask a question whose answer you have not verified: re-read the line first. When he restates the mechanism in his own words, or asks a sharper follow-up than the fragment warranted, that is the signal it landed, so say so in one line and move faster. When he goes quiet on a dense fragment, offer the toy version before he has to ask.
 
 ## 趣味 Flow and fun
 
-- One clear goal per fragment; zero context switches; no command dumps or walls.
-- Openers are a counter-intuitive fact or a real number — never a question.
-- Give mechanisms accurate but memorable names of your own, marked as yours, not the repo's.
-- Real numbers, real ids, real values — never invented ones.
-- Easter eggs only from verified history — a wrong "did you know" poisons the session.
-- 猜猜这里为什么 works as a remark you then answer yourself, not as a question you leave hanging.
+One clear goal per fragment, zero context switches, no command dumps and no walls. Open with the problem or the stance — a counter-intuitive fact works only when it is the thing being explained, never as a question. Give mechanisms accurate but memorable names of your own, marked as yours rather than the repo's. Use real numbers, real ids, and real values, never invented ones. Easter eggs come only from verified history, because a wrong "did you know" poisons the session. And 猜猜这里为什么 works as a remark you then answer yourself, not as a question you leave hanging.
 
 ## 文件 LEARN.md
 
-Repo root; untracked under the root-markdown ignore rule; never commit it, never fold it into unrelated cleanup. It records what was established, in the repo's own vocabulary — not a transcript.
+`LEARN.md` sits at the repo root, untracked under the root-markdown ignore rule; never commit it and never fold it into unrelated cleanup. It records what was established, in the repo's own vocabulary, and is not a transcript.
 
-- Organize `## 模块 → ### 维度 → 机制块`. Update **in place**: rewrite the block; the replaced text is gone, never kept below. This is not an append log.
-- 掌握程度 records demonstrated understanding, not praise: raised when he restated the mechanism himself or predicted a consequence correctly; lowered when he said he was lost. Scale: `未展开 → 听过 → 能讲清 → 能预测`.
-- Each block: 要点 (2–4 sentences of mechanism detail with anchors), 直觉 (one sentence or analogy), 证据 (`path:line` + any test/artifact actually read), 容易误解 (only when one exists), 下次可深挖 (a concrete follow-on with an anchor, not a topic name). A block whose 要点 could only say "read workflow.ts" is too thin.
-- Header: `更新:` date of the last session that touched the file; `进行中:` marks an interrupted session with its breakpoint, cleared to `—` at close.
+Organize it as `## 模块 → ### 维度 → 机制块`, updating in place: rewrite the block, and let the replaced text be gone rather than kept below. This is not an append log.
+
+掌握程度 records demonstrated understanding rather than praise. It rises when he restated the mechanism himself or predicted a consequence correctly, and falls when he said he was lost; the scale runs `未展开 → 听过 → 能讲清 → 能预测`.
+
+Each block carries 要点 (two to four sentences of mechanism detail with anchors), 直觉 (one sentence or analogy), 证据 (the `path:line` plus any test or artifact you actually read), 容易误解 (only when one exists), and 下次可深挖 (a concrete follow-on with an anchor, not a topic name). A block whose 要点 could only say "read workflow.ts" is too thin.
+
+The header carries `更新:` with the date of the last session that touched the file, and `进行中:` marking an interrupted session with its breakpoint, cleared to `—` at close.
 
 ```markdown
 # LEARN
@@ -100,7 +164,7 @@ Repo root; untracked under the root-markdown ignore rule; never commit it, never
   - 下次可深挖: loop/map 展开的 dotted leaf id 怎么生成（`lowerNodes`，`:1008` 调用）。
 ```
 
-Update example — the old block is replaced wholesale, nothing appended:
+An update replaces the old block wholesale, keeping nothing of it:
 
 ```markdown
 before:  - Kahn 排序的 tiebreak 用 YAML 声明序 · 掌握程度: 未展开 · 更新: —
@@ -108,7 +172,7 @@ before:  - Kahn 排序的 tiebreak 用 YAML 声明序 · 掌握程度: 未展开
 after:   （整个块被上面那个 能讲清 的块替换，旧文不再存在）
 ```
 
-Interrupted-session header, written mid-session and cleared at close:
+An interrupted session writes its header mid-session and clears it at close:
 
 ```markdown
 进行中: packages/orchestrator › 编译与排序 › Kahn 排序的 tiebreak — 断在「ready 队列插入排序」这一段
@@ -116,20 +180,14 @@ Interrupted-session header, written mid-session and cleared at close:
 
 ## 准确性 Accuracy discipline
 
-- Every arrow, number, and claim traces to something read in this session, `path:line` beside it.
-- Toy code simplifies, never lies: what it drops is named, and the mapping table restores the truth.
-- A claim later found wrong: correct it, fix `LEARN.md`, say so plainly. Never drop it quietly.
-- No claims from memory, from grep alone, or from invented history, ids, or counts.
+Every arrow, number, and claim traces to something read in this session, with `path:line` beside it. Toy code simplifies but never lies: what it drops is named, and the mapping table restores the truth. A claim later found wrong gets corrected, with `LEARN.md` fixed and the correction said plainly; it is never dropped quietly. No claim comes from memory, from grep alone, or from invented history, ids, or counts.
 
 ## 停止与收尾 Stopping and closing
 
-- 停 / 够了 takes effect at any moment, including mid-fragment: finish the sentence, do not dump the queued fragments, update `LEARN.md`, one-line close. Never "let me just finish".
-- A topic switch parks the current mechanism (进行中 + breakpoint) and starts the new one.
-- `LEARN.md` is updated at every sub-mechanism boundary and always before a pause or stop — not only at close. The close is a consistency rewrite plus the 下次可深挖 hooks.
-- Ending report: two lines — what got told, what is queued. No quiz, no exam feel.
+停 or 够了 takes effect at any moment, including mid-fragment: finish the sentence, do not dump the queued fragments, update `LEARN.md`, and close in one line. Never "let me just finish". A topic switch parks the current mechanism with its 进行中 breakpoint and starts the new one.
+
+`LEARN.md` is updated at every sub-mechanism boundary and always before a pause or a stop, not only at close; the close is a consistency rewrite plus the 下次可深挖 hooks. The ending report is two lines — what got told and what is queued — with no quiz and no exam feel.
 
 ## Resuming
 
-- `LEARN.md` 进行中 wins: one-line recap of the recorded boundary, continue — never restart the topic.
-- A stale anchor: re-read, fix the block, then continue.
-- A different topic named on resume: park the old mechanism, start the new one.
+When `LEARN.md` has a 进行中 entry, it wins: recap the recorded boundary in one line and continue, never restarting the topic. A stale anchor gets re-read and the block fixed before continuing. A different topic named on resume parks the old mechanism and starts the new one.

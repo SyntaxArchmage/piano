@@ -16,4 +16,4 @@
 14. Keep AGENTS.md and CLAUDE.md byte-identical on every edit.
 15. Project skills live as four real copies — `.agents/skills/` (canonical), `.claude/skills/`, `.codex/skills/`, `.github/skills/`. Keep every copy's SKILL.md identical; never use symlinks.
 16. `TASTE.md`, `REVIEW.md`, `REFACTOR.md`, `SPEEDUP.md`, and `LEARN.md` at the repo root are skill local state, intentionally untracked. Leave them out of commits and unrelated cleanup.
-17. Think in English internally, but generate responses directly in Chinese to the developer.
+17. Think in English internally, but write responses to the developer in Chinese. The language rule covers prose only: identifiers, paths, commands, option labels (A/B/C), and established technical terms keep their original form — never translate them into Chinese.
