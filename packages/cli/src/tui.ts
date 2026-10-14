@@ -1,6 +1,5 @@
 import { Duration, Effect, Fiber } from "effect";
 import { stdin, stdout } from "node:process";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +21,7 @@ import {
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
 } from "@piano/orchestrator";
+import { readWorkflowSnapshot } from "./progress-view.js";
 import { TranscriptView } from "./chat-render.js";
 import { TuiError } from "./errors.js";
 import { AskQuestion, type AskQuestionAnswer, type AskQuestionSpec, type AskQuestionStyles } from "./ask-question.js";
@@ -32,12 +32,7 @@ import { resolveTheme, queryBackgroundColor, sideTheme, RST, type PianoTheme } f
 import { buildSideBanner, renderSideFooter, sideFooterRunToken } from "./side-screen.js";
 import { TrajectoryPanel } from "./trajectory-panel.js";
 import { renderStatusPanel } from "./status-panel.js";
-import {
-  parseWorkflowGraphSnapshot,
-  WorkflowGraph,
-  type WorkflowGraphDefinition,
-  type WorkflowGraphSnapshot,
-} from "./workflow-graph.js";
+import { WorkflowGraph, type WorkflowGraphDefinition } from "./workflow-graph.js";
 import { DEFAULT_SPLIT_RATIO, emptySplitDrag, isWithinRightPane, parseSgrMouse, rightColumns, stepSplitDrag } from "./split-drag.js";
 import { SideBySide } from "./tui-face.js";
 import { COPY_MODE_KEYS, ERROR_EXPAND_KEYS, TOOL_EXPAND_KEYS, dispatchShortcut, getScrollKeyBindings, matchShortcut, matchesKeyPress } from "./shortcuts.js";
@@ -428,16 +423,6 @@ function editorTheme(theme: Pick<PianoTheme, "accent" | "dim">): EditorTheme {
       noMatch: (value) => `${theme.dim}${value}${RST}`,
     },
   };
-}
-
-async function readWorkflowSnapshot(path: string): Promise<WorkflowGraphSnapshot | undefined> {
-  try {
-    return parseWorkflowGraphSnapshot(JSON.parse(await readFile(path, "utf8")) as unknown);
-  } catch {
-    // The snapshot is a convenience view. Missing, malformed, or concurrently
-    // replaced files must not interrupt the interactive session.
-    return undefined;
-  }
 }
 
 /** Generic Piano shell: presentation and terminal input only. */
