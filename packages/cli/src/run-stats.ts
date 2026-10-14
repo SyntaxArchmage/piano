@@ -47,10 +47,6 @@ export interface RunStats {
   readonly completedStages: number;
   /** Failed stage invocations (agent_end with willRetry). */
   readonly failedStages: number;
-  /** Wall-clock elapsed since the run started, in milliseconds. */
-  readonly elapsedMs: number;
-  /** The prompt's own outcome was folded in. Set only by `markTerminal` —
-   * never inferred from a turn ending, which says nothing about the run. */
   /** The prompt's own outcome, folded in by `markTerminal` — never inferred
    * from a turn ending, which says nothing about the run. Absent while the run
    * is live, so this is also what "the run is over" reads off. */
@@ -64,7 +60,6 @@ export function emptyRunStats(): RunStats {
     toolFailures: 0,
     completedStages: 0,
     failedStages: 0,
-    elapsedMs: 0,
     terminal: undefined,
     inputTokens: undefined,
     outputTokens: undefined,
@@ -127,18 +122,13 @@ export function markTerminal(
   return { ...input, terminal };
 }
 
-/** Fold `events` in order into a cumulative `RunStats`, advancing elapsed to
- * the difference between startTime and now. */
-export function foldRunStats(
-  events: readonly AgentEvent[],
-  startTime: number,
-  now: number,
-): RunStats {
+/** Fold `events` in order into a cumulative `RunStats`. */
+export function foldRunStats(events: readonly AgentEvent[]): RunStats {
   let stats = emptyRunStats();
   for (const event of events) {
     stats = applyRunStat(stats, event);
   }
-  return { ...stats, elapsedMs: Math.max(0, now - startTime) };
+  return stats;
 }
 
 /** Compact token formatting for the footer: values ≥1000 render as "1.2k";

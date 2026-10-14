@@ -548,8 +548,7 @@ export function runTui(
           ).join("\n"));
           return;
         }
-        const currentStats = { ...front.stats, elapsedMs: Date.now() - front.startedAt };
-        const panel = renderStatusPanel(front.theme, terminal.columns, graph, currentStats, copyMode, scrollKeys.modifier).join("\n");
+        const panel = renderStatusPanel(front.theme, terminal.columns, graph, front.stats, copyMode, scrollKeys.modifier).join("\n");
         const notices = [exitDrainMsg].filter((line): line is string => line !== undefined);
         footer.setText([...notices, panel].join("\n"));
       };

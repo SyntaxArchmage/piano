@@ -96,16 +96,14 @@ describe("applyRunStat", () => {
 });
 
 describe("foldRunStats", () => {
-  it("folds events in order and advances elapsed", () => {
-    const stats = foldRunStats([toolEnd(), toolEnd(true), agentEnd(false)], 1000, 5000);
+  it("folds events in order", () => {
+    const stats = foldRunStats([toolEnd(), toolEnd(true), agentEnd(false)]);
     expect(stats.toolCalls).toBe(2);
     expect(stats.completedStages).toBe(1);
-    expect(stats.elapsedMs).toBe(4000);
   });
 
-  it("clamps elapsed to zero", () => {
-    const stats = foldRunStats([], 5000, 1000);
-    expect(stats.elapsedMs).toBe(0);
+  it("returns the empty state for no events", () => {
+    expect(foldRunStats([])).toEqual(emptyRunStats());
   });
 });
 
@@ -126,7 +124,7 @@ describe("formatTokens", () => {
 describe("statsStatusLabel", () => {
   it("reports waiting before any event and running after activity", () => {
     expect(statsStatusLabel(emptyRunStats())).toBe("waiting");
-    expect(statsStatusLabel(foldRunStats([toolEnd()], 0, 0))).toBe("running");
+    expect(statsStatusLabel(foldRunStats([toolEnd()]))).toBe("running");
   });
 });
 
@@ -138,7 +136,7 @@ describe("usageRows", () => {
   });
 
   it("renders token/tool/stage/status labels", () => {
-    const stats = foldRunStats([usage(1200, 400), toolEnd(), agentEnd(false)], 0, 0);
+    const stats = foldRunStats([usage(1200, 400), toolEnd(), agentEnd(false)]);
     const rows = usageRows(stats, theme);;
     expect(rows[0]).toContain("tokens");
     expect(rows[0]).toContain("1.2k");
