@@ -76,8 +76,8 @@ describe("the trajectory stream", () => {
   it("reads a run that has both forms without folding its records twice", () => {
     // Every write lands a record in the stream and then rewrites the document
     // whole, so a run recorded by this build has both and the document already
-    // contains what the stream holds. Folding the records on top of it would
-    // replay every turn twice.
+    // contains what the stream holds — which is what its `recordCount` says.
+    // Folding those records on top of it would replay every turn twice.
     const document = {
       version: 1 as const,
       runId: "run-1",
@@ -86,6 +86,7 @@ describe("the trajectory stream", () => {
       promptLength: 4,
       events: [{ type: "done" }],
       turns: [{ prompt: "before", status: "completed" as const, eventCount: 1 }],
+      recordCount: 1,
     };
     const record = {
       version: 1 as const,
@@ -102,6 +103,51 @@ describe("the trajectory stream", () => {
     expect(both).toEqual(document);
     expect(both?.turns).toHaveLength(1);
     expect(both?.events).toHaveLength(1);
+  });
+
+  it("recovers the record a document that died mid-write is short by", () => {
+    // The document says it holds one record and the stream holds two: the
+    // second write appended its record and never got to rewrite the document.
+    // Reading used to lose that turn for good.
+    const document = {
+      version: 1 as const,
+      runId: "run-1",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      status: "completed" as const,
+      promptLength: 4,
+      events: [{ type: "done" }],
+      turns: [{ prompt: "before", status: "completed" as const, eventCount: 1 }],
+      recordCount: 1,
+    };
+    const first = {
+      version: 1 as const,
+      runId: "run-1",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      status: "completed" as const,
+      promptLength: 4,
+      prompt: "before",
+      events: [{ type: "done" }],
+    };
+    const second = {
+      version: 1 as const,
+      runId: "run-1",
+      timestamp: "2026-09-01T00:01:00.000Z",
+      status: "cancelled" as const,
+      promptLength: 5,
+      prompt: "after",
+      events: [{ type: "tool_execution_end", toolCallId: "t1" }],
+    };
+
+    const both = parseTrajectory({
+      document: JSON.stringify(document),
+      stream: `${JSON.stringify(first)}\n${JSON.stringify(second)}\n`,
+    });
+
+    expect(both?.turns?.map((turn) => turn.prompt)).toEqual(["before", "after"]);
+    expect(both?.turns?.map((turn) => turn.eventCount)).toEqual([1, 2]);
+    expect(both?.events).toHaveLength(2);
+    expect(both?.status).toBe("cancelled");
+    expect(both?.recordCount).toBe(2);
   });
 
   it("falls back to the stream for a run whose document is gone", () => {

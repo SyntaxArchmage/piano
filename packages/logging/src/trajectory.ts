@@ -34,6 +34,17 @@ export interface TrajectoryDocument {
    * session cwd after `/workspace`. */
   readonly workspaceCwd?: string;
   readonly turns?: readonly TrajectoryTurn[];
+  /** How many stream records this document already includes.
+   *
+   * A write appends its record and then rewrites the document, so a crash
+   * between the two leaves the document short by the record that landed.
+   * Counting them is what lets a reader fold exactly the records the document
+   * is missing, rather than guessing from timestamps — two writes can share a
+   * millisecond, and a guess would drop one of them.
+   *
+   * Absent on a document written before this field existed, which reads the
+   * same as zero: a document that includes no records at all. */
+  readonly recordCount?: number;
 }
 
 /** Write input for one turn. `turns` is writer-owned because `eventCount` can
@@ -518,13 +529,22 @@ export function parseTrajectory(
   raw: { readonly stream?: string; readonly document?: string },
 ): TrajectoryDocument | undefined {
   const document = parseTrajectoryDocument(raw.document);
-  if (document !== undefined) return document;
+  const records = parseStreamRecords(raw.stream);
+  if (document === undefined) return foldTrajectoryStream(records);
+  // The document says how much of the stream it already holds, so the records
+  // it is short by are exactly the ones to fold on top of it. A document from
+  // before that field existed holds none of them and is seeded by all.
+  const missing = records.slice(document.recordCount ?? 0);
+  return missing.length === 0 ? document : foldTrajectoryStream(missing, document);
+}
+
+function parseStreamRecords(raw: string | undefined): readonly TrajectoryStreamRecord[] {
   const records: TrajectoryStreamRecord[] = [];
-  for (const line of (raw.stream ?? "").split("\n")) {
+  for (const line of (raw ?? "").split("\n")) {
     const record = parseStreamRecord(line);
     if (record !== undefined) records.push(record);
   }
-  return foldTrajectoryStream(records);
+  return records;
 }
 
 function parseTrajectoryDocument(raw: string | undefined): TrajectoryDocument | undefined {
@@ -566,20 +586,28 @@ function parseStreamRecord(line: string): TrajectoryStreamRecord | undefined {
  * document's fields forward.
  *
  * This is only the whole run for a stream that began with it. A document
- * written beside it already holds everything, which is why `parseTrajectory`
- * reads that one first. */
+ * written beside it already holds everything up to the count it carries, which
+ * is why `parseTrajectory` folds only the records past that count. */
 export function foldTrajectoryStream(
   records: readonly TrajectoryStreamRecord[],
+  seed?: TrajectoryDocument,
 ): TrajectoryDocument | undefined {
+  const seedEvents = seed?.events ?? [];
+  const seedTurns = seed?.turns ?? [];
   const last = records.at(-1);
-  if (last === undefined) return undefined;
+  if (last === undefined) return seed;
 
   // One linear pass: a `usage` key holds one slot from where it first appeared,
   // so the ledger's length at any point is the distinct keys seen so far plus
-  // the events that are not usage snapshots.
-  const turns: TrajectoryTurn[] = [];
+  // the events that are not usage snapshots. The seed's keys already hold their
+  // positions, and its turns carry their own cumulative counts.
+  const turns: TrajectoryTurn[] = [...seedTurns];
   const seenUsage = new Set<string>();
-  let eventCount = 0;
+  for (const event of seedEvents) {
+    const key = usageSlotKey(compactTrajectoryEvent(event));
+    if (key !== undefined) seenUsage.add(key);
+  }
+  let eventCount = seedTurns.at(-1)?.eventCount ?? compactTrajectoryEvents(seedEvents).length;
   for (const record of records) {
     for (const event of record.events) {
       const compact = compactTrajectoryEvent(event);
@@ -619,7 +647,9 @@ export function foldTrajectoryStream(
     updatedAt: last.timestamp,
     status,
     promptLength,
-    events: compactTrajectoryEvents(records.flatMap((record) => record.events)),
+    events: compactTrajectoryEvents([...seedEvents, ...records.flatMap((record) => record.events)]),
+    // What this fold covers: the seed's records are the prefix these continue.
+    recordCount: (seed?.recordCount ?? 0) + records.length,
     ...(turns.length === 0 ? {} : { turns }),
     ...(newest("sessionId") === undefined ? {} : { sessionId: newest("sessionId") }),
     ...(newest("transcriptPath") === undefined ? {} : { transcriptPath: newest("transcriptPath") }),
@@ -628,6 +658,19 @@ export function foldTrajectoryStream(
     ...(newest("workflowPath") === undefined ? {} : { workflowPath: newest("workflowPath") }),
     ...(newest("workspaceCwd") === undefined ? {} : { workspaceCwd: newest("workspaceCwd") }),
   };
+}
+
+/** How many records the run's stream holds, counted the way a reader counts
+ * them — a line that does not parse is not one of them, so a torn append
+ * cannot make the document claim a record it does not have. */
+function streamRecordCount(
+  fileSystem: FileSystem.FileSystem,
+  documentPath: string,
+): Effect.Effect<number, never, never> {
+  return fileSystem.readFileString(trajectoryStreamPath(documentPath)).pipe(
+    Effect.orElseSucceed(() => ""),
+    Effect.map((raw) => parseStreamRecords(raw).length),
+  );
 }
 
 function stringifyTrajectory(value: unknown): string {
@@ -699,9 +742,14 @@ export class TrajectoryWriter {
         ...document.events,
       ]);
       const priorTurns = previous === undefined || !Array.isArray(previous.turns) ? [] : previous.turns;
+      // What this document will include, so a reader can tell a document that
+      // is short by a record from one that is not — and fold exactly the ones
+      // it is missing.
+      const recordCount = yield* streamRecordCount(fileSystem, path);
       const merged = {
         ...fields,
         events,
+        recordCount,
         // A turn entry is appended only when the caller supplies the prompt
         // text, so non-turn updates (rename, session id backfill) never inflate
         // the replay index.
@@ -781,7 +829,6 @@ export class TrajectoryWriter {
             message: errorMessage(cause),
           })),
       );
-      const merged = { ...previous, name };
       const now = new Date().toISOString();
       // The record says only what this write is about. The fold carries the
       // run's fields forward from the writes that did speak about them, which
@@ -793,6 +840,11 @@ export class TrajectoryWriter {
         events: [],
         name,
       });
+      const merged = {
+        ...previous,
+        name,
+        recordCount: yield* streamRecordCount(fileSystem, path),
+      };
       const content = yield* Effect.try({
         try: () => `${JSON.stringify({
           ...merged,
