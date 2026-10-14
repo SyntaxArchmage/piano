@@ -4378,10 +4378,13 @@ export function executeWorkflow(
           },
         );
       }) : Effect.void),
-      Effect.ensuring(cleanupAfterFailure),
+      // Closed before the cleanup below for the same reason the outcome is
+      // recorded before it: the index is evidence about a finished run, and a
+      // cleanup that wedges must not leave it saying the run is still going.
       Effect.onExit((exit) => closeWorkflowTrajectory(
         Exit.isSuccess(exit) ? "completed" : isCancellation(exit.cause) ? "cancelled" : "failed",
       )),
+      Effect.ensuring(cleanupAfterFailure),
     );
   }));
 }
