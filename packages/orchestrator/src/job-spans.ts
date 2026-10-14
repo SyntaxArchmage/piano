@@ -32,6 +32,8 @@ export interface JobSpan {
   readonly accepted: ReadonlySet<string>;
   /** Highest attempt number recorded per invocation in this span. */
   readonly attempts: ReadonlyMap<string, number>;
+  /** The input the job runs, when the stream recorded it. */
+  readonly input?: string;
   /** The invocation whose latest attempt started and has not been accepted in
    * this span, when one is in flight. */
   readonly inFlight?: string;
@@ -56,6 +58,9 @@ export interface JobView {
   /** Highest attempt number recorded per invocation across the job's spans,
    * so a continue's re-run follows the attempts already on disk. */
   readonly attempts: ReadonlyMap<string, number>;
+  /** The input the job runs, read from its spans; `undefined` for streams
+   * written before the input was kept with the job. */
+  readonly input?: string;
   readonly spans: readonly JobSpan[];
 }
 
@@ -69,6 +74,7 @@ interface MutableSpan {
   attempts: Map<string, number>;
   inFlight?: string;
   closed?: "restarted";
+  input?: string;
 }
 
 /** Fold a run's stream records into their job spans, in stream order.
@@ -91,6 +97,7 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
         status: "running",
         accepted: new Set(),
         attempts: new Map(),
+        ...(started.prompt === undefined ? {} : { input: started.prompt }),
       });
       continue;
     }
@@ -184,6 +191,7 @@ function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
     ...(state === "finished" && outcome !== undefined ? { outcome } : {}),
     accepted,
     attempts,
+    ...(last?.input === undefined ? {} : { input: last.input }),
     spans: jobSpans,
   };
 }

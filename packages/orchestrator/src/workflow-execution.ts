@@ -2359,7 +2359,7 @@ export function executeWorkflow(
     // groups the spans together. A fresh job takes the next ordinal.
     const promptIndex = request.continueJob?.jobOrdinal ?? (request.execution?.promptIndex ?? 0) + 1;
     const knownLoopIterations = new Map<string, number>();
-    yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.execution !== undefined);
+    yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, executionId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {

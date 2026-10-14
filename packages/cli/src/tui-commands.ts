@@ -9,6 +9,8 @@ export const TUI_SLASH_COMMANDS = [
   { name: "rename", argumentHint: "<name>", description: "Rename the current run" },
   { name: "resume", description: "Resume a previous session" },
   { name: "side", description: "Toggle the trajectory panel" },
+  { name: "continue", description: "Resume paused job" },
+  { name: "restart", description: "Re-run from scratch" },
   { name: "workspace", description: "Choose the workspace directory" },
   { name: "workflow", description: "Choose a workflow file" },
 ] as const satisfies readonly SlashCommand[];

@@ -178,6 +178,11 @@ export interface WorkflowProgressExecutionStartRecord {
    * Absent in streams written before jobs existed, where every span is its own
    * job. */
   readonly jobOrdinal?: number;
+  /** The input this job runs — the prompt the human submitted. Kept with the
+   * job so `/continue` and `/restart` can re-run it without chasing turn
+   * positions, which continues make ambiguous. Absent in pre-existing
+   * streams. */
+  readonly prompt?: string;
   /** True when this execution continues actors a previous one left behind. */
   readonly resumed: boolean;
   readonly plan: WorkflowProgressPlan;
@@ -585,6 +590,7 @@ export function initializeWorkflowProgress(
   executionId: string,
   plan: WorkflowProgressPlan,
   jobOrdinal: number,
+  prompt: string,
   resume: boolean,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressSnapshotPath(runDir);
@@ -595,6 +601,7 @@ export function initializeWorkflowProgress(
       timestamp: new Date().toISOString(),
       executionId,
       jobOrdinal,
+      prompt,
       resumed: resume,
       plan,
     });

@@ -66,7 +66,7 @@ function run<A>(effect: Effect.Effect<A, WorkflowError, import("@effect/platform
 async function finishedRun(): Promise<string> {
   const runDir = await mkdtemp(join(tmpdir(), "piano-progress-view-"));
   roots.push(runDir);
-  await run(initializeWorkflowProgress(runDir, "execution", PLAN, 1, false));
+  await run(initializeWorkflowProgress(runDir, "execution", PLAN, 1, "do the work", false));
   await run(markWorkflowStageStarted(runDir, "execution", {
     invocationId: "tune@root", stageId: "tune", stage: "tune", worker: "basic", attempt: 1,
   }));

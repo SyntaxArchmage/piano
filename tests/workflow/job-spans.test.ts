@@ -11,12 +11,17 @@ import {
   type WorkflowProgressStreamRecord,
 } from "../../packages/orchestrator/src/index.js";
 
-const started = (jobOrdinal: number | undefined, timestamp: string): WorkflowProgressExecutionStartRecord => ({
+const started = (
+  jobOrdinal: number | undefined,
+  timestamp: string,
+  prompt?: string,
+): WorkflowProgressExecutionStartRecord => ({
   version: 1,
   kind: "execution-started",
   timestamp,
   executionId: "run-1",
   ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
+  ...(prompt === undefined ? {} : { prompt }),
   resumed: false,
   plan: { plannedStages: 2, stageCounts: {} },
 });
@@ -79,11 +84,11 @@ describe("foldJobSpans", () => {
 
   it("merges a paused job's continue span under the same ordinal", () => {
     const spans = foldJobSpans([
-      started(1, T(0)),
+      started(1, T(0), "iterate"),
       accepted(T(1), "first@root"),
       stageStarted(T(2), "second@root", 1),
       finished(T(3), "paused"),
-      started(1, T(4)),
+      started(1, T(4), "iterate"),
       stageStarted(T(5), "second@root", 2),
       accepted(T(6), "second@root", 2),
       finished(T(7), "completed"),
@@ -96,6 +101,9 @@ describe("foldJobSpans", () => {
     // The attempts merge across the job's spans, newest number winning, so a
     // later continue re-runs follow the attempts already on disk.
     expect([...(only?.attempts ?? [])]).toEqual([["first@root", 1], ["second@root", 2]]);
+    // The job carries its own input, so a continue never has to guess it from
+    // turn positions.
+    expect(only?.input).toBe("iterate");
   });
 
   it("treats a span without an ordinal as a new job (streams written before jobs)", () => {

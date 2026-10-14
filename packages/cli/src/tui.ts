@@ -66,6 +66,17 @@ export type TuiPromptRunner = (
   discuss?: (request: import("@piano/orchestrator").WorkflowDiscussRequest) => Effect.Effect<import("@piano/orchestrator").WorkflowDiscussDecision, WorkflowError>,
 ) => Effect.Effect<string | TuiPromptResult, unknown>;
 
+/** `/continue` and `/restart`: the same prompt path, with the engine told which
+ * job-level instruction to carry out. The prompt argument is only the
+ * transcript's echo — the input actually run comes from the job's recorded
+ * turn. */
+export type TuiJobCommandRunner = (
+  action: "continue" | "restart",
+  onEvent: (event: AgentEvent) => void,
+  signoff?: (request: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError>,
+  discuss?: (request: import("@piano/orchestrator").WorkflowDiscussRequest) => Effect.Effect<import("@piano/orchestrator").WorkflowDiscussDecision, WorkflowError>,
+) => Effect.Effect<string | TuiPromptResult, unknown>;
+
 export interface TuiOptions {
   readonly terminal?: Terminal;
   /** Abort the turn of one screen. `/btw` can leave the run and the side agent
@@ -82,6 +93,9 @@ export interface TuiOptions {
    * is the screen those events land on. The sign-off argument is passed but
    * unused — a lone agent call has no workflow gate. */
   readonly runSideAgent?: TuiPromptRunner;
+  /** `/continue` and `/restart`, when the caller provides them. Absent in
+   * tests that only exercise plain prompts. */
+  readonly runJobCommand?: TuiJobCommandRunner;
   /** Deliver a mid-turn steering message to the live prompt's session. The
    * channel answers per capability ("delivered" / "no-active-turn"); the TUI
    * never learns which harness is running. Absent in tests without steering. */
@@ -1122,7 +1136,7 @@ export function runTui(
           if (front.kind === "mission") mountScreen(ensureSideScreen());
           if (prompt !== "") submitPrompt(prompt, front);
         };
-        const submitPrompt = (prompt: string, screen: TuiScreen = front, alreadyEchoed = false): void => {
+        const submitPrompt = (prompt: string, screen: TuiScreen = front, alreadyEchoed = false, jobCommand?: "continue" | "restart"): void => {
           // The screen is captured, not read from `front` later. A turn's events
           // belong to the conversation that started them even after `/btw` moved
           // the foreground away: reading `front` inside the callbacks below would
@@ -1131,8 +1145,21 @@ export function runTui(
           // `/btw` swaps the runner, not the prompt path: steering, queueing,
           // interrupts, task events and the trajectory panel are identical for
           // the mission workflow and the side agent.
-          const runner = screen.kind === "side" ? deps.runSideAgent : deps.runPrompt;
+          const jobRunner = deps.runJobCommand;
+          const runner: TuiPromptRunner | undefined = jobCommand === undefined
+            ? (screen.kind === "side" ? deps.runSideAgent : deps.runPrompt)
+            : jobRunner === undefined || screen.kind === "side"
+              ? undefined
+              : (_candidate, onEvent, signoff, discuss) => jobRunner(jobCommand, onEvent, signoff, discuss);
           if (runner === undefined) return;
+          if (jobCommand !== undefined && screen.running) {
+            // A job command acts on the run's jobs, not on a live turn: it
+            // waits for the job to stop rather than steering text into it.
+            screen.transcript.appendText(`  ${screen.theme.dim}/${jobCommand} waits for the current job — press Esc to pause it, then run the command again${RST}`);
+            if (screen === front) chatViewport.scrollEnd();
+            tui.requestRender();
+            return;
+          }
           if (screen.running) {
             // Mid-turn input goes to the live session's steering channel
             // first; only what no session takes becomes the queued next turn.
@@ -1323,6 +1350,12 @@ export function runTui(
           // The rest are run-level commands. They address the mission, so while
           // the side screen owns the keyboard they are refused with the one
           // thing worth saying: how to get back to the run.
+          if (command === "/continue" || command === "/restart") {
+            if (missionOnly(command)) return;
+            editor.setText("");
+            submitPrompt(command, front, false, command === "/continue" ? "continue" : "restart");
+            return;
+          }
           if (command === "/workspace") {
             if (missionOnly("/workspace")) return;
             editor.setText("");
