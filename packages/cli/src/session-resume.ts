@@ -12,7 +12,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { basename, join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
-import type { FailureDetails, TrajectoryDocument } from "@piano/logging";
+import { parseTrajectory, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
 import { LogsStorageError } from "./errors.js";
 
 /** One replayable prompt and the events it produced. */
@@ -46,8 +46,13 @@ export interface RunSummary {
 }
 
 export function trajectoryPath(runsRoot: string, runId: string): string {
-  return join(runsRoot, runId, "trajectory.json");
+  return join(runsRoot, runId, DOCUMENT_FILE);
 }
+
+/** The two forms a run's trajectory is recorded in: the document readers were
+ * written against, and the append-only stream it is folded from. */
+const DOCUMENT_FILE = "trajectory.json";
+const STREAM_FILE = "trajectory.jsonl";
 
 /** What looking for one run's trajectory can find, and what each outcome means
  * for resumability. This is the resume layer's own rule, so every reader — the
@@ -147,23 +152,38 @@ function failureOf(value: unknown): FailureDetails | undefined {
     : undefined;
 }
 
-/** Read and parse a run's trajectory, failing when it is absent or malformed. */
+/** Read and parse a run's trajectory, failing when it is absent or malformed.
+ *
+ * Both of a run's forms are read and `parseTrajectory` picks between them: the
+ * append-only stream is the record, and the document beside it is folded from
+ * it, so a run whose document is missing or caught mid-write still replays from
+ * its own stream. A run written before the stream existed has only the document
+ * and is read from that. */
 function readDocument(
-  path: string,
+  runsRoot: string,
+  runId: string,
 ): Effect.Effect<Partial<TrajectoryDocument>, LogsStorageError, FileSystem.FileSystem> {
+  const path = trajectoryPath(runsRoot, runId);
   const storageError = (message: string): LogsStorageError =>
     new LogsStorageError({ operation: "read-trajectory", path, message });
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(path).pipe(
-      Effect.mapError((cause) => cause._tag === "SystemError" && cause.reason === "NotFound"
-        ? storageError("no trajectory recorded for this run")
-        : storageError(String(cause))),
-    );
-    return yield* Effect.try({
-      try: () => JSON.parse(raw) as Partial<TrajectoryDocument>,
-      catch: (cause) => storageError(String(cause)),
+    const readOptional = (name: string) =>
+      fileSystem.readFileString(join(runsRoot, runId, name)).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+    const stream = yield* readOptional(STREAM_FILE);
+    const document = yield* readOptional(DOCUMENT_FILE);
+    const parsed = parseTrajectory({
+      ...(stream === undefined ? {} : { stream }),
+      ...(document === undefined ? {} : { document }),
     });
+    if (parsed !== undefined) return parsed;
+    // Say which of the two is the problem: neither being there at all is a run
+    // with no history, and anything else is a trajectory that would not parse.
+    return yield* Effect.fail(storageError(
+      stream === undefined && document === undefined
+        ? "no trajectory recorded for this run"
+        : "the recorded trajectory could not be parsed",
+    ));
   });
 }
 
@@ -223,8 +243,7 @@ export function readResumeContext(
   runsRoot: string,
   runId: string,
 ): Effect.Effect<ResumeContext, LogsStorageError, FileSystem.FileSystem> {
-  const path = trajectoryPath(runsRoot, runId);
-  return readDocument(path).pipe(Effect.map((document): ResumeContext => {
+  return readDocument(runsRoot, runId).pipe(Effect.map((document): ResumeContext => {
     const allEvents = Array.isArray(document.events) ? document.events : [];
     const recorded = Array.isArray(document.turns) ? document.turns : undefined;
     const status = document.status ?? "completed";

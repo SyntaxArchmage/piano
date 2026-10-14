@@ -17,6 +17,17 @@ async function writeRun(root: string, runId: string, document: unknown): Promise
   await writeFile(join(runDir, "trajectory.json"), `${JSON.stringify(document)}\n`, "utf8");
 }
 
+/** A run recorded only in its append-only stream, as every new run is. */
+async function writeStreamRun(root: string, runId: string, records: readonly unknown[]): Promise<void> {
+  const runDir = join(root, runId);
+  await mkdir(runDir, { recursive: true });
+  await writeFile(
+    join(runDir, "trajectory.jsonl"),
+    records.map((record) => `${JSON.stringify(record)}\n`).join(""),
+    "utf8",
+  );
+}
+
 const twoTurns = {
   version: 1,
   runId: "r",
@@ -38,6 +49,35 @@ const twoTurns = {
 };
 
 describe("readResumeContext", () => {
+  it("replays a run recorded only in its append-only stream", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
+    const base = {
+      version: 1,
+      runId: "r",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      status: "completed",
+      promptLength: 3,
+      workflowPath: "/repo/recipes/workflows/basic.yaml",
+      workspaceCwd: "/repo/work",
+    };
+    await writeStreamRun(root, "run-stream", [
+      { ...base, prompt: "one", events: twoTurns.events.slice(0, 3) },
+      { ...base, prompt: "two", events: twoTurns.events.slice(3) },
+    ]);
+
+    const context = await Effect.runPromise(
+      readResumeContext(root, "run-stream").pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+
+    // Same replay as the equivalent document gives, down to the per-turn
+    // slices — the counts are folded, not read off a stored field.
+    expect(context.turns.map((turn) => turn.prompt)).toEqual(["one", "two"]);
+    expect(context.turns[0]?.events).toHaveLength(3);
+    expect(context.turns[1]?.events).toHaveLength(1);
+    expect(context.workflowPath).toBe("/repo/recipes/workflows/basic.yaml");
+    expect(context.workspaceCwd).toBe("/repo/work");
+  });
+
   it("slices events per turn using the cumulative event count", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeRun(root, "run-a", twoTurns);

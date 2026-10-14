@@ -493,6 +493,39 @@ function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[]
   return compacted;
 }
 
+/** Parse a run's trajectory from whichever of its two on-disk forms is there.
+ *
+ * The stream wins: every write lands in it first, and the document is folded
+ * from it. The document is read for runs written before the stream existed, and
+ * when the stream holds nothing usable — a torn or empty file describes no run.
+ *
+ * Takes raw file contents rather than paths because its callers read files
+ * through different layers, some through Effects and some synchronously. The
+ * choice between the two forms lives here and nowhere else. */
+export function parseTrajectory(
+  raw: { readonly stream?: string; readonly document?: string },
+): TrajectoryDocument | undefined {
+  const records: TrajectoryStreamRecord[] = [];
+  for (const line of (raw.stream ?? "").split("\n")) {
+    if (line.trim() === "") continue;
+    try {
+      const parsed = JSON.parse(line) as unknown;
+      if (typeof parsed === "object" && parsed !== null) records.push(parsed as TrajectoryStreamRecord);
+    } catch {
+      // Torn mid-append: it describes a write that never finished, and the
+      // records before it are still good.
+    }
+  }
+  if (records.length > 0) return foldTrajectoryStream(records);
+  if (raw.document === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(raw.document) as unknown;
+    return typeof parsed === "object" && parsed !== null ? parsed as TrajectoryDocument : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Rebuild a run's trajectory document from its stream.
  *
  * The counterpart of the writer's read-merge-rewrite, with the merging done
