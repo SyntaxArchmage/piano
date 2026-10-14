@@ -1,0 +1,32 @@
+# GitHub Actions mirror of the GitLab verify stage in .gitlab-ci.yml.
+# The two share no state: GitLab reads .gitlab-ci.yml and runs on the locked
+# devbox runner, GitHub reads this file and runs on a hosted runner. Both run
+# the same gate, in the same order: typecheck -> lint -> test.
+
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
