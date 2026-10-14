@@ -116,6 +116,7 @@ export {
   workflowProgressSnapshotPath,
   type WorkflowProgressRecord,
   type WorkflowProgressStartRecord,
+  type WorkflowProgressExecutionStartRecord,
   type WorkflowProgressStreamRecord,
   type WorkflowProgressCurrent,
   type WorkflowProgressPlan,

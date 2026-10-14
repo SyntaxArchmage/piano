@@ -296,7 +296,8 @@ describe("workflow progress stream", () => {
 
     // Not recovered from the invocation id: `"tune@tune/iter-0".split("@")[0]`
     // is the stage name, not the execution.
-    expect((await readStream(runDir))[0]).toEqual({
+    const started = (await readStream(runDir)).find((line) => progressRecordKind(line) === "stage-started");
+    expect(started).toEqual({
       version: 1,
       kind: "stage-started",
       timestamp: "2026-01-01T00:00:00.000Z",
@@ -307,6 +308,24 @@ describe("workflow progress stream", () => {
       worker: "worker",
       attempt: 1,
       instanceId: "tune/iter-0",
+    });
+  });
+
+  it("opens the stream with the execution's own start, carrying its plan", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    const runDir = await newRunDir();
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, true));
+
+    // First on the stream, so a run's boundary is legible from the record
+    // alone — and so the plan a reader needs to rebuild every count is in
+    // evidence rather than held outside it.
+    expect((await readStream(runDir))[0]).toEqual({
+      version: 1,
+      kind: "execution-started",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      executionId: "execution",
+      resumed: true,
+      plan: timingPlan,
     });
   });
 
@@ -340,9 +359,11 @@ describe("workflow progress stream", () => {
     const lastKind = new Map<string, "started" | "accepted">();
     const durationMs = new Map<string, number>();
     for (const line of await readStream(runDir)) {
+      const kind = progressRecordKind(line);
+      if (kind === "execution-started") continue;
       const invocationId = String(line.invocationId);
       const timestamp = String(line.timestamp);
-      if (progressRecordKind(line) === "stage-started") {
+      if (kind === "stage-started") {
         startedAt.set(invocationId, timestamp);
         lastKind.set(invocationId, "started");
         continue;

@@ -150,8 +150,30 @@ export interface WorkflowProgressStartRecord {
   readonly iteration?: number;
 }
 
+/** Append-only record of one workflow execution beginning.
+ *
+ * Marks where this execution's progress starts — and, once one session hosts
+ * more than one execution, where one execution ends and the next begins.
+ *
+ * It carries the plan because planned stage counts come from the compiled
+ * workflow, not from anything a stage could report: without this record a
+ * reader rebuilding the snapshot from the stream would still have to be handed
+ * the plan from outside. */
+export interface WorkflowProgressExecutionStartRecord {
+  readonly version: 1;
+  readonly kind: "execution-started";
+  readonly timestamp: string;
+  readonly executionId: string;
+  /** True when this execution continues actors a previous one left behind. */
+  readonly resumed: boolean;
+  readonly plan: WorkflowProgressPlan;
+}
+
 /** One line of the append-only progress stream. */
-export type WorkflowProgressStreamRecord = WorkflowProgressRecord | WorkflowProgressStartRecord;
+export type WorkflowProgressStreamRecord =
+  | WorkflowProgressRecord
+  | WorkflowProgressStartRecord
+  | WorkflowProgressExecutionStartRecord;
 
 /** Kind of one progress-stream line.
  *
@@ -159,8 +181,12 @@ export type WorkflowProgressStreamRecord = WorkflowProgressRecord | WorkflowProg
  * stream predates it, and every record written before it is an accepted stage.
  * Readers ask this function rather than testing `kind` themselves, so the
  * compatibility rule lives in exactly one place. */
-export function progressRecordKind(record: { readonly kind?: unknown }): WorkflowProgressStartRecord["kind"] | "stage-accepted" {
-  return record.kind === "stage-started" ? "stage-started" : "stage-accepted";
+export function progressRecordKind(
+  record: { readonly kind?: unknown },
+): WorkflowProgressStartRecord["kind"] | WorkflowProgressExecutionStartRecord["kind"] | "stage-accepted" {
+  if (record.kind === "stage-started") return "stage-started";
+  if (record.kind === "execution-started") return "execution-started";
+  return "stage-accepted";
 }
 
 export interface WorkflowProgressSnapshot {
@@ -325,10 +351,19 @@ export function initializeWorkflowProgress(
   const path = workflowProgressSnapshotPath(runDir);
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
+    const now = new Date().toISOString();
+    yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), {
+      version: 1,
+      kind: "execution-started",
+      timestamp: now,
+      executionId,
+      resumed: resume,
+      plan,
+    });
     const previous = resume ? yield* readSnapshot(fileSystem, path) : undefined;
     yield* writeSnapshotAtomic(path, {
       version: 1,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
       executionId,
       status: "running",
       plannedStages: plan.plannedStages,
