@@ -120,6 +120,7 @@ export {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
+  parseProgressStreamRecord,
   progressRecordKind,
   workflowProgressPath,
   workflowProgressSnapshotPath,
@@ -134,6 +135,13 @@ export {
   type WorkflowProgressSnapshot,
   type WorkflowProgressStageCount,
 } from "./progress.js";
+export {
+  foldJobSpans,
+  jobs,
+  latestJob,
+  type JobSpan,
+  type JobView,
+} from "./job-spans.js";
 export {
   snapshotWorkerContract,
   type WorkerContractReference,

@@ -2341,8 +2341,9 @@ export function executeWorkflow(
     }
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
+    const promptIndex = (request.execution?.promptIndex ?? 0) + 1;
     const knownLoopIterations = new Map<string, number>();
-    yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, request.execution !== undefined);
+    yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, executionId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {
@@ -2399,7 +2400,6 @@ export function executeWorkflow(
     // the reason an interrupt pauses a conversation instead of abandoning it.
     const announcedContinuations = new Map<string, AgentContinuation>();
     const actorContexts = new Map<string, ActorExecutionContext>();
-    const promptIndex = (request.execution?.promptIndex ?? 0) + 1;
     let acceptedStageCount = 0;
     const completedByStage = new Map<string, number>();
     // Map slots intentionally run in parallel. Serialize only the small

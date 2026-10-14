@@ -10,9 +10,9 @@ import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
   applyProgressRecord,
+  parseProgressStreamRecord,
   workflowProgressPath,
   type WorkflowProgressSnapshot,
-  type WorkflowProgressStreamRecord,
 } from "@piano/orchestrator";
 import { parseWorkflowGraphSnapshot, type WorkflowGraphSnapshot } from "./workflow-graph.js";
 
@@ -36,25 +36,7 @@ export async function readWorkflowSnapshot(path: string): Promise<WorkflowGraphS
 async function foldProgressStream(snapshotPath: string): Promise<WorkflowProgressSnapshot | undefined> {
   const raw = await readFile(workflowProgressPath(dirname(snapshotPath)), "utf8").catch(() => "");
   return raw.split("\n").reduce<WorkflowProgressSnapshot | undefined>((previous, line) => {
-    const record = parseStreamLine(line);
+    const record = parseProgressStreamRecord(line);
     return record === undefined ? previous : applyProgressRecord(previous, record);
   }, undefined);
-}
-
-/** One stream record, or `undefined` for a blank, torn, or shapeless line. */
-function parseStreamLine(line: string): WorkflowProgressStreamRecord | undefined {
-  if (line.trim() === "") return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    // Torn mid-append: it describes a write that never finished, and the
-    // records before it are still good.
-    return undefined;
-  }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  // Every kind carries these two, whichever shape it is.
-  const record = parsed as { executionId?: unknown; timestamp?: unknown };
-  if (typeof record.executionId !== "string" || typeof record.timestamp !== "string") return undefined;
-  return parsed as WorkflowProgressStreamRecord;
 }

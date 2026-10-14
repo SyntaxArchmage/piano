@@ -105,7 +105,7 @@ describe("workflow stage time", () => {
   it("leaves a started invocation open until its stage is accepted", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     await run(markWorkflowStageStarted(runDir, "execution", {
       invocationId: "tune@tune/iter-0",
       stageId: "tune",
@@ -124,7 +124,7 @@ describe("workflow stage time", () => {
   it("accumulates every attempt of one invocation into a single total", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     const tune = { stageId: "tune", stage: "tune", instanceId: "tune/iter-0" } as const;
     await run(markWorkflowStageStarted(runDir, "execution", {
       ...tune, invocationId: "tune@tune/iter-0", worker: "worker", attempt: 1,
@@ -165,7 +165,7 @@ describe("workflow stage time", () => {
   it("stops the clock on finalize so a human pause is not counted as work", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     const measure = { stageId: "measure", stage: "measure" } as const;
     await run(markWorkflowStageStarted(runDir, "execution", {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 1,
@@ -190,7 +190,7 @@ describe("workflow stage time", () => {
   it("folds the open stage into the terminal state on finalize", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     const measure = { stageId: "measure", stage: "measure" } as const;
     await run(markWorkflowStageStarted(runDir, "execution", {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 1,
@@ -219,14 +219,14 @@ describe("workflow stage time", () => {
   it("carries measured time across a resume", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     const tune = { stageId: "tune", stage: "tune", instanceId: "tune/iter-0", invocationId: "tune@tune/iter-0" } as const;
     await run(markWorkflowStageStarted(runDir, "execution", { ...tune, worker: "worker", attempt: 1 }));
     at("2026-01-01T00:00:07.000Z");
     await run(appendWorkflowProgress(runDir, record(tune)));
 
     at("2026-01-01T00:05:00.000Z");
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, true));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, true));
 
     expect((await readTiming(runDir)).invocationTime?.["tune@tune/iter-0"]).toMatchObject({
       stageId: "tune",
@@ -287,7 +287,7 @@ describe("workflow progress stream", () => {
   it("records a started invocation, with the execution id its caller holds", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     await run(markWorkflowStageStarted(runDir, "execution", {
       invocationId: "tune@tune/iter-0",
       stageId: "tune",
@@ -317,16 +317,18 @@ describe("workflow progress stream", () => {
   it("opens the stream with the execution's own start, carrying its plan", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, true));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, true));
 
     // First on the stream, so a run's boundary is legible from the record
     // alone — and so the plan a reader needs to rebuild every count is in
-    // evidence rather than held outside it.
+    // evidence rather than held outside it. The job ordinal ties the span to
+    // the job it belongs to.
     expect((await readStream(runDir))[0]).toEqual({
       version: 1,
       kind: "execution-started",
       timestamp: "2026-01-01T00:00:00.000Z",
       executionId: "execution",
+      jobOrdinal: 1,
       resumed: true,
       plan: timingPlan,
     });
@@ -344,7 +346,7 @@ describe("workflow progress stream", () => {
   it("answers which invocation is in flight, and since when, from the stream alone", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     await run(markWorkflowStageStarted(runDir, "execution", {
       invocationId: "tune@tune/iter-0", stageId: "tune", stage: "tune", worker: "worker", attempt: 1,
     }));
@@ -408,7 +410,7 @@ describe("workflow progress stream", () => {
   it("reproduces the snapshot by reducing the stream from nothing", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
     const tune = { stageId: "tune", stage: "tune", worker: "worker" } as const;
     const measure = { stageId: "measure", stage: "measure", worker: "worker" } as const;
 

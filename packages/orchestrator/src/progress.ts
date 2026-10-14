@@ -172,6 +172,12 @@ export interface WorkflowProgressExecutionStartRecord {
   readonly kind: "execution-started";
   readonly timestamp: string;
   readonly executionId: string;
+  /** The job this span belongs to: one prompt's workflow execution. A fresh
+   * job takes the next ordinal; a span that resumes a paused job repeats its
+   * predecessor's, which is what ties a continue back to the job it continues.
+   * Absent in streams written before jobs existed, where every span is its own
+   * job. */
+  readonly jobOrdinal?: number;
   /** True when this execution continues actors a previous one left behind. */
   readonly resumed: boolean;
   readonly plan: WorkflowProgressPlan;
@@ -218,6 +224,27 @@ export function progressRecordKind(record: object | null | undefined):
   if (kind === "execution-started") return "execution-started";
   if (kind === "execution-finished") return "execution-finished";
   return "stage-accepted";
+}
+
+/** Parse one stream line into a record, or `undefined` for a blank, torn, or
+ * shapeless line. The single definition of the line format's acceptance rule,
+ * shared by every stream reader (the snapshot fallback and the job fold) so
+ * they cannot disagree about what a line means. */
+export function parseProgressStreamRecord(line: string): WorkflowProgressStreamRecord | undefined {
+  if (line.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    // Torn mid-append: it describes a write that never finished, and the
+    // records before it are still good.
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  // Every kind carries these two, whichever shape it is.
+  const record = parsed as { executionId?: unknown; timestamp?: unknown };
+  if (typeof record.executionId !== "string" || typeof record.timestamp !== "string") return undefined;
+  return parsed as WorkflowProgressStreamRecord;
 }
 
 export interface WorkflowProgressSnapshot {
@@ -533,6 +560,7 @@ export function initializeWorkflowProgress(
   runDir: string,
   executionId: string,
   plan: WorkflowProgressPlan,
+  jobOrdinal: number,
   resume: boolean,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressSnapshotPath(runDir);
@@ -542,6 +570,7 @@ export function initializeWorkflowProgress(
       kind: "execution-started",
       timestamp: new Date().toISOString(),
       executionId,
+      jobOrdinal,
       resumed: resume,
       plan,
     });
