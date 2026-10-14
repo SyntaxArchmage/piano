@@ -2734,7 +2734,7 @@ workflow:
     }
   });
 
-  it("keeps distinct logical stages separate when they use the same worker plugin", async () => {
+  it("shares one conversation when two stages use the same worker plugin", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-same-worker-run-"));
     try {
       await writeFile(join(root, "same-worker.yml"), SAME_WORKER_WORKFLOW);
@@ -2760,12 +2760,13 @@ workflow:
       }));
       expect(result.stages.map((stage) => stage.id)).toEqual(["first@root", "second@root"]);
       expect(calls).toHaveLength(2);
+      // One worker, one conversation: the second stage continues the first
+      // stage's chat instead of starting a fresh one.
       expect(calls[0]?.continuation).toBeUndefined();
-      expect(calls[1]?.continuation).toBeUndefined();
+      expect(calls[1]?.continuation?.sessionId).toBe("session-first");
       expect(calls[1]?.contextFilePaths?.every((p) => p.endsWith("agents.pi.md"))).toBe(true);
-      expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(2);
-      expect(calls[0]?.sessionDir).toContain("actors/pi/first/root/session");
-      expect(calls[1]?.sessionDir).toContain("actors/pi/second/root/session");
+      expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(1);
+      expect(calls[0]?.sessionDir).toContain("actors/pi/basic/root/session");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2804,7 +2805,9 @@ workflow:
       expect(calls.map(stageId)).toEqual(["left", "right", "joined"]);
       expect(result.stages.map((stage) => stage.id)).toEqual(["left@root", "right@root", "joined@root"]);
       const joinCall = calls.find((call) => stageId(call) === "joined");
-      expect(joinCall?.continuation).toBeUndefined();
+      // All three stages share the `basic` worker, so the join continues the
+      // last accepted turn — right's.
+      expect(joinCall?.continuation?.sessionId).toBe("session-right");
       const handoffPath = joinCall?.contextFilePaths?.find((path) => path.endsWith("/joined.json"));
       const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ stage: string; text: string }> };
       expect(handoff.inputs).toMatchObject([
@@ -2843,9 +2846,11 @@ workflow:
       }));
       const proposes = calls.filter((call) => stageId(call) === "tune.propose");
       expect(proposes).toHaveLength(3);
-      expect(proposes.map((call) => call.continuation?.sessionId)).toEqual([undefined, "tune.propose-1", "tune.propose-2"]);
+      // The seed stage shares the `basic` worker, so the loop entry continues
+      // the seed's conversation; each iteration then continues the last one.
+      expect(proposes.map((call) => call.continuation?.sessionId)).toEqual(["seed-1", "tune.propose-1", "tune.propose-2"]);
       expect(new Set(proposes.map((call) => call.sessionDir))).toHaveLength(1);
-      expect(proposes[0]?.sessionDir).toContain("actors/pi/tune.propose/root/session");
+      expect(proposes[0]?.sessionDir).toContain("actors/pi/basic/root/session");
       expect(new Set(proposes.map(validationPath)).size).toBe(3);
       const proposalStages = result.stages.filter((stage) => stage.stageId === "tune.propose");
       expect(proposalStages.map((stage) => stage.handoffRecordPath)).toEqual(expect.arrayContaining([
@@ -2901,7 +2906,7 @@ workflow:
     }
   });
 
-  it("feeds an accepted prior-iteration child result back to the loop entry without resuming an upstream actor", async () => {
+  it("feeds an accepted prior-iteration child result back to the loop entry, sharing one worker conversation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-loop-feedback-run-"));
     try {
       await writeFile(join(root, "loop-feedback.yml"), LOOP_FEEDBACK_WORKFLOW);
@@ -2956,15 +2961,18 @@ workflow:
       const measures = calls.filter((call) => stageId(call) === "tune.measure");
       expect(profiles).toHaveLength(3);
       expect(measures).toHaveLength(3);
+      // seed, profile, and measure all use `basic`, so one conversation runs
+      // through the whole loop: each turn continues whatever was accepted
+      // last in the root lane. The feedback handoff below is unaffected.
       expect(profiles.map((call) => call.continuation?.sessionId)).toEqual([
-        undefined,
-        "tune.profile-session-1",
-        "tune.profile-session-2",
-      ]);
-      expect(measures.map((call) => call.continuation?.sessionId)).toEqual([
-        undefined,
+        "seed-session-1",
         "tune.measure-session-1",
         "tune.measure-session-2",
+      ]);
+      expect(measures.map((call) => call.continuation?.sessionId)).toEqual([
+        "tune.profile-session-1",
+        "tune.profile-session-2",
+        "tune.profile-session-3",
       ]);
 
       const contexts = await Promise.all(profiles.map(async (call) => {
@@ -3186,12 +3194,17 @@ workflow:
         await expect(stat(join(call.cwd, ".piano-run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
       }
       expect(implementCalls.map((call) => call.sessionDir)).toEqual(expect.arrayContaining([
-        expect.stringContaining("actors/pi/tournament.implement/tournament/slot-0/session"),
-        expect.stringContaining("actors/pi/tournament.implement/tournament/slot-1/session"),
+        expect.stringContaining("actors/pi/basic/tournament/slot-0/session"),
+        expect.stringContaining("actors/pi/basic/tournament/slot-1/session"),
       ]));
       const verifyCalls = calls.filter((call) => stageId(call) === "tournament.verify");
       expect(verifyCalls).toHaveLength(2);
-      expect(verifyCalls.map((call) => call.continuation)).toEqual([undefined, undefined]);
+      // Within a lane one worker (and so one actor) runs verify, which
+      // continues the implement turn that produced its candidate.
+      expect(verifyCalls.map((call) => call.continuation?.sessionId).sort()).toEqual([
+        "tournament.implement-tournament.implement-tournament-slot-0",
+        "tournament.implement-tournament.implement-tournament-slot-1",
+      ]);
       for (const call of verifyCalls) {
         expect(verifiedContents.get(call.cwd)).toBe(`candidate:${invocationId(implementCalls.find((implement) => implement.cwd === call.cwd)!)}\n`);
       }
@@ -3204,7 +3217,8 @@ workflow:
         { index: 1, value: { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" } },
       ]);
       const summary = calls.find((call) => stageId(call) === "summary");
-      expect(summary?.continuation).toBeUndefined();
+      // summary shares `basic` with the root-lane propose, so it continues it.
+      expect(summary?.continuation?.sessionId).toBe("propose-propose-root");
       const summaryPath = summary?.contextFilePaths?.find((path) => path.endsWith("/candidates.json"));
       const summaryInputs = JSON.parse(await readFile(summaryPath!, "utf8")) as {
         inputs: Array<{ instanceId: string; stageId: string; workspace: { key: string; cwd: string; kind: string; recordPath: string } }>;
@@ -4320,7 +4334,7 @@ workflow:
       if (!Exit.isSuccess(result)) return;
       expect(result.value.text).toBe("ans = 4");
       expect(result.value.model).toBe("test-model");
-      await expect(stat(join(session.runDir, "actors", "pi", "respond", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+      await expect(stat(join(session.runDir, "actors", "pi", "basic", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
       const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
       expect(log).toContain('"event":"workflow.loaded"');

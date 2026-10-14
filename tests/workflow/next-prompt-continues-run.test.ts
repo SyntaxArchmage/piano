@@ -168,7 +168,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
   });
 
   // A live coding session switches workflow (a different stage, a different
-  // harness) and switches back. Each prompt persists the actor table, so a
+  // worker) and switches back. Each prompt persists the actor table, so a
   // prompt that ran other actors must not evict the ones it did not touch:
   // evicted means unreachable, and the session the harness still holds on disk
   // is silently abandoned — the prompt after that starts the conversation over.
@@ -178,7 +178,10 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const FIRST_STAGE = join(root, "first.yml");
       const SECOND_STAGE = join(root, "second.yml");
       await writeFile(FIRST_STAGE, SIGNOFF_WORKFLOW);
-      await writeFile(SECOND_STAGE, SIGNOFF_WORKFLOW.replace("name: agent", "name: reviewer"));
+      await writeFile(
+        SECOND_STAGE,
+        SIGNOFF_WORKFLOW.replace("name: agent", "name: reviewer").replace("worker: basic", "worker: smoke-test-agent"),
+      );
       const session = await Effect.runPromise(
         createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
@@ -208,7 +211,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
         );
 
       await prompt(FIRST_STAGE, "first prompt");
-      const firstActorKey = `${session.id}/pi/agent/root`;
+      const firstActorKey = `v2/${session.id}/pi/basic/root`;
       const firstSession = (await readBack())?.actors.get(firstActorKey)?.continuation.sessionId;
       expect(firstSession).toBeDefined();
 
@@ -217,12 +220,62 @@ describe("a finished run's next prompt continues its workflow execution", () => 
 
       // The workflow that did not run is still resumable, identity and all.
       expect(both?.actors.get(firstActorKey)?.continuation.sessionId).toBe(firstSession);
-      expect(both?.actors.has(`${session.id}/pi/reviewer/root`)).toBe(true);
+      expect(both?.actors.has(`v2/${session.id}/pi/smoke-test-agent/root`)).toBe(true);
 
       // Returning to it reopens that same conversation instead of starting over.
       await prompt(FIRST_STAGE, "third prompt");
       const after = await readBack();
       expect(after?.actors.get(firstActorKey)?.turns).toBeGreaterThanOrEqual(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // One worker, one memory: switching to a different workflow that reuses the
+  // same worker continues the same conversation instead of opening a second
+  // one. This is what makes "run a workflow, then keep working on it" resume
+  // the same chat.
+  it("shares one conversation across workflows that reuse the same worker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-switch-worker-"));
+    try {
+      const FIRST_STAGE = join(root, "first.yml");
+      const SECOND_STAGE = join(root, "second.yml");
+      await writeFile(FIRST_STAGE, SIGNOFF_WORKFLOW);
+      await writeFile(SECOND_STAGE, SIGNOFF_WORKFLOW.replace("name: agent", "name: reviewer"));
+      const session = await Effect.runPromise(
+        createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      const runner: AgentRunner = (request, options) => executeAgent(request, { ...options, sdk: fakeSdk() });
+      const signoff = (_request: WorkflowSignoffRequest) => Effect.succeed({ type: "continue" as const });
+      const prompt = (workflowPath: string, text: string) =>
+        Effect.runPromise(
+          loadWorkflow(workflowPath, root).pipe(
+            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+              Effect.flatMap((execution) => executeWorkflow(loaded, {
+                runDir: session.runDir,
+                cwd: root,
+                prompt: text,
+                executionId: session.id,
+                ...(execution === undefined ? {} : { execution }),
+                signoff,
+                agentRunner: runner,
+              })),
+            )),
+            Effect.provideService(Logging, loggingService(session.log, session.trace)),
+            Effect.provide(NodeFileSystem.layer),
+          ),
+        );
+
+      await prompt(FIRST_STAGE, "first prompt");
+      await prompt(SECOND_STAGE, "second prompt");
+      const actors = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      // ONE actor under the worker key: the reviewer stage continued the
+      // agent stage's conversation instead of opening its own.
+      const actorKey = `v2/${session.id}/pi/basic/root`;
+      expect([...(actors?.actors.keys() ?? [])]).toEqual([actorKey]);
+      expect(actors?.actors.get(actorKey)?.turns).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

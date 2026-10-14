@@ -83,6 +83,7 @@ import {
   executionDirectory,
   executionId as normalizeExecutionId,
   mapOverParts,
+  migrateLegacyActorKey,
   runtimeInstanceId,
   runtimeInvocationId,
   validationResultPath,
@@ -2202,7 +2203,7 @@ function runPreparedConsolidation(
         ...(winnerActor?.tools === undefined ? {} : { tools: winnerActor.tools }),
         ...(winnerActor?.model === undefined ? request.model === undefined ? {} : { model: request.model } : { model: winnerActor.model }),
         ...(winnerActor?.thinkingLevel === undefined ? {} : { thinkingLevel: winnerActor.thinkingLevel }),
-        ...(winnerActor?.invocation === undefined ? {} : { sessionDir: actorSessionDirectory(request.runDir, winnerActor.invocation, winnerHarness) }),
+        ...(winnerActor?.invocation === undefined ? {} : { sessionDir: actorSessionDirectory(request.runDir, winnerActor.invocation, winnerHarness, winnerWorker) }),
         onEvent: request.onEvent,
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
         ...(continuation === undefined ? {} : { continuation }),
@@ -2368,6 +2369,20 @@ export function executeWorkflow(
     // worker request, so the harness reopens exactly the transcripts this prompt
     // touches and nothing else.
     const actors = new Map<string, ActorState>(request.execution?.actors);
+    // Actors written before they were keyed by worker carry the stage id in
+    // their key. Rekey them once here: the compiled workflow is the only place
+    // the stage→worker mapping exists, so this is the one moment the rewrite
+    // is possible. An actor whose stage the current workflow does not hold
+    // keeps its old key and is simply not looked up.
+    if (request.execution !== undefined) {
+      const stageToWorker = new Map(compiled.stages.map((stage) => [stage.id, stage.stage.worker]));
+      for (const [key, state] of [...actors]) {
+        const migratedKey = migrateLegacyActorKey(key, stageToWorker);
+        if (migratedKey === undefined || actors.has(migratedKey)) continue;
+        actors.delete(key);
+        actors.set(migratedKey, state);
+      }
+    }
     const workflowAgentOptions: AgentHarnessOptions = {
       ...(request.agentOptions ?? {}),
       // Codex's workspace-write sandbox only grants the task cwd by default;
@@ -2457,7 +2472,7 @@ export function executeWorkflow(
         .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
         .at(-1)?.slot;
       const stageModel = stageModelForSlot(node.stage.model, laneSlot);
-      const actorKey = workflowActorKey(invocation, node.stage.harness);
+      const actorKey = workflowActorKey(invocation, node.stage.harness, node.stage.worker);
       const memoryEnabled = node.stage.memory !== false;
       const actorSemaphore = semaphoreForActor(actorKey);
       const stageLog = WORKER_LOG.with({ stage: node.id, agent: node.stage.worker });
@@ -2835,7 +2850,7 @@ export function executeWorkflow(
             ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined
               ? {}
               : { thinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
-            sessionDir: actorSessionDirectory(request.runDir, invocation, node.stage.harness),
+            sessionDir: actorSessionDirectory(request.runDir, invocation, node.stage.harness, node.stage.worker),
             ...(stageContinuation === undefined
               ? {}
               : { continuation: stageContinuation }),
@@ -3326,7 +3341,7 @@ export function executeWorkflow(
             ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined
               ? {}
               : { thinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
-            sessionDir: actorSessionDirectory(request.runDir, invocation, node.stage.harness),
+            sessionDir: actorSessionDirectory(request.runDir, invocation, node.stage.harness, node.stage.worker),
             ...(memoryEnabled ? { continuation: acceptedWorker.continuation } : {}),
             // The follow-up is still this actor's turn, so its output streams
             // under the same stage attribution as the accepted one.

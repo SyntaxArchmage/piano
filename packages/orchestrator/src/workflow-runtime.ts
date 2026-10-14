@@ -99,33 +99,65 @@ export function validationResultPath(
   return join(invocationDirectory(runDir, invocation), "attempts", String(attempt), "result.json");
 }
 
-/** The actor deliberately includes logical stage identity rather than worker
- * plugin identity: two different stages using `basic` must not share a chat.
- * Loop iteration is excluded so the same actor resumes across iterations;
- * every active map slot remains an isolated lane. */
+/** The actor key's version marker. Keys written before actors were keyed by
+ * worker carried the logical stage id as their third segment; the marker is
+ * what lets a reader tell the two formats apart without guessing. */
+export const ACTOR_KEY_VERSION = "v2";
+
+/** Fan-out lane segments of an invocation: every active map slot is an
+ * isolated actor; loop frames contribute nothing, so the same actor resumes
+ * across iterations. */
+function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
+  return frames
+    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
+    .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
+}
+
+/** The actor identity: session × harness × worker × lane, under a versioned
+ * prefix. Worker — the recipe's role — rather than logical stage: one worker
+ * continues a single conversation across stages, loop iterations, workflow
+ * switches, and prompts of a session, which is what lets "run a workflow,
+ * then keep working on it" resume the same chat. Keys written before this
+ * format used the stage id on the opposite reading (that two stages sharing a
+ * worker must not share a chat); {@link migrateLegacyActorKey} rewrites them. */
 export function workflowActorKey(
   invocation: WorkflowRuntimeInvocation,
   harness: string,
+  worker: string,
 ): string {
-  const lane = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-    .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
-  return [invocation.executionId, harness, invocation.stageId, ...(lane.length === 0 ? ["root"] : lane)].join("/");
+  const lane = actorLaneSegments(invocation.frames);
+  return [ACTOR_KEY_VERSION, invocation.executionId, harness, worker, ...(lane.length === 0 ? ["root"] : lane)].join("/");
+}
+
+/** Rewrite one legacy stage-keyed actor key into the worker-keyed form, or
+ * `undefined` when the key is not legacy or names a stage the current
+ * workflow does not hold. Migration is best-effort by design: an actor whose
+ * stage is gone keeps its old key and is simply not looked up. */
+export function migrateLegacyActorKey(
+  key: string,
+  stageToWorker: ReadonlyMap<string, string>,
+): string | undefined {
+  if (key.startsWith(`${ACTOR_KEY_VERSION}/`)) return undefined;
+  const parts = key.split("/");
+  const [executionId, harness, stageId] = parts;
+  if (executionId === undefined || harness === undefined || stageId === undefined || parts.length < 4) return undefined;
+  const worker = stageToWorker.get(stageId);
+  if (worker === undefined) return undefined;
+  return [ACTOR_KEY_VERSION, executionId, harness, worker, ...parts.slice(3)].join("/");
 }
 
 export function actorSessionDirectory(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
   harness: string,
+  worker: string,
 ): string {
-  const lane = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-    .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
+  const lane = actorLaneSegments(invocation.frames);
   return join(
     executionDirectory(runDir, invocation.executionId),
     "actors",
     harness,
-    invocation.stageId,
+    worker,
     ...(lane.length === 0 ? ["root"] : lane),
     "session",
   );

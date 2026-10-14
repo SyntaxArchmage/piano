@@ -32,6 +32,14 @@ export {
   type WorkflowTournament,
 } from "./workflow.js";
 export {
+  ACTOR_KEY_VERSION,
+  actorSessionDirectory,
+  migrateLegacyActorKey,
+  workflowActorKey,
+  type WorkflowRuntimeFrame,
+  type WorkflowRuntimeInvocation,
+} from "./workflow-runtime.js";
+export {
   admitWinner,
   betterByDirection,
   selectWinner,
