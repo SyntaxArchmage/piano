@@ -2767,7 +2767,7 @@ export function executeWorkflow(
           // This snapshot is a convenience monitor view. A filesystem issue
           // must not hide a real worker result; the canonical stage evidence
           // and validation path remain authoritative.
-          yield* progressSemaphore.withPermits(1)(markWorkflowStageStarted(request.runDir, {
+          yield* progressSemaphore.withPermits(1)(markWorkflowStageStarted(request.runDir, executionId, {
             invocationId: runtimeInvocationId(invocation),
             stageId: node.id,
             stage: node.stage.name,

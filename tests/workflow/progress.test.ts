@@ -10,6 +10,8 @@ import {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
+  progressRecordKind,
+  workflowProgressPath,
   workflowProgressSnapshotPath,
   type WorkflowError,
   type WorkflowProgressPlan,
@@ -84,6 +86,14 @@ async function readTiming(runDir: string): Promise<SnapshotTiming> {
   return JSON.parse(await readFile(workflowProgressSnapshotPath(runDir), "utf8")) as SnapshotTiming;
 }
 
+/** The append-only stream, as its readers see it: one JSON object per line. */
+async function readStream(runDir: string): Promise<Record<string, unknown>[]> {
+  const text = await readFile(workflowProgressPath(runDir), "utf8").catch(() => "");
+  return text.split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
 describe("workflow stage time", () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -93,7 +103,7 @@ describe("workflow stage time", () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       invocationId: "tune@tune/iter-0",
       stageId: "tune",
       stage: "tune",
@@ -113,7 +123,7 @@ describe("workflow stage time", () => {
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
     const tune = { stageId: "tune", stage: "tune", instanceId: "tune/iter-0" } as const;
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       ...tune, invocationId: "tune@tune/iter-0", worker: "worker", attempt: 1,
     }));
 
@@ -126,7 +136,7 @@ describe("workflow stage time", () => {
 
     // A second attempt of the same invocation adds to the same total.
     at("2026-01-01T00:01:00.000Z");
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       ...tune, invocationId: "tune@tune/iter-0", worker: "worker", attempt: 2,
     }));
     at("2026-01-01T00:01:05.000Z");
@@ -136,7 +146,7 @@ describe("workflow stage time", () => {
 
     // The next loop iteration stays its own entry, so a reader can add them up.
     at("2026-01-01T00:02:00.000Z");
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       ...tune, invocationId: "tune@tune/iter-1", instanceId: "tune/iter-1", worker: "worker", attempt: 1,
     }));
     at("2026-01-01T00:02:01.000Z");
@@ -154,7 +164,7 @@ describe("workflow stage time", () => {
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
     const measure = { stageId: "measure", stage: "measure" } as const;
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 1,
     }));
     at("2026-01-01T00:00:20.000Z");
@@ -166,7 +176,7 @@ describe("workflow stage time", () => {
 
     // Resuming restarts the span; the pause itself is never measured.
     at("2026-01-01T00:10:00.000Z");
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 2,
     }));
     const resumed = (await readTiming(runDir)).invocationTime?.["measure@root"];
@@ -179,7 +189,7 @@ describe("workflow stage time", () => {
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
     const measure = { stageId: "measure", stage: "measure" } as const;
-    await run(markWorkflowStageStarted(runDir, {
+    await run(markWorkflowStageStarted(runDir, "execution", {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 1,
     }));
 
@@ -208,7 +218,7 @@ describe("workflow stage time", () => {
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
     const tune = { stageId: "tune", stage: "tune", instanceId: "tune/iter-0", invocationId: "tune@tune/iter-0" } as const;
-    await run(markWorkflowStageStarted(runDir, { ...tune, worker: "worker", attempt: 1 }));
+    await run(markWorkflowStageStarted(runDir, "execution", { ...tune, worker: "worker", attempt: 1 }));
     at("2026-01-01T00:00:07.000Z");
     await run(appendWorkflowProgress(runDir, record(tune)));
 
@@ -263,5 +273,94 @@ describe("workflow progress compatibility", () => {
       benchmark: { best: 7 },
       projections,
     });
+  });
+});
+
+describe("workflow progress stream", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("records a started invocation, with the execution id its caller holds", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    const runDir = await newRunDir();
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(markWorkflowStageStarted(runDir, "execution", {
+      invocationId: "tune@tune/iter-0",
+      stageId: "tune",
+      stage: "tune",
+      worker: "worker",
+      attempt: 1,
+      instanceId: "tune/iter-0",
+    }));
+
+    // Not recovered from the invocation id: `"tune@tune/iter-0".split("@")[0]`
+    // is the stage name, not the execution.
+    expect((await readStream(runDir))[0]).toEqual({
+      version: 1,
+      kind: "stage-started",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      executionId: "execution",
+      invocationId: "tune@tune/iter-0",
+      stageId: "tune",
+      stage: "tune",
+      worker: "worker",
+      attempt: 1,
+      instanceId: "tune/iter-0",
+    });
+  });
+
+  it("keeps accepted records free of the discriminator, so existing files read the same", async () => {
+    const runDir = await newRunDir();
+    await run(appendWorkflowProgress(runDir, record()));
+
+    const accepted = (await readStream(runDir))[0] ?? {};
+    expect(accepted.kind).toBeUndefined();
+    expect(progressRecordKind(accepted)).toBe("stage-accepted");
+  });
+
+  it("answers which invocation is in flight, and since when, from the stream alone", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    const runDir = await newRunDir();
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    await run(markWorkflowStageStarted(runDir, "execution", {
+      invocationId: "tune@tune/iter-0", stageId: "tune", stage: "tune", worker: "worker", attempt: 1,
+    }));
+    at("2026-01-01T00:00:30.000Z");
+    await run(appendWorkflowProgress(runDir, record({ invocationId: "tune@tune/iter-0" })));
+    at("2026-01-01T00:01:00.000Z");
+    await run(markWorkflowStageStarted(runDir, "execution", {
+      invocationId: "tune@tune/iter-1", stageId: "tune", stage: "tune", worker: "worker", attempt: 1,
+    }));
+
+    // Fold the stream the way a reader would. Two facts have to come out of it
+    // that acceptance records cannot supply on their own: which invocation is
+    // still in flight and when it started, and how long the accepted one took.
+    const startedAt = new Map<string, string>();
+    const lastKind = new Map<string, "started" | "accepted">();
+    const durationMs = new Map<string, number>();
+    for (const line of await readStream(runDir)) {
+      const invocationId = String(line.invocationId);
+      const timestamp = String(line.timestamp);
+      if (progressRecordKind(line) === "stage-started") {
+        startedAt.set(invocationId, timestamp);
+        lastKind.set(invocationId, "started");
+        continue;
+      }
+      lastKind.set(invocationId, "accepted");
+      const since = startedAt.get(invocationId);
+      if (since !== undefined) durationMs.set(invocationId, Date.parse(timestamp) - Date.parse(since));
+    }
+    const inFlight = [...lastKind]
+      .filter(([, kind]) => kind === "started")
+      .map(([invocationId]) => ({ invocationId, since: startedAt.get(invocationId) }));
+
+    expect(durationMs.get("tune@tune/iter-0")).toBe(30_000);
+    expect(inFlight).toEqual([{ invocationId: "tune@tune/iter-1", since: "2026-01-01T00:01:00.000Z" }]);
+
+    // The snapshot written beside the stream says the same thing, which is what
+    // makes the snapshot a view rather than the only copy.
+    expect((await readTiming(runDir)).invocationTime?.["tune@tune/iter-1"]?.runningSince)
+      .toBe("2026-01-01T00:01:00.000Z");
   });
 });

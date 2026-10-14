@@ -19,6 +19,7 @@ import {
   executeWorkflow,
   loadAndExecuteWorkflow,
   loadWorkflow,
+  progressRecordKind,
   readWorkflowExecutionContinuation,
   WorkflowError,
   type WorkflowSignoffRequest,
@@ -38,6 +39,19 @@ import {
 } from "../../packages/orchestrator/src/legacy-contract-projections.js";
 
 const runFile = promisify(execFile);
+
+/** The accepted-stage records of a run's append-only progress stream, in order.
+ *
+ * The stream also carries `stage-started` records, so a reader that wants "what
+ * the orchestrator accepted" asks by kind instead of by line position. These
+ * tests are about orchestration semantics — which stages ran, in what order,
+ * with what payload — so they read the accepted records. */
+function acceptedProgress<T>(text: string): T[] {
+  return text.trim().split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((record) => progressRecordKind(record) === "stage-accepted") as T[];
+}
 
 const BASIC_WORKFLOW = `version: 3
 workflow:
@@ -762,7 +776,7 @@ describe(" workflow execution", () => {
       expect(state.current_best.source).toBe("kernel.py");
       expect(state.current_best.promoted_at).toEqual(expect.any(String));
       expect(state.history).toHaveLength(1);
-      const progress = (await readFile(result.progressPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { resultPayload?: { current_best?: { digest?: string } } });
+      const progress = acceptedProgress<{ resultPayload?: { current_best?: { digest?: string } } }>(await readFile(result.progressPath, "utf8"));
       expect(progress[0]?.resultPayload?.current_best?.digest).toBe(candidateDigest);
       const accepted = JSON.parse(await readFile(result.stages[0]!.resultPath!, "utf8")) as {
         current_best?: { path?: string; digest?: string };
@@ -1082,13 +1096,10 @@ describe(" workflow execution", () => {
       ]));
       expect(result.stages[0]?.projections?.find(({ id }) => id === "round.materialization-v1")?.value)
         .toEqual(result.stages[0]?.resultPayload);
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as {
-          resultPayload?: { decision?: string };
-          projections?: Array<{ id: string; value: unknown }>;
-        });
+      const progress = acceptedProgress<{
+        resultPayload?: { decision?: string };
+        projections?: Array<{ id: string; value: unknown }>;
+      }>(await readFile(result.progressPath, "utf8"));
       expect(progress[0]?.resultPayload?.decision).toBe("DISCARD");
       expect(progress[0]?.projections).toContainEqual(expect.objectContaining({
         id: "round.decision",
@@ -2147,10 +2158,7 @@ workflow:
       }));
       expect(calls.map(stageId)).toEqual(["setup", "summary"]);
       expect(result.stages.map((stage) => stage.stageId)).toEqual(["setup", "summary"]);
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { stageId: string; resultPayload?: { status?: string } });
+      const progress = acceptedProgress<{ stageId: string; resultPayload?: { status?: string } }>(await readFile(result.progressPath, "utf8"));
       expect(progress.map((record) => record.stageId)).toEqual(["setup", "summary"]);
       expect(progress[0]?.resultPayload?.status).toBe("blocked");
       expect(result.stages[0]?.projections).toContainEqual(expect.objectContaining({
@@ -2979,15 +2987,12 @@ workflow:
         id: "tune.measure@tune/iter-1",
         resultPayload: { text: "tune.measure@tune/iter-1" },
       });
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as {
-          stageId: string;
-          iteration?: number;
-          sessionId: string;
-          resultPayload?: { text?: string };
-        });
+      const progress = acceptedProgress<{
+        stageId: string;
+        iteration?: number;
+        sessionId: string;
+        resultPayload?: { text?: string };
+      }>(await readFile(result.progressPath, "utf8"));
       expect(progress).toHaveLength(7);
       expect(progress.filter((record) => record.stageId === "tune.profile").map((record) => record.iteration)).toEqual([0, 1, 2]);
       expect(progress.filter((record) => record.stageId === "tune.measure").map((record) => record.resultPayload?.text)).toEqual([
@@ -3248,10 +3253,7 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .filter((time) => time.stageId === "tournament.implement")
         .map((time) => time.instanceId).sort()).toEqual(["tournament/slot-0", "tournament/slot-1"]);
-      const progressRecords = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { progress?: { completedStages?: number } });
+      const progressRecords = acceptedProgress<{ progress?: { completedStages?: number } }>(await readFile(join(session.runDir, "progress.jsonl"), "utf8"));
       expect(progressRecords.map((record) => record.progress?.completedStages)).toEqual([1, 2, 3, 4, 5, 6]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -4372,7 +4374,7 @@ workflow:
         model: "stage-model",
         thinkingLevel: "high",
       });
-      const progress = JSON.parse((await readFile(result.progressPath, "utf8")).trim()) as Record<string, unknown>;
+      const [progress] = acceptedProgress<Record<string, unknown>>(await readFile(result.progressPath, "utf8"));
       expect(progress).toMatchObject({ requestedModel: "stage-model", requestedThinkingLevel: "high", model: "stage-model", thinkingLevel: "high" });
       const handoffPath = result.stages[0]?.handoffRecordPath;
       expect(handoffPath).toBeDefined();

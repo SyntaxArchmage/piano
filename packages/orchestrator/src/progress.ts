@@ -128,6 +128,41 @@ export interface WorkflowProgressRecord {
   readonly contract?: WorkerContractReference;
 }
 
+/** Append-only record of one invocation *starting*.
+ *
+ * The stream records starts as well as acceptances because "which invocation is
+ * in flight, and since when" is not derivable from acceptance records alone.
+ * Without a start record that fact lived only in the snapshot, which made the
+ * snapshot the sole authority for information no log held — and forced its
+ * accumulated stage time to be carried forward from the snapshot's own
+ * previous value instead of from evidence. */
+export interface WorkflowProgressStartRecord {
+  readonly version: 1;
+  readonly kind: "stage-started";
+  readonly timestamp: string;
+  readonly executionId: string;
+  readonly invocationId: string;
+  readonly stageId: string;
+  readonly stage: string;
+  readonly worker: string;
+  readonly attempt: number;
+  readonly instanceId?: string;
+  readonly iteration?: number;
+}
+
+/** One line of the append-only progress stream. */
+export type WorkflowProgressStreamRecord = WorkflowProgressRecord | WorkflowProgressStartRecord;
+
+/** Kind of one progress-stream line.
+ *
+ * `"stage-accepted"` is the historical shape and carries no discriminator: the
+ * stream predates it, and every record written before it is an accepted stage.
+ * Readers ask this function rather than testing `kind` themselves, so the
+ * compatibility rule lives in exactly one place. */
+export function progressRecordKind(record: { readonly kind?: unknown }): WorkflowProgressStartRecord["kind"] | "stage-accepted" {
+  return record.kind === "stage-started" ? "stage-started" : "stage-accepted";
+}
+
 export interface WorkflowProgressSnapshot {
   readonly version: 1;
   readonly updatedAt: string;
@@ -307,21 +342,61 @@ export function initializeWorkflowProgress(
   });
 }
 
-/** Update the convenience snapshot when a stage/attempt starts. The
- * append-only progress stream intentionally remains acceptance-only. */
+/** Append one record to the run's progress stream.
+ *
+ * The stream's single writer seam: every record type goes through it, so the
+ * file has one place that knows its line format. */
+function appendProgressLine(
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+  record: WorkflowProgressStreamRecord,
+): Effect.Effect<void, WorkflowError, never> {
+  return Effect.gen(function* () {
+    const line = yield* Effect.try({
+      try: () => `${JSON.stringify(record)}\n`,
+      catch: (cause) => progressError(path, "serialize", cause),
+    });
+    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
+      Effect.mapError((cause) => progressError(path, "mkdir", cause)),
+    );
+    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
+      Effect.mapError((cause) => progressError(path, "append", cause)),
+    );
+  });
+}
+
+/** Record that a stage/attempt started, in the stream and then in the snapshot.
+ *
+ * The stream is written first on purpose: the snapshot is a view of the record,
+ * so a failure between the two must leave the view stale rather than the record
+ * missing. Viewing the order the other way would let a crash lose the start. */
 export function markWorkflowStageStarted(
   runDir: string,
+  executionId: string,
   current: Omit<WorkflowProgressCurrent, "status" | "progress">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressSnapshotPath(runDir);
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const previous = yield* readSnapshot(fileSystem, path);
     const now = new Date().toISOString();
+    yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), {
+      version: 1,
+      kind: "stage-started",
+      timestamp: now,
+      executionId,
+      invocationId: current.invocationId,
+      stageId: current.stageId,
+      stage: current.stage,
+      worker: current.worker,
+      attempt: current.attempt,
+      ...(current.instanceId === undefined ? {} : { instanceId: current.instanceId }),
+      ...(current.iteration === undefined ? {} : { iteration: current.iteration }),
+    });
+    const previous = yield* readSnapshot(fileSystem, path);
     const fallback: WorkflowProgressSnapshot = previous ?? {
       version: 1,
       updatedAt: now,
-      executionId: current.invocationId.split("@", 1)[0] ?? current.invocationId,
+      executionId,
       status: "running",
       plannedStages: 0,
       completedStages: 0,
@@ -356,21 +431,11 @@ export function appendWorkflowProgress(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const timestamp = new Date().toISOString();
-    const fullRecord = {
-      version: 1 as const,
+    yield* appendProgressLine(fileSystem, path, {
+      version: 1,
       timestamp,
       ...record,
-    };
-    const line = yield* Effect.try({
-      try: () => `${JSON.stringify(fullRecord)}\n`,
-      catch: (cause) => progressError(path, "serialize", cause),
     });
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => progressError(path, "mkdir", cause)),
-    );
-    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError((cause) => progressError(path, "append", cause)),
-    );
     const snapshotPath = workflowProgressSnapshotPath(runDir);
     const explicitProjections = record.projections;
     const hintProjections = explicitProjections ?? (record.contract === undefined
