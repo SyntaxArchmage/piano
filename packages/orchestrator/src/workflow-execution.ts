@@ -4286,6 +4286,18 @@ export function executeWorkflow(
         undefined,
         sharedWorkspace,
       );
+      const terminal = completed.boundary.results;
+      const final = terminal.at(-1) ?? completed.stages.at(-1);
+      if (final === undefined) {
+        return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, "workflow completed without a stage result"));
+      }
+      // The outcome is settled the moment the terminal stage resolves, so it
+      // is recorded before any cleanup runs. Cleanup is re-entrant, optional
+      // and allowed to fail; the record of what happened is none of those, and
+      // a cleanup that wedges must not be able to leave the run looking live.
+      yield* finalizeWorkflowProgress(request.runDir, executionId, "completed").pipe(
+        Effect.catchAll(() => Effect.void),
+      );
       yield* finalizeWorkspaces();
       // ISSUE-017: the progress record is written at the summary stage and
       // committed separately as a follow-up (user timing decision: source
@@ -4293,16 +4305,6 @@ export function executeWorkflow(
       if (autoCommit) {
         yield* commitSummaryProgressRecord(completed.stages, request.prompt, preExistingDirty, sharedWorkspace.cwd);
       }
-      const terminal = completed.boundary.results;
-      const final = terminal.at(-1) ?? completed.stages.at(-1);
-      if (final === undefined) {
-        return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, "workflow completed without a stage result"));
-      }
-      // The JSONL stream is the canonical event ledger; finalize the convenience
-      // snapshot only after the terminal stage has completed successfully.
-      yield* finalizeWorkflowProgress(request.runDir, executionId, "completed").pipe(
-        Effect.catchAll(() => Effect.void),
-      );
       yield* WORKFLOW_LOG.info("agentic.task.completed", {
         stage: final.stageId,
         agent: final.worker,
@@ -4345,38 +4347,41 @@ export function executeWorkflow(
       Effect.catchAll(() => Effect.void),
     );
     return yield* runExecution.pipe(
+      // Exit-level, not error-level: a bare fiber interrupt — no typed error,
+      // no abort signal, exactly what `/exit` performs on a stuck prompt — is
+      // the same human pause as a cancelled worker call and must not finalize
+      // the run as "failed". Error-channel taps ignore interrupts.
+      //
+      // Registered on the run itself rather than outside the cleanup below, so
+      // the outcome lands in evidence first: it is settled the moment the run
+      // fails, and a cleanup that wedges must not be able to swallow it.
+      Effect.onExit((exit) => Exit.isFailure(exit) ? Effect.gen(function* () {
+        const cancelled = isCancellation(exit.cause);
+        const details = failureDetails(exit.cause);
+        // An execution that failed before it had an identity never opened a
+        // stream or a snapshot, so it has no outcome of its own to record.
+        if (executionId !== undefined) {
+          yield* finalizeWorkflowProgress(
+            request.runDir,
+            executionId,
+            cancelled ? "paused" : "failed",
+            cancelled ? undefined : details.message,
+          ).pipe(
+            Effect.catchAll(() => Effect.void),
+          );
+        }
+        yield* (cancelled ? WORKFLOW_LOG.info : WORKFLOW_LOG.error)(
+          cancelled ? "agentic.task.cancelled" : "agentic.task.failed",
+          {
+            outcome: cancelled ? "cancelled" : "failure",
+            data: { error: details },
+          },
+        );
+      }) : Effect.void),
       Effect.ensuring(cleanupAfterFailure),
       Effect.onExit((exit) => closeWorkflowTrajectory(
         Exit.isSuccess(exit) ? "completed" : isCancellation(exit.cause) ? "cancelled" : "failed",
       )),
     );
-  })).pipe(
-    // Exit-level, not error-level: a bare fiber interrupt — no typed error,
-    // no abort signal, exactly what `/exit` performs on a stuck prompt — is
-    // the same human pause as a cancelled worker call and must not finalize
-    // the run as "failed". Error-channel taps ignore interrupts.
-    Effect.onExit((exit) => Exit.isFailure(exit) ? Effect.gen(function* () {
-      const cancelled = isCancellation(exit.cause);
-      const details = failureDetails(exit.cause);
-      // An execution that failed before it had an identity never opened a
-      // stream or a snapshot, so it has no outcome of its own to record.
-      if (executionId !== undefined) {
-        yield* finalizeWorkflowProgress(
-          request.runDir,
-          executionId,
-          cancelled ? "paused" : "failed",
-          cancelled ? undefined : details.message,
-        ).pipe(
-          Effect.catchAll(() => Effect.void),
-        );
-      }
-      yield* (cancelled ? WORKFLOW_LOG.info : WORKFLOW_LOG.error)(
-        cancelled ? "agentic.task.cancelled" : "agentic.task.failed",
-        {
-          outcome: cancelled ? "cancelled" : "failure",
-          data: { error: details },
-        },
-      );
-    }) : Effect.void),
-  );
+  }));
 }

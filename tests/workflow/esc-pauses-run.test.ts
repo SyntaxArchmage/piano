@@ -1,10 +1,11 @@
 // Escape-then-exit is a pause, not a failure. The engine half of the UX:
 // a turn interrupted mid-flight must leave (1) `resume.json` carrying the
 // harness session that turn opened — the partial transcript is on disk — and
-// (2) `progress.json` finalized as "paused", never "failed". The next prompt
-// then reopens the same actor conversation and runs to completion. The TUI
-// half lives in tests/tui/pause-exit-resume.test.ts.
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+// (2) the run finalized as "paused", never "failed", in both `progress.json`
+// and the append-only stream behind it. The next prompt then reopens the same
+// actor conversation and runs to completion. The TUI half lives in
+// tests/tui/pause-exit-resume.test.ts.
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sleep, waitFor } from "../common/terminal.js";
@@ -35,6 +36,14 @@ workflow:
         harness: pi
         from: []
 `;
+
+/** The last record of a run's append-only progress stream: how the run ended,
+ * as the stream itself tells it. */
+async function lastProgressRecord(runDir: string): Promise<{ kind?: string; status?: string }> {
+  const text = await readFile(join(runDir, "progress.jsonl"), "utf8");
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  return JSON.parse(lines.at(-1) ?? "{}") as { kind?: string; status?: string };
+}
 
 const SIGNOFF_STAGE_WORKFLOW = `version: 3
 workflow:
@@ -142,8 +151,14 @@ describe("Escape pauses a run instead of failing it", () => {
         transcriptPath: HANGING_SESSION.transcriptPath,
       });
 
-      // The convenience snapshot says paused, not failed.
+      // The convenience snapshot says paused, not failed — and the stream says
+      // the same thing, which is what makes the outcome survive a snapshot a
+      // wedged finalizer never reached.
       expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
+      expect(await lastProgressRecord(session.runDir)).toMatchObject({
+        kind: "execution-finished",
+        status: "paused",
+      });
 
       // Prompt 2 on the same run: the next-prompt path (identical to /resume)
       // hands the harness the exact session the interrupted turn opened.
@@ -160,6 +175,10 @@ describe("Escape pauses a run instead of failing it", () => {
 
       // Paused -> running -> completed: one execution across the pause.
       expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("completed");
+      expect(await lastProgressRecord(session.runDir)).toMatchObject({
+        kind: "execution-finished",
+        status: "completed",
+      });
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
