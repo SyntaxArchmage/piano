@@ -73,6 +73,7 @@ import {
   type WorkerResources,
 } from "./workflow-file.js";
 import { errorMessage, WorkflowError, workflowError } from "./errors.js";
+import { installStagingFile, writeFileAtomic } from "./atomic-write.js";
 import { pathWithin } from "./path-within.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import { writeResumeState } from "./resume-state.js";
@@ -989,82 +990,19 @@ function sha256Bytes(value: Uint8Array): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function isAtomicReplaceConflict(cause: unknown): boolean {
-  if (typeof cause !== "object" || cause === null) return false;
-  const code = (cause as { readonly code?: unknown }).code;
-  const reason = (cause as { readonly reason?: unknown }).reason;
-  return code === "EEXIST" || code === "EPERM" ||
-    reason === "AlreadyExists" || reason === "PermissionDenied";
-}
-
-/** Install a prepared sibling file with one rename where overwrite is
- * supported. Some Windows filesystems reject rename-over-existing; in that
- * case move the old entry to a random sibling first and restore it if the
- * install rename fails. The fallback is recoverable rather than silently
- * deleting the destination. */
-function replaceFileAtomicWorkflow(
-  fileSystem: FileSystem.FileSystem,
-  temporary: string,
-  path: string,
-): Effect.Effect<void, WorkflowError> {
-  return Effect.gen(function* () {
-    const direct = yield* Effect.either(fileSystem.rename(temporary, path));
-    if (Either.isRight(direct)) return;
-    if (!isAtomicReplaceConflict(direct.left)) {
-      return yield* Effect.fail(workflowError("schedule", path, errorMessage(direct.left)));
-    }
-
-    const backup = join(dirname(path), `.${basename(path)}.piano-replace-${randomUUID()}.bak`);
-    const preserved = yield* Effect.either(fileSystem.rename(path, backup));
-    if (Either.isLeft(preserved)) {
-      return yield* Effect.fail(workflowError(
-        "schedule",
-        path,
-        `atomic replace failed: ${errorMessage(direct.left)}; destination preservation failed: ${errorMessage(preserved.left)}`,
-      ));
-    }
-    const installed = yield* Effect.either(fileSystem.rename(temporary, path));
-    if (Either.isLeft(installed)) {
-      const restored = yield* Effect.either(fileSystem.rename(backup, path));
-      const restoreStatus = Either.isRight(restored)
-        ? "original destination restored"
-        : `original destination restore failed: ${errorMessage(restored.left)}; backup preserved at ${backup}`;
-      return yield* Effect.fail(workflowError(
-        "schedule",
-        path,
-        `atomic replace fallback failed: ${errorMessage(installed.left)}; ${restoreStatus}`,
-      ));
-    }
-    yield* fileSystem.remove(backup).pipe(
-      Effect.mapError((cause) => workflowError(
-        "schedule",
-        path,
-        `atomic replace completed but backup cleanup failed at ${backup}: ${errorMessage(cause)}`,
-      )),
-    );
-  });
-}
-
 function writeJsonAtomicWorkflow(
   path: string,
   value: unknown,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
+  return writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
     // A random, exclusive sibling avoids following a pre-created predictable
     // temp symlink. The preflight checks below still cannot close an OS-level
     // same-UID concurrent replacement race; use an OS sandbox/openat boundary
     // or a different UID when that threat model matters.
-    const temporary = join(dirname(path), `.${basename(path)}.piano-${randomUUID()}.tmp`);
-    yield* Effect.gen(function* () {
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => workflowError("schedule", path, errorMessage(cause))),
-      );
-      yield* fileSystem.writeFileString(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" }).pipe(
-        Effect.mapError((cause) => workflowError("schedule", path, errorMessage(cause))),
-      );
-      yield* replaceFileAtomicWorkflow(fileSystem, temporary, path);
-    }).pipe(Effect.ensuring(fileSystem.remove(temporary).pipe(Effect.ignore)));
+    temporaryPath: () => join(dirname(path), `.${basename(path)}.piano-${randomUUID()}.tmp`),
+    mapError: (cause) => workflowError("schedule", path, errorMessage(cause)),
+    exclusiveStaging: true,
+    installWithBackup: true,
   });
 }
 
@@ -1072,18 +1010,11 @@ function writeBytesAtomicWorkflow(
   path: string,
   value: Uint8Array,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const temporary = join(dirname(path), `.${basename(path)}.piano-${randomUUID()}.tmp`);
-    yield* Effect.gen(function* () {
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => workflowError("schedule", path, errorMessage(cause))),
-      );
-      yield* fileSystem.writeFile(temporary, value, { flag: "wx" }).pipe(
-        Effect.mapError((cause) => workflowError("schedule", path, errorMessage(cause))),
-      );
-      yield* replaceFileAtomicWorkflow(fileSystem, temporary, path);
-    }).pipe(Effect.ensuring(fileSystem.remove(temporary).pipe(Effect.ignore)));
+  return writeFileAtomic(path, value, {
+    temporaryPath: () => join(dirname(path), `.${basename(path)}.piano-${randomUUID()}.tmp`),
+    mapError: (cause) => workflowError("schedule", path, errorMessage(cause)),
+    exclusiveStaging: true,
+    installWithBackup: true,
   });
 }
 
@@ -1172,7 +1103,7 @@ function restoreMaterializationFile(
       yield* fileSystem.chmod(temporary, snapshotMode).pipe(
         Effect.mapError((cause) => workflowError("schedule", snapshot.path, `materialization rollback chmod failed: ${errorMessage(cause)}`)),
       );
-      yield* replaceFileAtomicWorkflow(fileSystem, temporary, snapshot.path).pipe(
+      yield* installStagingFile(fileSystem, temporary, snapshot.path, (cause) => workflowError("schedule", snapshot.path, errorMessage(cause))).pipe(
         Effect.mapError((cause) => workflowError("schedule", snapshot.path, `materialization rollback replace failed: ${errorMessage(cause)}`)),
       );
     }).pipe(Effect.ensuring(fileSystem.remove(temporary).pipe(Effect.ignore)));
