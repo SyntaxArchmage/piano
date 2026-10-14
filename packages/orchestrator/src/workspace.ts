@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { TRACE, type Logging, type Source } from "@piano/logging";
-import { errorMessage, WorkflowError, workflowError } from "./errors.js";
+import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import {
   executionDirectory,
@@ -64,10 +64,6 @@ const WORKSPACE_SOURCE: Source = {
   function: "allocateMapWorkspace",
 };
 
-function missingPath(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
 const workspacePathSeparator = sep === "\\" ? /[\\/]/u : /\//u;
 const protectedWorkspaceNames = new Set([".git", ".piano-run.lock"]);
 const slotIdentityMarkerPrefix = ".piano-slot-identity.";
@@ -116,7 +112,7 @@ async function isCaseInsensitiveFileSystem(root: string): Promise<boolean> {
       const candidateInfo = await lstat(candidateSegments.join(sep));
       if (candidateInfo.dev === rootInfo.dev && candidateInfo.ino === rootInfo.ino) return true;
     } catch (error) {
-      if (!missingPath(error)) throw error;
+      if (!isMissingPathError(error)) throw error;
     }
   }
   return false;
@@ -175,7 +171,7 @@ async function canonicalRunRoot(runDir: string, create: boolean): Promise<Canoni
   try {
     info = await lstat(lexical);
   } catch (error) {
-    if (!missingPath(error) || !create) throw error;
+    if (!isMissingPathError(error) || !create) throw error;
     await mkdir(lexical, { recursive: true });
     info = await lstat(lexical);
   }
@@ -230,7 +226,7 @@ async function assertSafeWorkspacePathAncestors(root: string, candidate: string)
     try {
       info = await lstat(current);
     } catch (error) {
-      if (missingPath(error)) return;
+      if (isMissingPathError(error)) return;
       throw error;
     }
     if (info.isSymbolicLink() || !info.isDirectory()) {
@@ -394,7 +390,7 @@ async function readWorkspaceRecord(
   try {
     recordInfo = await lstat(recordPath);
   } catch (error) {
-    if (missingPath(error)) return undefined;
+    if (isMissingPathError(error)) return undefined;
     throw error;
   }
   if (recordInfo.isSymbolicLink() || !recordInfo.isFile()) {
@@ -404,7 +400,7 @@ async function readWorkspaceRecord(
   try {
     raw = await readFile(recordPath, "utf8");
   } catch (error) {
-    if (missingPath(error)) return undefined;
+    if (isMissingPathError(error)) return undefined;
     throw error;
   }
   let value: unknown;
@@ -675,7 +671,7 @@ export function allocateMapWorkspace(
         try {
           await assertSafeWorkspaceDirectory(workspaceRoot, existing.cwd);
         } catch (error) {
-          if (missingPath(error)) {
+          if (isMissingPathError(error)) {
             throw workflowError("schedule", recordPath, `workspace slot "${key}" is missing at ${existing.cwd}`);
           }
           throw error;
@@ -697,7 +693,7 @@ export function allocateMapWorkspace(
         await lstat(cwd);
         throw workflowError("schedule", cwd, `workspace for map slot "${key}" already exists`);
       } catch (error) {
-        if (!missingPath(error)) throw error;
+        if (!isMissingPathError(error)) throw error;
       }
 
       const gitSource = await inspectGitSource(source, run);
@@ -812,7 +808,7 @@ async function readWorkspaceRecords(
   try {
     await lstat(recordsRoot);
   } catch (error) {
-    if (missingPath(error)) return [];
+    if (isMissingPathError(error)) return [];
     throw error;
   }
   await assertSafeWorkspaceDirectory(execution, recordsRoot);
@@ -820,7 +816,7 @@ async function readWorkspaceRecords(
   try {
     entries = await readdir(recordsRoot, { withFileTypes: true });
   } catch (error) {
-    if (missingPath(error)) return [];
+    if (isMissingPathError(error)) return [];
     throw error;
   }
   const expectedSource = sourceCwd === undefined ? undefined : await realpath(resolve(sourceCwd));
@@ -876,7 +872,7 @@ async function removeWorkspaceDirectory(
     const info = await lstat(record.cwd);
     kind = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
   } catch (error) {
-    if (missingPath(error)) return;
+    if (isMissingPathError(error)) return;
     throw error;
   }
   await assertRunOwnedWorkspaceDirectory(executionRoot, record.cwd, record.slotIdentity);
@@ -940,7 +936,7 @@ export function recoverMapWorkspaces(
         try {
           await assertRunOwnedWorkspaceDirectory(execution, record.cwd, record.slotIdentity);
         } catch (error) {
-          if (missingPath(error)) {
+          if (isMissingPathError(error)) {
             throw workflowError("schedule", path, `recoverable workspace is missing at ${record.cwd}`);
           }
           throw error;
@@ -1277,7 +1273,7 @@ async function assertRunOwnedWorkspaceDirectory(
     markerInfo = await lstat(markerPath);
     markerValue = await readFile(markerPath, "utf8");
   } catch (error) {
-    if (missingPath(error)) {
+    if (isMissingPathError(error)) {
       throw workflowError("schedule", candidate, "workspace slot identity marker is missing or invalid");
     }
     throw error;
@@ -1576,14 +1572,14 @@ async function pathExists(path: string): Promise<boolean> {
     await lstat(path);
     return true;
   } catch (error) {
-    if (missingPath(error)) return false;
+    if (isMissingPathError(error)) return false;
     throw error;
   }
 }
 
 async function sameFile(left: string, right: string): Promise<boolean> {
   const [leftInfo, rightInfo] = await Promise.all([lstat(left), lstat(right)]).catch((error: unknown) => {
-    if (missingPath(error)) return [undefined, undefined] as const;
+    if (isMissingPathError(error)) return [undefined, undefined] as const;
     throw error;
   });
   if (leftInfo === undefined || rightInfo === undefined) return false;
@@ -1626,7 +1622,7 @@ async function snapshotWorkspaceLstat(
   excludeUnder: readonly string[] = [],
 ): Promise<void> {
   const exists = await stat(snapshotDir).then(() => true, (error: unknown) => {
-    if (missingPath(error)) return false;
+    if (isMissingPathError(error)) return false;
     throw error;
   });
   if (exists) throw workflowError("schedule", snapshotDir, "workspace rollback snapshot already exists");
@@ -1743,12 +1739,12 @@ export async function restoreWorkspaceChanges(
   for (const change of changes) {
     safeWorkspaceNodePath(targetContentDir, change.path);
     await assertSafeWorkspaceAncestors(targetContentDir, change.path).catch((error: unknown) => {
-      if (!missingPath(error)) throw error;
+      if (!isMissingPathError(error)) throw error;
     });
     if (change.kind !== "added") {
       safeWorkspaceNodePath(beforeContentDir, change.path);
       await assertSafeWorkspaceAncestors(beforeContentDir, change.path).catch((error: unknown) => {
-        if (!missingPath(error)) throw error;
+        if (!isMissingPathError(error)) throw error;
       });
     }
   }
@@ -1871,7 +1867,7 @@ export function applyWinnerWorkspace(
       try {
         await assertRunOwnedWorkspaceDirectory(executionDirectory(run, executionId), selected.record.cwd, selected.record.slotIdentity);
       } catch (error) {
-        if (missingPath(error)) {
+        if (isMissingPathError(error)) {
           throw workflowError("schedule", selected.path, `winner workspace is missing at ${selected.record.cwd}`);
         }
         throw error;
