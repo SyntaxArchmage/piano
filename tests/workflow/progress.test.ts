@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendWorkflowProgress,
+  applyProgressRecord,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
@@ -16,6 +17,8 @@ import {
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
+  type WorkflowProgressSnapshot,
+  type WorkflowProgressStreamRecord,
 } from "../../packages/orchestrator/src/index.js";
 
 const roots: string[] = [];
@@ -400,5 +403,40 @@ describe("workflow progress stream", () => {
       status: "failed",
       error: "boom",
     });
+  });
+
+  it("reproduces the snapshot by reducing the stream from nothing", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    const runDir = await newRunDir();
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, false));
+    const tune = { stageId: "tune", stage: "tune", worker: "worker" } as const;
+    const measure = { stageId: "measure", stage: "measure", worker: "worker" } as const;
+
+    await run(markWorkflowStageStarted(runDir, "execution", {
+      ...tune, invocationId: "tune@root", attempt: 1,
+    }));
+    at("2026-01-01T00:00:30.000Z");
+    await run(appendWorkflowProgress(runDir, record({
+      ...tune, invocationId: "tune@root", attempt: 1,
+      progress: { status: "accepted", acceptedStages: 1, completedStages: 1, plannedStages: 4, remainingStages: 3, stageCounts: timingPlan.stageCounts, hint: "1/4" },
+    })));
+    at("2026-01-01T00:01:00.000Z");
+    await run(markWorkflowStageStarted(runDir, "execution", {
+      ...measure, invocationId: "measure@root", attempt: 1,
+    }));
+    at("2026-01-01T00:02:00.000Z");
+    await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
+
+    // The snapshot the writers produced, and the same snapshot rebuilt by
+    // reducing the stream they wrote. Equal output is what makes the snapshot a
+    // view of the stream rather than a second account of the run.
+    const written = JSON.parse(await readFile(workflowProgressSnapshotPath(runDir), "utf8")) as unknown;
+    const rebuilt = (await readStream(runDir)).reduce<WorkflowProgressSnapshot | undefined>(
+      (previous, line) => applyProgressRecord(previous, line as unknown as WorkflowProgressStreamRecord),
+      undefined,
+    );
+
+    expect(rebuilt).toBeDefined();
+    expect(rebuilt).toEqual(written);
   });
 });

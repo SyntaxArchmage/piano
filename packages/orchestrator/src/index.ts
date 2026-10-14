@@ -108,6 +108,7 @@ export {
 } from "./workflow-resume.js";
 export {
   appendWorkflowProgress,
+  applyProgressRecord,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
