@@ -24,11 +24,10 @@
 //     concrete invocation (root stage, loop iteration, or map slot), so a
 //     provider/validation retry emits another `agent_end` rather than
 //     double-counting the same attempt.
-//   - `done` closes ONE harness turn and preserves that turn's session id and
-//     transcript path for evidence. It is not the run's terminal state: a
-//     workflow runs one turn per stage, so a run has as many `done` events as
-//     it has stage attempts. The run's terminal comes from outside the stream,
-//     through `markTerminal`, which the prompt's own outcome supplies.
+//   - `done` closes ONE harness turn and is not counted: a workflow runs one
+//     turn per stage, so a run has as many `done` events as it has stage
+//     attempts, and the run's own terminal comes from outside the stream
+//     through `markTerminal`.
 
 import type { AgentEvent } from "@piano/harness";
 
@@ -56,10 +55,6 @@ export interface RunStats {
    * from a turn ending, which says nothing about the run. Absent while the run
    * is live, so this is also what "the run is over" reads off. */
   readonly terminal?: "completed" | "failed" | "cancelled";
-  /** Evidence availability: session id and transcript path of the last turn
-   * that closed (preserved from the raw trajectory as source of truth). */
-  readonly sessionId?: string;
-  readonly transcriptPath?: string;
 }
 
 /** Initial run state: everything zero, nothing terminal. */
@@ -76,8 +71,6 @@ export function emptyRunStats(): RunStats {
     totalTokens: undefined,
     cacheReadTokens: undefined,
     cacheWriteTokens: undefined,
-    sessionId: undefined,
-    transcriptPath: undefined,
   };
 }
 
@@ -116,19 +109,10 @@ export function applyRunStat(input: RunStats, event: AgentEvent): RunStats {
         failedStages: input.failedStages + (event.willRetry ? 1 : 0),
       };
     }
-    case "done": {
-      return {
-        ...input,
-        // Evidence availability only. Reading this as the run's terminal state
-        // made the footer report "completed" from the first stage onward while
-        // the workflow still had stages to run — and the footer is not the only
-        // place that shows the run: the graph beside it, drawn from the run's
-        // own progress, kept saying otherwise.
-        sessionId: event.sessionId,
-        transcriptPath: event.transcriptPath,
-      };
-    }
     default:
+      // `done` among them: it closes a harness turn, which says nothing this
+      // reducer counts and nothing about the run. The run's outcome arrives
+      // through `markTerminal` instead.
       return input;
   }
 }

@@ -63,19 +63,17 @@ describe("applyRunStat", () => {
     expect(stats.failedStages).toBe(1);
   });
 
-  it("keeps a closed turn's evidence without calling the run terminal", () => {
+  it("keeps a closed turn's ending out of the run's state", () => {
     let stats = emptyRunStats();
     stats = applyRunStat(stats, agentEnd(false));
+    const afterTurn = stats;
     stats = applyRunStat(stats, done(0));
 
     // One stage's turn closed. The workflow may have many more to run, so the
     // run is still running — the footer must not say otherwise from here on.
+    expect(stats).toBe(afterTurn);
     expect(stats.terminal).toBeUndefined();
     expect(statsStatusLabel(stats)).toBe("running");
-
-    // Its evidence is still worth keeping.
-    expect(stats.sessionId).toBe("s1");
-    expect(stats.transcriptPath).toBe("/tmp/t.json");
 
     // The run's own outcome is what settles the label.
     expect(statsStatusLabel(markTerminal(stats, "completed"))).toBe("completed");
