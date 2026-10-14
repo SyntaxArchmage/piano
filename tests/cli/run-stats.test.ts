@@ -70,7 +70,6 @@ describe("applyRunStat", () => {
 
     // One stage's turn closed. The workflow may have many more to run, so the
     // run is still running — the footer must not say otherwise from here on.
-    expect(stats.completed).toBe(false);
     expect(stats.terminal).toBeUndefined();
     expect(statsStatusLabel(stats)).toBe("running");
 

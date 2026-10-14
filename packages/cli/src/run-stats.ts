@@ -52,7 +52,9 @@ export interface RunStats {
   readonly elapsedMs: number;
   /** The prompt's own outcome was folded in. Set only by `markTerminal` —
    * never inferred from a turn ending, which says nothing about the run. */
-  readonly completed: boolean;
+  /** The prompt's own outcome, folded in by `markTerminal` — never inferred
+   * from a turn ending, which says nothing about the run. Absent while the run
+   * is live, so this is also what "the run is over" reads off. */
   readonly terminal?: "completed" | "failed" | "cancelled";
   /** Evidence availability: session id and transcript path of the last turn
    * that closed (preserved from the raw trajectory as source of truth). */
@@ -68,7 +70,6 @@ export function emptyRunStats(): RunStats {
     completedStages: 0,
     failedStages: 0,
     elapsedMs: 0,
-    completed: false,
     terminal: undefined,
     inputTokens: undefined,
     outputTokens: undefined,
@@ -132,15 +133,14 @@ export function applyRunStat(input: RunStats, event: AgentEvent): RunStats {
   }
 }
 
-/** Record a non-success terminal outcome observed outside the event stream. The
- * harness reports failure/cancellation as an Effect error (not a `done` event),
- * so the TUI calls this from its tapError path to fold that outcome into the
- * cumulative stats the same way a successful `done` would. */
+/** Record the run's outcome. The harness reports failure and cancellation as an
+ * Effect error rather than an event, so the TUI folds them in from its own
+ * outcome taps; success comes the same way, so all three land in one field. */
 export function markTerminal(
   input: RunStats,
   terminal: "completed" | "failed" | "cancelled",
 ): RunStats {
-  return { ...input, completed: true, terminal };
+  return { ...input, terminal };
 }
 
 /** Fold `events` in order into a cumulative `RunStats`, advancing elapsed to
@@ -170,9 +170,7 @@ export function formatTokens(value: number | undefined): string {
 /** Compact lifecycle label for the STATUS row, mirroring the workflow graph's
  * summary phrasing ("waiting" before the first stage resolves). */
 export function statsStatusLabel(stats: RunStats): string {
-  if (stats.terminal === "cancelled") return "cancelled";
-  if (stats.terminal === "failed") return "failed";
-  if (stats.completed) return "completed";
+  if (stats.terminal !== undefined) return stats.terminal;
   if (stats.completedStages > 0 || stats.failedStages > 0 || stats.toolCalls > 0) return "running";
   return "waiting";
 }
