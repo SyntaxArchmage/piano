@@ -24,8 +24,11 @@
 //     concrete invocation (root stage, loop iteration, or map slot), so a
 //     provider/validation retry emits another `agent_end` rather than
 //     double-counting the same attempt.
-//   - `done` marks the run terminal and preserves session id / transcript path
-//     (evidence availability).
+//   - `done` closes ONE harness turn and preserves that turn's session id and
+//     transcript path for evidence. It is not the run's terminal state: a
+//     workflow runs one turn per stage, so a run has as many `done` events as
+//     it has stage attempts. The run's terminal comes from outside the stream,
+//     through `markTerminal`, which the prompt's own outcome supplies.
 
 import type { AgentEvent } from "@piano/harness";
 
@@ -47,11 +50,12 @@ export interface RunStats {
   readonly failedStages: number;
   /** Wall-clock elapsed since the run started, in milliseconds. */
   readonly elapsedMs: number;
-  /** A terminal `done` event was observed. */
+  /** The prompt's own outcome was folded in. Set only by `markTerminal` —
+   * never inferred from a turn ending, which says nothing about the run. */
   readonly completed: boolean;
   readonly terminal?: "completed" | "failed" | "cancelled";
-  /** Evidence availability: session id and transcript path from the terminal
-   * `done` event (preserved from the raw trajectory as source of truth). */
+  /** Evidence availability: session id and transcript path of the last turn
+   * that closed (preserved from the raw trajectory as source of truth). */
   readonly sessionId?: string;
   readonly transcriptPath?: string;
 }
@@ -114,13 +118,11 @@ export function applyRunStat(input: RunStats, event: AgentEvent): RunStats {
     case "done": {
       return {
         ...input,
-        completed: true,
-        // The harness emits `done` only on a successful exit (subprocess.ts and
-        // pi.ts both hard-code exitStatus 0); failure and cancellation
-        // surface through Effect.fail, not a `done` event. The caller marks
-        // those terminals explicitly via `markTerminal`. Keeping exitStatus's
-        // sign here is harmless and self-documenting.
-        terminal: event.exitStatus === 0 ? "completed" : "failed",
+        // Evidence availability only. Reading this as the run's terminal state
+        // made the footer report "completed" from the first stage onward while
+        // the workflow still had stages to run — and the footer is not the only
+        // place that shows the run: the graph beside it, drawn from the run's
+        // own progress, kept saying otherwise.
         sessionId: event.sessionId,
         transcriptPath: event.transcriptPath,
       };

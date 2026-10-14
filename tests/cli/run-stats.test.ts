@@ -5,6 +5,7 @@ import {
   emptyRunStats,
   foldRunStats,
   formatTokens,
+  markTerminal,
   statsStatusLabel,
   usageRows,
 } from "../../packages/cli/src/run-stats.js";
@@ -62,19 +63,31 @@ describe("applyRunStat", () => {
     expect(stats.failedStages).toBe(1);
   });
 
-  it("marks the run terminal on done and records evidence", () => {
+  it("keeps a closed turn's evidence without calling the run terminal", () => {
     let stats = emptyRunStats();
+    stats = applyRunStat(stats, agentEnd(false));
     stats = applyRunStat(stats, done(0));
-    expect(stats.completed).toBe(true);
-    expect(stats.terminal).toBe("completed");
+
+    // One stage's turn closed. The workflow may have many more to run, so the
+    // run is still running — the footer must not say otherwise from here on.
+    expect(stats.completed).toBe(false);
+    expect(stats.terminal).toBeUndefined();
+    expect(statsStatusLabel(stats)).toBe("running");
+
+    // Its evidence is still worth keeping.
     expect(stats.sessionId).toBe("s1");
     expect(stats.transcriptPath).toBe("/tmp/t.json");
+
+    // The run's own outcome is what settles the label.
+    expect(statsStatusLabel(markTerminal(stats, "completed"))).toBe("completed");
+    expect(statsStatusLabel(markTerminal(stats, "failed"))).toBe("failed");
   });
 
-  it("reports a non-zero exit as failed", () => {
-    let stats = emptyRunStats();
-    stats = applyRunStat(stats, done(1));
-    expect(stats.terminal).toBe("failed");
+  it("does not read a turn's exit status as the run's terminal state", () => {
+    // Both harnesses hard-code exitStatus 0 on `done`; a non-zero value would
+    // be a turn-level signal either way, and turn level is not run level.
+    const stats = applyRunStat(emptyRunStats(), done(1));
+    expect(stats.terminal).toBeUndefined();
   });
 
   it("does not mutate its input", () => {
