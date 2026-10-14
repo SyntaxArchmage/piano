@@ -653,6 +653,12 @@ export class TrajectoryWriter {
       const now = new Date().toISOString();
       // The record lands before the view that is folded from it: a failure
       // between the two must leave the view stale, not the record missing.
+      //
+      // Nothing this build ships reads the view any more — every reader goes
+      // through `parseTrajectory`, which prefers the stream — so it is kept for
+      // the runs a person or an older tool reads directly, and it is what makes
+      // a write still cost the whole run so far. Dropping it is a change to a
+      // documented artifact, so it waits for that call to be made.
       yield* appendTrajectoryRecord(fileSystem, path, {
         version: 1,
         runId,
