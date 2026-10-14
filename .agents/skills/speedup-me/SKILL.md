@@ -104,7 +104,7 @@ Every proposal carries every slot; delete a slot only when it truly has no conte
    YAML/拓扑: backward compatibility is a hard requirement, so new keys default to current behavior and every recipe under `recipes/workflows/` and `recipes/eval-workflows/`, plus the `evals/` consumers, must parse unchanged. A topology change states what an evals comparison must show before it counts as done.
 
 4. A batch answer like 都做 is valid only after it is echoed back as the exact numbered list and confirmed once.
-5. When a general design position surfaces, fold it into `TASTE.md` with 出处 (`出处: 2026-10-13 P1`) and cite it in later items.
+5. When a general design position surfaces, fold it into `TASTE.md` with 出处 (`出处: 2026-10-13 P1`) and cite it in later items. An entry has to be a general design position — the kind that shapes how code is written here — not a detail of a single mechanism. A choice that only makes sense inside the mechanism the session produced stays in that item.
 
 ## 背景化（backgrounding）规则
 
