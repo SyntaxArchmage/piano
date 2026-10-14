@@ -7,6 +7,7 @@ import { Effect } from "effect";
 import {
   readResumeContext,
   readRunSummary,
+  readRunTrajectory,
   summarizeRun,
   trajectoryReadFailed,
 } from "../../packages/cli/src/session-resume.js";
@@ -29,10 +30,10 @@ async function writeStreamRun(root: string, runId: string, records: readonly unk
 }
 
 const twoTurns = {
-  version: 1,
+  version: 1 as const,
   runId: "r",
   updatedAt: "2026-09-01T00:00:00.000Z",
-  status: "completed",
+  status: "completed" as const,
   promptLength: 3,
   workflowPath: "/repo/recipes/workflows/basic.yaml",
   workspaceCwd: "/repo/work",
@@ -43,8 +44,8 @@ const twoTurns = {
     { type: "message_end", message: { role: "assistant", content: "second" } },
   ],
   turns: [
-    { prompt: "one", status: "completed", eventCount: 3 },
-    { prompt: "two", status: "completed", eventCount: 4 },
+    { prompt: "one", status: "completed" as const, eventCount: 3 },
+    { prompt: "two", status: "completed" as const, eventCount: 4 },
   ],
 };
 
@@ -203,7 +204,7 @@ describe("readResumeContext", () => {
 
 describe("summarizeRun", () => {
   it("reduces a document to the picker row fields", () => {
-    expect(summarizeRun("run-a", JSON.stringify({ ...twoTurns, name: "kernel tuning" }))).toEqual({
+    expect(summarizeRun("run-a", { ...twoTurns, name: "kernel tuning" })).toEqual({
       runId: "run-a",
       name: "kernel tuning",
       prompt: "one",
@@ -214,18 +215,52 @@ describe("summarizeRun", () => {
     });
   });
 
-  it("yields an id-only row for an unreadable or malformed document", () => {
+  it("yields an id-only row when there is no document to read", () => {
     expect(summarizeRun("run-x", undefined)).toEqual({ runId: "run-x" });
-    expect(summarizeRun("run-x", "{not json")).toEqual({ runId: "run-x" });
-    expect(summarizeRun("run-x", "[]")).toEqual({ runId: "run-x" });
   });
 
   it("reads the first prompt of a pre-turns document from its events", () => {
-    const summary = summarizeRun("run-y", JSON.stringify({
+    const summary = summarizeRun("run-y", {
       version: 1,
       events: [{ type: "context", context: { userMessage: "old prompt\n\n## Workflow stage context\nstage" } }],
-    }));
+    });
     expect(summary.prompt).toBe("old prompt");
+  });
+});
+
+describe("readRunTrajectory", () => {
+  it("describes a run recorded only in its stream", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
+    await writeStreamRun(root, "run-s", [{
+      version: 1,
+      runId: "run-s",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      status: "completed",
+      promptLength: 3,
+      workflowPath: "/repo/recipes/workflows/basic.yaml",
+      prompt: "only prompt",
+      events: [{ type: "done" }],
+    }]);
+
+    const verdict = await readRunTrajectory(join(root, "run-s"));
+
+    expect(verdict.kind).toBe("present");
+    expect(summarizeRun("run-s", verdict.kind === "present" ? verdict.document : undefined))
+      .toMatchObject({ prompt: "only prompt", workflow: "basic", status: "completed" });
+  });
+
+  it("calls a run with neither form absent, and keeps unparsable bytes listed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
+    await mkdir(join(root, "bare"), { recursive: true });
+    await mkdir(join(root, "junk"), { recursive: true });
+    await writeFile(join(root, "junk", "trajectory.json"), "{not json\n", "utf8");
+
+    // Absent is the one outcome that drops a run from the picker...
+    expect((await readRunTrajectory(join(root, "bare"))).kind).toBe("absent");
+    // ...and unparsable bytes are not it: the run was there, so it stays.
+    const junk = await readRunTrajectory(join(root, "junk"));
+    expect(junk.kind).toBe("present");
+    expect(junk.kind === "present" ? junk.document : "unset").toBeUndefined();
   });
 });
 

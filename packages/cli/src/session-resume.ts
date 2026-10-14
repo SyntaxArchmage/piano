@@ -10,6 +10,7 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
+import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
 import { parseTrajectory, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
@@ -69,9 +70,37 @@ const STREAM_FILE = "trajectory.jsonl";
  *   history the user could be looking for is worse than showing it without
  *   metadata. A malformed document is `present` — the bytes were read. */
 export type RunTrajectory =
-  | { readonly kind: "present"; readonly raw: string }
+  | { readonly kind: "present"; readonly document: Partial<TrajectoryDocument> | undefined }
   | { readonly kind: "absent" }
   | { readonly kind: "unreadable" };
+
+/** Read one run's trajectory straight off disk, for callers that are not on the
+ * Effect runtime.
+ *
+ * The same rule the replay path applies: the stream wins and the document is
+ * the fallback, so either form is enough to describe a run. `absent` means
+ * neither file was there — the only outcome that makes a run unresumable;
+ * bytes that were read but do not parse stay `present`, and the row degrades to
+ * id-only rather than disappearing. */
+export async function readRunTrajectory(runDir: string): Promise<RunTrajectory> {
+  const settle = (name: string) => readFile(join(runDir, name), "utf8").then(
+    (raw: string) => ({ raw }),
+    (cause: unknown) => ({ cause }),
+  );
+  const [stream, document] = await Promise.all([settle(STREAM_FILE), settle(DOCUMENT_FILE)]);
+  const verdicts = [stream, document]
+    .filter((result): result is { cause: unknown } => "cause" in result)
+    .map((result) => trajectoryReadFailed(result.cause));
+  if (verdicts.some((verdict) => verdict.kind === "unreadable")) return { kind: "unreadable" };
+  if (verdicts.length === 2) return { kind: "absent" };
+  return {
+    kind: "present",
+    document: parseTrajectory({
+      ...("raw" in stream ? { stream: stream.raw } : {}),
+      ...("raw" in document ? { document: document.raw } : {}),
+    }),
+  };
+}
 
 /** Interpret a failed trajectory read. Only ENOENT means "no trajectory", the
  * one outcome that makes a run unresumable; every other failure is treated as
@@ -187,24 +216,13 @@ function readDocument(
   });
 }
 
-/** Metadata for one picker row, from raw file bytes. Pure and total so both the
- * Effect reader below and the TUI picker (which reads with `node:fs/promises`,
- * off the Effect runtime) share one interpretation of a trajectory. A run that
- * cannot be read or parsed still yields a row: hiding it would misrepresent
- * what the runs root contains. */
-export function summarizeRun(runId: string, raw: string | undefined): RunSummary {
-  let document: Partial<TrajectoryDocument> | undefined;
-  if (raw !== undefined) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        document = parsed as Partial<TrajectoryDocument>;
-      }
-    } catch {
-      // Malformed or half-written document: fall through to the id-only row.
-    }
-  }
-  if (document === undefined) return { runId };
+/** Metadata for one picker row, from a run's trajectory document. Pure and
+ * total so both the Effect reader below and the TUI picker (which reads with
+ * `node:fs/promises`, off the Effect runtime) share one interpretation of a
+ * trajectory. A run whose trajectory is missing or unparsable still yields a
+ * row: hiding it would misrepresent what the runs root contains. */
+export function summarizeRun(runId: string, document: Partial<TrajectoryDocument> | undefined): RunSummary {
+  if (document === undefined || Array.isArray(document)) return { runId };
   const turns = Array.isArray(document.turns) ? document.turns : [];
   const firstPrompt = typeof turns[0]?.prompt === "string"
     ? turns[0].prompt
@@ -227,13 +245,13 @@ export function readRunSummary(
   runsRoot: string,
   runId: string,
 ): Effect.Effect<RunSummary, never, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(trajectoryPath(runsRoot, runId)).pipe(
-      Effect.catchAll(() => Effect.succeed(undefined)),
-    );
-    return summarizeRun(runId, raw);
-  });
+  // Through the same dual read the replay path uses, so a run is summarised
+  // from whichever form recorded it. A trajectory that is absent or unreadable
+  // still yields an id-only row.
+  return readDocument(runsRoot, runId).pipe(
+    Effect.map((document) => summarizeRun(runId, document)),
+    Effect.catchAll(() => Effect.succeed({ runId })),
+  );
 }
 
 /** Full replay context for the run the user chose. Fails when the run has no
