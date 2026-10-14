@@ -507,14 +507,8 @@ export function parseTrajectory(
 ): TrajectoryDocument | undefined {
   const records: TrajectoryStreamRecord[] = [];
   for (const line of (raw.stream ?? "").split("\n")) {
-    if (line.trim() === "") continue;
-    try {
-      const parsed = JSON.parse(line) as unknown;
-      if (typeof parsed === "object" && parsed !== null) records.push(parsed as TrajectoryStreamRecord);
-    } catch {
-      // Torn mid-append: it describes a write that never finished, and the
-      // records before it are still good.
-    }
+    const record = parseStreamRecord(line);
+    if (record !== undefined) records.push(record);
   }
   if (records.length > 0) return foldTrajectoryStream(records);
   if (raw.document === undefined) return undefined;
@@ -524,6 +518,26 @@ export function parseTrajectory(
   } catch {
     return undefined;
   }
+}
+
+/** One stream record, or `undefined` for a blank, torn, or shapeless line.
+ *
+ * The identity is what tells a record from any other object that happens to be
+ * JSON: a file of bare events, say, must not fold into a run. */
+function parseStreamRecord(line: string): TrajectoryStreamRecord | undefined {
+  if (line.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    // Torn mid-append: it describes a write that never finished, and the
+    // records before it are still good.
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const record = parsed as { runId?: unknown; timestamp?: unknown };
+  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
+  return parsed as TrajectoryStreamRecord;
 }
 
 /** Rebuild a run's trajectory document from its stream.

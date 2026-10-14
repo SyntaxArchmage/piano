@@ -46,6 +46,7 @@ import type {
   TrajectoryMetrics,
 } from "./types.js";
 import type { AgentEvent } from "@piano/harness";
+import { parseTrajectory } from "@piano/logging";
 import {
   workflowEvaluator,
   type WorkflowTrajectoryEvaluation,
@@ -814,14 +815,23 @@ export function readHandoffRecords(runDir: string): HandoffRecord[] {
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
-  try {
-    const value = JSON.parse(readFileSync(join(runDir, "trajectory.json"), "utf8")) as { events?: unknown };
-    return Array.isArray(value.events)
-      ? value.events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null)
-      : [];
-  } catch {
-    return [];
-  }
+  const read = (name: string): string | undefined => {
+    try {
+      return readFileSync(join(runDir, name), "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  // Both of a run's forms, the stream first: it is the record and the document
+  // beside it is folded from it, so either one describes the run.
+  const stream = read("trajectory.jsonl");
+  const document = read("trajectory.json");
+  const trajectory = parseTrajectory({
+    ...(stream === undefined ? {} : { stream }),
+    ...(document === undefined ? {} : { document }),
+  });
+  const events: readonly unknown[] = trajectory?.events ?? [];
+  return events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null);
 }
 
 interface StageLogEvidence {

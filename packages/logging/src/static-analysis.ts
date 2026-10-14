@@ -1,6 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Data, Effect } from "effect";
 import { basename, join, resolve } from "node:path";
+import { parseTrajectory } from "./trajectory.js";
 
 export type StaticObservabilityFileName =
   | "log"
@@ -59,6 +60,9 @@ export interface StaticObservabilityInput {
   readonly log?: string;
   readonly trace?: string;
   readonly trajectory?: string;
+  /** The append-only stream the trajectory document is folded from. Either form
+   * is enough to describe a run, and the analysis reads whichever is there. */
+  readonly trajectoryStream?: string;
   readonly progress?: string;
   readonly progressSnapshot?: string;
   /** Keys are resolved transcript paths. Missing keys represent missing files. */
@@ -501,15 +505,25 @@ export function analyzeStaticObservability(
   const trajectoryPath = join(runDir, "trajectory.json");
   const progressPath = join(runDir, "progress.jsonl");
   const snapshotPath = join(runDir, "progress.json");
+  // A run's trajectory is recorded in two forms. The stream is the record and
+  // the document beside it is folded from it, so whichever is there describes
+  // the run — and the checks below read one document either way.
+  const foldedTrajectory = input.trajectoryStream === undefined
+    ? undefined
+    : parseTrajectory({
+      stream: input.trajectoryStream,
+      ...(input.trajectory === undefined ? {} : { document: input.trajectory }),
+    });
+  const trajectoryText = foldedTrajectory === undefined ? input.trajectory : JSON.stringify(foldedTrajectory);
 
   addRequiredFileIssue(issues, logPath, "log", input.log);
   addRequiredFileIssue(issues, tracePath, "trace", input.trace);
-  addRequiredFileIssue(issues, trajectoryPath, "trajectory", input.trajectory);
+  addRequiredFileIssue(issues, trajectoryPath, "trajectory", trajectoryText);
 
   const logRecords = parseJsonl(logPath, input.log, issues);
   const traceRecords = parseJsonl(tracePath, input.trace, issues);
   const progressRecords = parseJsonl(progressPath, input.progress, issues);
-  const trajectory = parseJson(trajectoryPath, input.trajectory, issues);
+  const trajectory = parseJson(trajectoryPath, trajectoryText, issues);
   const snapshot = parseJson(snapshotPath, input.progressSnapshot, issues);
   if (input.log !== undefined && logRecords.length === 0 && input.log.trim() !== "") {
     issue(issues, "empty-file", logPath, "log contains no valid records");
@@ -541,7 +555,7 @@ export function analyzeStaticObservability(
   const files: readonly StaticObservabilityFile[] = [
     fileSummary("log", logPath, true, input.log, logRecords.length),
     fileSummary("trace", tracePath, true, input.trace, traceRecords.length),
-    fileSummary("trajectory", trajectoryPath, true, input.trajectory, trajectory === undefined ? 0 : 1),
+    fileSummary("trajectory", trajectoryPath, true, trajectoryText, trajectory === undefined ? 0 : 1),
     fileSummary("progress", progressPath, false, input.progress, progressRecords.length),
     fileSummary("progress-snapshot", snapshotPath, false, input.progressSnapshot, snapshot === undefined ? 0 : 1),
   ];
@@ -576,10 +590,11 @@ export function inspectStaticObservability(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const resolvedRunDir = resolve(runDir);
-    const [log, trace, trajectory, progress, progressSnapshot] = yield* Effect.all([
+    const [log, trace, trajectory, trajectoryStream, progress, progressSnapshot] = yield* Effect.all([
       readOptional(fileSystem, join(resolvedRunDir, "log.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "trace.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "trajectory.json")),
+      readOptional(fileSystem, join(resolvedRunDir, "trajectory.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "progress.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "progress.json")),
     ] as const, { concurrency: "unbounded" });
@@ -588,6 +603,7 @@ export function inspectStaticObservability(
       log,
       trace,
       trajectory,
+      trajectoryStream,
       progress,
       progressSnapshot,
     });
@@ -601,6 +617,7 @@ export function inspectStaticObservability(
       log,
       trace,
       trajectory,
+      trajectoryStream,
       progress,
       progressSnapshot,
       transcripts: Object.fromEntries(transcriptEntries),

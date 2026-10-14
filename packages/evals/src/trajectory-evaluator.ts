@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { Data } from "effect";
 import type { AgentEvent, AgentUsage } from "@piano/harness";
+import { parseTrajectory, trajectoryStreamPath } from "@piano/logging";
 import type { TrajectoryMetrics } from "./types.js";
 
 export class TrajectoryEvalError extends Data.TaggedError("TrajectoryEvalError")<{
@@ -110,16 +111,24 @@ export function evaluateTrajectory(events: readonly AgentEvent[]): TrajectoryMet
 /**
  * Load a persisted event stream and evaluate trajectory metrics.
  *
- * Accepts either a `trajectory.json` (a raw event array) or a JSONL transcript
- * (one event object per line). The CLI persists the raw `events` array to
- * `trajectory.json`, so that is the primary path.
+ * Prefers the run's append-only trajectory stream, then its document, then a
+ * plain JSONL transcript (one event object per line). `parseTrajectory` refuses
+ * anything that is not a trajectory record, so a transcript of bare events
+ * falls through to the last form rather than folding into a run.
  */
 export function evaluateTrajectoryFile(
   path: string,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
   return Effect.tryPromise({
     try: async () => {
-      const raw = await readFile(path, "utf8");
+      const stream = await readFile(trajectoryStreamPath(path), "utf8").catch(() => undefined);
+      const document = await readFile(path, "utf8").catch(() => undefined);
+      const trajectory = parseTrajectory({
+        ...(stream === undefined ? {} : { stream }),
+        ...(document === undefined ? {} : { document }),
+      });
+      if (trajectory !== undefined) return evaluateTrajectory(trajectory.events as AgentEvent[]);
+      const raw = document ?? "";
       const trimmed = raw.trim();
       if (trimmed === "") return ZERO_METRICS;
       let parsed: unknown;

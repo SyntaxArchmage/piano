@@ -68,6 +68,44 @@ describe(" static observability analysis", () => {
     if (root !== undefined) await rm(root, { recursive: true, force: true });
   });
 
+  it("passes a run whose trajectory is recorded only in its stream", async () => {
+    root = await mkdtemp(join(tmpdir(), "piano-static-analysis-"));
+    const runDir = join(root, runId);
+    const transcriptPath = join(runDir, "transcript.jsonl");
+    await mkdir(runDir, { recursive: true });
+    const artifacts = validArtifacts(transcriptPath);
+    // The same run, in the form every new one is written in: one append-only
+    // record instead of the document folded from it.
+    const document = JSON.parse(artifacts.trajectory) as Record<string, unknown>;
+    await Promise.all([
+      writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
+      writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
+      writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({
+        version: 1,
+        runId: document.runId,
+        timestamp: document.updatedAt,
+        status: document.status,
+        promptLength: document.promptLength,
+        events: document.events,
+        transcriptPath: document.transcriptPath,
+      })}\n`, "utf8"),
+      writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
+      writeFile(join(runDir, "progress.json"), artifacts.progressSnapshot, "utf8"),
+      writeFile(transcriptPath, [
+        JSON.stringify({ type: "message", message: { role: "user", content: "work" } }),
+        JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
+        "",
+      ].join("\n"), "utf8"),
+    ]);
+
+    const report = await Effect.runPromise(inspectStaticObservability(runDir).pipe(
+      Effect.provide(NodeFileSystem.layer),
+    ));
+
+    // No missing-trajectory issue: the stream is the run's trajectory.
+    expect(report).toMatchObject({ runId, valid: true, transcriptPaths: [transcriptPath], issues: [] });
+  });
+
   it("passes a complete log/trace/trajectory/progress/transcript evidence set", async () => {
     root = await mkdtemp(join(tmpdir(), "piano-static-analysis-"));
     const runDir = join(root, runId);
