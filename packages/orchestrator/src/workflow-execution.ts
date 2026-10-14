@@ -4094,26 +4094,22 @@ export function executeWorkflow(
 
     // Run-end backstop: tournaments clean their own slots at region exit, but
     // a failure inside a region can strand slots, so sweep whatever remains.
-    let workspaceFinalizationState: "pending" | "running" | "finished" = "pending";
-    const finalizeWorkspaces = (): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> => Effect.uninterruptible(Effect.suspend(() => {
-      if (workspaceFinalizationState === "finished") return Effect.void;
-      // A successful finalization can fail after marking a record as applying
-      // or cleaning. The failure finalizer must be allowed to retry cleanup so
-      // an intermediate metadata phase does not strand a run-owned workspace.
-      workspaceFinalizationState = "running";
-      return cleanupMapWorkspaces(request.runDir, executionId, {
+    //
+    // Called once, from the run's finalizer, on every exit path. It used to be
+    // called from inside the run body as well, which is what the once-only
+    // guard beside it was for.
+    //
+    // Suspended, not merely called: the effect is built before the run starts,
+    // so `preserve` has to be read when the finalizer runs — a region that
+    // failed part way sets that flag while the run is in flight.
+    const finalizeWorkspaces = (): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
+      Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, executionId, {
         // A nested map slot legitimately records its immediate parent slot as
         // sourceCwd. The execution id and run-owned record path already bound
         // this backstop to the current run; applying the root source identity
         // here would reject valid nested (including already-cleaned) records.
         preserve: request.workspace?.preserve === true || preserveWorkspacesAfterFailure,
-      }).pipe(
-        Effect.asVoid,
-        Effect.tap(() => Effect.sync(() => {
-          workspaceFinalizationState = "finished";
-        })),
-      );
-    }));
+      }).pipe(Effect.asVoid)));
 
     function projectionValue(result: InternalStageResult, id: string): unknown {
       return resultProjectionValue(result, id);
@@ -4296,16 +4292,17 @@ export function executeWorkflow(
       // is recorded before any cleanup runs. Cleanup is re-entrant, optional
       // and allowed to fail; the record of what happened is none of those, and
       // a cleanup that wedges must not be able to leave the run looking live.
-      yield* finalizeWorkflowProgress(request.runDir, executionId, "completed").pipe(
-        Effect.catchAll(() => Effect.void),
-      );
-      yield* finalizeWorkspaces();
-      // ISSUE-017: the progress record is written at the summary stage and
-      // committed separately as a follow-up (user timing decision: source
-      // changes commit per KEEP round, progress record commits after summary).
+      //
+      // `commitSummaryProgressRecord` is not cleanup: it is work whose failure
+      // changes the outcome, so it stays on this side of the record. The
+      // workspace sweep that used to sit here was cleanup in the middle of
+      // that work, and `cleanupAfterFailure` below runs it on every path.
       if (autoCommit) {
         yield* commitSummaryProgressRecord(completed.stages, request.prompt, preExistingDirty, sharedWorkspace.cwd);
       }
+      yield* finalizeWorkflowProgress(request.runDir, executionId, "completed").pipe(
+        Effect.catchAll(() => Effect.void),
+      );
       yield* WORKFLOW_LOG.info("agentic.task.completed", {
         stage: final.stageId,
         agent: final.worker,
