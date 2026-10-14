@@ -337,10 +337,16 @@ function pathExists(path: string | undefined): boolean {
   return path !== undefined && existsSync(path);
 }
 
+/** A run's trajectory is recorded in two forms and either one is the run: the
+ * document, and the append-only stream beside it. */
+function trajectoryAvailable(path: string | undefined): boolean {
+  return pathExists(path) || pathExists(path === undefined ? undefined : `${path}l`);
+}
+
 function evidenceAvailability(result: CaseResult) {
   return {
     run: pathExists(result.runDir),
-    trajectory: pathExists(result.trajectoryPath),
+    trajectory: trajectoryAvailable(result.trajectoryPath),
     workflowTrajectory: result.workflowTrajectory !== undefined,
     log: pathExists(result.logPath),
     trace: pathExists(result.tracePath),
@@ -1179,8 +1185,20 @@ function mergeWorkflowTrajectory(
 
 export function findTranscriptPath(runDir: string): string | undefined {
   try {
-    const trajectory = JSON.parse(readFileSync(join(runDir, "trajectory.json"), "utf8")) as { transcriptPath?: unknown };
-    if (typeof trajectory.transcriptPath === "string" && existsSync(trajectory.transcriptPath)) {
+    const read = (name: string): string | undefined => {
+      try {
+        return readFileSync(join(runDir, name), "utf8");
+      } catch {
+        return undefined;
+      }
+    };
+    const stream = read("trajectory.jsonl");
+    const document = read("trajectory.json");
+    const trajectory = parseTrajectory({
+      ...(stream === undefined ? {} : { stream }),
+      ...(document === undefined ? {} : { document }),
+    });
+    if (typeof trajectory?.transcriptPath === "string" && existsSync(trajectory.transcriptPath)) {
       return trajectory.transcriptPath;
     }
   } catch {
@@ -1357,7 +1375,9 @@ function defaultRunSetId(): string {
 function resolveTrajectory(
   runDir: string | undefined,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
-  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.json")];
+  // Either form of a run's trajectory, so a run recorded in the stream alone is
+  // evaluated the same way as one that also has the document.
+  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.jsonl"), join(runDir, "trajectory.json")];
   const empty: TrajectoryMetrics = {
     messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
     toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
