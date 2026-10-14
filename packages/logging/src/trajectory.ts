@@ -505,15 +505,22 @@ function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[]
 export function parseTrajectory(
   raw: { readonly stream?: string; readonly document?: string },
 ): TrajectoryDocument | undefined {
+  const document = parseTrajectoryDocument(raw.document);
   const records: TrajectoryStreamRecord[] = [];
   for (const line of (raw.stream ?? "").split("\n")) {
     const record = parseStreamRecord(line);
     if (record !== undefined) records.push(record);
   }
-  if (records.length > 0) return foldTrajectoryStream(records);
-  if (raw.document === undefined) return undefined;
+  // The document seeds the fold: a run written before the stream existed keeps
+  // its history there, and the records appended after an upgrade continue it
+  // rather than replacing it.
+  return records.length > 0 ? foldTrajectoryStream(records, document) : document;
+}
+
+function parseTrajectoryDocument(raw: string | undefined): TrajectoryDocument | undefined {
+  if (raw === undefined) return undefined;
   try {
-    const parsed = JSON.parse(raw.document) as unknown;
+    const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === "object" && parsed !== null ? parsed as TrajectoryDocument : undefined;
   } catch {
     return undefined;
@@ -546,19 +553,31 @@ function parseStreamRecord(line: string): TrajectoryStreamRecord | undefined {
  * once instead of once per write. Events concatenate and compact in order, a
  * turn's extent is where its prompt sits, and each optional field takes its
  * newest definition — which is what the writer did by hand when it carried the
- * previous document's fields forward. */
+ * previous document's fields forward.
+ *
+ * `seed` is the run as it was recorded before the stream existed. A run that
+ * predates the stream keeps its history there, and the first record appended
+ * after an upgrade would otherwise describe a run with only that record in it. */
 export function foldTrajectoryStream(
   records: readonly TrajectoryStreamRecord[],
+  seed?: TrajectoryDocument,
 ): TrajectoryDocument | undefined {
+  const seedEvents = seed?.events ?? [];
+  const seedTurns = seed?.turns ?? [];
   const last = records.at(-1);
-  if (last === undefined) return undefined;
+  if (last === undefined) return seed;
 
   // One linear pass: a `usage` key holds one slot from where it first appeared,
   // so the ledger's length at any point is the distinct keys seen so far plus
-  // the events that are not usage snapshots.
-  const turns: TrajectoryTurn[] = [];
+  // the events that are not usage snapshots. The seed's keys already hold their
+  // positions, and its turns carry their own cumulative counts.
+  const turns: TrajectoryTurn[] = [...seedTurns];
   const seenUsage = new Set<string>();
-  let eventCount = 0;
+  for (const event of seedEvents) {
+    const key = usageSlotKey(compactTrajectoryEvent(event));
+    if (key !== undefined) seenUsage.add(key);
+  }
+  let eventCount = seedTurns.at(-1)?.eventCount ?? compactTrajectoryEvents(seedEvents).length;
   for (const record of records) {
     for (const event of record.events) {
       const compact = compactTrajectoryEvent(event);
@@ -598,7 +617,7 @@ export function foldTrajectoryStream(
     updatedAt: last.timestamp,
     status,
     promptLength,
-    events: compactTrajectoryEvents(records.flatMap((record) => record.events)),
+    events: compactTrajectoryEvents([...seedEvents, ...records.flatMap((record) => record.events)]),
     ...(turns.length === 0 ? {} : { turns }),
     ...(newest("sessionId") === undefined ? {} : { sessionId: newest("sessionId") }),
     ...(newest("transcriptPath") === undefined ? {} : { transcriptPath: newest("transcriptPath") }),

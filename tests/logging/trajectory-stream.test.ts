@@ -11,6 +11,7 @@ import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   foldTrajectoryStream,
+  parseTrajectory,
   trajectoryStreamPath,
   TrajectoryWriter,
   type TrajectoryDocument,
@@ -70,6 +71,37 @@ describe("the trajectory stream", () => {
     // The counts are cumulative over the merged ledger, so the last turn's is
     // the ledger's length — the invariant replay slices on.
     expect(folded?.turns?.map((turn) => turn.eventCount)).toEqual([2, 3, 3]);
+  });
+
+  it("keeps a run's history when its first stream record lands after an upgrade", () => {
+    // A run written before the stream existed has only its document. The first
+    // record appended after an upgrade has to continue that history, not
+    // describe a run that starts here.
+    const legacy = {
+      version: 1 as const,
+      runId: "run-1",
+      updatedAt: "2026-09-01T00:00:00.000Z",
+      status: "completed" as const,
+      promptLength: 4,
+      events: [{ type: "done" }],
+      turns: [{ prompt: "before", status: "completed" as const, eventCount: 1 }],
+    };
+    const record = {
+      version: 1 as const,
+      runId: "run-1",
+      timestamp: "2026-09-02T00:00:00.000Z",
+      status: "cancelled" as const,
+      promptLength: 5,
+      prompt: "after",
+      events: [{ type: "tool_execution_end", toolCallId: "t1" }],
+    };
+
+    const folded = parseTrajectory({ document: JSON.stringify(legacy), stream: `${JSON.stringify(record)}\n` });
+
+    expect(folded?.turns?.map((turn) => turn.prompt)).toEqual(["before", "after"]);
+    expect(folded?.turns?.map((turn) => turn.eventCount)).toEqual([1, 2]);
+    expect(folded?.events).toHaveLength(2);
+    expect(folded?.status).toBe("cancelled");
   });
 
   it("leaves every earlier record alone as the run goes on", async () => {
