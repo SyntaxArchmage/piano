@@ -417,6 +417,7 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 ├── log.jsonl          # run + stage lifecycle events (machine-readable)
 ├── trace.jsonl        # function-level span traces
 ├── trajectory.json    # per-run summary: status, per-prompt turns, session/transcript of the latest turn
+├── trajectory.jsonl   # append-only record of each write, the summary is folded from
 ├── progress.jsonl     # append-only ledger: one line per accepted stage attempt
 ├── progress.json      # live workflow plan/status snapshot for monitors
 ├── resume.jsonl       # append-only resume state: newest line holds the whole actor table
@@ -453,7 +454,13 @@ Key files:
   `failed` | `cancelled`), the per-prompt `turns` (`prompt`, `status`,
   `eventCount`), the latest `sessionId` and `transcriptPath`, plus
   `runId`/`workflowPath`/`workspaceCwd`, and a `name` once you `/rename` the
-  run.
+  run. Every write rewrites it whole, so it is the run's complete record and
+  the file Piano's own readers read.
+- **`trajectory.jsonl`** — the record each write appends *before* that rewrite:
+  one line carrying that write's prompt and events, or the single field a
+  rename touched. It is the only copy of a run whose document is missing or
+  was never written, and folding it is how the summary above is rebuilt from
+  it.
 - **`progress.jsonl`** — the machine-readable stage ledger. Every accepted
   stage attempt appends a line with `stageId`, `stage`, `worker`, `attempt`,
   `invocationId`, `harness`, `sessionId`, `transcriptPath`,
