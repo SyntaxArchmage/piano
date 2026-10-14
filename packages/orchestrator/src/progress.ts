@@ -169,11 +169,27 @@ export interface WorkflowProgressExecutionStartRecord {
   readonly plan: WorkflowProgressPlan;
 }
 
+/** Append-only record of one workflow execution ending.
+ *
+ * The stream carries the outcome itself rather than only a view of it. The
+ * snapshot write is best-effort and a hard exit can skip it entirely, so "how
+ * did this end" has to be answerable from evidence rather than from a file a
+ * wedged finalizer may never have reached. */
+export interface WorkflowProgressExecutionFinishRecord {
+  readonly version: 1;
+  readonly kind: "execution-finished";
+  readonly timestamp: string;
+  readonly executionId: string;
+  readonly status: "completed" | "failed" | "paused";
+  readonly error?: string;
+}
+
 /** One line of the append-only progress stream. */
 export type WorkflowProgressStreamRecord =
   | WorkflowProgressRecord
   | WorkflowProgressStartRecord
-  | WorkflowProgressExecutionStartRecord;
+  | WorkflowProgressExecutionStartRecord
+  | WorkflowProgressExecutionFinishRecord;
 
 /** Kind of one progress-stream line.
  *
@@ -181,11 +197,14 @@ export type WorkflowProgressStreamRecord =
  * stream predates it, and every record written before it is an accepted stage.
  * Readers ask this function rather than testing `kind` themselves, so the
  * compatibility rule lives in exactly one place. */
-export function progressRecordKind(
-  record: { readonly kind?: unknown },
-): WorkflowProgressStartRecord["kind"] | WorkflowProgressExecutionStartRecord["kind"] | "stage-accepted" {
+export function progressRecordKind(record: { readonly kind?: unknown }):
+  | WorkflowProgressStartRecord["kind"]
+  | WorkflowProgressExecutionStartRecord["kind"]
+  | WorkflowProgressExecutionFinishRecord["kind"]
+  | "stage-accepted" {
   if (record.kind === "stage-started") return "stage-started";
   if (record.kind === "execution-started") return "execution-started";
+  if (record.kind === "execution-finished") return "execution-finished";
   return "stage-accepted";
 }
 
@@ -528,7 +547,8 @@ export function appendWorkflowProgress(
   });
 }
 
-/** Mark the latest snapshot terminal without changing the append-only stream.
+/** Record that an execution ended, in the stream and then in the snapshot.
+ *
  * Best-effort callers may catch this error so a convenience view never hides
  * the canonical workflow result. When snapshot.current is present its status
  * is folded: "accepted" for completed/paused (a human stop is not a failure;
@@ -538,15 +558,24 @@ export function appendWorkflowProgress(
  * under a terminal snapshot) written before this fold was introduced. */
 export function finalizeWorkflowProgress(
   runDir: string,
+  executionId: string,
   status: "completed" | "failed" | "paused",
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressSnapshotPath(runDir);
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
+    const now = new Date().toISOString();
+    yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), {
+      version: 1,
+      kind: "execution-finished",
+      timestamp: now,
+      executionId,
+      status,
+      ...(error === undefined ? {} : { error }),
+    });
     const snapshot = yield* readSnapshot(fileSystem, path);
     if (snapshot === undefined) return path;
-    const now = new Date().toISOString();
     yield* writeSnapshotAtomic(path, {
       ...snapshot,
       updatedAt: now,

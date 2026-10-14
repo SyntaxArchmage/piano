@@ -168,7 +168,7 @@ describe("workflow stage time", () => {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 1,
     }));
     at("2026-01-01T00:00:20.000Z");
-    await run(finalizeWorkflowProgress(runDir, "paused"));
+    await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
 
     const paused = (await readTiming(runDir)).invocationTime?.["measure@root"];
     expect(paused?.completedMs).toBe(20_000);
@@ -196,7 +196,7 @@ describe("workflow stage time", () => {
     // Root cause 1 pin: a paused snapshot keeps its top-level verdict but
     // never claims a running stage; the pointer folds to "accepted" and
     // stageId survives as the resume-view pointer.
-    await run(finalizeWorkflowProgress(runDir, "paused"));
+    await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
     const paused = await readTiming(runDir) as SnapshotTiming & {
       status?: string;
       current?: { stageId?: string; status?: string };
@@ -205,7 +205,7 @@ describe("workflow stage time", () => {
     expect(paused.current).toMatchObject({ stageId: "measure", status: "accepted" });
 
     // Failed finalization still labels the stage "failed".
-    await run(finalizeWorkflowProgress(runDir, "failed", "boom"));
+    await run(finalizeWorkflowProgress(runDir, "execution", "failed", "boom"));
     const failed = await readTiming(runDir) as SnapshotTiming & {
       status?: string;
       current?: { stageId?: string; status?: string };
@@ -383,5 +383,22 @@ describe("workflow progress stream", () => {
     // makes the snapshot a view rather than the only copy.
     expect((await readTiming(runDir)).invocationTime?.["tune@tune/iter-1"]?.runningSince)
       .toBe("2026-01-01T00:01:00.000Z");
+  });
+
+  it("records how an execution ended even when there is no snapshot to fold", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    // No initialize: the snapshot is the throwaway half of this pair, and the
+    // outcome must not depend on it existing.
+    const runDir = await newRunDir();
+    await run(finalizeWorkflowProgress(runDir, "execution", "failed", "boom"));
+
+    expect((await readStream(runDir))[0]).toEqual({
+      version: 1,
+      kind: "execution-finished",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      executionId: "execution",
+      status: "failed",
+      error: "boom",
+    });
   });
 });

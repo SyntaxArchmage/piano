@@ -2265,6 +2265,9 @@ export function executeWorkflow(
   WorkflowExecutionError,
   FileSystem.FileSystem | Logging
 > {
+  // Normalized outside the generator so the exit-level finalizer below can
+  // name the execution it is closing, where the generator's locals are gone.
+  const executionId = normalizeExecutionId(request.execution?.id ?? request.executionId);
   return TRACE(WORKFLOW_SOURCE, Effect.gen(function* () {
     yield* WORKFLOW_LOG.info("agentic.task.started", { data: { promptLength: request.prompt.length } });
     const sharedWorkspace = sharedWorkspaceBinding(request.cwd);
@@ -2276,7 +2279,6 @@ export function executeWorkflow(
         ownership: "shared-root",
       },
     });
-    const executionId = normalizeExecutionId(request.execution?.id ?? request.executionId);
     if (executionId === undefined) {
       return yield* Effect.fail(workflowError(
         "schedule",
@@ -4298,7 +4300,7 @@ export function executeWorkflow(
       }
       // The JSONL stream is the canonical event ledger; finalize the convenience
       // snapshot only after the terminal stage has completed successfully.
-      yield* finalizeWorkflowProgress(request.runDir, "completed").pipe(
+      yield* finalizeWorkflowProgress(request.runDir, executionId, "completed").pipe(
         Effect.catchAll(() => Effect.void),
       );
       yield* WORKFLOW_LOG.info("agentic.task.completed", {
@@ -4356,13 +4358,18 @@ export function executeWorkflow(
     Effect.onExit((exit) => Exit.isFailure(exit) ? Effect.gen(function* () {
       const cancelled = isCancellation(exit.cause);
       const details = failureDetails(exit.cause);
-      yield* finalizeWorkflowProgress(
-        request.runDir,
-        cancelled ? "paused" : "failed",
-        cancelled ? undefined : details.message,
-      ).pipe(
-        Effect.catchAll(() => Effect.void),
-      );
+      // An execution that failed before it had an identity never opened a
+      // stream or a snapshot, so it has no outcome of its own to record.
+      if (executionId !== undefined) {
+        yield* finalizeWorkflowProgress(
+          request.runDir,
+          executionId,
+          cancelled ? "paused" : "failed",
+          cancelled ? undefined : details.message,
+        ).pipe(
+          Effect.catchAll(() => Effect.void),
+        );
+      }
       yield* (cancelled ? WORKFLOW_LOG.info : WORKFLOW_LOG.error)(
         cancelled ? "agentic.task.cancelled" : "agentic.task.failed",
         {
