@@ -639,9 +639,9 @@ function reportMessage(report: GitMetadataRollbackReport): string {
  * crashing the carry: by the time these run the worker has usually already
  * mutated the parent workspace, and that state has to reach the rollback.
  * Interruption is not a transaction failure and is left alone. */
-function seamEither<A, E>(
-  run: () => Effect.Effect<A, E>,
-): Effect.Effect<Either.Either<A, E | ImplementationDefectError>> {
+function seamEither<A, E, R>(
+  run: () => Effect.Effect<A, E, R>,
+): Effect.Effect<Either.Either<A, E | ImplementationDefectError>, never, R> {
   return Effect.try({ try: run, catch: implementationDefect }).pipe(
     Effect.flatten,
     Effect.either,
@@ -702,15 +702,16 @@ async function rollbackPrepared(
       catch: (cause) => cause,
     })
     : Effect.fail(new Error("canonical external evidence is not trusted; filesystem rollback was withheld"));
-  const gitRollback = gitMetadata === undefined
-    ? Effect.fail(new GitMetadataTransactionError("invalid-state", "Git metadata transaction was not created"))
-    : gitMetadata.rollback();
-  // Both rollbacks are Effect now, and each folds its outcome into an Either so
-  // one failing half cannot hide the report of the other. `Effect.all` is
-  // sequential by default; these two have always run side by side.
+  // Both rollbacks are Effect now, and both fold their outcome into an Either
+  // so one failing half cannot hide the report of the other. `Effect.all` is
+  // sequential by default; these two have always run side by side. The Git half
+  // is built inside the thunk so an implementation that throws before it
+  // returns an effect is folded the same way one that ends in a defect is.
   const [filesystem, git] = await Effect.runPromise(Effect.all([
     Effect.either(filesystemRollback),
-    seamEither(() => gitRollback),
+    seamEither(() => gitMetadata === undefined
+      ? Effect.fail(new GitMetadataTransactionError("invalid-state", "Git metadata transaction was not created"))
+      : gitMetadata.rollback()),
   ], { concurrency: "unbounded" }));
   const filesystemReason = Either.isLeft(filesystem) ? errorMessage(filesystem.left) : undefined;
   let gitReason: string | undefined;
@@ -720,7 +721,9 @@ async function rollbackPrepared(
     if (!gitRestored) gitReason = reportMessage(git.right);
   } else {
     const failure = git.left;
-    const report = failure instanceof GitMetadataTransactionError ? failure.report : undefined;
+    const report = failure !== null && typeof failure === "object" && "report" in failure
+      ? (failure as { readonly report?: GitMetadataRollbackReport }).report
+      : undefined;
     gitReason = report === undefined ? errorMessage(failure) : reportMessage(report);
   }
   let sourceReason: string | undefined;
@@ -825,7 +828,7 @@ export function runConsolidationTransaction<R>(
     }
     let repair: readonly string[] | undefined;
     for (let attempt = 0; attempt <= input.repairAttempts; attempt += 1) {
-      const turn = yield* input.runTurn(repair).pipe(Effect.either);
+      const turn = yield* seamEither(() => input.runTurn(repair));
       const observed = yield* seamEither(() => Effect.gen(function* () {
         const changed = yield* gitMetadata!.observe();
         yield* Effect.tryPromise({ try: () => verifyFullEvidence(evidence), catch: (cause) => cause });
@@ -865,7 +868,8 @@ export function runConsolidationTransaction<R>(
         break;
       }
       if (input.persistAfterCarry !== undefined) {
-        const persisted = yield* input.persistAfterCarry().pipe(Effect.either);
+        const persistAfterCarry = input.persistAfterCarry;
+        const persisted = yield* seamEither(() => persistAfterCarry());
         if (persisted._tag === "Left") {
           verdict.failureReason = `actor/resume-state persistence failed: ${errorMessage(persisted.left)}`;
           break;
@@ -922,6 +926,9 @@ export function runConsolidationTransaction<R>(
       }
       return { kind: "worker-consolidated", sourceState: "known" } satisfies ConsolidationCarrying;
     }
+    // A carry that failed without recording why still has to name itself before
+    // the final check can append to the reason.
+    if (verdict.failureReason === undefined) verdict.failureReason = "consolidation did not complete";
     if (!verdict.integrityFailure) {
       noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "final integrity verification failed");
     }
