@@ -73,11 +73,12 @@ describe("the trajectory stream", () => {
     expect(folded?.turns?.map((turn) => turn.eventCount)).toEqual([2, 3, 3]);
   });
 
-  it("keeps a run's history when its first stream record lands after an upgrade", () => {
-    // A run written before the stream existed has only its document. The first
-    // record appended after an upgrade has to continue that history, not
-    // describe a run that starts here.
-    const legacy = {
+  it("reads a run that has both forms without folding its records twice", () => {
+    // Every write lands a record in the stream and then rewrites the document
+    // whole, so a run recorded by this build has both and the document already
+    // contains what the stream holds. Folding the records on top of it would
+    // replay every turn twice.
+    const document = {
       version: 1 as const,
       runId: "run-1",
       updatedAt: "2026-09-01T00:00:00.000Z",
@@ -89,18 +90,34 @@ describe("the trajectory stream", () => {
     const record = {
       version: 1 as const,
       runId: "run-1",
+      timestamp: "2026-09-01T00:00:00.000Z",
+      status: "completed" as const,
+      promptLength: 4,
+      prompt: "before",
+      events: [{ type: "done" }],
+    };
+
+    const both = parseTrajectory({ document: JSON.stringify(document), stream: `${JSON.stringify(record)}\n` });
+
+    expect(both).toEqual(document);
+    expect(both?.turns).toHaveLength(1);
+    expect(both?.events).toHaveLength(1);
+  });
+
+  it("falls back to the stream for a run whose document is gone", () => {
+    const record = {
+      version: 1 as const,
+      runId: "run-1",
       timestamp: "2026-09-02T00:00:00.000Z",
       status: "cancelled" as const,
       promptLength: 5,
-      prompt: "after",
+      prompt: "only",
       events: [{ type: "tool_execution_end", toolCallId: "t1" }],
     };
 
-    const folded = parseTrajectory({ document: JSON.stringify(legacy), stream: `${JSON.stringify(record)}\n` });
+    const folded = parseTrajectory({ stream: `${JSON.stringify(record)}\n` });
 
-    expect(folded?.turns?.map((turn) => turn.prompt)).toEqual(["before", "after"]);
-    expect(folded?.turns?.map((turn) => turn.eventCount)).toEqual([1, 2]);
-    expect(folded?.events).toHaveLength(2);
+    expect(folded?.turns?.map((turn) => turn.prompt)).toEqual(["only"]);
     expect(folded?.status).toBe("cancelled");
   });
 

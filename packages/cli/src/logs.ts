@@ -198,11 +198,11 @@ function parseRunTail(tail: string): RunRowMetadata {
   return row;
 }
 
-/** Row fields read from a run's two ends, which is all a row needs.
+/** Row fields read from a stream's two ends, for a run whose document is gone.
  *
- * Trajectory records are append-only, so the run's first prompt is in the
- * earliest record that carried one and its newest status and workflow are in
- * the last. The events in between are the bulk of the run and none of the row.
+ * Trajectory records are append-only, so the earliest record that carried a
+ * prompt holds the run's first one and the last holds its newest status and
+ * workflow. The events in between are the bulk of the run and none of the row.
  * Windows are generous enough to hold a record; a record larger than one simply
  * yields fewer fields, never a failure. */
 const STREAM_WINDOW_BYTES = 16 * 1024;
@@ -251,16 +251,19 @@ function readStreamRowMetadata(streamFile: string): RunRowMetadata | undefined {
 
 /** Exported for testing; the picker calls it once per listed run. */
 export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
-  const fromStream = readStreamRowMetadata(trajectoryStreamPath(trajectoryFile));
-  if (fromStream !== undefined) return fromStream;
   const tail = readTail(trajectoryFile, TAIL_WINDOW_BYTES);
-  if (tail === undefined) return {};
-  const row = parseRunTail(tail);
-  if (row.workflow !== undefined) return row;
-  const bigger = readTail(trajectoryFile, TAIL_WINDOW_CAP_BYTES);
-  // Shorter means the file already fit the small window; nothing more to find.
-  if (bigger === undefined || bigger.length <= tail.length) return row;
-  return parseRunTail(bigger);
+  if (tail !== undefined) {
+    const row = parseRunTail(tail);
+    if (row.workflow !== undefined) return row;
+    const bigger = readTail(trajectoryFile, TAIL_WINDOW_CAP_BYTES);
+    // Shorter means the file already fit the small window; nothing more to find.
+    if (bigger !== undefined && bigger.length > tail.length) {
+      const wider = parseRunTail(bigger);
+      if (wider.workflow !== undefined) return wider;
+    }
+  }
+  // No document: the stream is the run's only copy, and its ends answer the row.
+  return readStreamRowMetadata(trajectoryStreamPath(trajectoryFile)) ?? {};
 }
 
 /** One picker label: `2026-09-03 01:07 · gpu-cuda-tuning · [failed] · <prompt

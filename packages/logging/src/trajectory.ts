@@ -502,19 +502,29 @@ function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[]
  * Takes raw file contents rather than paths because its callers read files
  * through different layers, some through Effects and some synchronously. The
  * choice between the two forms lives here and nowhere else. */
+/** Parse a run's trajectory from whichever of its two on-disk forms is there.
+ *
+ * The document wins, and it is the one to read: every write rewrites it whole,
+ * so for a run that has one it is the complete record. The stream is the record
+ * each write appends to *before* the rewrite, and it is the only copy for a run
+ * whose document was never written or has since been removed — which is also
+ * the case where folding it alone is right, since nothing else describes the
+ * run's earlier turns.
+ *
+ * Takes raw file contents rather than paths because its callers read files
+ * through different layers, some through Effects and some synchronously. The
+ * choice between the two forms lives here and nowhere else. */
 export function parseTrajectory(
   raw: { readonly stream?: string; readonly document?: string },
 ): TrajectoryDocument | undefined {
   const document = parseTrajectoryDocument(raw.document);
+  if (document !== undefined) return document;
   const records: TrajectoryStreamRecord[] = [];
   for (const line of (raw.stream ?? "").split("\n")) {
     const record = parseStreamRecord(line);
     if (record !== undefined) records.push(record);
   }
-  // The document seeds the fold: a run written before the stream existed keeps
-  // its history there, and the records appended after an upgrade continue it
-  // rather than replacing it.
-  return records.length > 0 ? foldTrajectoryStream(records, document) : document;
+  return foldTrajectoryStream(records);
 }
 
 function parseTrajectoryDocument(raw: string | undefined): TrajectoryDocument | undefined {
@@ -552,32 +562,24 @@ function parseStreamRecord(line: string): TrajectoryStreamRecord | undefined {
  * The counterpart of the writer's read-merge-rewrite, with the merging done
  * once instead of once per write. Events concatenate and compact in order, a
  * turn's extent is where its prompt sits, and each optional field takes its
- * newest definition — which is what the writer did by hand when it carried the
- * previous document's fields forward.
+ * newest definition — which is what the writer does by hand when it carries the
+ * document's fields forward.
  *
- * `seed` is the run as it was recorded before the stream existed. A run that
- * predates the stream keeps its history there, and the first record appended
- * after an upgrade would otherwise describe a run with only that record in it. */
+ * This is only the whole run for a stream that began with it. A document
+ * written beside it already holds everything, which is why `parseTrajectory`
+ * reads that one first. */
 export function foldTrajectoryStream(
   records: readonly TrajectoryStreamRecord[],
-  seed?: TrajectoryDocument,
 ): TrajectoryDocument | undefined {
-  const seedEvents = seed?.events ?? [];
-  const seedTurns = seed?.turns ?? [];
   const last = records.at(-1);
-  if (last === undefined) return seed;
+  if (last === undefined) return undefined;
 
   // One linear pass: a `usage` key holds one slot from where it first appeared,
   // so the ledger's length at any point is the distinct keys seen so far plus
-  // the events that are not usage snapshots. The seed's keys already hold their
-  // positions, and its turns carry their own cumulative counts.
-  const turns: TrajectoryTurn[] = [...seedTurns];
+  // the events that are not usage snapshots.
+  const turns: TrajectoryTurn[] = [];
   const seenUsage = new Set<string>();
-  for (const event of seedEvents) {
-    const key = usageSlotKey(compactTrajectoryEvent(event));
-    if (key !== undefined) seenUsage.add(key);
-  }
-  let eventCount = seedTurns.at(-1)?.eventCount ?? compactTrajectoryEvents(seedEvents).length;
+  let eventCount = 0;
   for (const record of records) {
     for (const event of record.events) {
       const compact = compactTrajectoryEvent(event);
@@ -617,7 +619,7 @@ export function foldTrajectoryStream(
     updatedAt: last.timestamp,
     status,
     promptLength,
-    events: compactTrajectoryEvents([...seedEvents, ...records.flatMap((record) => record.events)]),
+    events: compactTrajectoryEvents(records.flatMap((record) => record.events)),
     ...(turns.length === 0 ? {} : { turns }),
     ...(newest("sessionId") === undefined ? {} : { sessionId: newest("sessionId") }),
     ...(newest("transcriptPath") === undefined ? {} : { transcriptPath: newest("transcriptPath") }),
@@ -651,14 +653,14 @@ export class TrajectoryWriter {
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const now = new Date().toISOString();
-      // The record lands before the view that is folded from it: a failure
-      // between the two must leave the view stale, not the record missing.
+      // The record lands before the document rewritten from it: a failure
+      // between the two must leave the document stale, not the record missing.
       //
-      // Nothing this build ships reads the view any more — every reader goes
-      // through `parseTrajectory`, which prefers the stream — so it is kept for
-      // the runs a person or an older tool reads directly, and it is what makes
-      // a write still cost the whole run so far. Dropping it is a change to a
-      // documented artifact, so it waits for that call to be made.
+      // The rewrite is the whole write's cost — it merges the run so far and
+      // serializes it — so this is what still makes a write grow with the run.
+      // It is kept because the document is what a reader reads directly; a run
+      // without one falls back to folding the stream, which cannot describe a
+      // run whose stream began after its document did.
       yield* appendTrajectoryRecord(fileSystem, path, {
         version: 1,
         runId,
