@@ -1,7 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import type { CompiledWorkerContract } from "@piano/contract";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 
@@ -41,17 +42,10 @@ export function snapshotWorkerContract(
         ));
       }
     } else {
-      const temporary = `${snapshotPath}.tmp-${process.pid}-${randomUUID()}`;
-      yield* fileSystem.makeDirectory(dirname(snapshotPath), { recursive: true }).pipe(
-        Effect.mapError((cause) => snapshotError(snapshotPath, "contract snapshot mkdir", cause)),
-      );
-      yield* fileSystem.writeFileString(temporary, contract.source).pipe(
-        Effect.mapError((cause) => snapshotError(snapshotPath, "contract snapshot write", cause)),
-        Effect.zipRight(fileSystem.rename(temporary, snapshotPath).pipe(
-          Effect.mapError((cause) => snapshotError(snapshotPath, "contract snapshot rename", cause)),
-        )),
-        Effect.ensuring(fileSystem.remove(temporary).pipe(Effect.ignore)),
-      );
+      yield* writeFileAtomic(snapshotPath, contract.source, {
+        temporaryPath: `${snapshotPath}.tmp-${process.pid}-${randomUUID()}`,
+        mapError: (cause, step) => snapshotError(snapshotPath, `contract snapshot ${step}`, cause),
+      });
     }
     return {
       id: contract.manifest.id,
