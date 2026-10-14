@@ -19,7 +19,7 @@ import type { WorkflowRuntimeFrame, WorkflowRuntimeInvocation } from "./workflow
 import { VALIDATE_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { validateStagePayload } from "./stage-validation.js";
-import type { ResolvedStageValidation, ValidatedStagePayload } from "./execution-types.js";
+import type { InternalStageResult, ResolvedStageValidation, ValidatedStagePayload } from "./execution-types.js";
 import { abortableSleep } from "@piano/harness";
 import { dirname } from "node:path";
 
@@ -356,4 +356,22 @@ export function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usa
 
 export function usageNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+export function projectionValue(result: InternalStageResult, id: string): unknown {
+  return resultProjectionValue(result, id);
+}
+
+export function projectionString(result: InternalStageResult, id: string): string | undefined {
+  const value = projectionValue(result, id);
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+export function projectionNumber(result: InternalStageResult, id: string): number | undefined {
+  const value = projectionValue(result, id);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export function resultProjectionValue(result: InternalStageResult, id: string): unknown {
+  return result.projections?.find((projection) => projection.id === id)?.value;
 }
