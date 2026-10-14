@@ -1,7 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
   invocationDirectory,
@@ -69,19 +70,9 @@ function writeJsonAtomic(
   path: string,
   value: unknown,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const temporaryPath = `${path}.${randomUUID()}.tmp`;
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => mapFsError(path, cause)),
-    );
-    yield* fileSystem.writeFileString(temporaryPath, `${JSON.stringify(value, null, 2)}\n`).pipe(
-      Effect.mapError((cause) => mapFsError(path, cause)),
-    );
-    yield* fileSystem.rename(temporaryPath, path).pipe(
-      Effect.mapError((cause) => mapFsError(path, cause)),
-      Effect.ensuring(fileSystem.remove(temporaryPath).pipe(Effect.ignore)),
-    );
+  return writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
+    temporaryPath: () => `${path}.${randomUUID()}.tmp`,
+    mapError: (cause) => mapFsError(path, cause),
   });
 }
 

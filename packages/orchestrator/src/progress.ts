@@ -1,6 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
+import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
@@ -205,22 +206,12 @@ function progressProjectionHint(
 }
 
 function writeSnapshotAtomic(
-  fileSystem: FileSystem.FileSystem,
   path: string,
   snapshot: WorkflowProgressSnapshot,
-): Effect.Effect<void, WorkflowError, never> {
-  const temporary = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  return Effect.gen(function* () {
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot mkdir", cause)),
-    );
-    yield* fileSystem.writeFileString(temporary, `${JSON.stringify(snapshot, null, 2)}\n`).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot write", cause)),
-    );
-    yield* fileSystem.rename(temporary, path).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot rename", cause)),
-      Effect.ensuring(fileSystem.remove(temporary).pipe(Effect.ignore)),
-    );
+): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
+  return writeFileAtomic(path, `${JSON.stringify(snapshot, null, 2)}\n`, {
+    temporaryPath: () => `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    mapError: (cause, step) => progressError(path, `snapshot ${step}`, cause),
   });
 }
 
@@ -300,7 +291,7 @@ export function initializeWorkflowProgress(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const previous = resume ? yield* readSnapshot(fileSystem, path) : undefined;
-    yield* writeSnapshotAtomic(fileSystem, path, {
+    yield* writeSnapshotAtomic(path, {
       version: 1,
       updatedAt: new Date().toISOString(),
       executionId,
@@ -338,7 +329,7 @@ export function markWorkflowStageStarted(
       remainingStages: 0,
       stageCounts: {},
     };
-    yield* writeSnapshotAtomic(fileSystem, path, {
+    yield* writeSnapshotAtomic(path, {
       ...fallback,
       updatedAt: now,
       status: "running",
@@ -432,7 +423,7 @@ export function appendWorkflowProgress(
         ...payloadHint,
       },
     };
-    yield* writeSnapshotAtomic(fileSystem, snapshotPath, snapshot);
+    yield* writeSnapshotAtomic(snapshotPath, snapshot);
     return path;
   });
 }
@@ -456,7 +447,7 @@ export function finalizeWorkflowProgress(
     const snapshot = yield* readSnapshot(fileSystem, path);
     if (snapshot === undefined) return path;
     const now = new Date().toISOString();
-    yield* writeSnapshotAtomic(fileSystem, path, {
+    yield* writeSnapshotAtomic(path, {
       ...snapshot,
       updatedAt: now,
       status,

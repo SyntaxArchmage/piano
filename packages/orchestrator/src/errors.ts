@@ -24,6 +24,13 @@ export function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+/** Whether a failure means "that path is not there". Callers treat the answer
+ * as state rather than as a problem: an absent lock, marker, or metadata
+ * directory is something they already describe. */
+export function isMissingPathError(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null && (cause as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 /** A caller-supplied implementation of an injected interface ended in a defect
  * — a rejected `Effect.promise`, a synchronous throw — instead of the failure
  * its contract declares. It carries the raw defect so the boundary that
