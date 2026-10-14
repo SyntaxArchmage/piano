@@ -73,6 +73,7 @@ import {
   type WorkerResources,
 } from "./workflow-file.js";
 import { errorMessage, WorkflowError, workflowError } from "./errors.js";
+import { pathWithin } from "./path-within.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import { writeResumeState } from "./resume-state.js";
 import {
@@ -871,11 +872,6 @@ function isNotLinkFileSystemError(cause: unknown): boolean {
         String((cause as { readonly message?: unknown }).message ?? "").includes("EINVAL")));
 }
 
-function pathInside(parent: string, child: string): boolean {
-  const rel = relative(resolve(parent), resolve(child));
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) && !rel.includes("\0");
-}
-
 /** Validate a write target against a real filesystem boundary. This checks
  * every existing path component without following symlinks, then checks the
  * realpath of either the target or its nearest existing ancestor. */
@@ -888,7 +884,7 @@ function preflightWritePath(
   return Effect.gen(function* () {
     const rootPath = resolve(root);
     const targetPath = resolve(target);
-    if (!pathInside(rootPath, targetPath)) {
+    if (!pathWithin(rootPath, targetPath, false)) {
       return yield* Effect.fail(workflowError("schedule", targetPath, `${label} must stay inside ${rootPath}`));
     }
     const rootRealPath = yield* fileSystem.realPath(rootPath).pipe(
@@ -923,7 +919,7 @@ function preflightWritePath(
       const targetRealPath = yield* fileSystem.realPath(targetPath).pipe(
         Effect.mapError((cause) => workflowError("schedule", targetPath, `${label} realpath check failed: ${errorMessage(cause)}`)),
       );
-      if (!pathInside(rootRealPath, targetRealPath)) {
+      if (!pathWithin(rootRealPath, targetRealPath, false)) {
         return yield* Effect.fail(workflowError("schedule", targetPath, `${label} resolves outside ${rootRealPath}`));
       }
       identity = targetRealPath;
@@ -933,7 +929,7 @@ function preflightWritePath(
       }
       let ancestor = dirname(targetPath);
       let ancestorRealPath: string | undefined;
-      while (pathInside(rootPath, ancestor) || resolve(ancestor) === rootPath) {
+      while (pathWithin(rootPath, ancestor, false) || resolve(ancestor) === rootPath) {
         const ancestorStat = yield* Effect.either(fileSystem.stat(ancestor));
         if (Either.isRight(ancestorStat)) {
           if (ancestorStat.right.type !== "Directory") {
@@ -951,7 +947,7 @@ function preflightWritePath(
         if (parent === ancestor) break;
         ancestor = parent;
       }
-      if (ancestorRealPath === undefined || !pathInside(rootRealPath, ancestorRealPath) && resolve(ancestorRealPath) !== resolve(rootRealPath)) {
+      if (ancestorRealPath === undefined || !pathWithin(rootRealPath, ancestorRealPath, false) && resolve(ancestorRealPath) !== resolve(rootRealPath)) {
         return yield* Effect.fail(workflowError("schedule", targetPath, `${label} nearest existing ancestor escapes ${rootRealPath}`));
       }
       identity = resolve(ancestorRealPath ?? rootRealPath, relative(ancestor, targetPath));
@@ -975,12 +971,8 @@ function rejectPathAliases(
       const leftIdentity = resolve(left.value.identity);
       const rightIdentity = resolve(right.value.identity);
       const identitiesOverlap = leftIdentity === rightIdentity ||
-        (relative(leftIdentity, rightIdentity) !== "" &&
-          !relative(leftIdentity, rightIdentity).startsWith("..") &&
-          !isAbsolute(relative(leftIdentity, rightIdentity))) ||
-        (relative(rightIdentity, leftIdentity) !== "" &&
-          !relative(rightIdentity, leftIdentity).startsWith("..") &&
-          !isAbsolute(relative(rightIdentity, leftIdentity)));
+        pathWithin(leftIdentity, rightIdentity, false) ||
+        pathWithin(rightIdentity, leftIdentity, false);
       if (identitiesOverlap) {
         return Effect.fail(workflowError(
           "schedule",
