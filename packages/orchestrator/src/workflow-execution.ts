@@ -24,7 +24,6 @@ import {
   WorkerError,
 } from "@piano/workers";
 import {
-  type CompiledWorkerContract,
   type ContractMetric,
   validateContract,
   validateWorkerContract,
@@ -36,7 +35,6 @@ import {
   isUnsafeWorkspaceRelativePath,
   type ContractName,
   type ContractProjection,
-  type ContractProjectionDeclaration,
 } from "@piano/contract";
 import {
   legacyContractProjectionDeclarations,
@@ -62,7 +60,6 @@ import {
   type WorkflowHarness,
   type WorkflowRegionPlan,
   type WorkflowRetry,
-  type WorkflowStage,
 } from "./workflow.js";
 import {
   loadDefaultWorkflow,
@@ -70,7 +67,6 @@ import {
   resolveWorkerResources,
   workerResourcesKey,
   type LoadedWorkflow,
-  type WorkerResources,
 } from "./workflow-file.js";
 import { errorMessage, WorkflowError, workflowError } from "./errors.js";
 import { installStagingFile, writeFileAtomic } from "./atomic-write.js";
@@ -81,6 +77,18 @@ import {
   normalizeDurableMetricCompatibility,
   parseBenchmarkIdentity,
 } from "./stage-metrics.js";
+import type {
+  ActorExecutionContext,
+  ActorState,
+  InternalStageResult,
+  ResolvedStageValidation,
+  SignoffRetry,
+  StagePayloadValidationResult,
+  StageReviewNote,
+  ValidatedStagePayload,
+  WorkflowStageExecutionResult,
+} from "./execution-types.js";
+export type { WorkflowStageExecutionResult } from "./execution-types.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import { writeResumeState } from "./resume-state.js";
 import {
@@ -104,7 +112,6 @@ import {
   writeHandoffRecord,
   writeMapItemContext,
   type HandoffMapItem,
-  type HandoffProducer,
 } from "./handoff.js";
 import {
   allocateMapWorkspace,
@@ -145,7 +152,6 @@ import {
 } from "./progress.js";
 import {
   snapshotWorkerContract,
-  type WorkerContractReference,
 } from "./contract-snapshot.js";
 import {
   buildCommitMessage,
@@ -325,35 +331,6 @@ export interface WorkflowExecutionResult {
   readonly progressSnapshotPath?: string;
 }
 
-export interface WorkflowStageExecutionResult {
-  /** Concrete runtime invocation id, e.g. `tune.implement@tune/iter-1`. */
-  readonly id: string;
-  /** Static dotted stage identity from the compiled workflow. */
-  readonly stageId: string;
-  readonly instanceId?: string;
-  readonly stage: string;
-  readonly worker: string;
-  readonly text: string;
-  readonly sessionId: string;
-  readonly transcriptPath: string;
-  readonly requestedModel?: string;
-  readonly requestedThinkingLevel?: ThinkingLevel;
-  readonly model?: string;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly attempts: number;
-  /** The concrete workspace used by this invocation. Map-slot paths are
-   * preserved so downstream handoff consumers can locate candidate artifacts. */
-  readonly workspace: WorkflowWorkspaceBinding;
-  readonly resultPath?: string;
-  readonly resultPayload?: unknown;
-  /** Piano-normalized outputs projected from a worker-owned contract. */
-  readonly metrics?: readonly ContractMetric[];
-  /** Contract-declared values available to downstream workflow consumers. */
-  readonly projections?: readonly ContractProjection[];
-  readonly contract?: WorkerContractReference;
-  readonly handoffRecordPath: string;
-  readonly progressRecordPath?: string;
-}
 
 export type WorkflowExecutionError =
   | WorkflowError
@@ -471,34 +448,8 @@ const VALIDATE_SOURCE: Source = {
 const WORKFLOW_LOG = logger(WORKFLOW_SOURCE, { namespace: "workflow" });
 const WORKER_LOG = logger(WORKER_SOURCE, { namespace: "workflow" });
 
-interface InternalStageResult extends WorkflowStageExecutionResult {
-  readonly handoff: HandoffProducer;
-  /** The note the reviewer left when they continued past this stage, if any.
-   *
-   * Deliberately **not** part of `WorkflowStageExecutionResult`, and
-   * deliberately not written into the handoff record: the handoff is the
-   * worker's immutable evidence, and `stagePrompt` tells every consumer that
-   * "handoff files are immutable upstream evidence". A human's instruction is
-   * an input to the next prompt, not a finding to be cited as evidence, so it
-   * rides the internal result the same way `handoff` does and reaches exactly
-   * one place: the prompt of the stages that consume this one. */
-  readonly reviewNote?: string;
-}
 
-/** A reviewer note that reached this stage from one of its direct upstream
- * stages, kept attributed so the prompt can say which stage it was written
- * about. */
-interface StageReviewNote {
-  readonly stageId: string;
-  readonly note: string;
-}
 
-/** Set when an attempt is a human sign-off retry rather than the stage's first
- * run. The presence of the object is what tells the worker it is being asked
- * again; `note` carries the reviewer's own words when there are any. */
-interface SignoffRetry {
-  readonly note?: string;
-}
 
 /** Preserve the lexical scope context for every child while retaining the
  * child's explicit dependency order. A producer can be both inherited from a
@@ -535,57 +486,10 @@ interface ScopeExecution extends NodeExecution {
   readonly completed: ReadonlyMap<string, ResultGroup>;
 }
 
-interface ActorState {
-  readonly turns: number;
-  readonly continuation?: AgentContinuation;
-  readonly harness?: string;
-  readonly sessionId?: string;
-  readonly transcriptPath?: string;
-}
 
-interface ActorExecutionContext {
-  readonly actorKey: string;
-  readonly invocation: WorkflowRuntimeInvocation;
-  readonly worker: string;
-  readonly harness: WorkflowHarness;
-  readonly workspaceKey: string;
-  readonly memory: boolean;
-  readonly resources: WorkerResources;
-  readonly contextFilePaths: readonly string[];
-  readonly tools?: WorkflowStage["tools"];
-  readonly model?: string;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly timeout?: number;
-}
 
-type ResolvedStageValidation =
-  | {
-    readonly kind: "legacy";
-    readonly id: ContractName;
-    readonly guidance: string;
-    readonly projectionDeclarations: readonly ContractProjectionDeclaration[];
-  }
-  | {
-    readonly kind: "worker";
-    readonly id: string;
-    readonly guidance: string;
-    readonly projectionDeclarations: readonly ContractProjectionDeclaration[];
-    readonly contract: CompiledWorkerContract;
-    readonly reference: WorkerContractReference;
-  };
 
-interface ValidatedStagePayload {
-  readonly value: unknown;
-  readonly metrics: readonly ContractMetric[];
-  readonly projections: readonly ContractProjection[];
-}
 
-type StagePayloadValidationResult =
-  | { readonly success: true; readonly payload: ValidatedStagePayload }
-  | {
-    readonly success: false;
-    readonly error: ContractValidationError | WorkerContractValidationError;
-  };
 
 /** One validation boundary shared by the initial worker result and every
  * orchestrator-materialized replacement. This prevents accepted evidence from
