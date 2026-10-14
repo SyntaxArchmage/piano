@@ -4,10 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   failureDetails,
   isCancellation,
-  logger,
   TRACE,
   type Logging,
-  type Source,
 } from "@piano/logging";
 import {
   abortableSleep,
@@ -89,6 +87,17 @@ import type {
   WorkflowStageExecutionResult,
 } from "./execution-types.js";
 export type { WorkflowStageExecutionResult } from "./execution-types.js";
+import {
+  COMPILE_SOURCE,
+  EXPLICIT_LOAD_SOURCE,
+  LOAD_SOURCE,
+  SCHEDULE_SOURCE,
+  VALIDATE_SOURCE,
+  WORKER_LOG,
+  WORKER_SOURCE,
+  WORKFLOW_LOG,
+  WORKFLOW_SOURCE,
+} from "./execution-logs.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import { writeResumeState } from "./resume-state.js";
 import {
@@ -410,43 +419,6 @@ function scheduleStageRetry(
     return delayMs;
   });
 }
-
-const LOAD_SOURCE: Source = {
-  module: "orchestrator",
-  file: "workflow-file.ts",
-  function: "loadDefaultWorkflow",
-};
-const EXPLICIT_LOAD_SOURCE: Source = {
-  ...LOAD_SOURCE,
-  function: "loadWorkflow",
-};
-const COMPILE_SOURCE: Source = {
-  module: "orchestrator",
-  file: "workflow.ts",
-  function: "compileWorkflow",
-};
-const SCHEDULE_SOURCE: Source = {
-  module: "orchestrator",
-  file: "workflow.ts",
-  function: "scheduleWorkflow",
-};
-const WORKER_SOURCE: Source = {
-  module: "workers",
-  file: "worker.ts",
-  function: "executeWorker",
-};
-const WORKFLOW_SOURCE: Source = {
-  module: "orchestrator",
-  file: "workflow-execution.ts",
-  function: "executeWorkflow",
-};
-const VALIDATE_SOURCE: Source = {
-  module: "orchestrator",
-  file: "workflow-execution.ts",
-  function: "validateStageResult",
-};
-const WORKFLOW_LOG = logger(WORKFLOW_SOURCE, { namespace: "workflow" });
-const WORKER_LOG = logger(WORKER_SOURCE, { namespace: "workflow" });
 
 
 
