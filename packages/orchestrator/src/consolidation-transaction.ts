@@ -697,33 +697,31 @@ async function rollbackPrepared(
   integrityFailure: boolean,
 ): Promise<ConsolidationCarrying> {
   const filesystemRollback = canonicalEvidenceTrusted
-    ? restoreWorkspaceLstat(evidence.sourceCwd, evidence.targetBeforeDir, undefined, evidence.excluded)
-    : Promise.reject(new Error("canonical external evidence is not trusted; filesystem rollback was withheld"));
+    ? Effect.tryPromise({
+      try: () => restoreWorkspaceLstat(evidence.sourceCwd, evidence.targetBeforeDir, undefined, evidence.excluded),
+      catch: (cause) => cause,
+    })
+    : Effect.fail(new Error("canonical external evidence is not trusted; filesystem rollback was withheld"));
   const gitRollback = gitMetadata === undefined
     ? Effect.fail(new GitMetadataTransactionError("invalid-state", "Git metadata transaction was not created"))
     : gitMetadata.rollback();
-  // The two rollbacks run concurrently and only one of them is an Effect, so
-  // the Git half is driven here rather than composed: the seam helper keeps
-  // every way that half can end — including a defect — on the Either side.
-  const [filesystem, git] = await Promise.allSettled([
-    filesystemRollback,
-    Effect.runPromise(seamEither(() => gitRollback)),
-  ]);
-  let filesystemReason: string | undefined;
-  if (filesystem.status === "rejected") filesystemReason = errorMessage(filesystem.reason);
+  // Both rollbacks are Effect now, and each folds its outcome into an Either so
+  // one failing half cannot hide the report of the other. `Effect.all` is
+  // sequential by default; these two have always run side by side.
+  const [filesystem, git] = await Effect.runPromise(Effect.all([
+    Effect.either(filesystemRollback),
+    seamEither(() => gitRollback),
+  ], { concurrency: "unbounded" }));
+  const filesystemReason = Either.isLeft(filesystem) ? errorMessage(filesystem.left) : undefined;
   let gitReason: string | undefined;
   let gitRestored = false;
-  if (git.status === "fulfilled") {
-    if (Either.isRight(git.value)) {
-      gitRestored = git.value.right.restored;
-      if (!gitRestored) gitReason = reportMessage(git.value.right);
-    } else {
-      const failure = git.value.left;
-      const report = failure instanceof GitMetadataTransactionError ? failure.report : undefined;
-      gitReason = report === undefined ? errorMessage(failure) : reportMessage(report);
-    }
+  if (Either.isRight(git)) {
+    gitRestored = git.right.restored;
+    if (!gitRestored) gitReason = reportMessage(git.right);
   } else {
-    gitReason = errorMessage(git.reason);
+    const failure = git.left;
+    const report = failure instanceof GitMetadataTransactionError ? failure.report : undefined;
+    gitReason = report === undefined ? errorMessage(failure) : reportMessage(report);
   }
   let sourceReason: string | undefined;
   try {
@@ -734,7 +732,7 @@ async function rollbackPrepared(
   } catch (cause) {
     sourceReason = errorMessage(cause);
   }
-  const fullyRestored = filesystem.status === "fulfilled" && gitRestored && sourceReason === undefined && !integrityFailure;
+  const fullyRestored = Either.isRight(filesystem) && gitRestored && sourceReason === undefined && !integrityFailure;
   const details = [
     reason,
     filesystemReason === undefined ? "filesystem rollback completed" : `filesystem rollback failed: ${filesystemReason}`,
