@@ -7,7 +7,6 @@ import {
   type Logging,
 } from "@piano/logging";
 import {
-  abortableSleep,
   failedAttemptContinuation,
   type AgentContinuation,
   type AgentEvent,
@@ -34,11 +33,10 @@ import {
 } from "./legacy-contract-projections.js";
 import {
 } from "./gpu-round-protocol.js";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import {
   WorkflowTrajectory,
-  type TokenUsage,
   type TrajectoryRecordContext,
   type WorkflowObservation,
 } from "@piano/trajectory";
@@ -49,7 +47,6 @@ import {
   type CompiledWorkflow,
   type WorkflowHarness,
   type WorkflowRegionPlan,
-  type WorkflowRetry,
 } from "./workflow.js";
 import {
   loadDefaultWorkflow,
@@ -77,7 +74,6 @@ import {
   EXPLICIT_LOAD_SOURCE,
   LOAD_SOURCE,
   SCHEDULE_SOURCE,
-  VALIDATE_SOURCE,
   WORKER_LOG,
   WORKER_SOURCE,
   WORKFLOW_LOG,
@@ -89,8 +85,18 @@ import {
   inspectGpuRound,
   materializeGpuPromotion,
 } from "./gpu-round-materialization.js";
-import { validateStagePayload } from "./stage-validation.js";
 import { stagePrompt, wholeWorkflowTask } from "./stage-prompt.js";
+import {
+  attributeTrajectoryObservation,
+  ensureResultDirectory,
+  scheduleStageRetry,
+  trajectoryAgentObservation,
+  validateStageResult,
+  workflowProgressPlan,
+  workflowProgressProjection,
+} from "./stage-runner-support.js"; 
+import { VALIDATE_REPAIR_ATTEMPTS } from "./stage-runner-support.js";
+export { RETRY_DEFAULT_BACKOFF_MAX_SECONDS, RETRY_DEFAULT_BACKOFF_SECONDS, VALIDATE_REPAIR_ATTEMPTS, retryBackoffSeconds } from "./stage-runner-support.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import { writeResumeState } from "./resume-state.js";
 import {
@@ -148,9 +154,6 @@ import {
   markWorkflowStageStarted,
   workflowProgressPath,
   workflowProgressSnapshotPath,
-  type WorkflowProgressPlan,
-  type WorkflowProgressProjection,
-  type WorkflowProgressStageCount,
 } from "./progress.js";
 import {
   snapshotWorkerContract,
@@ -340,78 +343,6 @@ export type WorkflowExecutionError =
   | ContractValidationError
   | WorkerContractValidationError;
 
-/** One initial attempt and one resumed repair turn. A stage that declares
- * `retry` keeps its own budget on top of this, without changing handoff or
- * session semantics. */
-export const VALIDATE_REPAIR_ATTEMPTS = 1;
-
-/** Retry waits for a stage that opted in with `retry: {}`. Deliberately much
- * longer than the harness's own `AGENT_RETRY_DELAYS_MS` (5s, 20s): by the time
- * an error reaches this layer, the harness has already spent those retries and
- * the engine has already spent its repair turn, so what is left is the
- * persistent failure. The point of the wait is to outlast a provider incident,
- * not to paper over a blip. */
-export const RETRY_DEFAULT_BACKOFF_SECONDS = 30;
-export const RETRY_DEFAULT_BACKOFF_MAX_SECONDS = 900;
-/** Bound on the exponential factor. Without it a long unattended run reaches
- * `Infinity` and the cap stops applying exactly when it matters most. */
-const RETRY_MAX_EXPONENT = 16;
-
-/** How long to wait before retry number `retries + 1`, or `undefined` when the
- * policy allows no further retry. `retries` counts retries already performed,
- * so the first one waits `backoff` seconds.
- *
- * Pure, so the schedule is testable without waiting for it — which matters
- * because the whole point of the policy is that it can outlast a person's
- * patience. */
-export function retryBackoffSeconds(
-  retry: WorkflowRetry | undefined,
-  retries: number,
-): number | undefined {
-  if (retry === undefined) return undefined;
-  const attempts = retry.attempts ?? "unbounded";
-  if (attempts !== "unbounded" && retries >= attempts) return undefined;
-  const base = retry.backoff ?? RETRY_DEFAULT_BACKOFF_SECONDS;
-  const cap = retry.backoffMax ?? RETRY_DEFAULT_BACKOFF_MAX_SECONDS;
-  return Math.min(base * 2 ** Math.min(retries, RETRY_MAX_EXPONENT), cap);
-}
-
-/** Announce and perform one retry wait, returning the waited milliseconds or
- * `undefined` when there is no retry to make — the caller then fails with the
- * error it already holds.
- *
- * A wait ends early when the run is cancelled, and an interrupted wait *is* the
- * cancellation: converting a user's Escape into "retryable failure" would
- * leave a run that cannot be stopped. */
-function scheduleStageRetry(
-  stageId: string,
-  retry: WorkflowRetry | undefined,
-  retries: number,
-  reason: unknown,
-  signal: AbortSignal | undefined,
-): Effect.Effect<number | undefined, never, FileSystem.FileSystem | Logging> {
-  const seconds = retryBackoffSeconds(retry, retries);
-  if (seconds === undefined) return Effect.succeed(undefined);
-  const declared = retry?.attempts;
-  const delayMs = seconds * 1000;
-  return Effect.gen(function* () {
-    yield* WORKFLOW_LOG.warn("stage.retry.scheduled", {
-      outcome: "failure",
-      data: {
-        id: stageId,
-        retry: retries + 1,
-        nextAttempt: retries + 2,
-        delayMs,
-        ...(declared === undefined || declared === "unbounded"
-          ? { unbounded: true }
-          : { remainingRetries: declared - retries - 1 }),
-        reason,
-      },
-    }).pipe(Effect.catchAll(() => Effect.void));
-    yield* abortableSleep<never>(delayMs, signal, () => Effect.interrupt);
-    return delayMs;
-  });
-}
 
 
 
@@ -457,63 +388,8 @@ interface ScopeExecution extends NodeExecution {
 
 
 
-function usageNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-}
 
-function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usage" }>): TokenUsage {
-  const input = usageNumber(event.usage.input);
-  const output = usageNumber(event.usage.output);
-  const cacheRead = usageNumber(event.usage.cacheRead);
-  const cacheWrite = usageNumber(event.usage.cacheWrite);
-  return {
-    input,
-    output,
-    cacheRead,
-    cacheWrite,
-    total: event.usage.totalTokens === undefined
-      ? input + output + cacheRead + cacheWrite
-      : usageNumber(event.usage.totalTokens),
-  };
-}
 
-function trajectoryAgentObservation(
-  event: AgentEvent,
-  context: TrajectoryRecordContext,
-): WorkflowObservation | undefined {
-  const monotonicMs = performance.now();
-  if (event.type === "usage") {
-    return { type: "token_usage", context, usage: normalizedUsage(event) };
-  }
-  if (event.type === "tool_execution_start") {
-    return {
-      type: "tool_call_started",
-      context,
-      toolCallId: event.toolCallId,
-      toolName: event.toolName,
-      monotonicMs,
-    };
-  }
-  if (event.type === "tool_execution_end") {
-    return {
-      type: "tool_call_finished",
-      context,
-      toolCallId: event.toolCallId,
-      toolName: event.toolName,
-      isError: event.isError,
-      monotonicMs,
-    };
-  }
-  return undefined;
-}
-
-function attributeTrajectoryObservation(
-  observation: WorkflowObservation,
-  worker: { readonly sessionId: string; readonly transcriptPath: string } | undefined,
-): WorkflowObservation {
-  if (worker === undefined || !("context" in observation)) return observation;
-  return { ...observation, context: { ...observation.context, sessionId: worker.sessionId, transcriptPath: worker.transcriptPath } };
-}
 
 
 function validateWorkspace(
@@ -530,47 +406,7 @@ function validateWorkspace(
   });
 }
 
-/** Read and validate one attempt's result payload. The validator is a named
- * schema-level success criterion; domain outcomes inside a valid report remain
- * explicit data for downstream stages rather than hidden orchestration rules. */
-function validateStageResult(
-  validation: ResolvedStageValidation,
-  resultPath: string,
-  invocationId: string,
-): Effect.Effect<ValidatedStagePayload, ContractValidationError | WorkerContractValidationError, FileSystem.FileSystem | Logging> {
-  return TRACE(VALIDATE_SOURCE, Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(resultPath).pipe(
-      Effect.mapError(() => new ContractValidationError({
-        contract: validation.id,
-        message: `validation result missing: expected "${resultPath}"`,
-      })),
-    );
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      return yield* Effect.fail(new ContractValidationError({
-        contract: validation.id,
-        message: `validation result is not valid JSON: ${errorMessage(error)}`,
-      }));
-    }
-    const result = validateStagePayload(validation, parsed);
-    if (!result.success) return yield* Effect.fail(result.error);
-    return result.payload;
-  }), { validate: validation.id, resultPath, invocationId });
-}
 
-function ensureResultDirectory(
-  resultPath: string,
-): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    yield* fileSystem.makeDirectory(dirname(resultPath), { recursive: true }).pipe(
-      Effect.mapError((cause) => workflowError("schedule", resultPath, String(cause))),
-    );
-  });
-}
 
 
 /** The run directory is session-owned (created by createSession or a staging
@@ -647,167 +483,7 @@ function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string | undef
   );
 }
 
-/** Expand the statically compiled leaf table into a worker-neutral work plan.
- * Loop/map controls are part of the DSL, so a monitor can know the denominator
- * before the first model turn without inspecting a worker payload. */
-function workflowProgressPlan(
-  compiled: CompiledWorkflow,
-  /** Effective iteration count for loops whose runtime bound is now known.
-   * Duration loops grow this count from frames; a contract-requested stop
-   * shrinks a fixed loop to the number of iterations actually completed. */
-  loopIterations: ReadonlyMap<string, number> = new Map(),
-): WorkflowProgressPlan {
-  const regionsById = new Map(compiled.regions.map((region) => [region.id, region]));
-  const stageCounts: Record<string, WorkflowProgressStageCount> = {};
-  for (const stage of compiled.stages) {
-    let planned = 1;
-    for (let index = 0; index < stage.regionPath.length; index += 1) {
-      const regionId = stage.regionPath.slice(0, index + 1).join(".");
-      const region = regionsById.get(regionId);
-      if (region === undefined) continue;
-      if (region.kind === "loop") {
-        const effectiveIterations = loopIterations.get(regionId);
-        if (effectiveIterations !== undefined || region.duration !== undefined) {
-          // `Math.max(1, …)` rather than the raw count: the current iteration is
-          // the furthest one that can already hold accepted stages, so the
-          // denominator stays ahead of the numerator and the snapshot validator's
-          // `completed <= planned` invariant holds while the loop is open.
-          planned *= Math.max(1, effectiveIterations ?? 1);
-          continue;
-        }
-        planned *= region.iterations ?? 1;
-        continue;
-      }
-      planned *= region.count ?? 1;
-    }
-    stageCounts[stage.id] = { planned, completed: 0 };
-  }
-  return {
-    plannedStages: Object.values(stageCounts).reduce((sum, count) => sum + count.planned, 0),
-    stageCounts,
-  };
-}
 
-/** Build a worker-neutral progress label from the compiled graph and runtime
- * frames. Domain payloads remain untouched; monitors can use this projection
- * without knowing whether the worker is CUDA, Triton, basic, or a plugin. */
-function workflowProgressProjection(
-  compiled: CompiledWorkflow,
-  invocation: WorkflowRuntimeInvocation,
-  acceptedStages: number,
-  plan: WorkflowProgressPlan,
-  completedByStage: ReadonlyMap<string, number>,
-  knownLoopIterations: ReadonlyMap<string, number> = new Map(),
-): WorkflowProgressProjection {
-  const loopFrame = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop")
-    .at(-1);
-  const mapFrame = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-    .at(-1);
-  const innermostFrame = invocation.frames.at(-1);
-  // A duration-bound loop's denominator is only knowable from the run itself,
-  // so the plan is re-derived whenever this invocation sits inside one. The
-  // frames carry exactly the missing input: which iteration is running now.
-  const effectiveLoopIterations = new Map(knownLoopIterations);
-  for (const frame of invocation.frames) {
-    if (frame.kind !== "loop") continue;
-    const frameRegion = compiled.regions.find((candidate) => candidate.id === frame.regionId);
-    if (frameRegion?.duration !== undefined) {
-      effectiveLoopIterations.set(
-        frame.regionId,
-        Math.max(effectiveLoopIterations.get(frame.regionId) ?? 1, frame.iteration + 1),
-      );
-    }
-  }
-  const effectivePlan = effectiveLoopIterations.size === 0
-    ? plan
-    : workflowProgressPlan(compiled, effectiveLoopIterations);
-  const innermostRegion = innermostFrame === undefined
-    ? undefined
-    : compiled.regions.find((candidate) => candidate.id === innermostFrame.regionId);
-  const stageIds = innermostRegion === undefined
-    ? compiled.stages
-      .filter((stage) => stage.regionPath.length === 0)
-      .map((stage) => stage.id)
-    : compiled.stages
-      // Only direct leaves belong to this scope. Nested regions report their
-      // own stage ordinal when they become the innermost frame.
-      .filter((stage) => stage.regionPath.join(".") === innermostRegion.id)
-      .map((stage) => stage.id);
-  const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
-  const stageCount = stageIds.length;
-  const stageCounts: Readonly<Record<string, WorkflowProgressStageCount>> = Object.fromEntries(
-    Object.entries(effectivePlan.stageCounts).map(([stageId, count]) => [stageId, {
-      planned: count.planned,
-      completed: completedByStage.get(stageId) ?? 0,
-    }]),
-  );
-  const base = {
-    status: "accepted" as const,
-    acceptedStages,
-    completedStages: acceptedStages,
-    plannedStages: effectivePlan.plannedStages,
-    remainingStages: Math.max(0, effectivePlan.plannedStages - acceptedStages),
-    stageCounts,
-    ...(stageIndex > 0 ? { stageIndex } : {}),
-    ...(stageCount > 0 ? { stageCount } : {}),
-  };
-  if (innermostFrame?.kind === "loop" && loopFrame !== undefined) {
-    const region = compiled.regions.find((candidate) => candidate.id === loopFrame.regionId);
-    const outerMap = mapFrame === undefined
-      ? undefined
-      : compiled.regions.find((candidate) => candidate.id === mapFrame.regionId);
-    const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
-    const stageCount = stageIds.length;
-    const iterationLabel = region?.iterations === undefined
-      ? `iter-${loopFrame.iteration + 1}`
-      : `iter-${loopFrame.iteration + 1}/${region.iterations}`;
-    const stageLabel = stageIndex > 0 && stageCount > 0
-      ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-      : invocation.stageName;
-    return {
-      ...base,
-      ...(stageIndex > 0 ? { stageIndex } : {}),
-      ...(stageCount > 0 ? { stageCount } : {}),
-      iteration: loopFrame.iteration,
-      ...(region?.iterations === undefined ? {} : { iterations: region.iterations }),
-      ...(mapFrame === undefined ? {} : { mapSlot: mapFrame.slot }),
-      ...(outerMap?.count === undefined ? {} : { mapSlots: outerMap.count }),
-      scope: region?.name ?? loopFrame.regionId,
-      hint: `${iterationLabel} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
-    };
-  }
-  if (innermostFrame?.kind === "map" && mapFrame !== undefined) {
-    const region = compiled.regions.find((candidate) => candidate.id === mapFrame.regionId);
-    const loopRegion = loopFrame === undefined
-      ? undefined
-      : compiled.regions.find((candidate) => candidate.id === loopFrame.regionId);
-    const regionName = region?.name ?? mapFrame.regionId;
-    const slots = region?.count;
-    const stageLabel = stageIndex > 0 && stageCount > 0
-      ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-      : invocation.stageName;
-    return {
-      ...base,
-      mapSlot: mapFrame.slot,
-      ...(slots === undefined ? {} : { mapSlots: slots }),
-      ...(loopFrame === undefined ? {} : { iteration: loopFrame.iteration }),
-      ...(loopRegion?.iterations === undefined ? {} : { iterations: loopRegion.iterations }),
-      scope: regionName,
-      hint: slots === undefined
-        ? `${regionName}/slot-${mapFrame.slot + 1} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`
-        : `${regionName}/slot-${mapFrame.slot + 1}/${slots} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
-    };
-  }
-  const stageLabel = stageIndex > 0 && stageCount > 0
-    ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-    : invocation.stageName;
-  return {
-    ...base,
-    hint: `${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
-  };
-}
 
 /** Execute a workflow with runtime expansion. Handoff data and continuation
  * state live in distinct stores: records move between stages, while a harness
