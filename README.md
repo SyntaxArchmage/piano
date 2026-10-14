@@ -50,6 +50,13 @@ written outside your home directory, so the command stays private to you.
 `link:cli` does the same through the npm global prefix for a machine-wide
 install.
 
+The launcher starts `piano` from a prebuilt bundle of the CLI. The bundle is
+built on first use and rebuilt whenever a source file or the lock file no longer
+matches it, so editing sources takes effect on the next run with no reinstall
+step. `npm run build:cli` builds it up front instead — useful before a
+measurement run or in CI. The output lives in `packages/cli/dist/` and is
+ignored by git.
+
 > **Note:** `link:cli:user` only works if `~/.local/bin` is on your `PATH`,
 > which is not the case for every shell. Verify it first:
 >
