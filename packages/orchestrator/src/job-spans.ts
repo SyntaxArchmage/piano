@@ -15,6 +15,7 @@ import {
   progressRecordKind,
   type WorkflowProgressExecutionFinishRecord,
   type WorkflowProgressExecutionStartRecord,
+  type WorkflowProgressJobClosedRecord,
   type WorkflowProgressRecord,
   type WorkflowProgressStartRecord,
   type WorkflowProgressStreamRecord,
@@ -34,6 +35,10 @@ export interface JobSpan {
   /** The invocation whose latest attempt started and has not been accepted in
    * this span, when one is in flight. */
   readonly inFlight?: string;
+  /** Set on the span in flight when the human closed the job by their own
+   * action (`/restart`). The span's own status still says how it stopped
+   * running; this is the job-level outcome on top of it. */
+  readonly closed?: "restarted";
 }
 
 /** One job across all of its spans. */
@@ -44,7 +49,7 @@ export interface JobView {
    * once a span closed with an outcome. */
   readonly state: "alive" | "paused" | "finished";
   /** Present only when `state` is `finished`. */
-  readonly outcome?: "completed" | "failed";
+  readonly outcome?: "completed" | "failed" | "restarted";
   /** Invocation ids accepted across every span of this job — the set a
    * continue of this job skips. */
   readonly accepted: ReadonlySet<string>;
@@ -63,6 +68,7 @@ interface MutableSpan {
   accepted: Set<string>;
   attempts: Map<string, number>;
   inFlight?: string;
+  closed?: "restarted";
 }
 
 /** Fold a run's stream records into their job spans, in stream order.
@@ -101,10 +107,22 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
       // The in-flight attempt was accepted; a later stage-started for the same
       // invocation sets the flag again.
       if (span.inFlight === acceptedRecord.invocationId) delete span.inFlight;
-    } else {
+    } else if (kind === "execution-finished") {
       const finished = record as WorkflowProgressExecutionFinishRecord;
       span.status = finished.status;
       span.finishedAt = finished.timestamp;
+    } else {
+      // A close names its job explicitly, and the job it closes is not
+      // necessarily the latest one: a restart closes the paused job it
+      // replaces.
+      const closed = record as WorkflowProgressJobClosedRecord;
+      for (let index = spans.length - 1; index >= 0; index -= 1) {
+        const target = spans[index];
+        if (target !== undefined && target.jobOrdinal === closed.jobOrdinal) {
+          target.closed = closed.outcome;
+          break;
+        }
+      }
     }
   }
   return spans;
@@ -149,14 +167,21 @@ function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
     }
   }
   const last = jobSpans.at(-1);
-  const state = last?.status === "running" ? "alive" : last?.status === "paused" ? "paused" : "finished";
+  // A closed job reads as finished whatever its last span was doing: the
+  // human ended the job, and the cursor it held is no longer offered.
+  const outcome = last?.closed !== undefined
+    ? last.closed
+    : last?.status === "completed" || last?.status === "failed"
+      ? last.status
+      : undefined;
+  const state: JobView["state"] = last?.closed !== undefined
+    ? "finished"
+    : last?.status === "running" ? "alive" : last?.status === "paused" ? "paused" : "finished";
   return {
     jobOrdinal,
     executionId: last?.executionId ?? "",
     state,
-    ...(state === "finished" && (last?.status === "completed" || last?.status === "failed")
-      ? { outcome: last.status }
-      : {}),
+    ...(state === "finished" && outcome !== undefined ? { outcome } : {}),
     accepted,
     attempts,
     spans: jobSpans,

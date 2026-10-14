@@ -117,6 +117,7 @@ export {
 export {
   appendWorkflowProgress,
   applyProgressRecord,
+  closeWorkflowJob,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
@@ -128,6 +129,7 @@ export {
   type WorkflowProgressStartRecord,
   type WorkflowProgressExecutionStartRecord,
   type WorkflowProgressExecutionFinishRecord,
+  type WorkflowProgressJobClosedRecord,
   type WorkflowProgressStreamRecord,
   type WorkflowProgressCurrent,
   type WorkflowProgressPlan,

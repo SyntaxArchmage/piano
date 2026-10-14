@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendWorkflowProgress,
   applyProgressRecord,
+  closeWorkflowJob,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
@@ -405,6 +406,29 @@ describe("workflow progress stream", () => {
       status: "failed",
       error: "boom",
     });
+  });
+
+  it("closes a job on the stream without touching the snapshot's run state", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    const runDir = await newRunDir();
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, false));
+    await run(closeWorkflowJob(runDir, "execution", 1, "restarted"));
+
+    expect((await readStream(runDir)).at(-1)).toEqual({
+      version: 1,
+      kind: "job-closed",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      executionId: "execution",
+      jobOrdinal: 1,
+      outcome: "restarted",
+    });
+    // The snapshot describes the latest span; a close moves only its
+    // timestamp, and the job's own reading comes from the fold.
+    const snapshot = JSON.parse(
+      await readFile(workflowProgressSnapshotPath(runDir), "utf8"),
+    ) as { updatedAt: string; status: string };
+    expect(snapshot.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(snapshot.status).toBe("running");
   });
 
   it("reproduces the snapshot by reducing the stream from nothing", async () => {

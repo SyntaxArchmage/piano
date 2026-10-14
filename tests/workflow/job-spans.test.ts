@@ -48,6 +48,15 @@ const finished = (
   status,
 });
 
+const jobClosed = (jobOrdinal: number, timestamp: string): WorkflowProgressStreamRecord => ({
+  version: 1,
+  kind: "job-closed",
+  timestamp,
+  executionId: "run-1",
+  jobOrdinal,
+  outcome: "restarted",
+});
+
 const T = (second: number): string => `2026-10-14T00:00:${String(second).padStart(2, "0")}.000Z`;
 
 describe("foldJobSpans", () => {
@@ -120,6 +129,25 @@ describe("foldJobSpans", () => {
     ]);
     expect(spans).toEqual([]);
     expect(latestJob(spans)).toBeUndefined();
+  });
+
+  it("reads a closed job as finished with that outcome, wherever its spans stopped", () => {
+    const spans = foldJobSpans([
+      started(1, T(0)),
+      accepted(T(1), "first@root"),
+      finished(T(2), "paused"),
+      jobClosed(1, T(3)),
+      started(2, T(4)),
+      stageStarted(T(5), "first@root"),
+    ]);
+    const [first, second] = jobs(spans);
+    // The human ended the job: its cursor is no longer offered even though
+    // its last span still says it was paused.
+    expect(first?.state).toBe("finished");
+    expect(first?.outcome).toBe("restarted");
+    expect(first?.spans.at(-1)?.status).toBe("paused");
+    // Closing an earlier job leaves the latest one alone.
+    expect(second?.state).toBe("alive");
   });
 
   it("reports a trailing span with no finish as alive", () => {

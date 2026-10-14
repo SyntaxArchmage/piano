@@ -198,12 +198,27 @@ export interface WorkflowProgressExecutionFinishRecord {
   readonly error?: string;
 }
 
+/** Append-only record that a job is closed by the human's own action rather
+ * than by the work ending — today only `/restart`, which abandons a paused job
+ * in favour of a fresh one. The job's spans keep their own truth (the last one
+ * still says `paused`); this record is what makes the job read as finished
+ * with that outcome, and what keeps its cursor from being offered again. */
+export interface WorkflowProgressJobClosedRecord {
+  readonly version: 1;
+  readonly kind: "job-closed";
+  readonly timestamp: string;
+  readonly executionId: string;
+  readonly jobOrdinal: number;
+  readonly outcome: "restarted";
+}
+
 /** One line of the append-only progress stream. */
 export type WorkflowProgressStreamRecord =
   | WorkflowProgressRecord
   | WorkflowProgressStartRecord
   | WorkflowProgressExecutionStartRecord
-  | WorkflowProgressExecutionFinishRecord;
+  | WorkflowProgressExecutionFinishRecord
+  | WorkflowProgressJobClosedRecord;
 
 /** Kind of one progress-stream line.
  *
@@ -218,11 +233,13 @@ export function progressRecordKind(record: object | null | undefined):
   | WorkflowProgressStartRecord["kind"]
   | WorkflowProgressExecutionStartRecord["kind"]
   | WorkflowProgressExecutionFinishRecord["kind"]
+  | WorkflowProgressJobClosedRecord["kind"]
   | "stage-accepted" {
   const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
   if (kind === "stage-started") return "stage-started";
   if (kind === "execution-started") return "execution-started";
   if (kind === "execution-finished") return "execution-finished";
+  if (kind === "job-closed") return "job-closed";
   return "stage-accepted";
 }
 
@@ -500,6 +517,13 @@ export function applyProgressRecord(
       ...(finished.error === undefined ? {} : { error: finished.error }),
     };
   }
+  if (kind === "job-closed") {
+    const closed = record as WorkflowProgressJobClosedRecord;
+    // The snapshot describes the latest span; a job closed by an action the
+    // viewer may not even be showing moves only its timestamp.
+    const base = previous ?? emptyProgressSnapshot(closed.executionId, closed.timestamp);
+    return { ...base, updatedAt: closed.timestamp };
+  }
   const accepted = record as WorkflowProgressRecord;
   const projection = accepted.progress;
   const explicitProjections = accepted.projections;
@@ -704,6 +728,29 @@ export function finalizeWorkflowProgress(
     const previous = yield* readSnapshot(fileSystem, path);
     if (previous === undefined) return path;
     yield* writeSnapshotAtomic(path, applyProgressRecord(previous, record));
+    return path;
+  });
+}
+
+/** Close one job by the human's own action, so its paused spans read as
+ * finished with that outcome. Appends the marker and folds it like every
+ * other record; the job's own spans keep saying how they stopped. */
+export function closeWorkflowJob(
+  runDir: string,
+  executionId: string,
+  jobOrdinal: number,
+  outcome: "restarted",
+): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
+  const path = workflowProgressPath(runDir);
+  return Effect.gen(function* () {
+    yield* appendAndFold(runDir, {
+      version: 1,
+      kind: "job-closed",
+      timestamp: new Date().toISOString(),
+      executionId,
+      jobOrdinal,
+      outcome,
+    });
     return path;
   });
 }
