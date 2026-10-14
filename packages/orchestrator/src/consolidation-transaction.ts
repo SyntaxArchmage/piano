@@ -134,8 +134,9 @@ export interface ConsolidationTransactionInput<R> {
   readonly persistAfterCarry?: () => Effect.Effect<void, WorkflowError, R>;
   readonly repairAttempts: number;
   /** Dependency injection is intentionally limited to transaction creation so
-   * focused tests can exercise independent Git rollback failure. Runtime uses
-   * beginGitMetadataTransaction and starts it immediately before runTurn. */
+   * focused tests can exercise independent Git rollback failure. Runtime builds
+   * beginGitMetadataTransaction and runs it immediately before runTurn, which
+   * is when the transaction's baseline snapshot is taken. */
   readonly gitMetadataFactory?: (sourceCwd: string) => Effect.Effect<GitMetadataTransaction, GitMetadataTransactionError>;
 }
 
@@ -632,6 +633,14 @@ function reportMessage(report: GitMetadataRollbackReport): string {
   ].join(", ");
 }
 
+/** Fold a step that returns a promise into an Either, keeping whatever it
+ * rejected with so the carry reason can render it the way it always has. A
+ * promise rejection is a failure here, unlike at the injection seams, where
+ * the implementation is somebody else's and a defect is reported as one. */
+function promiseEither<A>(run: () => Promise<A>): Effect.Effect<Either.Either<A, unknown>> {
+  return Effect.tryPromise({ try: run, catch: (cause) => cause }).pipe(Effect.either);
+}
+
 /** Run one caller-supplied effect and fold everything that ended it into an
  * Either. The dependency-injection seam admits any implementation, so one that
  * ends in a defect — a rejected `Effect.promise` — or a factory that throws
@@ -692,11 +701,10 @@ async function carryingWithRetention(
 async function rollbackPrepared(
   evidence: PreparedConsolidationEvidence,
   gitMetadata: GitMetadataTransaction | undefined,
-  reason: string,
-  canonicalEvidenceTrusted: boolean,
-  integrityFailure: boolean,
+  verdict: CarryVerdict,
 ): Promise<ConsolidationCarrying> {
-  const filesystemRollback = canonicalEvidenceTrusted
+  const reason = verdict.failureReason ?? "consolidation did not complete";
+  const filesystemRollback = verdict.canonicalEvidenceTrusted
     ? Effect.tryPromise({
       try: () => restoreWorkspaceLstat(evidence.sourceCwd, evidence.targetBeforeDir, undefined, evidence.excluded),
       catch: (cause) => cause,
@@ -735,7 +743,7 @@ async function rollbackPrepared(
   } catch (cause) {
     sourceReason = errorMessage(cause);
   }
-  const fullyRestored = Either.isRight(filesystem) && gitRestored && sourceReason === undefined && !integrityFailure;
+  const fullyRestored = Either.isRight(filesystem) && gitRestored && sourceReason === undefined && !verdict.integrityFailure;
   const details = [
     reason,
     filesystemReason === undefined ? "filesystem rollback completed" : `filesystem rollback failed: ${filesystemReason}`,
@@ -756,7 +764,7 @@ async function rollbackPrepared(
     }
     return { kind: "carry-failed", sourceState: "known", reason: details.join("; ") };
   }
-  if (integrityFailure) details.push("consolidation integrity verification failed; source state is unknown");
+  if (verdict.integrityFailure) details.push("consolidation integrity verification failed; source state is unknown");
   return carryingWithRetention(evidence, {
     kind: "carry-failed",
     sourceState: "unknown",
@@ -779,13 +787,10 @@ export function runConsolidationTransaction<R>(
     };
     // This closes the deterministic prepare-to-worker gap. A same-UID writer
     // can still race after this check, so the per-turn gate remains required.
-    const preWorker = yield* Effect.tryPromise({
-      try: async () => {
-        await verifyFullEvidence(evidence);
-        await verifySourceMatchesTargetBefore(evidence, "before first worker turn");
-      },
-      catch: (cause) => cause,
-    }).pipe(Effect.either);
+    const preWorker = yield* promiseEither(async () => {
+      await verifyFullEvidence(evidence);
+      await verifySourceMatchesTargetBefore(evidence, "before first worker turn");
+    });
     if (preWorker._tag === "Left") {
       return yield* Effect.promise(() => carryingWithRetention(evidence, {
         kind: "carry-failed",
@@ -808,23 +813,14 @@ export function runConsolidationTransaction<R>(
     // before the first worker side effect. If it drifted, the transaction is
     // already open, so every rollback path must run through the same dual
     // rollback core used for worker failures.
-    const postFactoryPreWorker = yield* Effect.tryPromise({
-      try: async () => {
-        await verifyFullEvidence(evidence);
-        await verifySourceMatchesTargetBefore(evidence, "before first worker turn after Git metadata transaction creation");
-      },
-      catch: (cause) => cause,
-    }).pipe(Effect.either);
+    const postFactoryPreWorker = yield* promiseEither(async () => {
+      await verifyFullEvidence(evidence);
+      await verifySourceMatchesTargetBefore(evidence, "before first worker turn after Git metadata transaction creation");
+    });
     if (postFactoryPreWorker._tag === "Left") {
       verdict.failureReason = `pre-worker consolidation baseline verification failed after Git metadata transaction creation: ${errorMessage(postFactoryPreWorker.left)}`;
       noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "external evidence verification failed");
-      return yield* Effect.promise(() => rollbackPrepared(
-        evidence,
-        gitMetadata,
-        verdict.failureReason!,
-        verdict.canonicalEvidenceTrusted,
-        verdict.integrityFailure,
-      ));
+      return yield* Effect.promise(() => rollbackPrepared(evidence, gitMetadata, verdict));
     }
     let repair: readonly string[] | undefined;
     for (let attempt = 0; attempt <= input.repairAttempts; attempt += 1) {
@@ -851,10 +847,7 @@ export function runConsolidationTransaction<R>(
         noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)));
         break;
       }
-      const gate = yield* Effect.tryPromise({
-        try: () => inspectGate(evidence),
-        catch: (cause) => cause,
-      }).pipe(Effect.either);
+      const gate = yield* promiseEither(() => inspectGate(evidence));
       if (gate._tag === "Left") {
         verdict.failureReason = `consolidation gate failed: ${errorMessage(gate.left)}`;
         break;
@@ -874,20 +867,14 @@ export function runConsolidationTransaction<R>(
           verdict.failureReason = `actor/resume-state persistence failed: ${errorMessage(persisted.left)}`;
           break;
         }
-        const afterPersist = yield* Effect.tryPromise({
-          try: () => verifyFullEvidence(evidence),
-          catch: (cause) => cause,
-        }).pipe(Effect.either);
+        const afterPersist = yield* promiseEither(() => verifyFullEvidence(evidence));
         if (afterPersist._tag === "Left") {
           verdict.failureReason = `post-persistence integrity verification failed: ${errorMessage(afterPersist.left)}`;
           verdict.integrityFailure = true;
           noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)));
           break;
         }
-        const postPersistenceGate = yield* Effect.tryPromise({
-          try: () => inspectGate(evidence),
-          catch: (cause) => cause,
-        }).pipe(Effect.either);
+        const postPersistenceGate = yield* promiseEither(() => inspectGate(evidence));
         if (postPersistenceGate._tag === "Left") {
           verdict.failureReason = `post-persistence source delta gate failed: ${errorMessage(postPersistenceGate.left)}`;
           break;
@@ -902,10 +889,7 @@ export function runConsolidationTransaction<R>(
         verdict.failureReason = `Git metadata transaction commit failed: ${errorMessage(committed.left)}`;
         break;
       }
-      const convenienceCleaned = yield* Effect.tryPromise({
-        try: () => removeConvenienceEvidence(evidence),
-        catch: (cause) => cause,
-      }).pipe(Effect.either);
+      const convenienceCleaned = yield* promiseEither(() => removeConvenienceEvidence(evidence));
       if (convenienceCleaned._tag === "Left") {
         return yield* Effect.promise(() => carryingWithRetention(evidence, {
           kind: "worker-consolidated",
@@ -913,10 +897,7 @@ export function runConsolidationTransaction<R>(
           reason: `consolidation succeeded but runDir convenience cleanup failed: ${errorMessage(convenienceCleaned.left)}`,
         }));
       }
-      const cleaned = yield* Effect.tryPromise({
-        try: () => removeExternalRoot(evidence),
-        catch: (cause) => cause,
-      }).pipe(Effect.either);
+      const cleaned = yield* promiseEither(() => removeExternalRoot(evidence));
       if (cleaned._tag === "Left") {
         return yield* Effect.promise(() => carryingWithRetention(evidence, {
           kind: "worker-consolidated",
@@ -932,12 +913,6 @@ export function runConsolidationTransaction<R>(
     if (!verdict.integrityFailure) {
       noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "final integrity verification failed");
     }
-    return yield* Effect.promise(() => rollbackPrepared(
-      evidence,
-      gitMetadata,
-      verdict.failureReason ?? "consolidation did not complete",
-      verdict.canonicalEvidenceTrusted,
-      verdict.integrityFailure,
-    ));
+    return yield* Effect.promise(() => rollbackPrepared(evidence, gitMetadata, verdict));
   });
 }
