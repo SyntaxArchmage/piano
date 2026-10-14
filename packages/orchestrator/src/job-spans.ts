@@ -29,6 +29,8 @@ export interface JobSpan {
   readonly status: "running" | "completed" | "failed" | "paused";
   /** Invocation ids accepted during this span. */
   readonly accepted: ReadonlySet<string>;
+  /** Highest attempt number recorded per invocation in this span. */
+  readonly attempts: ReadonlyMap<string, number>;
   /** The invocation whose latest attempt started and has not been accepted in
    * this span, when one is in flight. */
   readonly inFlight?: string;
@@ -46,6 +48,9 @@ export interface JobView {
   /** Invocation ids accepted across every span of this job — the set a
    * continue of this job skips. */
   readonly accepted: ReadonlySet<string>;
+  /** Highest attempt number recorded per invocation across the job's spans,
+   * so a continue's re-run follows the attempts already on disk. */
+  readonly attempts: ReadonlyMap<string, number>;
   readonly spans: readonly JobSpan[];
 }
 
@@ -56,6 +61,7 @@ interface MutableSpan {
   finishedAt?: string;
   status: JobSpan["status"];
   accepted: Set<string>;
+  attempts: Map<string, number>;
   inFlight?: string;
 }
 
@@ -78,19 +84,23 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
         startedAt: started.timestamp,
         status: "running",
         accepted: new Set(),
+        attempts: new Map(),
       });
       continue;
     }
     const span = spans.at(-1);
     if (span === undefined) continue;
     if (kind === "stage-started") {
-      span.inFlight = (record as WorkflowProgressStartRecord).invocationId;
+      const startedRecord = record as WorkflowProgressStartRecord;
+      span.inFlight = startedRecord.invocationId;
+      recordAttempt(span, startedRecord.invocationId, startedRecord.attempt);
     } else if (kind === "stage-accepted") {
-      const invocationId = (record as WorkflowProgressRecord).invocationId;
-      span.accepted.add(invocationId);
+      const acceptedRecord = record as WorkflowProgressRecord;
+      span.accepted.add(acceptedRecord.invocationId);
+      recordAttempt(span, acceptedRecord.invocationId, acceptedRecord.attempt);
       // The in-flight attempt was accepted; a later stage-started for the same
       // invocation sets the flag again.
-      if (span.inFlight === invocationId) delete span.inFlight;
+      if (span.inFlight === acceptedRecord.invocationId) delete span.inFlight;
     } else {
       const finished = record as WorkflowProgressExecutionFinishRecord;
       span.status = finished.status;
@@ -98,6 +108,14 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
     }
   }
   return spans;
+}
+
+/** Keep the highest attempt number seen for one invocation: attempts grow, and
+ * a continue seeds its next attempt from the highest the job recorded. A line
+ * without a usable number is skipped rather than poisoning the map. */
+function recordAttempt(span: MutableSpan, invocationId: string, attempt: unknown): void {
+  if (typeof attempt !== "number" || !Number.isFinite(attempt)) return;
+  span.attempts.set(invocationId, Math.max(span.attempts.get(invocationId) ?? 0, attempt));
 }
 
 /** Every job in the stream, oldest first. */
@@ -123,8 +141,12 @@ export function latestJob(spans: readonly JobSpan[]): JobView | undefined {
 
 function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
   const accepted = new Set<string>();
+  const attempts = new Map<string, number>();
   for (const span of jobSpans) {
     for (const invocationId of span.accepted) accepted.add(invocationId);
+    for (const [invocationId, attempt] of span.attempts) {
+      attempts.set(invocationId, Math.max(attempts.get(invocationId) ?? 0, attempt));
+    }
   }
   const last = jobSpans.at(-1);
   const state = last?.status === "running" ? "alive" : last?.status === "paused" ? "paused" : "finished";
@@ -136,6 +158,7 @@ function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
       ? { outcome: last.status }
       : {}),
     accepted,
+    attempts,
     spans: jobSpans,
   };
 }

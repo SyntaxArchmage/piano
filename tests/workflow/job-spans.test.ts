@@ -21,7 +21,7 @@ const started = (jobOrdinal: number | undefined, timestamp: string): WorkflowPro
   plan: { plannedStages: 2, stageCounts: {} },
 });
 
-const stageStarted = (timestamp: string, invocationId: string): WorkflowProgressStreamRecord => ({
+const stageStarted = (timestamp: string, invocationId: string, attempt = 1): WorkflowProgressStreamRecord => ({
   version: 1,
   kind: "stage-started",
   timestamp,
@@ -30,12 +30,12 @@ const stageStarted = (timestamp: string, invocationId: string): WorkflowProgress
   stageId: invocationId.split("@")[0] ?? invocationId,
   stage: invocationId,
   worker: "basic",
-  attempt: 1,
+  attempt,
 });
 
 /** Only the fields the fold reads; the full accepted shape belongs to writers. */
-const accepted = (timestamp: string, invocationId: string): WorkflowProgressStreamRecord =>
-  ({ version: 1, timestamp, executionId: "run-1", invocationId } as unknown as WorkflowProgressStreamRecord);
+const accepted = (timestamp: string, invocationId: string, attempt = 1): WorkflowProgressStreamRecord =>
+  ({ version: 1, timestamp, executionId: "run-1", invocationId, attempt } as unknown as WorkflowProgressStreamRecord);
 
 const finished = (
   timestamp: string,
@@ -65,23 +65,28 @@ describe("foldJobSpans", () => {
       [1, "completed", ["first@root"]],
       [2, "completed", ["first@root", "second@root"]],
     ]);
+    expect([...latestJob(spans)!.attempts]).toEqual([["first@root", 1], ["second@root", 1]]);
   });
 
   it("merges a paused job's continue span under the same ordinal", () => {
     const spans = foldJobSpans([
       started(1, T(0)),
       accepted(T(1), "first@root"),
-      stageStarted(T(2), "second@root"),
+      stageStarted(T(2), "second@root", 1),
       finished(T(3), "paused"),
       started(1, T(4)),
-      accepted(T(5), "second@root"),
-      finished(T(6), "completed"),
+      stageStarted(T(5), "second@root", 2),
+      accepted(T(6), "second@root", 2),
+      finished(T(7), "completed"),
     ]);
     const [only] = jobs(spans);
     expect(jobs(spans)).toHaveLength(1);
     expect(only?.state).toBe("finished");
     expect(only?.outcome).toBe("completed");
     expect([...(only?.accepted ?? [])].sort()).toEqual(["first@root", "second@root"]);
+    // The attempts merge across the job's spans, newest number winning, so a
+    // later continue re-runs follow the attempts already on disk.
+    expect([...(only?.attempts ?? [])]).toEqual([["first@root", 1], ["second@root", 2]]);
   });
 
   it("treats a span without an ordinal as a new job (streams written before jobs)", () => {

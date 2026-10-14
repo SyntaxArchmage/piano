@@ -93,6 +93,7 @@ import {
   type WorkflowRuntimeNode,
 } from "./workflow-runtime.js";
 import {
+  readHandoffRecord,
   writeHandoffContext,
   writeHandoffRecord,
   writeMapItemContext,
@@ -161,6 +162,18 @@ export interface WorkflowExecutionRequest {
    * fresh-directory guarantee; when present it takes precedence over
    * `executionId`. */
   readonly execution?: WorkflowExecutionContinuation;
+  /** Continue a paused job from its cursor. Invocations already accepted in
+   * any span of this job are rebuilt from their evidence instead of run
+   * again, and this span repeats the job's ordinal so the stream groups it
+   * with the spans before it. */
+  readonly continueJob?: {
+    readonly jobOrdinal: number;
+    /** Invocation ids accepted across the job's earlier spans. */
+    readonly accepted: ReadonlySet<string>;
+    /** Highest attempt number recorded per invocation in the job so far, so a
+     * re-run's new attempt does not overwrite the evidence it follows. */
+    readonly attempts: ReadonlyMap<string, number>;
+  };
   readonly cwd: string;
   readonly prompt: string;
   readonly signal?: AbortSignal;
@@ -2341,7 +2354,10 @@ export function executeWorkflow(
     }
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
-    const promptIndex = (request.execution?.promptIndex ?? 0) + 1;
+    // A continue repeats its job's ordinal: the span belongs to the same job,
+    // so its evidence lands in the same prompts/<i>/ tree and the stream
+    // groups the spans together. A fresh job takes the next ordinal.
+    const promptIndex = request.continueJob?.jobOrdinal ?? (request.execution?.promptIndex ?? 0) + 1;
     const knownLoopIterations = new Map<string, number>();
     yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, executionId);
@@ -2402,6 +2418,16 @@ export function executeWorkflow(
     const actorContexts = new Map<string, ActorExecutionContext>();
     let acceptedStageCount = 0;
     const completedByStage = new Map<string, number>();
+    // A continue's snapshot starts where the job left off: the invocations
+    // accepted in earlier spans are not re-run, so nothing would count them
+    // again and the run's counts would restart from the continue instead.
+    if (request.continueJob !== undefined) {
+      for (const invocationId of request.continueJob.accepted) {
+        acceptedStageCount += 1;
+        const stageId = invocationId.split("@", 1)[0] ?? invocationId;
+        completedByStage.set(stageId, (completedByStage.get(stageId) ?? 0) + 1);
+      }
+    }
     // Map slots intentionally run in parallel. Serialize only the small
     // progress writes so no read/modify/write snapshot update is lost.
     const progressSemaphore = Effect.unsafeMakeSemaphore(1);
@@ -2450,6 +2476,52 @@ export function executeWorkflow(
         }]];
       })),
     });
+
+    /** Rebuild an already-accepted invocation's result from the evidence it
+     * left, so a continue can skip its worker turn. `undefined` means the
+     * producer record is gone or unreadable — the caller falls through to
+     * re-running the invocation, which is slower but answers in the same
+     * shape. */
+    const rebuildAcceptedStage = (
+      runDir: string,
+      invocation: WorkflowRuntimeInvocation,
+      cursor: NonNullable<WorkflowExecutionRequest["continueJob"]>,
+    ): Effect.Effect<InternalStageResult | undefined, WorkflowError, FileSystem.FileSystem | Logging> =>
+      Effect.gen(function* () {
+        const producer = yield* readHandoffRecord(runDir, invocation);
+        const invocationId = runtimeInvocationId(invocation);
+        if (producer === undefined) {
+          yield* WORKFLOW_LOG.warn("stage.continue.evidence-missing", {
+            data: { invocationId, executionId: invocation.executionId },
+          }).pipe(Effect.catchAll(() => Effect.void));
+          return undefined;
+        }
+        return {
+          id: invocationId,
+          stageId: invocation.stageId,
+          ...(producer.instanceId === undefined ? {} : { instanceId: producer.instanceId }),
+          stage: producer.stage,
+          worker: producer.worker,
+          text: producer.text,
+          sessionId: producer.sessionId,
+          transcriptPath: producer.transcriptPath,
+          ...(producer.requestedModel === undefined ? {} : { requestedModel: producer.requestedModel }),
+          ...(producer.requestedThinkingLevel === undefined
+            ? {}
+            : { requestedThinkingLevel: producer.requestedThinkingLevel as ThinkingLevel }),
+          ...(producer.model === undefined ? {} : { model: producer.model }),
+          ...(producer.thinkingLevel === undefined ? {} : { thinkingLevel: producer.thinkingLevel as ThinkingLevel }),
+          attempts: producer.attempt ?? cursor.attempts.get(invocationId) ?? 1,
+          workspace: producer.workspace,
+          ...(producer.resultPath === undefined ? {} : { resultPath: producer.resultPath }),
+          ...(producer.resultPayload === undefined ? {} : { resultPayload: producer.resultPayload }),
+          ...(producer.metrics === undefined ? {} : { metrics: producer.metrics }),
+          ...(producer.projections === undefined ? {} : { projections: producer.projections }),
+          ...(producer.contract === undefined ? {} : { contract: producer.contract }),
+          handoffRecordPath: producer.recordPath,
+          handoff: producer,
+        };
+      });
 
     const executeStage = (
       node: Extract<WorkflowRuntimeNode, { kind: "stage" }>,
@@ -2506,6 +2578,15 @@ export function executeWorkflow(
         };
       };
       const core = Effect.gen(function* () {
+        const invocationId = runtimeInvocationId(invocation);
+        // A continue rebuilds an already-accepted invocation from the evidence
+        // it left instead of running it again — the worker turn, its
+        // validation, its sign-off, and its epilogue all already happened in
+        // an earlier span of this job.
+        if (request.continueJob !== undefined && request.continueJob.accepted.has(invocationId)) {
+          const rebuilt = yield* rebuildAcceptedStage(request.runDir, invocation, request.continueJob);
+          if (rebuilt !== undefined) return rebuilt;
+        }
         const previous = actors.get(actorKey);
         if (memoryEnabled && previous !== undefined && previous.turns > 0 && previous.continuation === undefined) {
           return yield* Effect.fail(workflowError(
@@ -2619,7 +2700,11 @@ export function executeWorkflow(
           },
         });
 
-        let attempt = 1;
+        // A continue's re-run follows the attempts this job already recorded;
+        // starting from one again would overwrite attempts/<n>/result.json.
+        let attempt = request.continueJob === undefined
+          ? 1
+          : (request.continueJob.attempts.get(invocationId) ?? 0) + 1;
         let repairAttempts = 0;
         /** Set by a `retry`: the next attempt at this stage is a human rerun,
          * and this carries the reviewer's own words when they wrote any. */
@@ -3189,6 +3274,7 @@ export function executeWorkflow(
           text: acceptedWorker.text,
           sessionId: acceptedWorker.sessionId,
           transcriptPath: acceptedWorker.transcriptPath,
+          attempt,
           ...(requestedModel === undefined ? {} : { requestedModel }),
           ...(requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel }),
           ...(acceptedWorker.model === undefined ? {} : { model: acceptedWorker.model }),
@@ -3196,6 +3282,7 @@ export function executeWorkflow(
           workspace,
           ...(acceptedResultPath === undefined ? {} : { resultPath: acceptedResultPath }),
           ...(acceptedPayload === undefined ? {} : { resultPayload: acceptedPayload }),
+          ...(acceptedMetrics.length === 0 ? {} : { metrics: acceptedMetrics }),
           ...(acceptedProjections.length === 0 ? {} : { projections: acceptedProjections }),
           ...(validation?.kind === "worker" ? { contract: validation.reference } : {}),
         });
