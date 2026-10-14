@@ -1,0 +1,42 @@
+# GitHub Actions mirror of the GitLab verify stage in .gitlab-ci.yml.
+# The two share no state: GitLab reads .gitlab-ci.yml and runs on the locked
+# devbox runner, GitHub reads this file and runs on a hosted runner. Both run
+# the same gate, in the same order: typecheck -> lint -> test.
+
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      # Some suites inject a fake SDK but still resolve provider and model
+      # through the path the real harness uses (packages/harness/src/pi.ts),
+      # so a machine without ~/.piano/agent.config.json fails them with
+      # "[configuration] model is not configured". The devbox runner hides
+      # that dependency by sharing the developer's home; nothing here calls a
+      # model, it only satisfies the resolution step.
+      - name: Write the agent config the harness path resolves
+        run: |
+          mkdir -p ~/.piano
+          printf '{"provider":"test-provider","model":"test-model"}\n' > ~/.piano/agent.config.json
+      - run: npm test
