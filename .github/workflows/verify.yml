@@ -29,4 +29,14 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
+      # Some suites inject a fake SDK but still resolve provider and model
+      # through the path the real harness uses (packages/harness/src/pi.ts),
+      # so a machine without ~/.piano/agent.config.json fails them with
+      # "[configuration] model is not configured". The devbox runner hides
+      # that dependency by sharing the developer's home; nothing here calls a
+      # model, it only satisfies the resolution step.
+      - name: Write the agent config the harness path resolves
+        run: |
+          mkdir -p ~/.piano
+          printf '{"provider":"test-provider","model":"test-model"}\n' > ~/.piano/agent.config.json
       - run: npm test
