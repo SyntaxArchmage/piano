@@ -649,6 +649,46 @@ function seamEither<A, E>(
   );
 }
 
+/** The carry's running verdict. It lives in one object because six checks
+ * mutate the same three facts, and a caller that forgets one of them fails
+ * silently rather than loudly. */
+interface CarryVerdict {
+  canonicalEvidenceTrusted: boolean;
+  integrityFailure: boolean;
+  failureReason: string | undefined;
+}
+
+/** Fold one canonical-evidence check into the carry's verdict. A failed check
+ * is what makes the source state unknown, so it always flips
+ * `integrityFailure`; `label` is the wording the caller wants recorded, and a
+ * caller that has already recorded a reason passes none. */
+function noteIntegrity(verdict: CarryVerdict, integrity: IntegrityCheck, label?: string): void {
+  if (integrity.ok) return;
+  verdict.integrityFailure = true;
+  verdict.canonicalEvidenceTrusted = integrity.canonicalTrusted;
+  if (label !== undefined) verdict.failureReason += `; ${label}: ${integrity.reason ?? "unknown failure"}`;
+}
+
+/** Answer a carry that leaves evidence behind: the retention verdict says
+ * whether the external tree is still there and where, and its message joins the
+ * reason so whoever reads the carry knows what survived. */
+async function carryingWithRetention(
+  evidence: PreparedConsolidationEvidence,
+  carrying: {
+    readonly kind: NonNullable<ConsolidationCarrying["kind"]>;
+    readonly sourceState: "known" | "unknown";
+    readonly reason: string;
+  },
+): Promise<ConsolidationCarrying> {
+  const retention = await verifiedExternalEvidenceRetention(evidence);
+  return {
+    kind: carrying.kind,
+    sourceState: carrying.sourceState,
+    reason: `${carrying.reason}; ${retention.reason}`,
+    ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
+  };
+}
+
 async function rollbackPrepared(
   evidence: PreparedConsolidationEvidence,
   gitMetadata: GitMetadataTransaction | undefined,
@@ -706,27 +746,21 @@ async function rollbackPrepared(
       await removeConvenienceEvidence(evidence);
       await removeExternalRoot(evidence);
     } catch (cause) {
-      const retention = await verifiedExternalEvidenceRetention(evidence);
       details.push(`external evidence cleanup failed: ${errorMessage(cause)}`);
-      details.push(retention.reason);
-      return {
+      return carryingWithRetention(evidence, {
         kind: "carry-failed",
         sourceState: "known",
         reason: details.join("; "),
-        ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
-      };
+      });
     }
     return { kind: "carry-failed", sourceState: "known", reason: details.join("; ") };
   }
   if (integrityFailure) details.push("consolidation integrity verification failed; source state is unknown");
-  const retention = await verifiedExternalEvidenceRetention(evidence);
-  details.push(retention.reason);
-  return {
+  return carryingWithRetention(evidence, {
     kind: "carry-failed",
     sourceState: "unknown",
     reason: details.join("; "),
-    ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
-  };
+  });
 }
 
 /** Run the one canonical consolidation lifecycle for both runtime and legacy
@@ -737,9 +771,11 @@ export function runConsolidationTransaction<R>(
 ): Effect.Effect<ConsolidationCarrying, never, R | FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const evidence = input.evidence;
-    let canonicalEvidenceTrusted = true;
-    let integrityFailure = false;
-    let failureReason: string | undefined;
+    const verdict: CarryVerdict = {
+      canonicalEvidenceTrusted: true,
+      integrityFailure: false,
+      failureReason: undefined,
+    };
     // This closes the deterministic prepare-to-worker gap. A same-UID writer
     // can still race after this check, so the per-turn gate remains required.
     const preWorker = yield* Effect.tryPromise({
@@ -750,24 +786,20 @@ export function runConsolidationTransaction<R>(
       catch: (cause) => cause,
     }).pipe(Effect.either);
     if (preWorker._tag === "Left") {
-      const retention = yield* Effect.promise(() => verifiedExternalEvidenceRetention(evidence));
-      return {
+      return yield* Effect.promise(() => carryingWithRetention(evidence, {
         kind: "carry-failed",
         sourceState: "unknown",
-        reason: `pre-worker consolidation baseline verification failed: ${errorMessage(preWorker.left)}; ${retention.reason}`,
-        ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
-      } satisfies ConsolidationCarrying;
+        reason: `pre-worker consolidation baseline verification failed: ${errorMessage(preWorker.left)}`,
+      }));
     }
     const gitFactory = input.gitMetadataFactory ?? beginGitMetadataTransaction;
     const begun = yield* seamEither(() => gitFactory(evidence.sourceCwd));
     if (begun._tag === "Left") {
-      const retention = yield* Effect.promise(() => verifiedExternalEvidenceRetention(evidence));
-      return {
+      return yield* Effect.promise(() => carryingWithRetention(evidence, {
         kind: "carry-failed",
         sourceState: "unknown",
-        reason: `cannot start Git metadata transaction: ${errorMessage(begun.left)}; ${retention.reason}`,
-        ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
-      } satisfies ConsolidationCarrying;
+        reason: `cannot start Git metadata transaction: ${errorMessage(begun.left)}`,
+      }));
     }
     const gitMetadata = begun.right;
     // Creating the Git transaction performs an asynchronous metadata
@@ -783,19 +815,14 @@ export function runConsolidationTransaction<R>(
       catch: (cause) => cause,
     }).pipe(Effect.either);
     if (postFactoryPreWorker._tag === "Left") {
-      failureReason = `pre-worker consolidation baseline verification failed after Git metadata transaction creation: ${errorMessage(postFactoryPreWorker.left)}`;
-      const integrity = yield* Effect.promise(() => checkEvidence(evidence));
-      if (!integrity.ok) {
-        integrityFailure = true;
-        canonicalEvidenceTrusted = integrity.canonicalTrusted;
-        failureReason += `; external evidence verification failed: ${integrity.reason ?? "unknown failure"}`;
-      }
+      verdict.failureReason = `pre-worker consolidation baseline verification failed after Git metadata transaction creation: ${errorMessage(postFactoryPreWorker.left)}`;
+      noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "external evidence verification failed");
       return yield* Effect.promise(() => rollbackPrepared(
         evidence,
         gitMetadata,
-        failureReason!,
-        canonicalEvidenceTrusted,
-        integrityFailure,
+        verdict.failureReason!,
+        verdict.canonicalEvidenceTrusted,
+        verdict.integrityFailure,
       ));
     }
     let repair: readonly string[] | undefined;
@@ -807,28 +834,20 @@ export function runConsolidationTransaction<R>(
         return changed;
       }));
       if (turn._tag === "Left") {
-        failureReason = `winner consolidation worker failed: ${errorMessage(turn.left)}`;
+        verdict.failureReason = `winner consolidation worker failed: ${errorMessage(turn.left)}`;
         if (observed._tag === "Left") {
-          integrityFailure = true;
-          failureReason += `; post-worker integrity/metadata check failed: ${errorMessage(observed.left)}`;
-          const integrity = yield* Effect.promise(() => checkEvidence(evidence));
-          canonicalEvidenceTrusted = integrity.canonicalTrusted;
-          if (!integrity.ok) failureReason += `; external evidence verification failed: ${integrity.reason ?? "unknown failure"}`;
+          verdict.integrityFailure = true;
+          verdict.failureReason += `; post-worker integrity/metadata check failed: ${errorMessage(observed.left)}`;
+          noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "external evidence verification failed");
         } else {
-          const integrity = yield* Effect.promise(() => checkEvidence(evidence));
-          if (!integrity.ok) {
-            integrityFailure = true;
-            canonicalEvidenceTrusted = integrity.canonicalTrusted;
-            failureReason += `; post-worker integrity verification failed: ${integrity.reason ?? "unknown failure"}`;
-          }
+          noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "post-worker integrity verification failed");
         }
         break;
       }
       if (observed._tag === "Left") {
-        failureReason = `consolidation turn integrity/metadata check failed: ${errorMessage(observed.left)}`;
-        integrityFailure = true;
-        const integrity = yield* Effect.promise(() => checkEvidence(evidence));
-        canonicalEvidenceTrusted = integrity.canonicalTrusted;
+        verdict.failureReason = `consolidation turn integrity/metadata check failed: ${errorMessage(observed.left)}`;
+        verdict.integrityFailure = true;
+        noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)));
         break;
       }
       const gate = yield* Effect.tryPromise({
@@ -836,7 +855,7 @@ export function runConsolidationTransaction<R>(
         catch: (cause) => cause,
       }).pipe(Effect.either);
       if (gate._tag === "Left") {
-        failureReason = `consolidation gate failed: ${errorMessage(gate.left)}`;
+        verdict.failureReason = `consolidation gate failed: ${errorMessage(gate.left)}`;
         break;
       }
       if (!gate.right.equal) {
@@ -844,13 +863,13 @@ export function runConsolidationTransaction<R>(
           repair = gate.right.differing.slice(0, 20);
           continue;
         }
-        failureReason = `the parent never matched the frozen winning delta; still differing (${gate.right.differing.length}): ${gate.right.differing.slice(0, 5).join(", ")}`;
+        verdict.failureReason = `the parent never matched the frozen winning delta; still differing (${gate.right.differing.length}): ${gate.right.differing.slice(0, 5).join(", ")}`;
         break;
       }
       if (input.persistAfterCarry !== undefined) {
         const persisted = yield* input.persistAfterCarry().pipe(Effect.either);
         if (persisted._tag === "Left") {
-          failureReason = `actor/resume-state persistence failed: ${errorMessage(persisted.left)}`;
+          verdict.failureReason = `actor/resume-state persistence failed: ${errorMessage(persisted.left)}`;
           break;
         }
         const afterPersist = yield* Effect.tryPromise({
@@ -858,10 +877,9 @@ export function runConsolidationTransaction<R>(
           catch: (cause) => cause,
         }).pipe(Effect.either);
         if (afterPersist._tag === "Left") {
-          failureReason = `post-persistence integrity verification failed: ${errorMessage(afterPersist.left)}`;
-          integrityFailure = true;
-          const integrity = yield* Effect.promise(() => checkEvidence(evidence));
-          canonicalEvidenceTrusted = integrity.canonicalTrusted;
+          verdict.failureReason = `post-persistence integrity verification failed: ${errorMessage(afterPersist.left)}`;
+          verdict.integrityFailure = true;
+          noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)));
           break;
         }
         const postPersistenceGate = yield* Effect.tryPromise({
@@ -869,17 +887,17 @@ export function runConsolidationTransaction<R>(
           catch: (cause) => cause,
         }).pipe(Effect.either);
         if (postPersistenceGate._tag === "Left") {
-          failureReason = `post-persistence source delta gate failed: ${errorMessage(postPersistenceGate.left)}`;
+          verdict.failureReason = `post-persistence source delta gate failed: ${errorMessage(postPersistenceGate.left)}`;
           break;
         }
         if (!postPersistenceGate.right.equal) {
-          failureReason = `post-persistence source delta gate rejected changes (${postPersistenceGate.right.differing.length}): ${postPersistenceGate.right.differing.slice(0, 5).join(", ")}`;
+          verdict.failureReason = `post-persistence source delta gate rejected changes (${postPersistenceGate.right.differing.length}): ${postPersistenceGate.right.differing.slice(0, 5).join(", ")}`;
           break;
         }
       }
       const committed = yield* seamEither(() => gitMetadata!.commit());
       if (committed._tag === "Left") {
-        failureReason = `Git metadata transaction commit failed: ${errorMessage(committed.left)}`;
+        verdict.failureReason = `Git metadata transaction commit failed: ${errorMessage(committed.left)}`;
         break;
       }
       const convenienceCleaned = yield* Effect.tryPromise({
@@ -887,44 +905,34 @@ export function runConsolidationTransaction<R>(
         catch: (cause) => cause,
       }).pipe(Effect.either);
       if (convenienceCleaned._tag === "Left") {
-        const retention = yield* Effect.promise(() => verifiedExternalEvidenceRetention(evidence));
-        return {
+        return yield* Effect.promise(() => carryingWithRetention(evidence, {
           kind: "worker-consolidated",
           sourceState: "known",
-          reason: `consolidation succeeded but runDir convenience cleanup failed: ${errorMessage(convenienceCleaned.left)}; ${retention.reason}`,
-          ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
-        } satisfies ConsolidationCarrying;
+          reason: `consolidation succeeded but runDir convenience cleanup failed: ${errorMessage(convenienceCleaned.left)}`,
+        }));
       }
       const cleaned = yield* Effect.tryPromise({
         try: () => removeExternalRoot(evidence),
         catch: (cause) => cause,
       }).pipe(Effect.either);
       if (cleaned._tag === "Left") {
-        const retention = yield* Effect.promise(() => verifiedExternalEvidenceRetention(evidence));
-        return {
+        return yield* Effect.promise(() => carryingWithRetention(evidence, {
           kind: "worker-consolidated",
           sourceState: "known",
-          reason: `consolidation succeeded but external evidence cleanup failed: ${errorMessage(cleaned.left)}; ${retention.reason}`,
-          ...(retention.root === undefined ? {} : { externalEvidenceRoot: retention.root }),
-        } satisfies ConsolidationCarrying;
+          reason: `consolidation succeeded but external evidence cleanup failed: ${errorMessage(cleaned.left)}`,
+        }));
       }
       return { kind: "worker-consolidated", sourceState: "known" } satisfies ConsolidationCarrying;
     }
-    if (failureReason === undefined) failureReason = "consolidation did not complete";
-    if (!integrityFailure) {
-      const integrity = yield* Effect.promise(() => checkEvidence(evidence));
-      if (!integrity.ok) {
-        integrityFailure = true;
-        canonicalEvidenceTrusted = integrity.canonicalTrusted;
-        failureReason += `; final integrity verification failed: ${integrity.reason ?? "unknown failure"}`;
-      }
+    if (!verdict.integrityFailure) {
+      noteIntegrity(verdict, yield* Effect.promise(() => checkEvidence(evidence)), "final integrity verification failed");
     }
     return yield* Effect.promise(() => rollbackPrepared(
       evidence,
       gitMetadata,
-      failureReason!,
-      canonicalEvidenceTrusted,
-      integrityFailure,
+      verdict.failureReason ?? "consolidation did not complete",
+      verdict.canonicalEvidenceTrusted,
+      verdict.integrityFailure,
     ));
   });
 }
