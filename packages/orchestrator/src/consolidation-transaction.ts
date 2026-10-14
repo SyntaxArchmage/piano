@@ -1,5 +1,5 @@
 import { FileSystem } from "@effect/platform";
-import { Effect } from "effect";
+import { Effect, Either } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import {
   lstat,
@@ -12,9 +12,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { errorMessage, WorkflowError, workflowError } from "./errors.js";
+import {
+  errorMessage,
+  implementationDefect,
+  ImplementationDefectError,
+  WorkflowError,
+  workflowError,
+} from "./errors.js";
 import {
   beginGitMetadataTransaction,
+  GitMetadataTransactionError,
   type GitMetadataRollbackReport,
   type GitMetadataTransaction,
 } from "./git-metadata-transaction.js";
@@ -128,7 +135,7 @@ export interface ConsolidationTransactionInput<R> {
   /** Dependency injection is intentionally limited to transaction creation so
    * focused tests can exercise independent Git rollback failure. Runtime uses
    * beginGitMetadataTransaction and starts it immediately before runTurn. */
-  readonly gitMetadataFactory?: (sourceCwd: string) => Promise<GitMetadataTransaction>;
+  readonly gitMetadataFactory?: (sourceCwd: string) => Effect.Effect<GitMetadataTransaction, GitMetadataTransactionError>;
 }
 
 /** Preparation can fail after the external root has been created. In that
@@ -630,6 +637,23 @@ function reportMessage(report: GitMetadataRollbackReport): string {
   ].join(", ");
 }
 
+/** Run one caller-supplied effect and fold everything that ended it into an
+ * Either. The dependency-injection seam admits any implementation, so one that
+ * ends in a defect — a rejected `Effect.promise` — or a factory that throws
+ * synchronously is reported as an {@link ImplementationDefectError} instead of
+ * crashing the carry: by the time these run the worker has usually already
+ * mutated the parent workspace, and that state has to reach the rollback.
+ * Interruption is not a transaction failure and is left alone. */
+function seamEither<A, E>(
+  run: () => Effect.Effect<A, E>,
+): Effect.Effect<Either.Either<A, E | ImplementationDefectError>> {
+  return Effect.try({ try: run, catch: implementationDefect }).pipe(
+    Effect.flatten,
+    Effect.either,
+    Effect.catchAllDefect((defect) => Effect.succeed(Either.left(implementationDefect(defect)))),
+  );
+}
+
 async function rollbackPrepared(
   evidence: PreparedConsolidationEvidence,
   gitMetadata: GitMetadataTransaction | undefined,
@@ -641,19 +665,30 @@ async function rollbackPrepared(
     ? restoreWorkspaceLstat(evidence.sourceCwd, evidence.targetBeforeDir, undefined, evidence.excluded)
     : Promise.reject(new Error("canonical external evidence is not trusted; filesystem rollback was withheld"));
   const gitRollback = gitMetadata === undefined
-    ? Promise.reject(new Error("Git metadata transaction was not created"))
+    ? Effect.fail(new GitMetadataTransactionError("invalid-state", "Git metadata transaction was not created"))
     : gitMetadata.rollback();
-  const [filesystem, git] = await Promise.allSettled([filesystemRollback, gitRollback]);
+  // The two rollbacks run concurrently and only one of them is an Effect, so
+  // the Git half is driven here rather than composed: the seam helper keeps
+  // every way that half can end — including a defect — on the Either side.
+  const [filesystem, git] = await Promise.allSettled([
+    filesystemRollback,
+    Effect.runPromise(seamEither(() => gitRollback)),
+  ]);
   let filesystemReason: string | undefined;
   if (filesystem.status === "rejected") filesystemReason = errorMessage(filesystem.reason);
   let gitReason: string | undefined;
   let gitRestored = false;
   if (git.status === "fulfilled") {
-    gitRestored = git.value.restored;
-    if (!git.value.restored) gitReason = reportMessage(git.value);
+    if (Either.isRight(git.value)) {
+      gitRestored = git.value.right.restored;
+      if (!gitRestored) gitReason = reportMessage(git.value.right);
+    } else {
+      const failure = git.value.left;
+      const report = failure instanceof GitMetadataTransactionError ? failure.report : undefined;
+      gitReason = report === undefined ? errorMessage(failure) : reportMessage(report);
+    }
   } else {
-    const report = (git.reason as { readonly report?: GitMetadataRollbackReport } | undefined)?.report;
-    gitReason = report === undefined ? errorMessage(git.reason) : reportMessage(report);
+    gitReason = errorMessage(git.reason);
   }
   let sourceReason: string | undefined;
   try {
@@ -729,10 +764,7 @@ export function runConsolidationTransaction<R>(
       } satisfies ConsolidationCarrying;
     }
     const gitFactory = input.gitMetadataFactory ?? beginGitMetadataTransaction;
-    const begun = yield* Effect.tryPromise({
-      try: () => gitFactory(evidence.sourceCwd),
-      catch: (cause) => cause,
-    }).pipe(Effect.either);
+    const begun = yield* seamEither(() => gitFactory(evidence.sourceCwd));
     if (begun._tag === "Left") {
       const retention = yield* Effect.promise(() => verifiedExternalEvidenceRetention(evidence));
       return {
@@ -774,14 +806,11 @@ export function runConsolidationTransaction<R>(
     let repair: readonly string[] | undefined;
     for (let attempt = 0; attempt <= input.repairAttempts; attempt += 1) {
       const turn = yield* input.runTurn(repair).pipe(Effect.either);
-      const observed = yield* Effect.tryPromise({
-        try: async () => {
-          const changed = await gitMetadata!.observe();
-          await verifyFullEvidence(evidence);
-          return changed;
-        },
-        catch: (cause) => cause,
-      }).pipe(Effect.either);
+      const observed = yield* seamEither(() => Effect.gen(function* () {
+        const changed = yield* gitMetadata!.observe();
+        yield* Effect.tryPromise({ try: () => verifyFullEvidence(evidence), catch: (cause) => cause });
+        return changed;
+      }));
       if (turn._tag === "Left") {
         failureReason = `winner consolidation worker failed: ${errorMessage(turn.left)}`;
         if (observed._tag === "Left") {
@@ -853,10 +882,7 @@ export function runConsolidationTransaction<R>(
           break;
         }
       }
-      const committed = yield* Effect.tryPromise({
-        try: () => gitMetadata!.commit(),
-        catch: (cause) => cause,
-      }).pipe(Effect.either);
+      const committed = yield* seamEither(() => gitMetadata!.commit());
       if (committed._tag === "Left") {
         failureReason = `Git metadata transaction commit failed: ${errorMessage(committed.left)}`;
         break;

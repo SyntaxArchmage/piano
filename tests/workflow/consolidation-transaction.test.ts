@@ -15,9 +15,10 @@ import {
   type ConsolidationEvidenceInput,
 } from "../../packages/orchestrator/src/consolidation-transaction.js";
 import { workflowError } from "../../packages/orchestrator/src/errors.js";
-import type {
-  GitMetadataRollbackReport,
-  GitMetadataTransaction,
+import {
+  GitMetadataTransactionError,
+  type GitMetadataRollbackReport,
+  type GitMetadataTransaction,
 } from "../../packages/orchestrator/src/git-metadata-transaction.js";
 import { consolidateAndGate } from "../../packages/orchestrator/src/workflow-execution.js";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
@@ -59,18 +60,21 @@ async function evidenceInput(fixture: Fixture, overrides: Partial<ConsolidationE
   });
 }
 
-function nonGitTransaction(sourceCwd: string, rollback: () => Promise<GitMetadataRollbackReport> = async () => ({
-  kind: "non-git" as const,
-  restored: true,
-  changed: [],
-  failures: [],
-  residues: [],
-})) {
+function nonGitTransaction(
+  sourceCwd: string,
+  rollback: () => Effect.Effect<GitMetadataRollbackReport, GitMetadataTransactionError> = () => Effect.succeed({
+    kind: "non-git" as const,
+    restored: true,
+    changed: [],
+    failures: [],
+    residues: [],
+  }),
+) {
   return {
     kind: "non-git" as const,
     sourceCwd,
-    observe: async () => [],
-    commit: async () => undefined,
+    observe: () => Effect.succeed<readonly string[]>([]),
+    commit: () => Effect.void,
     rollback,
   } satisfies GitMetadataTransaction;
 }
@@ -80,7 +84,7 @@ async function runTransaction(
   options: {
     readonly runTurn: () => Promise<void>;
     readonly persistAfterCarry?: () => Effect.Effect<void, ReturnType<typeof workflowError>, FileSystem.FileSystem>;
-    readonly gitMetadataFactory?: (sourceCwd: string) => Promise<GitMetadataTransaction>;
+    readonly gitMetadataFactory?: (sourceCwd: string) => Effect.Effect<GitMetadataTransaction, GitMetadataTransactionError>;
     readonly repairAttempts?: number;
   },
 ): Promise<ConsolidationCarrying> {
@@ -164,13 +168,13 @@ describe("external consolidation transaction", () => {
         runTurn: async () => {
           turnCalls += 1;
         },
-        gitMetadataFactory: async (sourceCwd) => {
+        gitMetadataFactory: (sourceCwd) => Effect.promise(async () => {
           await writeFile(join(sourceCwd, "kernel.py"), "factory drift\n");
-          return nonGitTransaction(sourceCwd, async () => {
+          return nonGitTransaction(sourceCwd, () => Effect.sync(() => {
             rollbackCalls += 1;
             return { kind: "non-git", restored: true, changed: [], failures: [], residues: [] };
-          });
-        },
+          }));
+        }),
       });
       expect(result).toMatchObject({ kind: "carry-failed", sourceState: "known" });
       expect(result).not.toHaveProperty("externalEvidenceRoot");
@@ -194,14 +198,14 @@ describe("external consolidation transaction", () => {
       const transaction: GitMetadataTransaction = {
         kind: "non-git",
         sourceCwd: evidence.sourceCwd,
-        observe: async () => [],
-        commit: async () => {
+        observe: () => Effect.succeed([]),
+        commit: () => Effect.promise(async () => {
           if (cleanupPhase === "commit") await rm(testFixture.runDir, { recursive: true, force: true });
-        },
-        rollback: async () => {
+        }),
+        rollback: () => Effect.promise(async () => {
           if (cleanupPhase === "rollback") await rm(testFixture.runDir, { recursive: true, force: true });
           return { kind: "non-git", restored: true, changed: [], failures: [], residues: [] };
-        },
+        }),
       };
       const result = await runTransaction(evidence, {
         runTurn: async () => {
@@ -212,7 +216,7 @@ describe("external consolidation transaction", () => {
             await writeFile(join(testFixture.source, "kernel.py"), "wrong\n");
           }
         },
-        gitMetadataFactory: async () => transaction,
+        gitMetadataFactory: () => Effect.succeed(transaction),
       });
       expect(result).toMatchObject({
         kind: cleanupPhase === "commit" ? "worker-consolidated" : "carry-failed",
@@ -234,12 +238,12 @@ describe("external consolidation transaction", () => {
           await writeFile(join(testFixture.source, "kernel.py"), "winner\n");
           await rm(join(testFixture.source, "untouched.txt"), { force: true });
         },
-        gitMetadataFactory: async (sourceCwd) => ({
+        gitMetadataFactory: (sourceCwd) => Effect.succeed({
           ...nonGitTransaction(sourceCwd),
-          commit: async () => {
+          commit: () => Effect.promise(async () => {
             await rm(evidence.targetBeforeDir, { recursive: true, force: true });
             await rm(testFixture.runDir, { recursive: true, force: true });
-          },
+          }),
         }),
       });
       expect(result).toMatchObject({ kind: "worker-consolidated", sourceState: "known" });
@@ -348,12 +352,12 @@ describe("external consolidation transaction", () => {
           yield* Effect.promise(() => writeFile(join(testFixture.source, "kernel.py"), "partial\n"));
           return yield* Effect.fail(workflowError("schedule", testFixture.source, "forced worker failure"));
         }),
-        gitMetadataFactory: async () => ({
+        gitMetadataFactory: () => Effect.succeed({
           ...transaction,
-          observe: async () => {
+          observe: () => Effect.sync(() => {
             observeCalls += 1;
             return [];
-          },
+          }),
         } satisfies GitMetadataTransaction),
       }).pipe(Effect.provide(NodeFileSystem.layer)));
       expect(result).toMatchObject({ kind: "carry-failed", sourceState: "known" });
@@ -382,15 +386,15 @@ describe("external consolidation transaction", () => {
             await rm(join(testFixture.source, "untouched.txt"), { force: true });
           }
         },
-        gitMetadataFactory: async (sourceCwd) => ({
+        gitMetadataFactory: (sourceCwd) => Effect.succeed({
           ...nonGitTransaction(sourceCwd),
-          observe: async () => {
+          observe: () => Effect.sync(() => {
             observeCalls += 1;
             return [];
-          },
-          commit: async () => {
+          }),
+          commit: () => Effect.sync(() => {
             commitCalls += 1;
-          },
+          }),
         } satisfies GitMetadataTransaction),
       });
       expect(result).toMatchObject({ kind: "worker-consolidated", sourceState: "known" });
@@ -414,10 +418,10 @@ describe("external consolidation transaction", () => {
           await rm(testFixture.source, { recursive: true, force: true });
           await symlink(replacement, testFixture.source);
         },
-        gitMetadataFactory: async (sourceCwd) => nonGitTransaction(sourceCwd, async () => {
+        gitMetadataFactory: (sourceCwd) => Effect.succeed(nonGitTransaction(sourceCwd, () => Effect.sync(() => {
           rollbackCalls += 1;
           return { kind: "non-git", restored: true, changed: [], failures: [], residues: [] };
-        }),
+        }))),
       });
       expect(result).toMatchObject({
         kind: "carry-failed",
@@ -472,10 +476,10 @@ describe("external consolidation transaction", () => {
       const result = await runTransaction(evidence, {
         runTurn: () => mutate(testFixture.source),
         ...(persistence === undefined ? {} : { persistAfterCarry: () => persistence }),
-        gitMetadataFactory: async (sourceCwd) => nonGitTransaction(sourceCwd, async () => {
+        gitMetadataFactory: (sourceCwd) => Effect.succeed(nonGitTransaction(sourceCwd, () => Effect.sync(() => {
           rollbackCalls += 1;
           return { kind: "non-git", restored: true, changed: [], failures: [], residues: [] };
-        }),
+        }))),
       });
       expect(result.kind).toBe("carry-failed");
       expect(rollbackCalls).toBe(1);
@@ -500,15 +504,15 @@ describe("external consolidation transaction", () => {
           join(testFixture.source, "kernel.py"),
           "persistence mutation\n",
         )),
-        gitMetadataFactory: async (sourceCwd) => ({
+        gitMetadataFactory: (sourceCwd) => Effect.succeed({
           ...nonGitTransaction(sourceCwd),
-          commit: async () => {
+          commit: () => Effect.sync(() => {
             commitCalls += 1;
-          },
-          rollback: async () => {
+          }),
+          rollback: () => Effect.sync(() => {
             rollbackCalls += 1;
             return { kind: "non-git", restored: true, changed: [], failures: [], residues: [] };
-          },
+          }),
         }),
       });
       expect(result).toMatchObject({ kind: "carry-failed", sourceState: "known" });
@@ -528,12 +532,59 @@ describe("external consolidation transaction", () => {
       const evidence = await evidenceInput(testFixture);
       const result = await runTransaction(evidence, {
         runTurn: async () => writeFile(join(testFixture.source, "kernel.py"), "wrong\n"),
-        gitMetadataFactory: async (sourceCwd) => nonGitTransaction(sourceCwd, async () => {
-          throw new Error("forced Git rollback failure");
-        }),
+        gitMetadataFactory: (sourceCwd) => Effect.succeed(nonGitTransaction(sourceCwd, () =>
+          Effect.fail(new GitMetadataTransactionError("restore-failed", "forced Git rollback failure")))),
       });
       expect(result).toMatchObject({ kind: "carry-failed", sourceState: "unknown", externalEvidenceRoot: evidence.externalRoot });
       await expect(lstat(evidence.externalRoot)).resolves.toBeDefined();
+      await expect(readFile(join(testFixture.source, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
+    } finally {
+      await cleanup(testFixture.root);
+    }
+  });
+
+  it("keeps a dying injected rollback on the carry path", async () => {
+    const testFixture = await fixture();
+    try {
+      const evidence = await evidenceInput(testFixture);
+      // An injected implementation may end as a defect — `Effect.promise`
+      // turns a rejection into one — and that must not skip either rollback.
+      const result = await runTransaction(evidence, {
+        runTurn: async () => writeFile(join(testFixture.source, "kernel.py"), "wrong\n"),
+        gitMetadataFactory: (sourceCwd) => Effect.succeed({
+          ...nonGitTransaction(sourceCwd, () => Effect.promise(async () => {
+            throw new Error("rollback died");
+          })),
+        }),
+      });
+      expect(result).toMatchObject({ kind: "carry-failed", sourceState: "unknown", externalEvidenceRoot: evidence.externalRoot });
+      expect(result.reason).toMatch(/Git metadata rollback failed: injected implementation ended in a defect: rollback died/u);
+      await expect(readFile(join(testFixture.source, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
+    } finally {
+      await cleanup(testFixture.root);
+    }
+  });
+
+  it("keeps a dying injected factory on the carry path", async () => {
+    const testFixture = await fixture();
+    let turnCalls = 0;
+    try {
+      const evidence = await evidenceInput(testFixture);
+      const result = await runTransaction(evidence, {
+        runTurn: async () => {
+          turnCalls += 1;
+        },
+        gitMetadataFactory: () => Effect.promise(async () => {
+          throw new Error("factory died");
+        }),
+      });
+      expect(result).toMatchObject({
+        kind: "carry-failed",
+        sourceState: "unknown",
+        externalEvidenceRoot: evidence.externalRoot,
+      });
+      expect(result.reason).toMatch(/cannot start Git metadata transaction: injected implementation ended in a defect: factory died/u);
+      expect(turnCalls).toBe(0);
       await expect(readFile(join(testFixture.source, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
     } finally {
       await cleanup(testFixture.root);

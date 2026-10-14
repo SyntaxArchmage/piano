@@ -3,6 +3,8 @@ import { lstat, open, readFile, readdir, realpath, rename, rm, unlink } from "no
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
+import { Effect } from "effect";
+import { errorMessage } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 const MARKERS = ["ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "AUTO_MERGE", "BISECT_HEAD", "MERGE_MSG", "SQUASH_MSG"];
@@ -55,9 +57,68 @@ export class GitMetadataTransactionError extends Error {
 export interface GitMetadataTransaction {
   readonly kind: "git" | "non-git";
   readonly sourceCwd: string;
+  observe(): Effect.Effect<readonly string[], GitMetadataTransactionError>;
+  commit(): Effect.Effect<void, GitMetadataTransactionError>;
+  rollback(): Effect.Effect<GitMetadataRollbackReport, GitMetadataTransactionError>;
+}
+
+/** A failure of this module leaves through an Effect channel: the async core
+ * throws {@link GitMetadataTransactionError}, and the boundary carries that
+ * same instance into the error channel rather than re-describing it. A raw
+ * filesystem rejection keeps its own message and takes the code of the entry
+ * point it broke in, so a caller that branches on the code is never told a
+ * rollback failed while the transaction was still being captured. */
+function toGitMetadataTransactionError(
+  cause: unknown,
+  code: GitMetadataTransactionError["code"],
+): GitMetadataTransactionError {
+  return cause instanceof GitMetadataTransactionError
+    ? cause
+    : new GitMetadataTransactionError(code, errorMessage(cause));
+}
+
+function effectify<A>(
+  run: () => Promise<A>,
+  code: GitMetadataTransactionError["code"],
+): Effect.Effect<A, GitMetadataTransactionError> {
+  return Effect.tryPromise({ try: run, catch: (cause) => toGitMetadataTransactionError(cause, code) });
+}
+
+/** The transaction's async core: exactly the three operations the Effect API
+ * exposes, before the promise/Effect seam is applied. Both construction
+ * branches build one of these, so the seam is crossed in a single place. */
+interface TransactionCore {
   observe(): Promise<readonly string[]>;
   commit(): Promise<void>;
   rollback(): Promise<GitMetadataRollbackReport>;
+}
+
+function liftTransaction(
+  core: TransactionCore,
+): Pick<GitMetadataTransaction, "observe" | "commit" | "rollback"> {
+  return {
+    observe: () => effectify(core.observe, "capture-failed"),
+    commit: () => effectify(core.commit, "capture-failed"),
+    rollback: () => effectify(core.rollback, "restore-failed"),
+  };
+}
+
+/** ENOENT is an answer rather than an error for these checks: an absent lock,
+ * marker, or metadata directory is a state the transaction already describes. */
+function isMissingPath(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+/** A symlinked metadata node can point the transaction at a different
+ * repository, so both reads and replacements refuse one outright. */
+function assertNotSymlink(info: Awaited<ReturnType<typeof lstat>>, reason: string): void {
+  if (info.isSymbolicLink()) throw new GitMetadataTransactionError("unsafe-mutation", reason);
+}
+
+/** Metadata roots and lock-bearing directories must additionally be real
+ * directories: a substituted node changes what the lock scan sees. */
+function assertRealDirectory(info: Awaited<ReturnType<typeof lstat>>, reason: string): void {
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new GitMetadataTransactionError("unsafe-mutation", reason);
 }
 
 function message(error: unknown): string {
@@ -80,7 +141,7 @@ async function file(path: string): Promise<FileState> {
     if (!info.isFile()) throw new GitMetadataTransactionError("capture-failed", `unsupported Git metadata node: ${path}`);
     return { data: await readFile(path), mode: info.mode & 0o7777 };
   } catch (error) {
-    if (typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (isMissingPath(error)) return undefined;
     throw error;
   }
 }
@@ -125,37 +186,37 @@ async function paths(cwd: string, names: readonly string[]): Promise<ReadonlyMap
 async function lockFiles(directory: string): Promise<readonly string[]> {
   try {
     const info = await lstat(directory);
-    if (info.isSymbolicLink()) throw new GitMetadataTransactionError("unsafe-mutation", `symbolic Git refs directory: ${directory}`);
+    assertNotSymlink(info, `symbolic Git refs directory: ${directory}`);
     if (!info.isDirectory()) return [];
     const found: string[] = [];
     for (const name of await readdir(directory)) {
       const path = join(directory, name);
       const child = await lstat(path);
-      if (child.isSymbolicLink()) throw new GitMetadataTransactionError("unsafe-mutation", `symbolic Git refs directory entry: ${path}`);
+      assertNotSymlink(child, `symbolic Git refs directory entry: ${path}`);
       if (name.endsWith(".lock")) found.push(path);
       else if (child.isDirectory()) found.push(...await lockFiles(path));
     }
     return found;
   } catch (error) {
-    if (typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if (isMissingPath(error)) return [];
     throw error;
   }
 }
 
 async function rootLockFiles(directory: string): Promise<readonly string[]> {
   const info = await lstat(directory).catch((error: unknown) => {
-    if (typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (isMissingPath(error)) {
       throw new GitMetadataTransactionError("capture-failed", `missing Git metadata directory: ${directory}`);
     }
     throw error;
   });
-  if (info.isSymbolicLink() || !info.isDirectory()) throw new GitMetadataTransactionError("unsafe-mutation", `unsafe Git metadata directory: ${directory}`);
+  assertRealDirectory(info, `unsafe Git metadata directory: ${directory}`);
   const found: string[] = [];
   for (const name of await readdir(directory)) {
     if (!name.endsWith(".lock")) continue;
     const path = join(directory, name);
     const child = await lstat(path);
-    if (child.isSymbolicLink()) throw new GitMetadataTransactionError("unsafe-mutation", `symbolic Git lock: ${path}`);
+    assertNotSymlink(child, `symbolic Git lock: ${path}`);
     found.push(path);
   }
   return found;
@@ -164,16 +225,15 @@ async function rootLockFiles(directory: string): Promise<readonly string[]> {
 async function assertMetadataRoots(gitDir: string, commonDir: string): Promise<readonly string[]> {
   const roots = [...new Set([gitDir, commonDir])];
   for (const root of roots) {
-    const info = await lstat(root);
-    if (info.isSymbolicLink() || !info.isDirectory()) throw new GitMetadataTransactionError("unsafe-mutation", `unsafe Git metadata root: ${root}`);
+    assertRealDirectory(await lstat(root), `unsafe Git metadata root: ${root}`);
   }
   const refsRoots = [...new Set(roots.map((root) => join(root, "refs")))];
   for (const refsRoot of refsRoots) {
     const info = await lstat(refsRoot).catch((error: unknown) => {
-      if (typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      if (isMissingPath(error)) return undefined;
       throw error;
     });
-    if (info && (info.isSymbolicLink() || !info.isDirectory())) throw new GitMetadataTransactionError("unsafe-mutation", `unsafe Git refs root: ${refsRoot}`);
+    if (info) assertRealDirectory(info, `unsafe Git refs root: ${refsRoot}`);
   }
   return refsRoots;
 }
@@ -194,7 +254,7 @@ async function assertNoMetadataLocks(repository: Repository): Promise<void> {
       await lstat(path);
       throw new GitMetadataTransactionError("unsafe-mutation", `Git metadata is locked: ${path}`);
     } catch (error) {
-      if (typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if (isMissingPath(error)) continue;
       throw error;
     }
   }
@@ -218,7 +278,7 @@ async function discover(sourceCwd: string): Promise<Repository | undefined> {
   }
   const worktreeRoot = await realpath((await git(cwd, ["rev-parse", "--show-toplevel"])).trim());
   const worktreeGitEntry = await lstat(join(worktreeRoot, ".git"));
-  if (worktreeGitEntry.isSymbolicLink()) throw new GitMetadataTransactionError("unsafe-mutation", `symbolic Git metadata entry: ${join(worktreeRoot, ".git")}`);
+  assertNotSymlink(worktreeGitEntry, `symbolic Git metadata entry: ${join(worktreeRoot, ".git")}`);
   const absolute = (value: string): string => resolve(isAbsolute(value.trim()) ? value.trim() : join(cwd, value.trim()));
   const headPath = absolute(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "HEAD"]));
   const indexPath = absolute(await git(cwd, ["rev-parse", "--path-format=absolute", "--git-path", "index"]));
@@ -259,7 +319,7 @@ async function snapshot(repository: Repository): Promise<Snapshot> {
   const operationDirs = new Map<string, boolean>();
   for (const [name, path] of repository.operationDirs) {
     const present = await lstat(path).then(() => true, (error: unknown) => {
-      if (typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      if (isMissingPath(error)) return false;
       throw error;
     });
     operationDirs.set(name, present);
@@ -351,17 +411,34 @@ function report(kind: "git" | "non-git", restored: boolean, changed: readonly st
 }
 
 /** Snapshot and restore semantic Git state only. Worktree files are never read
- * or written; object files and reflogs are intentionally retained as residue. */
-export async function beginGitMetadataTransaction(sourceCwd: string): Promise<GitMetadataTransaction> {
+ * or written; object files and reflogs are intentionally retained as residue.
+ * Failures reach the caller on the Effect error channel as
+ * {@link GitMetadataTransactionError}. */
+export function beginGitMetadataTransaction(
+  sourceCwd: string,
+): Effect.Effect<GitMetadataTransaction, GitMetadataTransactionError> {
+  return effectify(() => openGitMetadataTransaction(sourceCwd), "capture-failed");
+}
+
+/** The async core behind {@link beginGitMetadataTransaction}. It stays
+ * promise-based because the transaction works at the file-descriptor level —
+ * `open` with an exclusive lock, `sync`, `chmod`, rename — and through
+ * `execFile`, and because its states are read back with `lstat`/`realpath`. */
+async function openGitMetadataTransaction(sourceCwd: string): Promise<GitMetadataTransaction> {
   const repository = await discover(sourceCwd);
   if (repository === undefined) {
     let state: Lifecycle = "open";
     const requireOpen = (operation: string): void => { if (state !== "open") throw new GitMetadataTransactionError("invalid-state", `cannot ${operation} transaction in state ${state}`); };
-    return { kind: "non-git", sourceCwd: resolve(sourceCwd), async observe() { requireOpen("observe"); return []; }, async commit() { requireOpen("commit"); state = "committed"; }, async rollback() {
-      if (state === "committed") throw new GitMetadataTransactionError("invalid-state", "cannot rollback a committed transaction");
-      if (state === "rolled-back") return report("non-git", true, []);
-      state = "rolled-back"; return report("non-git", true, []);
-    } };
+    const core: TransactionCore = {
+      observe: async () => { requireOpen("observe"); return []; },
+      commit: async () => { requireOpen("commit"); state = "committed"; },
+      rollback: async () => {
+        if (state === "committed") throw new GitMetadataTransactionError("invalid-state", "cannot rollback a committed transaction");
+        if (state === "rolled-back") return report("non-git", true, []);
+        state = "rolled-back"; return report("non-git", true, []);
+      },
+    };
+    return { kind: "non-git", sourceCwd: resolve(sourceCwd), ...liftTransaction(core) };
   }
   const before = await snapshot(repository);
   if ([...before.operationDirs.values()].some(Boolean)) throw new GitMetadataTransactionError("unsafe-mutation", "an existing rebase/sequencer operation cannot be snapshotted safely");
@@ -398,11 +475,9 @@ export async function beginGitMetadataTransaction(sourceCwd: string): Promise<Gi
     if (changed.some((entry) => entry === "HEAD" || entry.startsWith("ref:"))) residues.push("unreachable objects retained", "reflog entries retained");
     return residues;
   };
-  return {
-    kind: "git",
-    sourceCwd: repository.cwd,
+  const core: TransactionCore = {
     observe,
-    async commit() {
+    commit: async () => {
       requireOpen("commit");
       const current = await snapshot(repository);
       const conflicts = differences(observed, current);
@@ -411,7 +486,7 @@ export async function beginGitMetadataTransaction(sourceCwd: string): Promise<Gi
       }
       state = "committed";
     },
-    async rollback() {
+    rollback: async () => {
       if (state === "committed") throw new GitMetadataTransactionError("invalid-state", "cannot rollback a committed transaction");
       if (prior) return prior;
       requireOpen("rollback");
@@ -484,4 +559,5 @@ export async function beginGitMetadataTransaction(sourceCwd: string): Promise<Gi
       return prior;
     },
   };
+  return { kind: "git", sourceCwd: repository.cwd, ...liftTransaction(core) };
 }
