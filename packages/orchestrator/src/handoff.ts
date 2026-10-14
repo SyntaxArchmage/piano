@@ -71,7 +71,7 @@ function writeJsonAtomic(
   value: unknown,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
-    temporaryPath: `${path}.${randomUUID()}.tmp`,
+    temporaryPath: () => `${path}.${randomUUID()}.tmp`,
     mapError: (cause) => mapFsError(path, cause),
   });
 }

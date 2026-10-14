@@ -43,7 +43,7 @@ export function snapshotWorkerContract(
       }
     } else {
       yield* writeFileAtomic(snapshotPath, contract.source, {
-        temporaryPath: `${snapshotPath}.tmp-${process.pid}-${randomUUID()}`,
+        temporaryPath: () => `${snapshotPath}.tmp-${process.pid}-${randomUUID()}`,
         mapError: (cause, step) => snapshotError(snapshotPath, `contract snapshot ${step}`, cause),
       });
     }

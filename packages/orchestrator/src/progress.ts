@@ -210,7 +210,7 @@ function writeSnapshotAtomic(
   snapshot: WorkflowProgressSnapshot,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return writeFileAtomic(path, `${JSON.stringify(snapshot, null, 2)}\n`, {
-    temporaryPath: `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    temporaryPath: () => `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     mapError: (cause, step) => progressError(path, `snapshot ${step}`, cause),
   });
 }
