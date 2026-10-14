@@ -17,6 +17,7 @@ import {
   defaultRunsRoot,
   formatStaticObservabilityReport,
   inspectStaticObservability,
+  trajectoryStreamPath,
 } from "@piano/logging";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
@@ -149,13 +150,22 @@ function readJsonStringLiteral(match: RegExpExecArray): string | undefined {
 
 /** Last `bytes` of the file decoded as utf8, or undefined when unreadable. */
 function readTail(trajectoryFile: string, bytes: number): string | undefined {
+  return readWindow(trajectoryFile, bytes, "tail");
+}
+
+/** First `bytes` of the file decoded as utf8, or undefined when unreadable. */
+function readHead(trajectoryFile: string, bytes: number): string | undefined {
+  return readWindow(trajectoryFile, bytes, "head");
+}
+
+function readWindow(trajectoryFile: string, bytes: number, end: "head" | "tail"): string | undefined {
   try {
     const fd = openSync(trajectoryFile, "r");
     try {
       const size = fstatSync(fd).size;
       const length = Math.min(size, bytes);
       const buffer = Buffer.allocUnsafe(length);
-      readSync(fd, buffer, 0, length, size - length);
+      readSync(fd, buffer, 0, length, end === "tail" ? size - length : 0);
       return buffer.toString("utf8");
     } finally {
       closeSync(fd);
@@ -188,8 +198,61 @@ function parseRunTail(tail: string): RunRowMetadata {
   return row;
 }
 
+/** Row fields read from a run's two ends, which is all a row needs.
+ *
+ * Trajectory records are append-only, so the run's first prompt is in the
+ * earliest record that carried one and its newest status and workflow are in
+ * the last. The events in between are the bulk of the run and none of the row.
+ * Windows are generous enough to hold a record; a record larger than one simply
+ * yields fewer fields, never a failure. */
+const STREAM_WINDOW_BYTES = 16 * 1024;
+
+function parseStreamRecord(line: string | undefined): Record<string, unknown> | undefined {
+  if (line === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(line);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined;
+  } catch {
+    // Torn mid-append, or cut by the window: the records before it still count.
+    return undefined;
+  }
+}
+
+/** The records a window holds, newest first. */
+function windowRecords(window: string): readonly Record<string, unknown>[] {
+  return window.split("\n")
+    .filter((line) => line.trim() !== "")
+    .map(parseStreamRecord)
+    .filter((record): record is Record<string, unknown> => record !== undefined);
+}
+
+function readStreamRowMetadata(streamFile: string): RunRowMetadata | undefined {
+  const head = readHead(streamFile, STREAM_WINDOW_BYTES);
+  if (head === undefined) return undefined;
+  const row: { workflow?: string; status?: string; prompt?: string } = {};
+  for (const record of windowRecords(head)) {
+    if (row.prompt === undefined && typeof record.prompt === "string") row.prompt = record.prompt;
+    if (row.prompt !== undefined) break;
+  }
+  const tail = readTail(streamFile, STREAM_WINDOW_BYTES);
+  // The tail's first line is usually a fragment of the window's edge; walking
+  // back from the end finds the newest whole record.
+  for (const record of [...(tail === undefined ? [] : windowRecords(tail))].reverse()) {
+    if (row.status === undefined && typeof record.status === "string") row.status = record.status;
+    if (row.workflow === undefined && typeof record.workflowPath === "string") {
+      row.workflow = basename(record.workflowPath).replace(/\.ya?ml$/i, "");
+    }
+    if (row.status !== undefined && row.workflow !== undefined) break;
+  }
+  return row;
+}
+
 /** Exported for testing; the picker calls it once per listed run. */
 export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
+  const fromStream = readStreamRowMetadata(trajectoryStreamPath(trajectoryFile));
+  if (fromStream !== undefined) return fromStream;
   const tail = readTail(trajectoryFile, TAIL_WINDOW_BYTES);
   if (tail === undefined) return {};
   const row = parseRunTail(tail);

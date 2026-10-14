@@ -191,6 +191,32 @@ describe("piano logs picker rows", () => {
     expect(runPickerLabel("legacy-dir", {})).toBe("legacy-dir");
   });
 
+  it("takes the row from the ends of a run's stream, without reading the middle", async () => {
+    const runIdStream = "20260821T140000-str001";
+    await mkdir(join(root, runIdStream), { recursive: true });
+    const base = {
+      version: 1,
+      runId: runIdStream,
+      workflowPath: "/repo/recipes/workflows/gpu-cuda-tuning.yaml",
+      status: "completed",
+      promptLength: 4,
+    };
+    // The bulk of a run is its events; neither end needs them.
+    const filler = Array.from({ length: 400 }, (_, index) => ({ type: "message_end", index }));
+    await writeFile(join(root, runIdStream, "trajectory.jsonl"), [
+      { ...base, timestamp: "2026-08-21T14:00:00.000Z", prompt: "Implement a matmul.cu kernel", events: [] },
+      { ...base, timestamp: "2026-08-21T14:05:00.000Z", prompt: "second", events: filler },
+      { ...base, timestamp: "2026-08-21T14:09:00.000Z", status: "failed", events: [] },
+    ].map((record) => `${JSON.stringify(record)}\n`).join(""), "utf8");
+
+    // Read through the document path: the stream beside it is what answers.
+    expect(readRunRowMetadata(join(root, runIdStream, "trajectory.json"))).toEqual({
+      workflow: "gpu-cuda-tuning",
+      status: "failed",
+      prompt: "Implement a matmul.cu kernel",
+    });
+  });
+
   it("finds the trailing block past the small window when prompts are huge", async () => {
     // Workflow handoff prompts can push the document's trailing block past
     // the 64KB window; the metadata reader pays one bigger read for those.
