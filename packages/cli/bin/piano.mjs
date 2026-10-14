@@ -6,26 +6,49 @@
 // back to running the TypeScript sources through tsx, which is what this bin
 // did before the bundle existed.
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildBundle, isBundleFresh } from "../scripts/cli-bundle.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const distDir = fileURLToPath(new URL("../dist/", import.meta.url));
 const bundlePath = join(distDir, "piano.js");
 
-/** The bundle's `runCli`, or undefined when it could not be produced. */
-async function loadBundle() {
-  if (!(await isBundleFresh(distDir))) await buildBundle(distDir);
-  const loaded = await import(bundlePath);
-  return typeof loaded.runCli === "function" ? loaded : undefined;
+function noteFallback(detail) {
+  process.stderr.write(
+    `piano: prebuilt CLI unavailable${detail === undefined ? "" : ` (${detail})`}; running from sources\n`,
+  );
+}
+
+/** The bundle's `runCli`, or undefined when it cannot be started at all.
+ * `tag` makes a retry a different module URL, because the registry keeps the
+ * failed or empty module imported a moment ago under the plain one. */
+async function loadBundle(tag = "") {
+  try {
+    const loaded = await import(`${pathToFileURL(bundlePath).href}${tag}`);
+    return typeof loaded.runCli === "function" ? loaded : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 let cli;
 try {
-  cli = await loadBundle();
+  // Imported inside the try rather than at the top: a build module that is
+  // missing or saved half-written must not kill the launcher while its imports
+  // are being linked, because the fallback below is what runs in that case.
+  const { buildBundle, invalidateBundle, isBundleFresh } = await import("../scripts/cli-bundle.mjs");
+  if (await isBundleFresh(distDir)) {
+    cli = await loadBundle();
+    // A matching stamp over artifacts that do not start means the dist is
+    // damaged, not outdated. Dropping the stamp is what lets the rebuild below
+    // happen; without it every later start would trust the same broken file.
+    if (cli === undefined) await invalidateBundle(distDir);
+  }
+  if (cli === undefined) {
+    await buildBundle(distDir);
+    cli = await loadBundle(`?rebuilt=${Date.now()}`);
+  }
+  if (cli === undefined) noteFallback("the prebuilt bundle did not start");
 } catch (cause) {
-  process.stderr.write(
-    `piano: prebuilt CLI unavailable (${cause instanceof Error ? cause.message : String(cause)}); running from sources\n`,
-  );
+  noteFallback(cause instanceof Error ? cause.message : String(cause));
   cli = undefined;
 }
 if (cli === undefined) {
