@@ -192,8 +192,11 @@ interface TuiScreen {
   stats: RunStats;
   /** When the current turn was submitted, for the elapsed figures. */
   startedAt: number;
-  /** True while this screen's turn is in flight. */
-  running: boolean;
+  /** Derived from `active`, never assigned: a turn is in flight exactly while
+   * this screen holds it. It was a field of its own, with its own two
+   * assignments, and the two could disagree — one exit path cleared `active`
+   * and left `running` set, so the screen went on refusing input. */
+  readonly running: boolean;
   /** The in-flight prompt, for interrupt and cancel bookkeeping. */
   active?: PromptState;
   /** Mid-turn input no steering channel took: run when this turn settles. */
@@ -486,7 +489,9 @@ export function runTui(
           trajectory: new TrajectoryPanel(screenTheme, paneRows, scrollKeys.modifier),
           stats: emptyRunStats(),
           startedAt: Date.now(),
-          running: false,
+          get running(): boolean {
+            return this.active !== undefined;
+          },
         };
       };
       const missionScreen = makeScreen("mission", theme);
@@ -1190,7 +1195,10 @@ export function runTui(
             );
             return;
           }
-          screen.running = true;
+          // Claiming the turn IS this assignment: `running` reads off it, so
+          // the screen is busy from here until the prompt clears it.
+          const promptState: PromptState = { cancelled: false, outcomeReported: false };
+          screen.active = promptState;
           deps.onTaskEvent?.({ type: "input.accepted", prompt });
           deps.onTaskEvent?.({ type: "agentic.task.started", prompt });
           let outcome: "completed" | "failed" | "cancelled" = "completed";
@@ -1216,8 +1224,6 @@ export function runTui(
           }
           refreshFooter();
           tui.requestRender();
-          const promptState: PromptState = { cancelled: false, outcomeReported: false };
-          screen.active = promptState;
           const promptEffect = runner(prompt, (event) => {
             screen.transcript.route(event);
             screen.trajectory.record(event);
@@ -1262,7 +1268,7 @@ export function runTui(
             // live session open for all error shapes.
             Effect.catchAll(() => Effect.succeed("")),
             Effect.ensuring(Effect.sync(() => {
-              screen.running = false;
+              // Releasing the turn is this assignment; `running` follows it.
               if (screen.active === promptState) screen.active = undefined;
               if (promptState.cancelled && !promptState.outcomeReported) {
                 promptState.outcomeReported = true;
