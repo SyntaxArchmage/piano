@@ -20,6 +20,12 @@ describe("pathWithin", () => {
     expect(pathWithin("a/b", "a/c")).toBe(false);
   });
 
+  it("counts a directory whose name merely starts with dots as inside", () => {
+    expect(pathWithin("/root", "/root/..cache/.git/config")).toBe(true);
+    expect(pathWithin("/root", "/root/..cache")).toBe(true);
+    expect(pathWithin("/root", "/root/..")).toBe(false);
+  });
+
   it("fails a NUL byte the same way an escape fails", () => {
     expect(pathWithin("/root", "/root/\0bad")).toBe(false);
   });

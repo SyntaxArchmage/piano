@@ -1,4 +1,4 @@
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 
 /** Whether `child` is `parent` or lives below it. `relative` resolves both
  * sides itself, so a relative, `.`-bearing or `..`-bearing input cannot
@@ -9,5 +9,9 @@ import { isAbsolute, relative } from "node:path";
 export function pathWithin(parent: string, child: string, includeEqual = true): boolean {
   const childRelative = relative(parent, child);
   if (childRelative === "") return includeEqual;
-  return !childRelative.startsWith("..") && !isAbsolute(childRelative) && !childRelative.includes("\0");
+  // Only the whole `..` segment leaves the parent: a directory called
+  // `..cache` is a child like any other, and reading it as an escape would
+  // both skip the protected names inside it and reject legitimate snapshots.
+  const escapes = childRelative === ".." || childRelative.startsWith(`..${sep}`);
+  return !escapes && !isAbsolute(childRelative) && !childRelative.includes("\0");
 }
