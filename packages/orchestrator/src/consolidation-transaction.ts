@@ -11,7 +11,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   errorMessage,
   implementationDefect,
@@ -25,6 +25,7 @@ import {
   type GitMetadataRollbackReport,
   type GitMetadataTransaction,
 } from "./git-metadata-transaction.js";
+import { pathWithin } from "./path-within.js";
 import {
   captureWorkspaceChangeSet,
   diffWorkspaceChangeSet,
@@ -151,12 +152,6 @@ export class ConsolidationEvidencePreparationError extends Error {
   }
 }
 
-function isWithin(parent: string, child: string, includeEqual = false): boolean {
-  const childRelative = relative(resolve(parent), resolve(child));
-  return (includeEqual && childRelative === "") ||
-    (childRelative !== "" && !childRelative.startsWith("..") && !isAbsolute(childRelative));
-}
-
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (typeof value !== "object" || value === null) return value;
@@ -226,7 +221,7 @@ async function createExternalRoot(
       continue;
     }
     // The transaction root must not be a descendant of either protected tree.
-    if (isWithin(source.realPath, parent, true) || isWithin(runDir.realPath, parent, true)) continue;
+    if (pathWithin(source.realPath, parent) || pathWithin(runDir.realPath, parent)) continue;
     let root: string;
     try {
       root = await mkdtemp(join(parent, ".piano-consolidation-"));
@@ -234,7 +229,7 @@ async function createExternalRoot(
       continue;
     }
     const canonicalRoot = await realpath(root);
-    if (isWithin(source.realPath, canonicalRoot, true) || isWithin(runDir.realPath, canonicalRoot, true)) {
+    if (pathWithin(source.realPath, canonicalRoot) || pathWithin(runDir.realPath, canonicalRoot)) {
       await rm(root, { recursive: true, force: true }).catch(() => undefined);
       continue;
     }
@@ -483,7 +478,7 @@ export async function prepareConsolidationEvidence(
   const convenienceEvidencePath = join(runDirIdentity.lexicalPath, `.piano-consolidation-${transactionId}.json`);
   const excluded = [...new Set([
     ...input.excludeUnder.map((entry) => resolve(entry)),
-    ...(isWithin(sourceIdentity.realPath, runDirIdentity.realPath) ? [runDirIdentity.realPath] : []),
+    ...(pathWithin(sourceIdentity.realPath, runDirIdentity.realPath, false) ? [runDirIdentity.realPath] : []),
   ])];
   let canonicalEvidence: CanonicalEvidenceReference | undefined;
   try {

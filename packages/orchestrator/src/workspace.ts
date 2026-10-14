@@ -10,6 +10,7 @@ import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { TRACE, type Logging, type Source } from "@piano/logging";
 import { errorMessage, WorkflowError, workflowError } from "./errors.js";
+import { pathWithin } from "./path-within.js";
 import {
   executionDirectory,
   runtimeInstanceId,
@@ -63,11 +64,6 @@ const WORKSPACE_SOURCE: Source = {
   function: "allocateMapWorkspace",
 };
 
-function inside(parent: string, child: string): boolean {
-  const candidate = relative(parent, child);
-  return candidate === "" || (!candidate.startsWith("..") && !isAbsolute(candidate) && !candidate.includes("\0"));
-}
-
 function missingPath(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
@@ -89,7 +85,7 @@ function isProtectedWorkspaceName(name: string, caseInsensitive: boolean): boole
 function isProtectedWorkspacePath(root: string, candidate: string, caseInsensitive: boolean): boolean {
   const candidatePath = resolve(candidate);
   const rootPath = resolve(root);
-  if (!inside(rootPath, candidatePath) || rootPath === candidatePath) return false;
+  if (!pathWithin(rootPath, candidatePath) || rootPath === candidatePath) return false;
   return workspacePathSegments(relative(rootPath, candidatePath))
     .some((segment) => isProtectedWorkspaceName(segment, caseInsensitive));
 }
@@ -223,7 +219,7 @@ async function assertCanonicalRunRoot(root: CanonicalRunRoot): Promise<void> {
 async function assertSafeWorkspacePathAncestors(root: string, candidate: string): Promise<void> {
   const canonicalRoot = resolve(root);
   const lexicalCandidate = resolve(candidate);
-  if (!inside(canonicalRoot, lexicalCandidate)) {
+  if (!pathWithin(canonicalRoot, lexicalCandidate)) {
     throw workflowError("schedule", candidate, "workspace path escapes its canonical root");
   }
   let current = canonicalRoot;
@@ -429,7 +425,7 @@ async function validateSnapshotLinks(
     const info = await lstat(path);
     if (info.isSymbolicLink()) {
       const target = await realpath(path);
-      if (!inside(source, target) || skip(target)) {
+      if (!pathWithin(source, target) || skip(target)) {
         throw workflowError("schedule", path, `workspace snapshot symlink targets excluded or external content: ${target}`);
       }
       if (!(await stat(target)).isFile()) {
@@ -454,7 +450,7 @@ async function makeStagingDirectory(source: string): Promise<string> {
     return await mkdtemp(preferredPrefix);
   } catch {
     const fallback = await mkdtemp(join(tmpdir(), "piano-workspace-"));
-    if (inside(source, fallback)) {
+    if (pathWithin(source, fallback)) {
       await rm(fallback, { recursive: true, force: true });
       throw workflowError(
         "schedule",
@@ -511,14 +507,14 @@ async function inspectGitSource(
     // A workspace rooted below the repository root would make the worktree
     // include files outside the caller's declared workspace. Use a snapshot
     // strategy for that shape instead.
-    if (root !== source || inside(source, run)) return undefined;
+    if (root !== source || pathWithin(source, run)) return undefined;
     const statusResult = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" });
     const runRelative = relative(root, run);
     const caseInsensitive = await isCaseInsensitiveFileSystem(root);
     const meaningful = statusResult.stdout
       .split(/\r?\n/u)
       .map((line) => line.slice(3).trim())
-      .filter((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive) && path !== runRelative && !inside(runRelative, path));
+      .filter((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive) && path !== runRelative && !pathWithin(runRelative, path));
     return meaningful.length === 0 ? { root, commonRoot: repository.commonRoot } : undefined;
   } catch {
     return undefined;
@@ -566,7 +562,7 @@ async function rewriteSnapshotSymlinks(
     if (info.isSymbolicLink()) {
       const rawTarget = await readlink(sourcePath);
       const resolvedTarget = await realpath(sourcePath);
-      if (!inside(source, resolvedTarget) || skip(resolvedTarget) || !(await stat(resolvedTarget)).isFile()) {
+      if (!pathWithin(source, resolvedTarget) || skip(resolvedTarget) || !(await stat(resolvedTarget)).isFile()) {
         throw workflowError(
           "schedule",
           sourcePath,
@@ -599,12 +595,12 @@ async function createDirectorySnapshot(
 ): Promise<void> {
   const stagingDirectory = await makeStagingDirectory(source);
   const temporary = join(stagingDirectory, "workspace");
-  const sourceContainsRunDirectory = inside(source, run);
+  const sourceContainsRunDirectory = pathWithin(source, run);
   const runContainer = dirname(run);
   const sourceContainsRunContainer = sourceContainsRunDirectory && runContainer !== source;
   const caseInsensitive = await isCaseInsensitiveFileSystem(source);
   const shouldSkip = (entry: string): boolean =>
-    (sourceContainsRunDirectory && (inside(run, resolve(entry)) || (sourceContainsRunContainer && inside(runContainer, resolve(entry))))) ||
+    (sourceContainsRunDirectory && (pathWithin(run, resolve(entry)) || (sourceContainsRunContainer && pathWithin(runContainer, resolve(entry))))) ||
     isProtectedWorkspacePath(source, entry, caseInsensitive);
   try {
     await validateSnapshotLinks(source, shouldSkip);
@@ -652,7 +648,7 @@ export function allocateMapWorkspace(
       const runRoot = await canonicalRunRoot(runDir, true);
       const run = runRoot.canonical;
       const workspaceRoot = join(executionDirectory(run, executionId), "workspaces");
-      if (inside(run, source) && !inside(workspaceRoot, source)) {
+      if (pathWithin(run, source) && !pathWithin(workspaceRoot, source)) {
         throw workflowError(
           "schedule",
           source,
@@ -665,7 +661,7 @@ export function allocateMapWorkspace(
       }
       const key = mapSlotKey(frames);
       const cwd = mapWorkspacePath(run, executionId, frames);
-      if (!inside(source, run) && inside(source, cwd)) {
+      if (!pathWithin(source, run) && pathWithin(source, cwd)) {
         throw workflowError("schedule", cwd, `workspace for map slot "${key}" cannot be nested inside its source`);
       }
       const recordPath = mapWorkspaceRecordPath(run, executionId, frames);
@@ -853,7 +849,7 @@ async function readWorkspaceRecords(
     if (record === undefined) {
       throw workflowError("schedule", recordPath, "workspace record is missing");
     }
-    if (resolve(record.cwd) !== resolve(expectedCwd) || !inside(execution, resolve(record.cwd))) {
+    if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(execution, resolve(record.cwd))) {
       throw workflowError("schedule", recordPath, "workspace record points outside its execution directory");
     }
     records.push({ path: recordPath, record });
@@ -1058,14 +1054,14 @@ async function applyWorkspaceContents(
     // Re-emit every validated file link from its original candidate spelling
     // before the staged tree is used, so no link can point back at the slot.
     await rewriteSnapshotSymlinks(candidate, staged, skipCandidateEntry);
-    const sourceContainsRunDirectory = inside(source, run);
+    const sourceContainsRunDirectory = pathWithin(source, run);
     const runContainer = dirname(run);
     const sourceContainsRunContainer = sourceContainsRunDirectory && runContainer !== source;
     const sourceCaseInsensitive = await isCaseInsensitiveFileSystem(source);
     const excludedSourceSubtrees = sourceContainsRunDirectory && resolve(run) !== resolve(source) ? [run] : [];
     const protectedEntry = (entry: string): boolean => {
       return isProtectedWorkspacePath(source, entry, sourceCaseInsensitive) ||
-        (sourceContainsRunDirectory && (inside(run, resolve(entry)) || (sourceContainsRunContainer && inside(runContainer, resolve(entry)))));
+        (sourceContainsRunDirectory && (pathWithin(run, resolve(entry)) || (sourceContainsRunContainer && pathWithin(runContainer, resolve(entry)))));
     };
     // Freeze the source before the first destructive operation. If any later
     // copy/rewrite step fails, this snapshot restores the complete application
@@ -1102,7 +1098,7 @@ async function applyWorkspaceContents(
     if (beforeSnapshotCreated) {
       try {
         if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before rollback");
-        const sourceContainsRunDirectory = inside(source, run);
+        const sourceContainsRunDirectory = pathWithin(source, run);
         const excludedSourceSubtrees = sourceContainsRunDirectory && resolve(run) !== resolve(source) ? [run] : [];
         await restoreWorkspaceLstat(source, before, undefined, excludedSourceSubtrees);
         if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after rollback");
@@ -1217,7 +1213,7 @@ function safeWorkspaceNodePath(root: string, path: string): string {
     throw workflowError("schedule", root, `unsafe workspace rollback path: ${path}`);
   }
   const candidate = resolve(root, ...segments);
-  if (!inside(resolve(root), candidate)) {
+  if (!pathWithin(resolve(root), candidate)) {
     throw workflowError("schedule", root, `workspace rollback path escapes its root: ${path}`);
   }
   return candidate;
@@ -1229,7 +1225,7 @@ function safeWorkspaceNodePath(root: string, path: string): string {
 async function assertSafeWorkspaceDirectory(root: string, candidate: string): Promise<void> {
   const canonicalRoot = await realpath(root);
   const lexicalCandidate = resolve(candidate);
-  if (!inside(canonicalRoot, lexicalCandidate)) {
+  if (!pathWithin(canonicalRoot, lexicalCandidate)) {
     throw workflowError("schedule", candidate, "workspace path escapes its execution directory");
   }
 
@@ -1245,7 +1241,7 @@ async function assertSafeWorkspaceDirectory(root: string, candidate: string): Pr
       throw workflowError("schedule", current, "workspace slot has a non-directory ancestor");
     }
     const actual = await realpath(current);
-    if (resolve(actual) !== resolve(current) || !inside(canonicalRoot, actual)) {
+    if (resolve(actual) !== resolve(current) || !pathWithin(canonicalRoot, actual)) {
       throw workflowError("schedule", current, "workspace slot realpath escapes its execution directory");
     }
   }
@@ -1327,11 +1323,11 @@ export async function inventoryWorkspaceLstat(
   await realpath(root);
   const caseInsensitive = await isCaseInsensitiveFileSystem(root);
   const excludedUnder = excluded.map((entry) => resolve(entry));
-  const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !inside(entry, resolve(root)));
+  const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
   const reachable = (candidate: string): boolean =>
-    effectiveExcluded.every((entry) => !inside(entry, resolve(candidate)));
+    effectiveExcluded.every((entry) => !pathWithin(entry, resolve(candidate)));
   const protectsExcludedDescendant = (candidate: string): boolean =>
-    effectiveExcluded.some((entry) => inside(resolve(candidate), entry));
+    effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
   const entries: WorkspaceLstatEntry[] = [];
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
@@ -1507,22 +1503,22 @@ async function collectContentPaths(
   // so its walking root is nested inside an exclusion path: applying that
   // exclusion here would empty the whole winner tree. Only honour an exclusion
   // that is properly contained within the walked root.
-  const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !inside(entry, resolve(root)));
+  const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
   const excludedRoots = [
     join(resolvedRoot, ".git"),
     ...await Promise.all(effectiveExcluded.map(async (entry) => realpath(entry).catch(() => entry))),
   ];
   const reachable = (candidate: string): boolean =>
-    effectiveExcluded.every((entry) => !inside(entry, resolve(candidate)));
+    effectiveExcluded.every((entry) => !pathWithin(entry, resolve(candidate)));
   const protectsExcludedDescendant = (candidate: string): boolean =>
-    effectiveExcluded.some((entry) => inside(resolve(candidate), entry));
+    effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
   const excludedTarget = (candidate: string): boolean =>
     isProtectedWorkspacePath(resolvedRoot, candidate, caseInsensitive) ||
-    excludedRoots.some((entry) => inside(entry, candidate));
+    excludedRoots.some((entry) => pathWithin(entry, candidate));
   const validateNode = async (entryPath: string, info: Awaited<ReturnType<typeof lstat>>): Promise<void> => {
     if (info.isSymbolicLink()) {
       const target = await realpath(entryPath);
-      if (!inside(resolvedRoot, target) || excludedTarget(target)) {
+      if (!pathWithin(resolvedRoot, target) || excludedTarget(target)) {
         throw workflowError("schedule", entryPath, `workspace content symlink targets excluded or external content: ${target}`);
       }
       const targetInfo = await stat(target);

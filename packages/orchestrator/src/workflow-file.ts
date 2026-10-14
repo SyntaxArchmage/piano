@@ -1,6 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
@@ -12,6 +12,7 @@ import {
 } from "@piano/contract";
 import { logger, TRACE, type Logging, type Source } from "@piano/logging";
 import { WorkflowError, errorMessage, workflowError } from "./errors.js";
+import { pathWithin } from "./path-within.js";
 import {
   parseWorkflow,
   type WorkflowDocument,
@@ -101,11 +102,6 @@ interface SkillDiscovery {
   readonly dir: string;
   readonly name: string;
   readonly description: string;
-}
-
-function inside(parent: string, child: string): boolean {
-  const childRelative = relative(parent, child);
-  return childRelative === "" || (!childRelative.startsWith("..") && !isAbsolute(childRelative));
 }
 
 function mapFsError(path: string, cause: unknown): WorkflowError {
@@ -287,7 +283,7 @@ export function resolveWorkerResources(
     }
     const resolvedRecipesRoot = resolve(recipeRepositoryRoot, recipesDir);
     const workerDir = resolve(resolvedRecipesRoot, worker);
-    if (!inside(resolvedRecipesRoot, workerDir)) {
+    if (!pathWithin(resolvedRecipesRoot, workerDir)) {
       return yield* Effect.fail(workflowError("load", absoluteWorkflowPath, `worker "${worker}" resolves to an unsafe path outside ${resolvedRecipesRoot}`));
     }
     const workerExists = yield* fileSystem.exists(workerDir).pipe(
