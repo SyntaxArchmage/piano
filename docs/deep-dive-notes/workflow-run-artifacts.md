@@ -19,9 +19,9 @@
     ├── log.jsonl            ⑨  结构化日志，逐行append；含agent.event调试行
     ├── trace.jsonl          ⑩  span enter/exit/error，逐行append（trace.ts:180）
     ├── trajectory.json      ⑪  压缩事件账本，读-改-写全量重写；run命名也写这里
-    ├── progress.jsonl       ⑫  【不可变证据流】只记accepted stage，append
-    ├── progress.json        ⑬  【最新快照】给watch/TUI，原子重写
-    ├── resume.json          ⑭  actors的sessionId/transcriptPath/turns/continuation
+    ├── progress.jsonl       ⑫  【不可变证据流】execution/stage 起止与 accepted，逐行append
+    ├── progress.json        ⑬  【最新快照】给watch/TUI，由同一条流折叠得出，原子重写
+    ├── resume.jsonl         ⑭  actors的sessionId/transcriptPath/turns/continuation；逐行append，最新一行即全表
     ├── contracts/<sha256>.json  ⑮ 每个用到的contract.json按digest存一份原文
     ├── workspaces/slots/<key>/**   ⑯ 每actor一条git worktree/目录快照
     ├── workspace-records/<key>/record.json  ⑰ 绑定记录(key,cwd,gitRoot,fork点)

@@ -3000,9 +3000,10 @@ export function executeWorkflow(
           // the workflow does not end, it reopens this same actor session with
           // the reviewer's feedback, and a validation repair does the same. A
           // later interrupt or failure in the rework must therefore never strand
-          // a conversation the harness has already written: resume.json carries
-          // it from here, and the accepted-stage write below stays the final
-          // canonical state. A failed intermediate write never fails the stage.
+          // a conversation the harness has already written: the state stream
+          // carries it from here, and the accepted-stage write below stays the
+          // final canonical state. A failed intermediate write never fails the
+          // stage.
           yield* progressSemaphore.withPermits(1)(Effect.suspend(() => persistActors()))
             .pipe(Effect.catchAll(() => Effect.void));
 

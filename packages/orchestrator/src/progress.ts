@@ -645,7 +645,7 @@ export function appendWorkflowProgress(
  * Best-effort callers may catch this error so a convenience view never hides
  * the canonical workflow result. When snapshot.current is present its status
  * is folded: "accepted" for completed/paused (a human stop is not a failure;
- * resume.json is the sole continuation authority), "failed" for a failed run.
+ * resume.jsonl is the sole continuation authority), "failed" for a failed run.
  * `current.stageId` is never rewritten — it still names the last active stage.
  * Readers must tolerate legacy on-disk shapes (stale current.status:"running"
  * under a terminal snapshot) written before this fold was introduced. */

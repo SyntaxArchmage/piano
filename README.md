@@ -385,7 +385,7 @@ piano resume <run-id>
 ```
 
 A run is one execution: resuming reopens the same run directory (a
-`resume.json` records the execution id, prompt index, and actor sessions),
+`resume.jsonl` records the execution id, prompt index, and actor sessions),
 replays the prior transcript into the chat, and continues the actors the
 previous prompts left behind — it takes the same path as sending the next
 prompt in a live session. Inside the TUI, `/resume` routes to the same
@@ -419,7 +419,7 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 ├── trajectory.json    # per-run summary: status, per-prompt turns, session/transcript of the latest turn
 ├── progress.jsonl     # append-only ledger: one line per accepted stage attempt
 ├── progress.json      # live workflow plan/status snapshot for monitors
-├── resume.json        # durable resume state (execution id, prompt index, actor sessions)
+├── resume.jsonl       # append-only resume state: newest line holds the whole actor table
 ├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
 ├── trajectories/
 │   ├── index.json                # recorder inventory, status, and errors

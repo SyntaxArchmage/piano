@@ -26,7 +26,7 @@ import { readWorkflowExecutionContinuation } from "@piano/orchestrator";
 import type { AgentRunner } from "@piano/harness";
 import { runSession } from "../../packages/cli/src/session-run.js";
 import { FakeTerminal, plain, sleep, waitFor } from "../common/terminal.js";
-import { readJson } from "../common/fs.js";
+import { readJson, readResumeActors } from "../common/fs.js";
 import { hangUntilAbort, sessionOf, settledResult, type ActorSession } from "../common/fake-runner.js";
 
 // prepareHarnessHomes writes the developer's own harness home; the session
@@ -145,9 +145,7 @@ describe("one run across finish → exit → resume → Escape → exit → resu
       // Durable pause: progress says paused, and the interrupted attempt did
       // not consume the turn or lose the actor conversation.
       expect(progressStatus(runsRoot, runId)).toBe("paused");
-      const mid = Object.values(
-        (await readJson(join(runsRoot, runId, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const mid = Object.values(await readResumeActors(join(runsRoot, runId)))[0];
       expect(mid?.sessionId).toBe("sess-arc");
       expect(mid?.turns).toBe(1);
       terminalB.onInput?.("/exit");
@@ -198,9 +196,7 @@ describe("one run across finish → exit → resume → Escape → exit → resu
       ]);
       // The actor map finished the same conversation it started (turn 1 + turn
       // 3 completed; the interrupted turn never consumed one).
-      const finalActor = Object.values(
-        (await readJson(join(runsRoot, runId, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const finalActor = Object.values(await readResumeActors(join(runsRoot, runId)))[0];
       expect(finalActor?.sessionId).toBe("sess-arc");
       expect(finalActor?.turns).toBe(2);
       const execution = await Effect.runPromise(

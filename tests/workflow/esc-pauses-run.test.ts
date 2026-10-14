@@ -9,7 +9,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sleep, waitFor } from "../common/terminal.js";
-import { readJson } from "../common/fs.js";
+import { readJson, readResumeActors } from "../common/fs.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
@@ -139,8 +139,7 @@ describe("Escape pauses a run instead of failing it", () => {
 
       // The interrupted attempt's session survived into the canonical state
       // file: same sessionId, continuation present.
-      const resumeState = await readJson(join(session.runDir, "resume.json"));
-      const actors = resumeState.actors as Record<string, Record<string, unknown>>;
+      const actors = await readResumeActors(session.runDir);
       const actor = Object.values(actors)[0];
       expect(actor).toBeDefined();
       expect(actor?.harness).toBe("pi");
@@ -276,8 +275,7 @@ describe("Escape pauses a run instead of failing it", () => {
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
 
-      const resumeState = await readJson(join(session.runDir, "resume.json"));
-      const actors = resumeState.actors as Record<string, Record<string, unknown>>;
+      const actors = await readResumeActors(session.runDir);
       const actor = Object.values(actors)[0];
       expect(actor?.harness).toBe("pi");
       expect(actor?.sessionId).toBe(announced.sessionId);
@@ -369,9 +367,7 @@ describe("Escape pauses a run instead of failing it", () => {
       // "nothing was saved": the rework continues in the same conversation and
       // an interrupt during it must not fall back to a pre-turn resume state.
       await waitFor("the review was rejected", () => gate.length === 1);
-      const midActor = Object.values(
-        (await readJson(join(session.runDir, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const midActor = Object.values(await readResumeActors(session.runDir))[0];
       expect(midActor?.sessionId).toBe("sess-r");
       expect(midActor?.turns).toBe(1);
       expect(midActor?.continuation).toBeDefined();
@@ -385,9 +381,7 @@ describe("Escape pauses a run instead of failing it", () => {
       const exit = await Effect.runPromise(Fiber.await(fiber));
       expect(Exit.isFailure(exit) && isCancellation(exit.cause)).toBe(true);
       expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
-      const finalActor = Object.values(
-        (await readJson(join(session.runDir, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const finalActor = Object.values(await readResumeActors(session.runDir))[0];
       // The rejected turn's count survived the interrupt (live map read, not
       // the stale pre-attempt snapshot).
       expect(finalActor?.sessionId).toBe("sess-r");

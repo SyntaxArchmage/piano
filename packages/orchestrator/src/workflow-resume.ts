@@ -1,6 +1,6 @@
-// Read actor continuation state from resume.json — the canonical state file
-// written by the orchestrator after each accepted prompt.  This replaces the
-// previous approach of scanning progress.jsonl line-by-line, giving O(1)
+// Read actor continuation state from resume.jsonl — the canonical state
+// stream written by the orchestrator after each accepted prompt.  This replaces
+// the previous approach of scanning progress.jsonl line-by-line, giving O(1)
 // resume load and exact IDs with no reconstruction.
 
 import { FileSystem } from "@effect/platform";
@@ -9,9 +9,9 @@ import type { AgentContinuation } from "@piano/harness";
 import { type WorkflowError } from "./errors.js";
 import { readResumeState } from "./resume-state.js";
 
-/** One actor's carried-over state: the complete record resume.json holds for
- * it. The identity fields are part of it because the orchestrator writes its
- * whole actor table back on every prompt — an actor projected down to its
+/** One actor's carried-over state: the complete record the state stream holds
+ * for it. The identity fields are part of it because the orchestrator writes
+ * its whole actor table back on every prompt — an actor projected down to its
  * `turns` alone would be dropped by that write, and the conversation behind it
  * silently abandoned.
  *
@@ -34,7 +34,7 @@ export interface WorkflowExecutionContinuation {
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
 
-/** Read the actor continuation table for a run from resume.json.
+/** Read the actor continuation table for a run from its state stream.
  * Returns `undefined` when the file does not exist (fresh run or legacy run
  * without a state file), allowing callers to start workers fresh. */
 export function readWorkflowExecutionContinuation(

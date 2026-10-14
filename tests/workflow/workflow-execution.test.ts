@@ -5540,8 +5540,8 @@ workflow:
             await consolidateInto(request);
             // Replace the real resume-state target after the worker mutates the
             // parent, making the actual persistence Effect fail deterministically.
-            await rm(join(session.runDir, "resume.json"), { force: true });
-            await mkdir(join(session.runDir, "resume.json"));
+            await rm(join(session.runDir, "resume.jsonl"), { force: true });
+            await mkdir(join(session.runDir, "resume.jsonl"));
           } else if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
