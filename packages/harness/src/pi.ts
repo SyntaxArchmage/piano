@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AgentError, agentError } from "./errors.js";
+import { numberOrZero, stringList, stringOr } from "./json-narrowing.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";
@@ -549,18 +550,6 @@ function messageFailure(message: AgentMessage, attribution?: string): AgentError
   return undefined;
 }
 
-function numberValue(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === "string" && value !== "" ? value : fallback;
-}
-
-function stringList(value: unknown): readonly string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
 function isAssistantMessage(message: AgentMessage): boolean {
   return message.role === undefined || message.role === "assistant";
 }
@@ -665,16 +654,16 @@ function bindEvents(
       case "tool_execution_start":
         emit({
           type: "tool_execution_start",
-          toolCallId: stringValue(event.toolCallId, "unknown"),
-          toolName: stringValue(event.toolName, "unknown"),
+          toolCallId: stringOr(event.toolCallId, "unknown"),
+          toolName: stringOr(event.toolName, "unknown"),
           args: event.args,
         });
         return;
       case "tool_execution_update":
         emit({
           type: "tool_execution_update",
-          toolCallId: stringValue(event.toolCallId, "unknown"),
-          toolName: stringValue(event.toolName, "unknown"),
+          toolCallId: stringOr(event.toolCallId, "unknown"),
+          toolName: stringOr(event.toolName, "unknown"),
           args: event.args,
           partialResult: event.partialResult,
         });
@@ -682,8 +671,8 @@ function bindEvents(
       case "tool_execution_end":
         emit({
           type: "tool_execution_end",
-          toolCallId: stringValue(event.toolCallId, "unknown"),
-          toolName: stringValue(event.toolName, "unknown"),
+          toolCallId: stringOr(event.toolCallId, "unknown"),
+          toolName: stringOr(event.toolName, "unknown"),
           result: event.result,
           isError: event.isError === true,
         });
@@ -692,7 +681,7 @@ function bindEvents(
         emit({ type: "queue_update", steering: stringList(event.steering), followUp: stringList(event.followUp) });
         return;
       case "compaction_start":
-        emit({ type: "compaction_start", reason: stringValue(event.reason, "unknown") });
+        emit({ type: "compaction_start", reason: stringOr(event.reason, "unknown") });
         return;
       case "entry_appended":
         emit({ type: "entry_appended", entry: event.entry });
@@ -701,12 +690,12 @@ function bindEvents(
         emit({ type: "session_info_changed", name: typeof event.name === "string" ? event.name : undefined });
         return;
       case "thinking_level_changed":
-        emit({ type: "thinking_level_changed", level: stringValue(event.level, "unknown") });
+        emit({ type: "thinking_level_changed", level: stringOr(event.level, "unknown") });
         return;
       case "compaction_end":
         emit({
           type: "compaction_end",
-          reason: stringValue(event.reason, "unknown"),
+          reason: stringOr(event.reason, "unknown"),
           result: event.result,
           aborted: event.aborted === true,
           willRetry: event.willRetry === true,
@@ -716,33 +705,33 @@ function bindEvents(
       case "auto_retry_start":
         emit({
           type: "auto_retry_start",
-          attempt: numberValue(event.attempt),
-          maxAttempts: numberValue(event.maxAttempts),
-          delayMs: numberValue(event.delayMs),
-          errorMessage: stringValue(event.errorMessage, "retry requested"),
+          attempt: numberOrZero(event.attempt),
+          maxAttempts: numberOrZero(event.maxAttempts),
+          delayMs: numberOrZero(event.delayMs),
+          errorMessage: stringOr(event.errorMessage, "retry requested"),
         });
         return;
       case "auto_retry_end":
         emit({
           type: "auto_retry_end",
           success: event.success === true,
-          attempt: numberValue(event.attempt),
+          attempt: numberOrZero(event.attempt),
           ...(typeof event.finalError === "string" ? { finalError: event.finalError } : {}),
         });
         return;
       case "summarization_retry_scheduled":
         emit({
           type: "summarization_retry_scheduled",
-          attempt: numberValue(event.attempt),
-          maxAttempts: numberValue(event.maxAttempts),
-          delayMs: numberValue(event.delayMs),
-          errorMessage: stringValue(event.errorMessage, "retry requested"),
+          attempt: numberOrZero(event.attempt),
+          maxAttempts: numberOrZero(event.maxAttempts),
+          delayMs: numberOrZero(event.delayMs),
+          errorMessage: stringOr(event.errorMessage, "retry requested"),
         });
         return;
       case "summarization_retry_attempt_start":
         emit({
           type: "summarization_retry_attempt_start",
-          source: stringValue(event.source, "unknown"),
+          source: stringOr(event.source, "unknown"),
           ...(typeof event.reason === "string" ? { reason: event.reason } : {}),
         });
         return;

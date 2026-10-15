@@ -1,6 +1,5 @@
 import type { HarnessName } from "./harness-config.js";
-
-type JsonRecord = Record<string, unknown>;
+import { asRecord, jsonValue, numberValue, stringValue, type JsonRecord } from "./json-narrowing.js";
 
 /**
  * Persist each subprocess transcript in one canonical dialect: NDJSON records
@@ -81,29 +80,6 @@ export function mergeCanonicalTranscript(stored: string, produced: string): stri
   // this conversation stated once. (A stored transcript of nothing but blank
   // lines reaches here too, and carries nothing to preserve.)
   return produced;
-}
-
-function asRecord(value: unknown): JsonRecord | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as JsonRecord
-    : undefined;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function jsonValue(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return value;
-  }
 }
 
 function messageRecord(

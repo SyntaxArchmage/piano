@@ -8,6 +8,7 @@ import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import type { Logging } from "@piano/logging";
 import { AgentError, agentError } from "./errors.js";
+import { asRecord, jsonValue, nonEmptyString, numberValue, stringList, type JsonRecord } from "./json-narrowing.js";
 import { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
 import { dshModelPatchPath, dshResumeOverlayPath, DSH_RESUME_SESSION_ENV, dshWebSearchOffPatchPath } from "./harness-home.js";
 import {
@@ -42,10 +43,6 @@ import type {
 } from "./pi.js";
 import { PI_WEB_SEARCH_TOOL_NAME, piWebSearchExtensionPath } from "./pi-web-search.js";
 import { CLAUDE_BARE_UNAVAILABLE_TOOLS } from "./tool-names.js";
-
-interface JsonRecord {
-  readonly [key: string]: unknown;
-}
 
 export interface SubprocessAccumulator {
   text: string;
@@ -118,20 +115,6 @@ interface DshSessionTailer {
   finish(): Promise<DshSessionEvidence | undefined>;
 }
 
-function asRecord(value: unknown): JsonRecord | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as JsonRecord
-    : undefined;
-}
-
-function string(value: unknown): string | undefined {
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function number(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function assistantMessage(value: unknown): AgentMessage {
   const message = asAgentMessage(value);
   return message.role === undefined ? { ...message, role: "assistant" } : message;
@@ -185,15 +168,15 @@ function extractUsage(value: unknown): AgentUsage | undefined {
     ?? usage.cacheReadTokens;
   const cacheWrite = usage.cacheWrite ?? usage.cache_creation_input_tokens ?? usage.cacheWriteTokens;
   const result: AgentUsage = {
-    ...(number(input) === undefined ? {} : { input: number(input) }),
-    ...(number(output) === undefined ? {} : { output: number(output) }),
-    ...(number(cacheRead) === undefined ? {} : { cacheRead: number(cacheRead) }),
-    ...(number(cacheWrite) === undefined ? {} : { cacheWrite: number(cacheWrite) }),
-    ...(number(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) === undefined ? {} : { cacheWrite1h: number(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) }),
-    ...(number(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) === undefined ? {} : { reasoning: number(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) }),
-    ...(number(usage.totalTokens ?? usage.total_tokens) === undefined ? {} : { totalTokens: number(usage.totalTokens ?? usage.total_tokens) }),
-    ...(number(usage.contextTokens ?? usage.context_tokens) === undefined ? {} : { contextTokens: number(usage.contextTokens ?? usage.context_tokens) }),
-    ...(number(usage.turns) === undefined ? {} : { turns: number(usage.turns) }),
+    ...(numberValue(input) === undefined ? {} : { input: numberValue(input) }),
+    ...(numberValue(output) === undefined ? {} : { output: numberValue(output) }),
+    ...(numberValue(cacheRead) === undefined ? {} : { cacheRead: numberValue(cacheRead) }),
+    ...(numberValue(cacheWrite) === undefined ? {} : { cacheWrite: numberValue(cacheWrite) }),
+    ...(numberValue(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) === undefined ? {} : { cacheWrite1h: numberValue(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) }),
+    ...(numberValue(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) === undefined ? {} : { reasoning: numberValue(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) }),
+    ...(numberValue(usage.totalTokens ?? usage.total_tokens) === undefined ? {} : { totalTokens: numberValue(usage.totalTokens ?? usage.total_tokens) }),
+    ...(numberValue(usage.contextTokens ?? usage.context_tokens) === undefined ? {} : { contextTokens: numberValue(usage.contextTokens ?? usage.context_tokens) }),
+    ...(numberValue(usage.turns) === undefined ? {} : { turns: numberValue(usage.turns) }),
     ...(usage.cost === undefined ? {} : { cost: usage.cost }),
   };
   return Object.keys(result).length === 0 ? undefined : result;
@@ -420,17 +403,17 @@ function expandDshStorageRecord(record: JsonRecord): readonly JsonRecord[] {
   if (data === undefined) return [record];
   const payloadKey = record.type === "tool-call-chunks" ? "args" : "texts";
   const payload = data[payloadKey];
-  const seq0 = number(record.seq0);
-  const time0 = number(record.time0);
-  const turn = number(data.turn);
-  const step = number(data.step);
-  const index = number(data.index);
+  const seq0 = numberValue(record.seq0);
+  const time0 = numberValue(record.time0);
+  const turn = numberValue(data.turn);
+  const step = numberValue(data.step);
+  const index = numberValue(data.index);
   const gaps = data.dt;
   if (seq0 === undefined || time0 === undefined || turn === undefined || step === undefined || index === undefined
     || !Array.isArray(payload) || payload.some((part) => typeof part !== "string")
     || !Array.isArray(gaps) || gaps.length !== payload.length - 1
     || gaps.some((gap) => typeof gap !== "number" || !Number.isFinite(gap))) return [record];
-  const id = string(data.id);
+  const id = nonEmptyString(data.id);
   if (record.type === "tool-call-chunks" && id === undefined) return [record];
   const events: JsonRecord[] = [];
   let time = time0;
@@ -485,7 +468,7 @@ async function findDshSessionArtifact(
   for (const candidate of ranked) {
     try {
       const header = dshSessionHeader(candidate.path, await readFile(candidate.path));
-      if (header !== undefined && (string(header.cwd) === undefined || header.cwd === cwd)) return candidate.path;
+      if (header !== undefined && (nonEmptyString(header.cwd) === undefined || header.cwd === cwd)) return candidate.path;
     } catch {
       // The writer may still be publishing the first frame.
     }
@@ -517,7 +500,7 @@ function decodeDshSession(path: string, raw: Buffer): DshSessionEvidence | undef
     }
   });
   const header = events.find((event) => event.type === "session");
-  const sessionId = string(header?.id);
+  const sessionId = nonEmptyString(header?.id);
   if (sessionId === undefined) return undefined;
   return { path, sessionId, text, events };
 }
@@ -558,22 +541,13 @@ async function readDshSessionEvidence(
     try {
       const evidence = decodeDshSession(candidate.path, await readFile(candidate.path));
       const header = evidence?.events.find((event) => event.type === "session");
-      if (evidence !== undefined && (string(header?.cwd) === undefined || header?.cwd === cwd)) return evidence;
+      if (evidence !== undefined && (nonEmptyString(header?.cwd) === undefined || header?.cwd === cwd)) return evidence;
     } catch {
       // Native evidence is best effort for a successful child. The stdout
       // result remains usable, while the transcript records what was available.
     }
   }
   return undefined;
-}
-
-function jsonValue(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return value;
-  }
 }
 
 function visibleAssistantText(message: AgentMessage): string | undefined {
@@ -593,7 +567,7 @@ function dshUsage(data: JsonRecord): AgentUsage | undefined {
 
 function dshAssistantRecord(data: JsonRecord): DshAssistantRecord | undefined {
   const message = asAgentMessage(data.message);
-  const turn = number(data.turn);
+  const turn = numberValue(data.turn);
   if (turn === undefined) return undefined;
   const usage = dshUsage(data);
   return { turn, message: sanitizeAssistantMessage(message), ...(usage === undefined ? {} : { usage }) };
@@ -615,8 +589,8 @@ function createDshEventMapper(
   const completedTurns = new Set<number>();
 
   const stepKey = (data: JsonRecord): string | undefined => {
-    const turn = number(data.turn);
-    const step = number(data.step);
+    const turn = numberValue(data.turn);
+    const step = numberValue(data.step);
     return turn === undefined || step === undefined ? undefined : `${turn}/${step}`;
   };
 
@@ -661,14 +635,14 @@ function createDshEventMapper(
     const data = asRecord(event.data) ?? {};
     switch (event.type) {
       case "turn/start":
-        emitTurnStart(number(data.turn));
+        emitTurnStart(numberValue(data.turn));
         break;
       case "step/start":
         // dsh's current session format emits step boundaries for each model
         // call and may omit the outer turn/end when headless shutdown races
         // persistence. A step can still recover a missing turn start, while
         // the finalizer below closes the open outer turn exactly once.
-        emitTurnStart(number(data.turn));
+        emitTurnStart(numberValue(data.turn));
         break;
       case "assistant/message": {
         const assistant = dshAssistantRecord(data);
@@ -678,8 +652,8 @@ function createDshEventMapper(
       }
       case "assistant/chunk": {
         const chunk = asRecord(data.chunk);
-        const turn = number(data.turn);
-        const step = number(data.step);
+        const turn = numberValue(data.turn);
+        const step = numberValue(data.step);
         const key = stepKey(data);
         if (chunk?.type === "usage") {
           const usage = extractUsage(chunk);
@@ -700,7 +674,7 @@ function createDshEventMapper(
           emitStreamedText(chunk.text, accumulator, emit, {
             turn,
             step,
-            contentIndex: number(chunk.index),
+            contentIndex: numberValue(chunk.index),
           });
         } else if (chunk?.type === "reasoning-delta" && typeof chunk.text === "string") {
           emit({
@@ -712,8 +686,8 @@ function createDshEventMapper(
         break;
       }
       case "tool/call": {
-        const callId = string(data.callId) ?? "unknown";
-        const toolName = string(data.name) ?? "unknown";
+        const callId = nonEmptyString(data.callId) ?? "unknown";
+        const toolName = nonEmptyString(data.name) ?? "unknown";
         toolNames.set(callId, toolName);
         emit({ type: "tool_execution_start", toolCallId: callId, toolName, args: jsonValue(data.arguments) });
         break;
@@ -723,9 +697,9 @@ function createDshEventMapper(
         const resultBlock = Array.isArray(message.content)
           ? message.content.map(asRecord).find((part) => part?.type === "tool-result")
           : undefined;
-        const callId = string(data.callId)
-          ?? string(resultBlock?.toolCallId)
-          ?? string(asRecord(message.source)?.callId)
+        const callId = nonEmptyString(data.callId)
+          ?? nonEmptyString(resultBlock?.toolCallId)
+          ?? nonEmptyString(asRecord(message.source)?.callId)
           ?? "unknown";
         const toolName = toolNames.get(callId) ?? "unknown";
         const isError = resultBlock?.isError === true || data.error !== undefined;
@@ -736,7 +710,7 @@ function createDshEventMapper(
           result: resultBlock?.content ?? message.content ?? data.meta,
           isError,
         });
-        const turn = number(data.turn);
+        const turn = numberValue(data.turn);
         if (turn !== undefined) {
           const results = turnToolResults.get(turn) ?? [];
           results.push(message);
@@ -746,7 +720,7 @@ function createDshEventMapper(
         break;
       }
       case "turn/end": {
-        emitTurnEnd(number(data.turn));
+        emitTurnEnd(numberValue(data.turn));
         break;
       }
       case "step/end":
@@ -781,7 +755,7 @@ function createDshEventMapper(
 }
 
 function dshRecordKey(record: JsonRecord): string {
-  const seq = number(record.seq);
+  const seq = numberValue(record.seq);
   if (seq !== undefined) return `seq:${seq}`;
   try {
     return `record:${JSON.stringify(record)}`;
@@ -842,7 +816,7 @@ class DshSessionTailerImpl implements DshSessionTailer {
       ? undefined
       : {
         path: this.filePath,
-        sessionId: string(this.sessionHeader.id) ?? "",
+        sessionId: nonEmptyString(this.sessionHeader.id) ?? "",
         text: "",
         events: [this.sessionHeader, ...this.records],
       };
@@ -1019,8 +993,8 @@ function emitToolUse(
   accumulator?: SubprocessAccumulator,
 ): void {
   const tool = asRecord(value);
-  const toolCallId = string(tool?.toolCallId ?? tool?.tool_use_id ?? tool?.id) ?? "unknown";
-  const toolName = string(tool?.toolName ?? tool?.name) ?? "unknown";
+  const toolCallId = nonEmptyString(tool?.toolCallId ?? tool?.tool_use_id ?? tool?.id) ?? "unknown";
+  const toolName = nonEmptyString(tool?.toolName ?? tool?.name) ?? "unknown";
   if (accumulator !== undefined) {
     accumulator.toolNames ??= new Map();
     accumulator.toolNames.set(toolCallId, toolName);
@@ -1038,8 +1012,8 @@ function emitToolResult(
   emit: (event: AgentEvent) => void,
   accumulator: SubprocessAccumulator,
 ): void {
-  const toolCallId = string(value.toolCallId ?? value.tool_use_id ?? value.id) ?? "unknown";
-  const toolName = string(value.toolName ?? value.name)
+  const toolCallId = nonEmptyString(value.toolCallId ?? value.tool_use_id ?? value.id) ?? "unknown";
+  const toolName = nonEmptyString(value.toolName ?? value.name)
     ?? accumulator.toolNames?.get(toolCallId)
     ?? "unknown";
   emit({
@@ -1063,7 +1037,7 @@ function normalizeCodexRecord(
   emit: (event: AgentEvent) => void,
   accumulator: SubprocessAccumulator,
 ): boolean {
-  const type = string(value.type);
+  const type = nonEmptyString(value.type);
   switch (type) {
     case "thread.started":
       accumulator.sessionId ??= sessionIdFromValue(value);
@@ -1087,7 +1061,7 @@ function normalizeCodexRecord(
       emit({
         type: "error",
         errorType: "request-rejected",
-        message: string(failure?.message ?? value.message) ?? "Codex turn failed",
+        message: nonEmptyString(failure?.message ?? value.message) ?? "Codex turn failed",
       });
       accumulator.turnEnded = true;
       return true;
@@ -1097,10 +1071,10 @@ function normalizeCodexRecord(
     case "item.completed": {
       const item = asRecord(value.item);
       if (item === undefined) return true;
-      const itemType = string(item.type);
+      const itemType = nonEmptyString(item.type);
       if (itemType === "agent_message") {
         if (type === "item.updated") {
-          const delta = string(item.delta ?? item.text_delta);
+          const delta = nonEmptyString(item.delta ?? item.text_delta);
           if (delta !== undefined) emitStreamedText(delta, accumulator, emit, {});
           return true;
         }
@@ -1117,10 +1091,10 @@ function normalizeCodexRecord(
         || itemType === "mcp_tool_call"
         || itemType === "function_call";
       if (!isTool) return true;
-      const toolCallId = string(item.id) ?? `codex-${itemType}`;
+      const toolCallId = nonEmptyString(item.id) ?? `codex-${itemType}`;
       const toolName = itemType === "command_execution"
         ? "bash"
-        : string(item.name ?? item.tool_name) ?? "unknown";
+        : nonEmptyString(item.name ?? item.tool_name) ?? "unknown";
       const args = itemType === "command_execution"
         ? { command: item.command ?? "" }
         : item.arguments ?? item.input ?? {};
@@ -1128,7 +1102,7 @@ function normalizeCodexRecord(
         emitToolUse({ id: toolCallId, name: toolName, input: args }, emit, accumulator);
       }
       if (type === "item.completed") {
-        const exitCode = number(item.exit_code ?? item.exitCode);
+        const exitCode = numberValue(item.exit_code ?? item.exitCode);
         emitToolResult({
           id: toolCallId,
           name: toolName,
@@ -1142,7 +1116,7 @@ function normalizeCodexRecord(
       emit({
         type: "error",
         errorType: "request-rejected",
-        message: string(value.message) ?? "Codex request failed",
+        message: nonEmptyString(value.message) ?? "Codex request failed",
       });
       return true;
     default:
@@ -1186,7 +1160,7 @@ function normalizeSubprocessRecord(
   accumulator: SubprocessAccumulator,
 ): void {
   accumulator.sessionId ??= sessionIdFromValue(value);
-  const type = string(value.type);
+  const type = nonEmptyString(value.type);
   if (harness === "codex" && normalizeCodexRecord(value, emit, accumulator)) return;
   switch (type) {
     // Claude's `--include-partial-messages` wraps every raw Anthropic stream
@@ -1197,7 +1171,7 @@ function normalizeSubprocessRecord(
     // stays parked at the head of the transcript until the reply is over.
     case "stream_event": {
       const event = asRecord(value.event);
-      const inner = string(event?.type);
+      const inner = nonEmptyString(event?.type);
       // A nested envelope is not a shape the CLI emits; a hostile or buggy
       // frame must not recurse forever.
       if (event !== undefined && inner !== undefined && inner !== "stream_event") {
@@ -1268,7 +1242,7 @@ function normalizeSubprocessRecord(
       if (delta?.type === "text_delta" && typeof delta.text === "string") {
         emitStreamedText(delta.text, accumulator, emit, { contentIndex: value.index });
       } else if (delta?.type === "input_json_delta") {
-        const contentIndex = number(value.index);
+        const contentIndex = numberValue(value.index);
         const tool = contentIndex === undefined ? undefined : accumulator.toolCallsByContentIndex?.get(contentIndex);
         emit({
           type: "tool_execution_update",
@@ -1290,12 +1264,12 @@ function normalizeSubprocessRecord(
       const block = asRecord(value.content_block ?? value.block);
       if (block?.type === "tool_use") {
         emitToolUse(block, emit, accumulator);
-        const contentIndex = number(value.index);
+        const contentIndex = numberValue(value.index);
         if (contentIndex !== undefined) {
           accumulator.toolCallsByContentIndex ??= new Map();
           accumulator.toolCallsByContentIndex.set(contentIndex, {
-            toolCallId: string(block.id ?? block.toolCallId) ?? "unknown",
-            toolName: string(block.name ?? block.toolName) ?? "unknown",
+            toolCallId: nonEmptyString(block.id ?? block.toolCallId) ?? "unknown",
+            toolName: nonEmptyString(block.name ?? block.toolName) ?? "unknown",
           });
         }
       }
@@ -1310,7 +1284,7 @@ function normalizeSubprocessRecord(
       return;
     }
     case "content_block_stop": {
-      const contentIndex = number(value.index);
+      const contentIndex = numberValue(value.index);
       if (contentIndex !== undefined) accumulator.toolCallsByContentIndex?.delete(contentIndex);
       return;
     }
@@ -1320,8 +1294,8 @@ function normalizeSubprocessRecord(
       emitToolUse(value, emit, accumulator);
       return;
     case "tool_execution_update": {
-      const toolCallId = string(value.toolCallId ?? value.tool_use_id ?? value.id) ?? "unknown";
-      const toolName = string(value.toolName ?? value.name)
+      const toolCallId = nonEmptyString(value.toolCallId ?? value.tool_use_id ?? value.id) ?? "unknown";
+      const toolName = nonEmptyString(value.toolName ?? value.name)
         ?? accumulator.toolNames?.get(toolCallId)
         ?? "unknown";
       emit({
@@ -1359,7 +1333,7 @@ function normalizeSubprocessRecord(
       return;
     }
     case "message_delta": {
-      const error = asRecord(value.delta)?.stop_reason === "error" ? string(asRecord(value.delta)?.error) : undefined;
+      const error = asRecord(value.delta)?.stop_reason === "error" ? nonEmptyString(asRecord(value.delta)?.error) : undefined;
       if (error !== undefined) emit({ type: "error", errorType: "request-rejected", message: error });
       const usage = extractUsage(value);
       if (usage !== undefined) emit({ type: "usage", usage });
@@ -1374,7 +1348,7 @@ function normalizeSubprocessRecord(
       return;
     case "result":
     case "done": {
-      const rawText = string(value.result ?? value.text ?? value.output);
+      const rawText = nonEmptyString(value.result ?? value.text ?? value.output);
       const text = rawText === undefined ? undefined : stripProxyDiagnostic(rawText);
       if (text !== undefined && accumulator.lastMessageEndText !== text) {
         emitMessageEnd(sanitizeAssistantMessage({ role: "assistant", content: text }), accumulator, emit);
@@ -1388,7 +1362,7 @@ function normalizeSubprocessRecord(
       emit({ type: "queue_update", steering: stringList(value.steering), followUp: stringList(value.followUp) });
       return;
     case "compaction_start":
-      emit({ type: "compaction_start", reason: string(value.reason) ?? "unknown" });
+      emit({ type: "compaction_start", reason: nonEmptyString(value.reason) ?? "unknown" });
       return;
     case "entry_appended":
       emit({ type: "entry_appended", entry: value.entry });
@@ -1397,12 +1371,12 @@ function normalizeSubprocessRecord(
       emit({ type: "session_info_changed", name: typeof value.name === "string" ? value.name : undefined });
       return;
     case "thinking_level_changed":
-      emit({ type: "thinking_level_changed", level: string(value.level) ?? "unknown" });
+      emit({ type: "thinking_level_changed", level: nonEmptyString(value.level) ?? "unknown" });
       return;
     case "compaction_end":
       emit({
         type: "compaction_end",
-        reason: string(value.reason) ?? "unknown",
+        reason: nonEmptyString(value.reason) ?? "unknown",
         result: value.result,
         aborted: value.aborted === true,
         willRetry: value.willRetry === true,
@@ -1412,31 +1386,31 @@ function normalizeSubprocessRecord(
     case "auto_retry_start":
       emit({
         type: "auto_retry_start",
-        attempt: number(value.attempt) ?? 0,
-        maxAttempts: number(value.maxAttempts) ?? 0,
-        delayMs: number(value.delayMs) ?? 0,
-        errorMessage: string(value.errorMessage) ?? "retry requested",
+        attempt: numberValue(value.attempt) ?? 0,
+        maxAttempts: numberValue(value.maxAttempts) ?? 0,
+        delayMs: numberValue(value.delayMs) ?? 0,
+        errorMessage: nonEmptyString(value.errorMessage) ?? "retry requested",
       });
       return;
     case "auto_retry_end":
       emit({
         type: "auto_retry_end",
         success: value.success === true,
-        attempt: number(value.attempt) ?? 0,
+        attempt: numberValue(value.attempt) ?? 0,
         ...(typeof value.finalError === "string" ? { finalError: value.finalError } : {}),
       });
       return;
     case "summarization_retry_scheduled":
       emit({
         type: "summarization_retry_scheduled",
-        attempt: number(value.attempt) ?? 0,
-        maxAttempts: number(value.maxAttempts) ?? 0,
-        delayMs: number(value.delayMs) ?? 0,
-        errorMessage: string(value.errorMessage) ?? "retry requested",
+        attempt: numberValue(value.attempt) ?? 0,
+        maxAttempts: numberValue(value.maxAttempts) ?? 0,
+        delayMs: numberValue(value.delayMs) ?? 0,
+        errorMessage: nonEmptyString(value.errorMessage) ?? "retry requested",
       });
       return;
     case "summarization_retry_attempt_start":
-      emit({ type: "summarization_retry_attempt_start", source: string(value.source) ?? "unknown", ...(typeof value.reason === "string" ? { reason: value.reason } : {}) });
+      emit({ type: "summarization_retry_attempt_start", source: nonEmptyString(value.source) ?? "unknown", ...(typeof value.reason === "string" ? { reason: value.reason } : {}) });
       return;
     case "summarization_retry_finished":
       emit({ type: "summarization_retry_finished" });
@@ -1458,10 +1432,6 @@ function normalizeSubprocessRecord(
       emit({ type: "unknown", sourceType: type ?? `${harness}:unknown`, data: value });
     }
   }
-}
-
-function stringList(value: unknown): readonly string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 async function readResource(path: string): Promise<string> {
@@ -1760,9 +1730,9 @@ function dshSteerAck(line: string): { readonly id: string; readonly accepted: bo
   try {
     const parsed: unknown = JSON.parse(trimmed.slice(DSH_STEER_ACK_PREFIX.length));
     const record = asRecord(parsed);
-    const id = string(record?.id);
+    const id = nonEmptyString(record?.id);
     if (record === undefined || id === undefined || typeof record.accepted !== "boolean") return undefined;
-    const reason = string(record.reason);
+    const reason = nonEmptyString(record.reason);
     return { id, accepted: record.accepted, ...(reason === undefined ? {} : { reason }) };
   } catch {
     return undefined;
@@ -1818,7 +1788,7 @@ export class PiRpcClient {
    * request, false when nothing was waiting for it (a stray or duplicate
    * frame, which the caller then handles as an ordinary event). */
   settle(value: JsonRecord): boolean {
-    const id = string(value.id);
+    const id = nonEmptyString(value.id);
     if (id === undefined) return false;
     const pending = this.pending.get(id);
     if (pending === undefined) return false;
@@ -1827,7 +1797,7 @@ export class PiRpcClient {
       pending.resolve();
       return true;
     }
-    const reason = string(value.error) ?? "unknown reason";
+    const reason = nonEmptyString(value.error) ?? "unknown reason";
     const error = new AgentError({
       kind: "request-rejected",
       message: `pi rejected the ${pending.command} request: ${reason}`,
@@ -2197,7 +2167,7 @@ function consumeResponse(line: string, settle: (value: JsonRecord) => boolean): 
     return false;
   }
   const record = asRecord(parsed);
-  return record !== undefined && string(record.type) === "response" && settle(record);
+  return record !== undefined && nonEmptyString(record.type) === "response" && settle(record);
 }
 
 function runChild(
