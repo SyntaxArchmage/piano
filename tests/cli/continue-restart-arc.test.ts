@@ -60,7 +60,7 @@ const wait = (label: string, check: () => boolean) => waitFor(label, check, 60_0
 
 function progressStatus(runsRoot: string, runId: string): string | undefined {
   try {
-    const raw = readFileSync(join(runsRoot, runId, "progress.json"), "utf8");
+    const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
     return (JSON.parse(raw) as { status?: string }).status;
   } catch {
     return undefined;

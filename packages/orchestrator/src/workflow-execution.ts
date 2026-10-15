@@ -107,8 +107,8 @@ import {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   workflowProgressPath,
-  workflowProgressSnapshotPath,
 } from "./progress.js";
+import { runStatusPath } from "./run-status.js";
 import {
 } from "./contract-snapshot.js";
 import {
@@ -280,8 +280,8 @@ export interface WorkflowExecutionResult {
   readonly terminalStages: readonly WorkflowStageExecutionResult[];
   /** Run-level append-only progress stream, including every loop iteration. */
   readonly progressPath: string;
-  /** Latest worker-neutral progress view for monitors. */
-  readonly progressSnapshotPath?: string;
+  /** Where the run's one state document lives, for monitors. */
+  readonly statusPath?: string;
 }
 
 
@@ -1061,7 +1061,7 @@ export function executeWorkflow(
         stages: completed.stages,
         terminalStages: terminal,
         progressPath: workflowProgressPath(request.runDir),
-        progressSnapshotPath: workflowProgressSnapshotPath(request.runDir),
+        statusPath: runStatusPath(request.runDir),
       };
     });
     const cleanupAfterFailure = finalizeWorkspaces().pipe(

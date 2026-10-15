@@ -14,7 +14,8 @@ import {
   markWorkflowStageStarted,
   progressRecordKind,
   workflowProgressPath,
-  workflowProgressSnapshotPath,
+  runStatusPath,
+  runStatusFromParts,
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
@@ -44,15 +45,6 @@ function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowP
     transcriptPath: "/tmp/transcript.jsonl",
     handoffRecordPath: "/tmp/handoff.json",
     ...overrides,
-  };
-}
-
-async function appendAndRead(recordValue: Omit<WorkflowProgressRecord, "version" | "timestamp">) {
-  const runDir = await mkdtemp(join(tmpdir(), "piano-progress-"));
-  roots.push(runDir);
-  await Effect.runPromise(appendWorkflowProgress(runDir, recordValue).pipe(Effect.provide(NodeContext.layer)));
-  return JSON.parse(await readFile(workflowProgressSnapshotPath(runDir), "utf8")) as {
-    latest?: { decision?: string; benchmark?: unknown; projections?: unknown };
   };
 }
 
@@ -87,7 +79,7 @@ function run<A>(effect: Effect.Effect<A, WorkflowError, FileSystem.FileSystem>):
 }
 
 async function readTiming(runDir: string): Promise<SnapshotTiming> {
-  return JSON.parse(await readFile(workflowProgressSnapshotPath(runDir), "utf8")) as SnapshotTiming;
+  return JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as SnapshotTiming;
 }
 
 /** The append-only stream, as its readers see it: one JSON object per line. */
@@ -237,49 +229,6 @@ describe("workflow stage time", () => {
   });
 });
 
-describe("workflow progress compatibility", () => {
-  it("retains legacy payload hints when no projection or contract metadata exists", async () => {
-    const snapshot = await appendAndRead(record({
-      resultPayload: { decision: "KEEP", benchmark: { best: 12 } },
-    }));
-
-    expect(snapshot.latest).toMatchObject({ decision: "KEEP", benchmark: { best: 12 } });
-    expect(snapshot.latest?.projections).toBeUndefined();
-  });
-
-  it("does not infer canonical hints from undeclared payload fields", async () => {
-    const snapshot = await appendAndRead(record({
-      resultPayload: { decision: "KEEP", benchmark: { best: 12 } },
-      contract: {
-        id: "canonical-result",
-        version: 1,
-        digest: "a".repeat(64),
-        snapshotPath: "/tmp/contract.json",
-      },
-    }));
-
-    expect(snapshot.latest?.decision).toBeUndefined();
-    expect(snapshot.latest?.benchmark).toBeUndefined();
-  });
-
-  it("uses explicit projections instead of similarly named payload fields", async () => {
-    const projections = [
-      { id: "round.decision", pointer: "/verdict", format: "string" as const, value: "DISCARD" },
-      { id: "benchmark.evidence", pointer: "/metric", format: "json" as const, value: { best: 7 } },
-    ];
-    const snapshot = await appendAndRead(record({
-      resultPayload: { decision: "KEEP", benchmark: { best: 12 } },
-      projections,
-    }));
-
-    expect(snapshot.latest).toMatchObject({
-      decision: "DISCARD",
-      benchmark: { best: 7 },
-      projections,
-    });
-  });
-});
-
 describe("workflow progress stream", () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -336,21 +285,19 @@ describe("workflow progress stream", () => {
     });
   });
 
-  it("keeps a run going when its snapshot is unreadable", async () => {
+  it("keeps a run going when its state document is unreadable", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    // A snapshot that no longer parses is a damaged view of the stream, not a
-    // reason to refuse the run: the record lands and the fold rewrites the
-    // view from the record it just wrote.
-    await writeFile(workflowProgressSnapshotPath(runDir), "{not json\n", "utf8");
+    // A state document that no longer parses is a damaged view of the stream,
+    // not a reason to refuse the run: the record lands and the fold rewrites
+    // the view from the record it just wrote.
+    await writeFile(runStatusPath(runDir), "{not json\n", "utf8");
 
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
 
     expect((await readStream(runDir))[0]).toMatchObject({ kind: "execution-started", executionId: "execution" });
-    const snapshot = JSON.parse(
-      await readFile(workflowProgressSnapshotPath(runDir), "utf8"),
-    ) as WorkflowProgressSnapshot;
-    expect(snapshot).toMatchObject({ executionId: "execution", status: "running", plannedStages: 4 });
+    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as WorkflowProgressSnapshot;
+    expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
   });
 
   it("keeps accepted records free of the discriminator, so existing files read the same", async () => {
@@ -468,13 +415,13 @@ describe("workflow progress stream", () => {
       jobOrdinal: 1,
       outcome: "restarted",
     });
-    // The snapshot describes the latest span; a close moves only its
+    // The state document describes the latest span; a close moves only its
     // timestamp, and the job's own reading comes from the fold.
-    const snapshot = JSON.parse(
-      await readFile(workflowProgressSnapshotPath(runDir), "utf8"),
+    const status = JSON.parse(
+      await readFile(runStatusPath(runDir), "utf8"),
     ) as { updatedAt: string; status: string };
-    expect(snapshot.updatedAt).toBe("2026-01-01T00:00:00.000Z");
-    expect(snapshot.status).toBe("running");
+    expect(status.updatedAt).toBe("2026-01-01T00:00:00.000Z");
+    expect(status.status).toBe("running");
   });
 
   it("reproduces the snapshot by reducing the stream from nothing", async () => {
@@ -499,14 +446,11 @@ describe("workflow progress stream", () => {
     at("2026-01-01T00:02:00.000Z");
     await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
 
-    // The snapshot the writers produced, and the same snapshot rebuilt by
-    // reducing the stream they wrote. Equal output is what makes the snapshot a
+    // The state document the writers produced, and the same document rebuilt
+    // by folding the stream they wrote. Equal output is what makes the view a
     // view of the stream rather than a second account of the run.
-    const written = JSON.parse(await readFile(workflowProgressSnapshotPath(runDir), "utf8")) as unknown;
-    const rebuilt = (await readStream(runDir)).reduce<WorkflowProgressSnapshot | undefined>(
-      (previous, line) => applyProgressRecord(previous, line as unknown as WorkflowProgressStreamRecord),
-      undefined,
-    );
+    const written = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown;
+    const rebuilt = runStatusFromParts({ progressStream: await readFile(workflowProgressPath(runDir), "utf8") });
 
     expect(rebuilt).toBeDefined();
     expect(rebuilt).toEqual(written);

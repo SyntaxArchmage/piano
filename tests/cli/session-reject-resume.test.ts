@@ -114,7 +114,7 @@ describe("reject with feedback, then exit and resume", () => {
 
       // The completed turn is durable: one run, one conversation, one turn.
       expect((await readdir(runsRoot)).sort()).toEqual([runId]);
-      expect((await readJson(join(runsRoot, runId, "progress.json"))).status).toBe("completed");
+      expect((await readJson(join(runsRoot, runId, "status.json"))).status).toBe("completed");
       const trajectoryA = await readJson(join(runsRoot, runId, "trajectory.json"));
       const turnsA = trajectoryA.turns as Array<{ prompt: string; status: string }>;
       expect(turnsA).toHaveLength(1);
@@ -163,7 +163,7 @@ describe("reject with feedback, then exit and resume", () => {
       expect((requests[2] as { continuation?: { sessionId?: string } }).continuation?.sessionId)
         .toBe("sess-reject");
       expect((await readdir(runsRoot)).sort()).toEqual([runId]);
-      expect((await readJson(join(runsRoot, runId, "progress.json"))).status).toBe("completed");
+      expect((await readJson(join(runsRoot, runId, "status.json"))).status).toBe("completed");
       const trajectory = await readJson(join(runsRoot, runId, "trajectory.json"));
       const turns = trajectory.turns as Array<{ prompt: string; status: string }>;
       expect(turns.map((turn) => turn.status)).toEqual(["completed", "completed"]);

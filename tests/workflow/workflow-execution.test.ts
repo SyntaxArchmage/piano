@@ -2925,7 +2925,7 @@ workflow:
           const stage = stageId(request);
           const invocation = invocationId(request);
           if (calls.length === 1) {
-            const running = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+            const running = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
               status: string;
               plannedStages: number;
               completedStages: number;
@@ -3013,7 +3013,7 @@ workflow:
         "tune.profile-session-2",
         "tune.profile-session-3",
       ]);
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
         completedStages: number;
@@ -3067,7 +3067,7 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .every((time) => time.completedMs === undefined || Number.isSafeInteger(time.completedMs))).toBe(true);
       expect(snapshot.current?.progress?.hint).toContain("iter-3/3");
-      expect(snapshot.latest?.progress?.hint).toContain("7/7 stages completed");
+            expect(snapshot.current?.progress?.hint).toContain("7/7 stages completed");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3242,7 +3242,7 @@ workflow:
       }
       const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       expect(log.match(/"event":"workspace.prepared"/g)).toHaveLength(3);
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
         completedStages: number;
@@ -3730,7 +3730,7 @@ workflow:
         expect(relative(outerSeed!.workspace.cwd, stage.workspace.cwd).startsWith("..")).toBe(true);
       }
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         plannedStages: number;
         completedStages: number;
         stageCounts: Record<string, { planned: number; completed: number }>;

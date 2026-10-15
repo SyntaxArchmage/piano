@@ -291,7 +291,7 @@ describe("duration-bound loop execution", () => {
           // count exceeds its planned count, so an unknown-length loop must
           // grow its denominator rather than divide by one iteration.
           try {
-            snapshots.push(JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")));
+            snapshots.push(JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")));
           } catch {
             // The first attempt may run before any snapshot exists.
           }

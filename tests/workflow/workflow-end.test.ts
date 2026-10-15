@@ -170,7 +170,7 @@ function runWorkflow<A>(session: Awaited<ReturnType<typeof testSession>>, effect
  * point of this suite is that resolution happens at all, then that it is
  * honest. */
 async function readFinalProgress(runDir: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readFile(join(runDir, "progress.json"), "utf8")) as Record<string, unknown>;
+  return JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as Record<string, unknown>;
 }
 
 describe("workflow ends when its scripted workers finish", () => {

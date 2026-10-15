@@ -153,7 +153,7 @@ describe("Escape pauses a run instead of failing it", () => {
       // The convenience snapshot says paused, not failed — and the stream says
       // the same thing, which is what makes the outcome survive a snapshot a
       // wedged finalizer never reached.
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
       expect(await lastProgressRecord(session.runDir)).toMatchObject({
         kind: "execution-finished",
         status: "paused",
@@ -173,7 +173,7 @@ describe("Escape pauses a run instead of failing it", () => {
         .toBe(HANGING_SESSION.transcriptPath);
 
       // Paused -> running -> completed: one execution across the pause.
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("completed");
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("completed");
       expect(await lastProgressRecord(session.runDir)).toMatchObject({
         kind: "execution-finished",
         status: "completed",
@@ -217,7 +217,7 @@ describe("Escape pauses a run instead of failing it", () => {
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
       // The durable verdict for an interrupted run: paused, never failed.
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -380,7 +380,7 @@ describe("Escape pauses a run instead of failing it", () => {
       controller.abort();
       const exit = await Effect.runPromise(Fiber.await(fiber));
       expect(Exit.isFailure(exit) && isCancellation(exit.cause)).toBe(true);
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
       const finalActor = Object.values(await readResumeActors(session.runDir))[0];
       // The rejected turn's count survived the interrupt (live map read, not
       // the stale pre-attempt snapshot).

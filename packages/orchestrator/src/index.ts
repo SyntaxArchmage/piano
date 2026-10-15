@@ -125,7 +125,6 @@ export {
   parseProgressStreamRecord,
   progressRecordKind,
   workflowProgressPath,
-  workflowProgressSnapshotPath,
   type WorkflowProgressRecord,
   type WorkflowProgressStartRecord,
   type WorkflowProgressExecutionStartRecord,

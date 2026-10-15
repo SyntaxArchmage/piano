@@ -1,7 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
@@ -293,18 +292,6 @@ export interface WorkflowProgressSnapshot {
    * accumulated duration without replaying the append-only stream. */
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   readonly current?: WorkflowProgressCurrent;
-  readonly latest?: {
-    readonly invocationId: string;
-    readonly stageId: string;
-    readonly stage: string;
-    readonly worker: string;
-    readonly attempt: number;
-    readonly iteration?: number;
-    readonly progress?: WorkflowProgressProjection;
-    readonly projections?: readonly ContractProjection[];
-    readonly decision?: string;
-    readonly benchmark?: unknown;
-  };
   readonly error?: string;
 }
 
@@ -312,79 +299,8 @@ export function workflowProgressPath(runDir: string): string {
   return join(runDir, "progress.jsonl");
 }
 
-/** Current, human-readable projection for `watch`/TUI consumers. The JSONL
- * stream remains the immutable evidence source; this file is only the latest
- * state and is safe to replace after every accepted stage. */
-export function workflowProgressSnapshotPath(runDir: string): string {
-  return join(runDir, "progress.json");
-}
-
 function progressError(path: string, operation: string, cause: unknown): WorkflowError {
   return workflowError("schedule", path, `${operation}: ${errorMessage(cause)}`);
-}
-
-/** Adapt the pre-projection progress API at its persistence boundary. New
- * canonical records carry explicit projections; only historical/named callers
- * without a contract snapshot may recover the two legacy convenience hints
- * from resultPayload. */
-function legacyProgressProjections(
-  payload: unknown,
-): readonly ContractProjection[] {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return [];
-  const value = payload as Record<string, unknown>;
-  return [
-    ...(typeof value.decision === "string"
-      ? [{ id: "round.decision", pointer: "/decision", format: "string" as const, value: value.decision }]
-      : []),
-    ...(value.benchmark === undefined
-      ? []
-      : [{ id: "benchmark.evidence", pointer: "/benchmark", format: "json" as const, value: value.benchmark }]),
-  ];
-}
-
-function progressProjectionHint(
-  projections: readonly ContractProjection[],
-  persistProjections: boolean,
-): Pick<NonNullable<WorkflowProgressSnapshot["latest"]>, "decision" | "benchmark" | "projections"> {
-  const value = new Map(projections.map((projection) => [projection.id, projection.value]));
-  return {
-    ...(typeof value.get("round.decision") === "string" ? { decision: value.get("round.decision") as string } : {}),
-    ...(value.has("benchmark.evidence") ? { benchmark: value.get("benchmark.evidence") } : {}),
-    ...(persistProjections ? { projections } : {}),
-  };
-}
-
-function writeSnapshotAtomic(
-  path: string,
-  snapshot: WorkflowProgressSnapshot,
-): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return writeFileAtomic(path, `${JSON.stringify(snapshot, null, 2)}\n`, {
-    temporaryPath: () => `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    mapError: (cause, step) => progressError(path, `snapshot ${step}`, cause),
-  });
-}
-
-function readSnapshot(
-  fileSystem: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<WorkflowProgressSnapshot | undefined, WorkflowError, never> {
-  return Effect.gen(function* () {
-    const exists = yield* fileSystem.exists(path).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot exists", cause)),
-    );
-    if (!exists) return undefined;
-    const raw = yield* fileSystem.readFileString(path).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot read", cause)),
-    );
-    try {
-      return JSON.parse(raw) as WorkflowProgressSnapshot;
-    } catch {
-      // An unreadable view is no view. The stream holds the record of the run
-      // and this file is only its projection, so a run must not fail because
-      // the projection could not be parsed — a fresh one discards it anyway.
-      return undefined;
-    }
-  });
 }
 
 function emptyStageCounts(plan: WorkflowProgressPlan): Readonly<Record<string, WorkflowProgressStageCount>> {
@@ -569,11 +485,6 @@ export function applyProgressRecord(
   }
   const accepted = record as WorkflowProgressRecord;
   const projection = accepted.progress;
-  const explicitProjections = accepted.projections;
-  const hintProjections = explicitProjections ?? (accepted.contract === undefined
-    ? legacyProgressProjections(accepted.resultPayload)
-    : []);
-  const payloadHint = progressProjectionHint(hintProjections, explicitProjections !== undefined);
   const base = previous ?? emptyProgressSnapshot(accepted.executionId, accepted.timestamp);
   return {
     ...base,
@@ -605,16 +516,6 @@ export function applyProgressRecord(
       ...(projection === undefined ? {} : { progress: projection }),
       ...(accepted.projections === undefined ? {} : { projections: accepted.projections }),
     },
-    latest: {
-      invocationId: accepted.invocationId,
-      stageId: accepted.stageId,
-      stage: accepted.stage,
-      worker: accepted.worker,
-      attempt: accepted.attempt,
-      ...(accepted.iteration === undefined ? {} : { iteration: accepted.iteration }),
-      ...(projection === undefined ? {} : { progress: projection }),
-      ...payloadHint,
-    },
   };
 }
 
@@ -628,7 +529,7 @@ export function initializeWorkflowProgress(
   prompt: string,
   resume: boolean,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressSnapshotPath(runDir);
+  const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,
@@ -667,39 +568,37 @@ function appendProgressLine(
   });
 }
 
-/** Append one record, then fold it into the snapshot beside it.
+/** Append one record to the stream, then bring the run's state document back
+ * in step with it.
  *
  * The one path every writer takes. The record is written first on purpose: the
- * snapshot is a projection of it, so a failure between the two must leave the
- * projection stale rather than the record missing. */
+ * state document is a view of it, so a failure between the two must leave the
+ * view stale rather than the record missing. */
 function appendAndFold(
   runDir: string,
   record: WorkflowProgressStreamRecord,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const snapshotPath = workflowProgressSnapshotPath(runDir);
     yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), record);
-    const previous = yield* readSnapshot(fileSystem, snapshotPath);
-    yield* writeSnapshotAtomic(snapshotPath, applyProgressRecord(previous, record));
-    // The run's one state document stays in step with the ledger it is a view
-    // of. `run-status` folds this module's records back, which is why the two
+    // `run-status` folds this module's records back, which is why the two
     // import each other's functions rather than one owning the other.
     yield* refreshRunStatus(runDir);
   });
 }
 
-/** Record that a stage/attempt started, in the stream and then in the snapshot.
+/** Record that a stage/attempt started on the stream.
  *
- * The stream is written first on purpose: the snapshot is a view of the record,
- * so a failure between the two must leave the view stale rather than the record
- * missing. Viewing the order the other way would let a crash lose the start. */
+ * The stream is written first on purpose: the state document is a view of the
+ * record, so a failure between the two must leave the view stale rather than
+ * the record missing. Viewing the order the other way would let a crash lose
+ * the start. */
 export function markWorkflowStageStarted(
   runDir: string,
   executionId: string,
   current: Omit<WorkflowProgressCurrent, "status" | "progress">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressSnapshotPath(runDir);
+  const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,
@@ -739,41 +638,28 @@ export function appendWorkflowProgress(
   });
 }
 
-/** Record that an execution ended, in the stream and then in the snapshot.
+/** Record that an execution ended on the stream.
  *
  * Best-effort callers may catch this error so a convenience view never hides
- * the canonical workflow result. When snapshot.current is present its status
- * is folded: "accepted" for completed/paused (a human stop is not a failure;
- * resume.jsonl is the sole continuation authority), "failed" for a failed run.
- * `current.stageId` is never rewritten — it still names the last active stage.
- * Readers must tolerate legacy on-disk shapes (stale current.status:"running"
- * under a terminal snapshot) written before this fold was introduced. */
-/** Record that an execution ended, in the stream and then in the snapshot.
- *
- * Best-effort callers may catch this error so a convenience view never hides
- * the canonical workflow result. The snapshot stays a view: with no snapshot to
- * correct there is nothing to write, and the record above is the outcome. */
+ * the canonical workflow result. The state document is folded from this record
+ * like every other; with nothing to correct there, the record above is the
+ * outcome. */
 export function finalizeWorkflowProgress(
   runDir: string,
   executionId: string,
   status: "completed" | "failed" | "paused",
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressSnapshotPath(runDir);
+  const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const record: WorkflowProgressExecutionFinishRecord = {
+    yield* appendAndFold(runDir, {
       version: 1,
       kind: "execution-finished",
       timestamp: new Date().toISOString(),
       executionId,
       status,
       ...(error === undefined ? {} : { error }),
-    };
-    yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), record);
-    const previous = yield* readSnapshot(fileSystem, path);
-    if (previous !== undefined) yield* writeSnapshotAtomic(path, applyProgressRecord(previous, record));
-    yield* refreshRunStatus(runDir);
+    });
     return path;
   });
 }
