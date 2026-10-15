@@ -10,14 +10,13 @@ export {
   type AgentRetryNotice,
   type AgentRetryOutcome,
 } from "./retry.js";
+export { defaultPiConfigPath, executeAgent } from "./pi.js";
 export {
-  defaultPiConfigPath,
-  executeAgent,
   piAvailable,
   piLoadable,
   type PiHarnessOptions,
   type PiModule,
-} from "./pi.js";
+} from "./pi-sdk.js";
 export {
   type AgentHarnessOptions,
   type AgentContinuation,
