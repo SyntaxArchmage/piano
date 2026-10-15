@@ -416,11 +416,10 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 ~/.piano/runs/<run-id>/
 ├── log.jsonl          # run + stage lifecycle events (machine-readable)
 ├── trace.jsonl        # function-level span traces
-├── trajectory.json    # per-run summary: status, per-prompt turns, session/transcript of the latest turn
-├── trajectory.jsonl   # append-only record of each write, the summary is folded from
+├── trajectory.jsonl   # append-only record of each write; status.json is folded from it
 ├── progress.jsonl     # append-only ledger: one line per accepted stage attempt
-├── progress.json      # live workflow plan/status snapshot for monitors
 ├── resume.jsonl       # append-only resume state: newest line holds the whole actor table
+├── status.json        # the run's single state document, folded from the ledgers above
 ├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
 ├── trajectories/
 │   ├── index.json                # recorder inventory, status, and errors
@@ -450,29 +449,25 @@ normally clean up `workspaces/` while retaining `workspace-records/`.
 
 Key files:
 
-- **`trajectory.json`** — the per-run summary: `status` (`completed` |
-  `failed` | `cancelled`), the per-prompt `turns` (`prompt`, `status`,
-  `eventCount`), the latest `sessionId` and `transcriptPath`, plus
-  `runId`/`workflowPath`/`workspaceCwd`, and a `name` once you `/rename` the
-  run. Every write rewrites it whole, so it is the run's complete record and
-  the file Piano's own readers read.
-- **`trajectory.jsonl`** — the record each write appends *before* that rewrite:
-  one line carrying that write's prompt and events, or the single field a
-  rename touched. It is the only copy of a run whose document is missing or
-  was never written, and folding it is how the summary above is rebuilt from
-  it.
+- **`status.json`** — the run's single state document, folded from the ledgers
+  above: `status` (`running` | `completed` | `failed` | `paused` |
+  `cancelled`), the per-prompt `turns`, planned/completed/accepted stage
+  counts, the currently running or last accepted invocation (loop iteration,
+  tournament slot, validation attempt), the job list with each job's accepted
+  invocations, and the latest `sessionId`/`transcriptPath`, plus
+  `runId`/`workflowPath`/`workspaceCwd` and a `name` once you `/rename` the
+  run. Every reader — the TUI graph, the pickers, `piano logs`, the headless
+  `status_path`, the evals — reads this one document; a monitor never has to
+  infer progress from a worker name or count accepted lines by hand.
+- **`trajectory.jsonl`** — the append-only record each write appends: one line
+  carrying that write's prompt and events, or the single field a rename
+  touched. `status.json` is folded from it.
 - **`progress.jsonl`** — the machine-readable stage ledger. Every accepted
   stage attempt appends a line with `stageId`, `stage`, `worker`, `attempt`,
   `invocationId`, `harness`, `sessionId`, `transcriptPath`,
   `handoffRecordPath`, the workspace, and the latest progress snapshot
   (planned/completed counts). This is where you confirm a loop actually ran
   its `iterations` times.
-- **`progress.json`** — the live, worker-neutral view. It reports the planned
-  stage-invocation total, completed/remaining counts, per-DSL-stage counts, and
-  the currently running or last accepted invocation (including loop iteration
-  and tournament slot position and validation attempt). It is updated before
-  each worker turn and after each accepted stage, so a monitor never has to
-  infer progress from a worker name or count accepted lines by hand.
 - **`trajectories/index.json`** — the versioned workflow-trajectory index. A
   `WorkflowTrajectory` drives independent benchmark, duration, token, and tool
   recorders. Recorder errors are isolated and make the index incomplete without
@@ -504,10 +499,9 @@ To inspect raw evidence directly:
 
 ```bash
 RUN_DIR=~/.piano/runs/20260824T051320-f17b74
-jq . "$RUN_DIR/trajectory.json"
+jq . "$RUN_DIR/status.json"
 jq -C . "$RUN_DIR/log.jsonl"       | less
 cat     "$RUN_DIR/progress.jsonl"  | jq -c .
-jq -C . "$RUN_DIR/progress.json"
 find "$RUN_DIR" -type f -print | sort
 ```
 

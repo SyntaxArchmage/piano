@@ -332,3 +332,12 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - 测试面：5 个 CLI 测试的 orchestrator mock 工厂补 `runStatusPath`（枚举式 mock 随每次新 import 漂移——第 2 次同类断点，refreshRunStatus 是第 1 次）；driver-association/driver-workspace 的 snapshot fixture 改写真 status.json（含 version/runId/status 字段）；workflow-evaluator 的 legacy fixture 改流记录形状。
 - 待办：邻居释放 main → 我 ff 合入 status-close-evals → main 全量门禁 → 汇报；此后我的分工余量 = README 契约文本 + H6。
 
+**F5.4 H6a 落地与合并收口（2026-10-15 深夜）**
+- **main 行进**：`6619b4d` →（邻居按 piano-43 请求 ff）`b337c0f`（harness 模块拆分 + `930d2a6` 的 v3 port 入 `dsh-session-storage.ts`，拆分为 `subprocess-events.ts`/`harness-argv.ts`/`child-process.ts`/`dsh-session-events.ts`/`event-metadata.ts`/`portable-events.ts`/`agent-contract.ts`/`json-narrowing.ts`）→ **`61daca3` = Merge branch 'status-close-evals'**（普通 merge，零冲突，24 文件）。
+- **H6a 内容**（`ec760aa`，设计 L1+L2）：`mapSlotKey(jobOrdinal, frames)` = `job-<n>/<instanceId>`，贯穿 workspace path/record；`allocateMapWorkspace` 增 `jobOrdinal` 参数与 `options.recreateWhenSwept`（仅 `request.continueJob !== undefined` 时由 scope-walker 传 true；cleaned 一律大声，除非显式 continue）；record 增 `allocation: fresh | rebound | recreated-after-sweep` provenance；新 `ensureWorkspaceSnapshot`（create-once + sibling `.complete` merge marker，partial 重拍；marker 不放 snapshot 内以免污染内容比较）替换 scope-walker 两处 `snapshotWorkspaceContent`（region baseline + slot baselines）。
+- **可见后果（进 PR 文本）**：winnerKey 及由其派生的 consolidation stage id 现在是 `$consolidate/job-<n>/<region>/<slot-N>`（原 `$consolidate/<region>/<slot-N>`）——裁定保持（G2：一个 key 一种拼写，层间不改写）；`selection.jsonl` 的 winnerKey、路径 `slots/job-1%2F...` 同步变化。`instanceId`（frame 身份）不变。
+- **测试面**：workspace.test.ts 24 处调用点补 jobOrdinal 参数（脚本化，括号切片保证边界）；workflow-execution.test.ts 6 处断言（workspace.key/winnerKey/`$consolidate` 字面量）随迁；`real-consolidation.e2e` 中 `winnerKey toBe("race/slot-1")`（gated，未跑）留待其下次运行时更新。H6a 模块门禁 147/147 + tsc + eslint 绿。
+- **hunk 级暂存技巧（复用价值高）**：piano-be 的在制品（`scheduleWorkflow` 删除）与我的改动同文件（workflow-execution.test.ts）未提交；用 `git apply --cached` + 过滤掉含 `scheduleWorkflow` 的 hunk 的补丁，把我的 6 个 hunk 精确入库、他们的 1 个留在工作区；切分支时用 `git stash push -- <file>` 单独暂存他们的 hunk、merge 后 pop 还原。全程未碰其文件、未卷入其改动。
+- **钢琴-be 争议红定位**：其报告的「6619b4d 红、headless-json 发 status_path」实为**测量了我的脏工作树**（该行为我当时未提交）；邻居在干净树复核 41/41 绿 + `git grep status_path 6619b4d` = 0 命中。裁决性数字 = 本段之后在 `61daca3` 上的全量门禁。
+- **遗留（我的分工余量）**：README 契约文本（`status_path`、`trajectory_path` 指向 `.jsonl`、`progress_snapshot_path` 移除）；H6b（`region-finalized` + `/continue` 整段跳过）待邻居的 `progressRecordKind` 未知 kind 修复先落。
+
