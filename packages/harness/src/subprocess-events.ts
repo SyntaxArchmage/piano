@@ -7,7 +7,7 @@ import {
   type AgentUsage,
 } from "./events.js";
 import type { HarnessName } from "./harness-config.js";
-import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portableEvents.js";
+import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portable-events.js";
 import {
   asRecord,
   nonEmptyString,

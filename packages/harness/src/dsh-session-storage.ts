@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { asRecord, nonEmptyString, numberValue, type JsonRecord } from "./json-narrowing.js";
-import { dshRecordKey, type DshEventMapper } from "./dshSessionEvents.js";
+import { dshRecordKey, type DshEventMapper } from "./dsh-session-events.js";
 
 /**
  * Reading the conversation dsh persisted, rather than inferring one.

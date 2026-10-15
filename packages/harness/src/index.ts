@@ -52,11 +52,11 @@ export {
   unknownToolNames,
 } from "./tool-names.js";
 export { executeSubprocessAgent } from "./subprocess.js";
-export { dshProjectKey } from "./dshSessionStorage.js";
+export { dshProjectKey } from "./dsh-session-storage.js";
 export {
   normalizeSubprocessLine,
   type SubprocessAccumulator,
-} from "./subprocessEvents.js";
+} from "./subprocess-events.js";
 export {
   PI_WEB_SEARCH_TOOL_NAME,
   piWebSearchExtensionPath,

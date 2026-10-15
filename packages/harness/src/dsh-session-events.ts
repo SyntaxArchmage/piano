@@ -12,7 +12,7 @@ import {
   sanitizeAssistantMessage,
   stripProxyDiagnostic,
   type SubprocessAccumulator,
-} from "./subprocessEvents.js";
+} from "./subprocess-events.js";
 
 /**
  * Turning dsh's durable session records into events.

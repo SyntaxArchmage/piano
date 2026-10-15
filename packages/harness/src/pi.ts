@@ -20,7 +20,7 @@ import type {
   AgentResult,
 } from "./agent-contract.js";
 import { asRecord, stringOr } from "./json-narrowing.js";
-import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portableEvents.js";
+import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portable-events.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";

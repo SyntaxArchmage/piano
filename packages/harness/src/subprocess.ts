@@ -11,7 +11,7 @@ import {
   normalizeSubprocessLine,
   stripProxyDiagnostic,
   type SubprocessAccumulator,
-} from "./subprocessEvents.js";
+} from "./subprocess-events.js";
 import {
   claudeArguments,
   codexArguments,
@@ -22,7 +22,7 @@ import {
   piSessionPath,
   userFrame,
   type LoadedResources,
-} from "./harnessArgv.js";
+} from "./harness-argv.js";
 import {
   DshSteerAcks,
   PiRpcClient,
@@ -30,13 +30,13 @@ import {
   type ChildOutcome,
   type ChildStdinBridge,
   type ChildStdinControl,
-} from "./childProcess.js";
-import { createDshEventMapper } from "./dshSessionEvents.js";
+} from "./child-process.js";
+import { createDshEventMapper } from "./dsh-session-events.js";
 import {
   createDshSessionTailer,
   readDshSessionEvidence,
   type DshSessionEvidence,
-} from "./dshSessionStorage.js";
+} from "./dsh-session-storage.js";
 import { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
 import { dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
 import {
