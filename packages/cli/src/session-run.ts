@@ -6,7 +6,7 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit } from "effect";
 import { stderr, stdout } from "node:process";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   createSession,
   failureDetails,

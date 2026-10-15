@@ -28,7 +28,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import { hasPerformanceReadout, parseCaseConfig } from "./case-config.js";
 import { evaluateArtifact, evaluateBaseline } from "./artifact-evaluator.js";
-import { evaluateTrajectoryFile, evaluateTrajectory, TrajectoryEvalError } from "./trajectory-evaluator.js";
+import { evaluateTrajectory, TrajectoryEvalError } from "./trajectory-evaluator.js";
 import {
   analyzeTranscriptText,
   assessCaseEvidence,
