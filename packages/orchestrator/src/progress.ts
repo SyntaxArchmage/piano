@@ -231,6 +231,11 @@ export type WorkflowProgressStreamRecord =
  * `"stage-accepted"` is the historical shape and carries no discriminator: the
  * stream predates it, and every record written before it is an accepted stage.
  *
+ * A record that DOES carry a `kind` this function does not recognize was
+ * written by a newer writer, and answers `undefined`: the only safe reading of
+ * a record whose meaning a reader does not know is to skip it, because folding
+ * it into the historical shape would count a marker as accepted work.
+ *
  * Accepts any parsed line rather than the writer's own types, because the two
  * callers hold different things — a writer holds a typed record, a reader holds
  * whatever `JSON.parse` returned. Readers ask this function rather than testing
@@ -240,13 +245,15 @@ export function progressRecordKind(record: object | null | undefined):
   | WorkflowProgressExecutionStartRecord["kind"]
   | WorkflowProgressExecutionFinishRecord["kind"]
   | WorkflowProgressJobClosedRecord["kind"]
-  | "stage-accepted" {
+  | "stage-accepted"
+  | undefined {
   const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
+  if (kind === undefined) return "stage-accepted";
   if (kind === "stage-started") return "stage-started";
   if (kind === "execution-started") return "execution-started";
   if (kind === "execution-finished") return "execution-finished";
   if (kind === "job-closed") return "job-closed";
-  return "stage-accepted";
+  return undefined;
 }
 
 /** Parse one stream line into a record, or `undefined` for a blank, torn, or
@@ -455,6 +462,12 @@ export function applyProgressRecord(
   record: WorkflowProgressStreamRecord,
 ): WorkflowProgressSnapshot {
   const kind = progressRecordKind(record);
+  if (kind === undefined) {
+    // A kind this reducer does not know (a record from a newer writer): the
+    // snapshot carries only what it understands. An empty fold still gets its
+    // identity established, so a known record after this one has a base.
+    return previous ?? emptyProgressSnapshot(record.executionId, record.timestamp);
+  }
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
     // A resumed execution keeps the counts the previous one reached; a fresh

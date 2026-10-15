@@ -130,6 +130,27 @@ describe("foldJobSpans", () => {
     expect(latestJob(spans)?.state).toBe("alive");
   });
 
+  it("skips a record whose kind the fold does not know, instead of counting it as an accepted stage", () => {
+    // A newer writer's marker on the same stream: valid envelope, unknown
+    // discriminator. Guessing its meaning would corrupt the cursor a continue
+    // skips by, so it contributes nothing.
+    const marker = {
+      version: 1,
+      kind: "region-finalized",
+      timestamp: T(2),
+      executionId: "run-1",
+      regionId: "sweep",
+    } as unknown as WorkflowProgressStreamRecord;
+    const spans = foldJobSpans([
+      started(1, T(0)),
+      accepted(T(1), "first@root"),
+      marker,
+      stageStarted(T(3), "second@root"),
+    ]);
+    expect([...(spans[0]?.accepted ?? [])]).toEqual(["first@root"]);
+    expect(spans[0]?.inFlight).toBe("second@root");
+  });
+
   it("reads a stream with no execution markers as holding no jobs", () => {
     const spans = foldJobSpans([
       accepted(T(0), "first@root"),

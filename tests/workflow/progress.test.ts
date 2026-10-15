@@ -362,6 +362,34 @@ describe("workflow progress stream", () => {
     expect(progressRecordKind(accepted)).toBe("stage-accepted");
   });
 
+  it("reads a line with a kind it does not recognize as nothing, not as an accepted stage", () => {
+    // A newer writer's record riding the same stream: a valid envelope with a
+    // discriminator this reader has no meaning for. Folding it into the
+    // historical shape would count the marker as accepted work.
+    const marker = {
+      kind: "region-finalized",
+      executionId: "execution",
+      timestamp: "2026-01-01T00:00:05.000Z",
+      regionId: "sweep",
+    } as unknown as WorkflowProgressStreamRecord;
+    expect(progressRecordKind(marker)).toBeUndefined();
+    // The discriminator-less line stays the historical accepted stage.
+    expect(progressRecordKind(record())).toBe("stage-accepted");
+
+    // The snapshot reducer carries only what it understands: an unknown
+    // record leaves the previous snapshot untouched, byte for byte.
+    const before = applyProgressRecord(undefined, {
+      version: 1,
+      kind: "execution-started",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      executionId: "execution",
+      jobOrdinal: 1,
+      resumed: false,
+      plan: timingPlan,
+    } as unknown as WorkflowProgressStreamRecord);
+    expect(applyProgressRecord(before, marker)).toBe(before);
+  });
+
   it("answers which invocation is in flight, and since when, from the stream alone", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();

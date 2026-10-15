@@ -86,6 +86,10 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
   const spans: MutableSpan[] = [];
   for (const record of records) {
     const kind = progressRecordKind(record);
+    // A kind this fold does not know: no span semantics to apply. Skipping is
+    // the only safe reading — the historical shape would count it as an
+    // accepted stage and corrupt the cursor a continue skips by.
+    if (kind === undefined) continue;
     if (kind === "execution-started") {
       const started = record as WorkflowProgressExecutionStartRecord;
       spans.push({
