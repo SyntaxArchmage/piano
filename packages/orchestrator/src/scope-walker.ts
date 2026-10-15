@@ -14,7 +14,7 @@ import type { WorkflowTrajectory } from "@piano/trajectory";
 import {
   allocateMapWorkspace,
   cleanupMapWorkspaces,
-  snapshotWorkspaceContent,
+  ensureWorkspaceSnapshot,
   workspaceContentChanges,
   type WorkspaceChangeSet,
   type WorkspaceContentChange,
@@ -811,7 +811,7 @@ const executeScope = (
       }>;
       yield* Effect.gen(function* () {
         yield* Effect.tryPromise({
-          try: () => snapshotWorkspaceContent(
+          try: () => ensureWorkspaceSnapshot(
             workspace.cwd,
             baselineContentDir,
             [request.runDir],
@@ -827,8 +827,12 @@ const executeScope = (
           const slotWorkspace = yield* allocateMapWorkspace(
             request.runDir,
             executionId,
+            promptIndex,
             slotFrames,
             workspace.cwd,
+            // Only an explicit continue may re-create a slot whose record was
+            // already swept; every other re-entry must stay loud.
+            request.continueJob === undefined ? {} : { recreateWhenSwept: true },
           );
           const slotBaselineContentDir = join(
             tournamentSnapshotRoot,
@@ -842,7 +846,7 @@ const executeScope = (
             baselineContentDir: slotBaselineContentDir,
           });
           yield* Effect.tryPromise({
-            try: () => snapshotWorkspaceContent(
+            try: () => ensureWorkspaceSnapshot(
               slotWorkspace.cwd,
               slotBaselineContentDir,
               [request.runDir],

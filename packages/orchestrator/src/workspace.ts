@@ -43,6 +43,12 @@ export interface WorkflowWorkspaceRecord {
   readonly strategy: WorkflowWorkspaceStrategy;
   readonly status: WorkflowWorkspaceStatus;
   readonly phase: WorkflowWorkspacePhase;
+  /** How this incarnation of the slot came to exist. `fresh` is a snapshot of
+   * the source at allocation time; `recreated-after-sweep` means an explicit
+   * continue re-created a slot whose record was already swept, so its baseline
+   * must not be treated as a pristine source snapshot. Older records predate
+   * the field. */
+  readonly allocation?: "fresh" | "rebound" | "recreated-after-sweep";
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly finalizedAt?: string;
@@ -457,7 +463,12 @@ async function makeStagingDirectory(source: string): Promise<string> {
   }
 }
 
-function mapSlotKey(frames: readonly WorkflowRuntimeFrame[]): string {
+/** The map lane's workspace key. The job ordinal is part of the slot's
+ * identity, not decoration: every job re-enters the same loop frames from
+ * iteration zero, so a key without it collides with the previous job's
+ * cleaned tombstone — or silently rebinds a leftover directory — the moment a
+ * second prompt or a continue re-allocates the same slot. */
+function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[]): string {
   if (!frames.some((frame) => frame.kind === "map")) {
     throw new WorkflowError({
       phase: "schedule",
@@ -473,23 +484,25 @@ function mapSlotKey(frames: readonly WorkflowRuntimeFrame[]): string {
       message: "map workspace allocation has no runtime instance id",
     });
   }
-  return instanceId;
+  return `job-${jobOrdinal}/${instanceId}`;
 }
 
 function mapWorkspacePath(
   runDir: string,
   executionId: string,
+  jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
 ): string {
-  return workspacePath(runDir, executionId, mapSlotKey(frames));
+  return workspacePath(runDir, executionId, mapSlotKey(jobOrdinal, frames));
 }
 
 function mapWorkspaceRecordPath(
   runDir: string,
   executionId: string,
+  jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
 ): string {
-  return workspaceRecordPath(runDir, executionId, mapSlotKey(frames));
+  return workspaceRecordPath(runDir, executionId, mapSlotKey(jobOrdinal, frames));
 }
 
 async function inspectGitSource(
@@ -633,8 +646,10 @@ export function sharedWorkspaceBinding(cwd: string): WorkflowWorkspaceBinding {
 export function allocateMapWorkspace(
   runDir: string,
   executionId: string,
+  jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
   sourceCwd: string,
+  options: { readonly recreateWhenSwept?: boolean } = {},
 ): Effect.Effect<WorkflowWorkspaceBinding, WorkflowError, FileSystem.FileSystem | Logging> {
   return TRACE(WORKSPACE_SOURCE, Effect.tryPromise({
     try: async () => {
@@ -654,19 +669,24 @@ export function allocateMapWorkspace(
       if (!sourceInfo.isDirectory()) {
         throw workflowError("schedule", source, "workspace source must be a directory");
       }
-      const key = mapSlotKey(frames);
-      const cwd = mapWorkspacePath(run, executionId, frames);
+      const key = mapSlotKey(jobOrdinal, frames);
+      const cwd = mapWorkspacePath(run, executionId, jobOrdinal, frames);
       if (!pathWithin(source, run) && pathWithin(source, cwd)) {
         throw workflowError("schedule", cwd, `workspace for map slot "${key}" cannot be nested inside its source`);
       }
-      const recordPath = mapWorkspaceRecordPath(run, executionId, frames);
+      const recordPath = mapWorkspaceRecordPath(run, executionId, jobOrdinal, frames);
       await assertCanonicalRunRoot(runRoot);
       await assertSafeWorkspacePathAncestors(run, dirname(recordPath));
       const existing = await readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
-      if (existing !== undefined) {
-        if (existing.status === "cleaned") {
+      const recreatedAfterSweep = existing !== undefined && existing.status === "cleaned";
+      if (recreatedAfterSweep) {
+        // A swept slot inside the SAME job: only an explicit continue intent
+        // may recreate it at the same path — re-entering the same job without
+        // that intent is a bug and must stay loud.
+        if (options.recreateWhenSwept !== true) {
           throw workflowError("schedule", recordPath, `workspace slot "${key}" was already cleaned`);
         }
+      } else if (existing !== undefined) {
         try {
           await assertSafeWorkspaceDirectory(workspaceRoot, existing.cwd);
         } catch (error) {
@@ -751,6 +771,7 @@ export function allocateMapWorkspace(
         strategy,
         status: "active",
         phase: "allocated",
+        allocation: recreatedAfterSweep ? "recreated-after-sweep" : "fresh",
         createdAt: now,
         updatedAt: now,
         ...(gitRoot === undefined ? {} : { gitRoot }),
@@ -1656,6 +1677,36 @@ export async function snapshotWorkspaceContent(
   excludeUnder: readonly string[] = [],
 ): Promise<void> {
   await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
+}
+
+/** Create the snapshot once, and mark it complete only after every byte
+ * landed, so a crash mid-copy leaves no reusable partial behind.
+ *
+ * A region re-enters under a continue with the same job ordinal, so it must
+ * reuse the snapshot it already froze rather than re-snapshot (which used to
+ * fail with "workspace rollback snapshot already exists"). The marker is a
+ * SIBLING of the snapshot directory: content comparisons walk the snapshot
+ * tree, and a marker inside it would register as a spurious added file. A
+ * directory without its marker can only be a copy interrupted before any
+ * stage of this region ran, so re-taking it from the current source is
+ * semantically the same snapshot, taken once. */
+export async function ensureWorkspaceSnapshot(
+  sourceContentDir: string,
+  snapshotDir: string,
+  excludeUnder: readonly string[] = [],
+): Promise<void> {
+  const markerPath = `${snapshotDir}.complete`;
+  const exists = async (path: string): Promise<boolean> =>
+    stat(path).then(() => true, (error: unknown) => {
+      if (isMissingPathError(error)) return false;
+      throw error;
+    });
+  const complete = await exists(markerPath);
+  const dirExists = await exists(snapshotDir);
+  if (complete && dirExists) return;
+  if (dirExists) await rm(snapshotDir, { recursive: true, force: true });
+  await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
+  await writeFile(markerPath, "", { encoding: "utf8", mode: 0o600 });
 }
 
 /** Compute the concrete file delta from a frozen tournament baseline. */
