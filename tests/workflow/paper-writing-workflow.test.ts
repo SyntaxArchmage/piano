@@ -57,8 +57,8 @@ async function compileRecipeWorkflow(name: string) {
 }
 
 function runLogging<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Logging>): Promise<Exit.Exit<A, E>> {
-  const log = new LogWriter("test", join(tmpdir(), "piano-paper-writing-log.jsonl"));
-  const trace = new TraceWriter("test", join(tmpdir(), "piano-paper-writing-trace.jsonl"));
+  const log = new LogWriter("test", join(tmpdir(), "piano-paper-writing-log.jsonl"), "trace-test");
+  const trace = new TraceWriter("test", join(tmpdir(), "piano-paper-writing-trace.jsonl"), "trace-test");
   return Effect.runPromiseExit(effect.pipe(
     Effect.provideService(Logging, loggingService(log, trace)),
     Effect.provide(NodeFileSystem.layer),

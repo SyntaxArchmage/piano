@@ -183,7 +183,7 @@ describe("logging Effect boundary", () => {
     root = await mkdtemp(join(tmpdir(), "piano-logging-"));
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const writer = new LogWriter("test", join(root, "log.jsonl"));
+    const writer = new LogWriter("test", join(root, "log.jsonl"), "trace-test");
     const exit = await Effect.runPromiseExit(provideNode(writer.append("bad.payload", { data: circular })));
 
     expect(exit._tag).toBe("Failure");

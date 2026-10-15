@@ -95,8 +95,8 @@ function run<A, E>(effect: Effect.Effect<A, E, never>): Promise<Exit.Exit<A, E>>
 }
 
 function runLogging<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Logging>): Promise<Exit.Exit<A, E>> {
-  const log = new LogWriter("test", join(tmpdir(), "piano-workflow-log.jsonl"));
-  const trace = new TraceWriter("test", join(tmpdir(), "piano-workflow-trace.jsonl"));
+  const log = new LogWriter("test", join(tmpdir(), "piano-workflow-log.jsonl"), "trace-test");
+  const trace = new TraceWriter("test", join(tmpdir(), "piano-workflow-trace.jsonl"), "trace-test");
   return run(effect.pipe(
     Effect.provideService(Logging, loggingService(log, trace)),
     Effect.provide(NodeFileSystem.layer),

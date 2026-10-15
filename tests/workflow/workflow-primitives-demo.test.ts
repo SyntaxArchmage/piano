@@ -31,8 +31,8 @@ describe("workflow primitives demo recipe", () => {
   });
 
   it("uses worker-owned contracts and discoverable demo skills", async () => {
-    const log = new LogWriter("workflow-primitives-demo-test", join(tmpdir(), "piano-workflow-primitives-demo-log.jsonl"));
-    const trace = new TraceWriter("workflow-primitives-demo-test", join(tmpdir(), "piano-workflow-primitives-demo-trace.jsonl"));
+    const log = new LogWriter("workflow-primitives-demo-test", join(tmpdir(), "piano-workflow-primitives-demo-log.jsonl"), "trace-workflow-primitives-demo-test");
+    const trace = new TraceWriter("workflow-primitives-demo-test", join(tmpdir(), "piano-workflow-primitives-demo-trace.jsonl"), "trace-workflow-primitives-demo-test");
     const loaded = await Effect.runPromiseExit(loadWorkflow(workflowPath).pipe(
       Effect.provideService(Logging, loggingService(log, trace)),
       Effect.provide(NodeFileSystem.layer),
