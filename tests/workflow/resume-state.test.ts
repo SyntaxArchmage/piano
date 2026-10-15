@@ -12,7 +12,6 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   readResumeState,
-  resumeStatePath,
   resumeStreamPath,
   writeResumeState,
   type ResumeState,
@@ -101,24 +100,6 @@ describe("resume state persistence", () => {
     );
 
     expect((await read(dir))?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-claude"));
-  });
-
-  it("carries a run written before the stream existed into its first record", async () => {
-    const dir = await runDir();
-    await writeFile(resumeStatePath(dir), `${JSON.stringify(state({
-      "run-1/claude/coding/root": actor("sess-legacy"),
-    }))}\n`, "utf8");
-
-    // Readable on its own...
-    expect((await read(dir))?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-legacy"));
-
-    // ...and still there once this run starts appending.
-    await write(dir, state({ "run-1/pi/coding/root": actor("sess-pi") }, { promptIndex: 2 }));
-    const stored = await read(dir);
-    expect(Object.keys(stored?.actors ?? {}).sort()).toEqual([
-      "run-1/claude/coding/root",
-      "run-1/pi/coding/root",
-    ]);
   });
 
   it("reports no state when nothing has been written", async () => {

@@ -7,7 +7,6 @@ import type { AgentContinuation } from "@piano/harness";
 
 /** The legacy single-document form. Read for runs written before the stream
  * existed; never written now. */
-const RESUME_DOCUMENT_NAME = "resume.json";
 /** The append-only form: one complete table per line, newest last. */
 const RESUME_STREAM_NAME = "resume.jsonl";
 
@@ -27,11 +26,6 @@ export interface ResumeState {
 }
 
 /** Path of the legacy document. Kept for readers that predate the stream. */
-export function resumeStatePath(runDir: string): string {
-  return join(runDir, RESUME_DOCUMENT_NAME);
-}
-
-/** Path of the append-only resume stream. */
 export function resumeStreamPath(runDir: string): string {
   return join(runDir, RESUME_STREAM_NAME);
 }
@@ -82,46 +76,17 @@ function mergeResumeState(existing: ResumeState | undefined, next: ResumeState):
   return { ...next, actors: { ...existing.actors, ...next.actors } };
 }
 
-/** Read the run's actor table: fold the stream, seeded by the legacy document.
- *
- * Seeding from the document is what lets a run written before the stream
- * existed carry its actors forward into the first appended record, instead of
- * starting over. */
+/** Read the run's actor table: the stream folded by the writer's own rule. */
 export function readResumeState(
   runDir: string,
 ): Effect.Effect<ResumeState | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const staged = yield* readDocument(fs, resumeStatePath(runDir));
     const records = yield* readStream(fs, resumeStreamPath(runDir));
-    return records.reduce<ResumeState | undefined>(mergeResumeState, staged);
+    return records.reduce<ResumeState | undefined>(mergeResumeState, undefined);
   });
 }
 
-/** The legacy document, if it is there and parses. A missing file is not an
- * error; one that cannot be read is, because starting every actor over is a
- * worse answer than saying so. */
-function readDocument(
-  fs: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<ResumeState | undefined, WorkflowError, never> {
-  return Effect.gen(function* () {
-    const exists = yield* fs.exists(path).pipe(
-      Effect.mapError(resumeError(path, "resume state exists")),
-    );
-    if (!exists) return undefined;
-    const raw = yield* fs.readFileString(path).pipe(
-      Effect.mapError(resumeError(path, "resume state read")),
-    );
-    return parseResumeState(raw);
-  });
-}
-
-/** Every record of the stream that parses, in the order it was written.
- *
- * A line that does not parse is skipped rather than failing the read: a torn
- * final line is possible if a process died mid-append, and it describes a write
- * that never completed. Everything before it is still good. */
 function readStream(
   fs: FileSystem.FileSystem,
   path: string,
