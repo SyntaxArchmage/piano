@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   compileWorkflow,
   parseWorkflow,
-  scheduleWorkflow,
 } from "../../packages/orchestrator/src/index.js";
 
 const SOURCE = "/tmp/workflow.yaml";
@@ -113,24 +112,6 @@ describe(" loop/map workflow DSL", () => {
     expect(region?.exitStageId).toBe("tune.aggregate");
     expect(region?.feedback).toBe("aggregate");
     expect(region?.from).toEqual(["profile"]);
-  });
-
-  it("schedules loop-nested stages with a dotted region path", async () => {
-    const parsed = await run(parseWorkflow(LOOP_WORKFLOW, SOURCE));
-    if (!Exit.isSuccess(parsed)) return;
-    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
-    if (!Exit.isSuccess(compiled)) return;
-
-    const scheduled = await run(scheduleWorkflow(compiled.value));
-    expect(Exit.isSuccess(scheduled)).toBe(true);
-    if (!Exit.isSuccess(scheduled)) return;
-
-    const byName = new Map(scheduled.value.map((s) => [s.stage.name, s]));
-    expect(byName.get("profile")?.regionPath).toBeUndefined();
-    expect(byName.get("propose")?.regionPath).toEqual(["tune"]);
-    expect(byName.get("aggregate")?.regionPath).toEqual(["tune"]);
-    expect(byName.get("summary")?.regionPath).toBeUndefined();
-    expect(scheduled.value.map((s) => s.order)).toEqual([0, 1, 2, 3]);
   });
 
   it("compiles a map region with a fan-out count and over field", async () => {

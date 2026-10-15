@@ -62,6 +62,27 @@ export function runtimeInstanceId(frames: readonly WorkflowRuntimeFrame[]): stri
     : [frame.regionId, `slot-${frame.slot}`]).join("/");
 }
 
+/** The zero-based iteration of the innermost loop frame carried by an
+ * invocation id (`stageId@…/iter-N[/…]`), or undefined when it carries none.
+ * Inverse of the `iter-N` spelling {@link runtimeInstanceId} produces, kept
+ * beside it so parser and speller cannot drift. Tail-anchored patterns miss
+ * map-in-loop ids (`…/iter-2/…/slot-1`); a segment scan does not. Values that
+ * cannot be rendered safely (consumers display `iteration + 1`) yield
+ * undefined. */
+export function iterationOfInvocationId(invocationId: string | undefined): number | undefined {
+  if (invocationId === undefined) return undefined;
+  const at = invocationId.indexOf("@");
+  const instance = at === -1 ? invocationId : invocationId.slice(at + 1);
+  let iteration: number | undefined;
+  for (const segment of instance.split("/")) {
+    const match = /^iter-(\d+)$/.exec(segment);
+    if (match === null) continue;
+    const value = Number(match[1]);
+    iteration = Number.isSafeInteger(value) && value < Number.MAX_SAFE_INTEGER ? value : undefined;
+  }
+  return iteration;
+}
+
 export function runtimeInvocationId(invocation: WorkflowRuntimeInvocation): string {
   return `${invocation.stageId}@${runtimeInstanceId(invocation.frames) ?? "root"}`;
 }
@@ -159,15 +180,8 @@ export function actorSessionDirectory(
   );
 }
 
-function isDirectStageInScope(stageId: string, scopeId: string | undefined): boolean {
-  const prefix = scopeId === undefined ? "" : `${scopeId}.`;
-  if (!stageId.startsWith(prefix)) return false;
-  const relative = stageId.slice(prefix.length);
-  return relative.length > 0 && !relative.includes(".");
-}
-
-/** Reconstruct lexical runtime scopes from the compiler's stable flattened
- * leaves and region boundaries. The compiler remains responsible for graph
+/** Reconstruct lexical runtime scopes from the compiler's leaves and their
+ * enclosing-region pointers. The compiler remains responsible for graph
  * validation; this structure only controls dynamic loop/map expansion. */
 export function buildWorkflowRuntimePlan(
   compiled: CompiledWorkflow,
@@ -175,7 +189,7 @@ export function buildWorkflowRuntimePlan(
   const orderById = new Map(compiled.stages.map((stage, order) => [stage.id, order]));
   const buildScope = (scopeId: string | undefined): readonly WorkflowRuntimeNode[] => {
     const stages: WorkflowRuntimeNode[] = compiled.stages
-      .filter((stage) => isDirectStageInScope(stage.id, scopeId))
+      .filter((stage) => stage.parentId === scopeId)
       .map((stage) => ({
         kind: "stage" as const,
         name: stage.stage.name,

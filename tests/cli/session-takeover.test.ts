@@ -23,7 +23,6 @@ vi.mock("@piano/orchestrator", () => ({
     stages: [{
       id: "respond",
       dependsOn: [],
-      regionPath: [],
       stage: { name: "respond", worker: "basic", harness: "pi", from: [] },
     }],
     regions: [],

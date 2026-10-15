@@ -41,7 +41,7 @@ export class LogWriter implements ILogWriter {
   constructor(
     readonly runId: string,
     readonly path: string,
-    readonly traceId: string = runId,
+    readonly traceId: string,
   ) {}
 
   append(
@@ -113,7 +113,7 @@ export class AsyncLogWriter implements ILogWriter {
 
   constructor(
     readonly runId: string,
-    readonly traceId: string = runId,
+    readonly traceId: string,
   ) {}
 
   commit(path: string): Effect.Effect<void, LogWriteError, FileSystem.FileSystem> {

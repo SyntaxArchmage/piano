@@ -123,7 +123,11 @@ if (stage.endsWith("propose")) {
   }
 }
 
-// pi-CLI NDJSON transcript, mirroring the subprocess adapter's fake protocol.
+// pi-CLI NDJSON transcript in the json-mode dialect the subprocess adapter
+// reads (`--mode json --print`): pi writes its own session header first, then
+// the turn's frames. Usage rides only `message_end` — real pi-cli emits no
+// terminal `result` frame in any mode (usage lives on the finalized message),
+// and the adapter derives its `usage` events from that message_end alone.
 // Usage is reported as session-cumulative per actor (like the real pi-cli on
 // resume): the trajectory recorder subtracts the actor's previous cumulative
 // snapshot to derive per-turn deltas, so a constant per-turn total would make
@@ -145,9 +149,10 @@ try {
   // (e.g. the evidence dir was pruned), every turn just reports turn 1.
 }
 const frames = [
+  { type: "session", version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: process.cwd() },
   { type: "agent_start" },
   { type: "message_update", message: { role: "assistant", content: "" }, assistantMessageEvent: { type: "text_delta", delta: "done" } },
-  { type: "message_end", message: { role: "assistant", content: "done", usage: { input_tokens: turn, output_tokens: turn } } },
-  { type: "result", result: "done", session_id: sessionId, usage: { total_tokens: turn * 2 } },
+  { type: "message_end", message: { role: "assistant", content: "done", usage: { input: turn, output: turn, cacheRead: 0, cacheWrite: 0, totalTokens: turn * 2 } } },
+  { type: "agent_settled" },
 ];
 process.stdout.write(`${frames.map((frame) => JSON.stringify(frame)).join("\n")}\n`);

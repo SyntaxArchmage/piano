@@ -38,8 +38,8 @@ describe("architect discuss primitive", () => {
       agentRunner: runner,
     }).pipe(
       Effect.provideService(Logging, loggingService(
-        new LogWriter("test", join(tmpdir(), "piano-discuss-test.log")),
-        new TraceWriter("test", join(tmpdir(), "piano-discuss-test.trace")),
+        new LogWriter("test", join(tmpdir(), "piano-discuss-test.log"), "trace-test"),
+        new TraceWriter("test", join(tmpdir(), "piano-discuss-test.trace"), "trace-test"),
       )),
       Effect.provide(NodeFileSystem.layer),
     ));
