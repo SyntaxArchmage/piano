@@ -17,7 +17,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { parseTrajectory, trajectoryStreamPath, type TrajectoryTurn } from "@piano/logging";
+import { parseTrajectory, trajectoryStreamPath } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
@@ -54,6 +54,15 @@ export interface RunJob {
   readonly input?: string;
 }
 
+/** One turn as the state document records it: what the turn was asked and how
+ * it ended. Where its events begin and end is a question about the evidence —
+ * `eventCount` — and the answer comes from folding the trajectory, which is
+ * what the replay does. The view does not carry it. */
+export interface RunTurn {
+  readonly prompt: string;
+  readonly status: "completed" | "failed" | "cancelled";
+}
+
 /** The run's state.
  *
  * One of each thing a run used to say once per file: `runId` (which the
@@ -75,8 +84,8 @@ export interface RunStatus {
   readonly transcriptPath?: string;
   readonly sessionId?: string;
   readonly promptLength: number;
-  /** One entry per turn, so a replay slices its events by `eventCount`. */
-  readonly turns?: readonly TrajectoryTurn[];
+  /** The turns this run has run, oldest first. */
+  readonly turns?: readonly RunTurn[];
   /** The plan this run was given, and how much of it is done. */
   readonly plannedStages: number;
   readonly completedStages: number;
@@ -143,7 +152,9 @@ export function runStatusFromParts(parts: {
     ...(trajectory?.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
     ...(trajectory?.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
     promptLength: trajectory?.promptLength ?? 0,
-    ...(trajectory?.turns === undefined ? {} : { turns: trajectory.turns }),
+    ...(trajectory?.turns === undefined
+      ? {}
+      : { turns: trajectory.turns.map((turn): RunTurn => ({ prompt: turn.prompt, status: turn.status })) }),
     plannedStages: progress?.plannedStages ?? 0,
     completedStages: progress?.completedStages ?? 0,
     acceptedStages: progress?.acceptedStages ?? 0,

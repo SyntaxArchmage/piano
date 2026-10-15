@@ -153,6 +153,7 @@ export {
   writeRunStatus,
   type RunJob,
   type RunStatus,
+  type RunTurn,
 } from "./run-status.js";
 export {
   snapshotWorkerContract,

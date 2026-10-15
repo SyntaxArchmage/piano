@@ -70,7 +70,7 @@ describe("run status", () => {
       updatedAt: timestamp,
       status: "running",
       promptLength: 3,
-      turns: [{ prompt: "do the work", status: "completed", eventCount: 0 }],
+      turns: [{ prompt: "do the work", status: "completed" }],
       plannedStages: 2,
       stageCounts: { tune: { planned: 2, completed: 0 } },
       promptIndex: 1,
@@ -107,5 +107,25 @@ describe("run status", () => {
   it("has no state for a run nothing describes", () => {
     expect(runStatusFromParts({})).toBeUndefined();
     expect(runStatusFromParts({ resume: JSON.stringify({ version: 1 }) })).toBeUndefined();
+  });
+
+  it("says which turns ran and how they ended, not where their events sit", () => {
+    // The state document answers how a run is doing; the replay slices events
+    // by folding the trajectory itself. So `eventCount` — a fact about the
+    // evidence — never reaches the view, even though the fold computes it.
+    const status = runStatusFromParts({
+      trajectoryStream: progressStream([
+        {
+          version: 1,
+          runId: "run-4",
+          timestamp,
+          status: "completed",
+          promptLength: 2,
+          prompt: "first",
+          events: [{ type: "done" }],
+        },
+      ]),
+    });
+    expect(status?.turns).toEqual([{ prompt: "first", status: "completed" }]);
   });
 });
