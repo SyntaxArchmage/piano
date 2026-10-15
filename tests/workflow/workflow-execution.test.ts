@@ -790,6 +790,12 @@ describe(" workflow execution", () => {
       expect(accepted.current_best?.path).toBe("state/current-best.py");
       expect(accepted.current_best?.digest).toBe(candidateDigest);
       expect(accepted.promotion?.resulting_best).toMatchObject({ path: "state/current-best.py", digest: candidateDigest });
+      // The orchestrator rewrote the accepted payload after validating the
+      // worker's bytes, and the record says who wrote what it carries.
+      const promotedRecord = JSON.parse(await readFile(result.stages[0]!.handoffRecordPath, "utf8")) as {
+        producer: { result?: { trust?: string } };
+      };
+      expect(promotedRecord.producer.result?.trust).toBe("orchestrator-materialized");
       expect(result.stages[0]?.projections).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "round.materialization-v1", pointer: "" }),
         expect.objectContaining({ id: "round.decision", value: "KEEP" }),
@@ -3934,6 +3940,18 @@ workflow:
       expect(handoff.inputs).toMatchObject([{ text: "produce attempt 2", resultPayload: { text: "accepted" } }]);
       expect(handoff.inputs[0]?.resultPath).toBe(validationPath(produces[1]!));
       expect(result.stages.find((stage) => stage.stageId === "produce")?.attempts).toBe(2);
+      // The record pins the accepted result file by content, so a reader can
+      // verify the evidence still holds what was accepted — and who wrote it.
+      const produceStage = result.stages.find((stage) => stage.stageId === "produce")!;
+      const acceptedBytes = await readFile(produceStage.resultPath!);
+      const onDisk = JSON.parse(await readFile(produceStage.handoffRecordPath, "utf8")) as {
+        producer: { result?: { path: string; sha256: string; trust: string } };
+      };
+      expect(onDisk.producer.result).toEqual({
+        path: produceStage.resultPath,
+        sha256: `sha256:${createHash("sha256").update(acceptedBytes).digest("hex")}`,
+        trust: "worker",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

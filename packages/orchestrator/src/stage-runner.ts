@@ -7,6 +7,7 @@
 // module forward, so the dependency stays one-way.
 
 import { FileSystem } from "@effect/platform";
+import { createHash } from "node:crypto";
 import { Duration, Either, Effect } from "effect";
 import { TRACE, failureDetails, isCancellation, type Logging } from "@piano/logging";
 import {
@@ -28,7 +29,7 @@ import {
 } from "./handoff.js";
 import { snapshotWorkerContract, workerContractSnapshotPath } from "./contract-snapshot.js";
 import { legacyContractProjectionDeclarations } from "./legacy-contract-projections.js";
-import { WorkflowError, workflowError } from "./errors.js";
+import { errorMessage, WorkflowError, workflowError } from "./errors.js";
 import { WORKER_LOG, WORKER_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import {
   actorSessionDirectory,
@@ -444,6 +445,9 @@ export function executeStage(
     let acceptedMetrics: readonly ContractMetric[] = [];
     let acceptedProjections: readonly ContractProjection[] = [];
     let acceptedResultPath: string | undefined;
+    /** Whether the orchestrator re-materialised the accepted payload (the
+     * GPU-round protocol) after the worker's bytes were validated. */
+    let materializedPayload = false;
     /** The reviewer's note arriving from the upstream stages this one is
      * declared to consume.
      *
@@ -978,7 +982,27 @@ export function executeStage(
       acceptedPayload = materialized.value;
       acceptedMetrics = materialized.metrics;
       acceptedProjections = materialized.projections;
+      materializedPayload = materialized.applied;
     }
+    // The record pins the published result file by content, so a reader can
+    // verify the evidence still holds what was accepted — and the trust marker
+    // says whether the orchestrator re-materialised the payload after the
+    // worker wrote those bytes.
+    const resultReference = acceptedResultPath === undefined
+      ? undefined
+      : yield* FileSystem.FileSystem.pipe(
+        Effect.flatMap((fileSystem) => fileSystem.readFile(acceptedResultPath)),
+        Effect.map((bytes) => ({
+          path: acceptedResultPath,
+          sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          trust: materializedPayload ? "orchestrator-materialized" as const : "worker" as const,
+        })),
+        Effect.mapError((cause) => workflowError(
+          "schedule",
+          acceptedResultPath,
+          `cannot hash the accepted result file: ${errorMessage(cause)}`,
+        )),
+      );
     const requestedModel = request.model ?? stageModel;
     const requestedThinkingLevel = request.thinkingLevel ?? node.stage.thinkingLevel;
     const handoff = yield* writeHandoffRecord(request.runDir, invocation, {
@@ -995,6 +1019,7 @@ export function executeStage(
       ...(acceptedWorker.thinkingLevel === undefined ? {} : { thinkingLevel: acceptedWorker.thinkingLevel }),
       workspace,
       ...(acceptedResultPath === undefined ? {} : { resultPath: acceptedResultPath }),
+      ...(resultReference === undefined ? {} : { result: resultReference }),
       ...(acceptedPayload === undefined ? {} : { resultPayload: acceptedPayload }),
       ...(acceptedMetrics.length === 0 ? {} : { metrics: acceptedMetrics }),
       ...(acceptedProjections.length === 0 ? {} : { projections: acceptedProjections }),

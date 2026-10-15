@@ -42,6 +42,19 @@ export interface HandoffProducer {
   readonly thinkingLevel?: string;
   readonly workspace: WorkflowWorkspaceBinding;
   readonly resultPath?: string;
+  /** The published result file this acceptance vouches for, pinned by content.
+   * `path` is the worker's `attempts/<k>/result.json` — a published contract
+   * whose path never moves — and `trust` says who last wrote what the record
+   * carries: the worker itself, or the orchestrator's GPU-round
+   * materialization, which rewrites the accepted payload after the worker's
+   * bytes were validated. A reader can therefore tell evidence that still
+   * holds exactly the worker's file from evidence the orchestrator
+   * re-materialised. */
+  readonly result?: {
+    readonly path: string;
+    readonly sha256: string;
+    readonly trust: "worker" | "orchestrator-materialized";
+  };
   readonly resultPayload?: unknown;
   /** Contract-declared metrics of the accepted result, so a rebuilt result
    * carries what tournament selection reads. */
