@@ -147,17 +147,24 @@ function requireSessionArtifact(
   return Effect.succeed({ sessionId: session.sessionId, transcriptPath: session.sessionFile });
 }
 
-function loadTextResources(
+/** Load a group of resources through the one pipeline they share: read each
+ * path under a trace, turn a failure into a resource error and a failed
+ * resource event, and hand back the path with what it held.
+ *
+ * `read` is the only part a caller supplies, because it is the only part that
+ * differs between the kinds. */
+function loadResourceGroup(
   request: AgentRequest,
-  kind: "context-file" | "skill",
+  kind: AgentResourceKind,
   paths: readonly string[],
+  source: Source,
+  read: (path: string, fileSystem: FileSystem.FileSystem) => Effect.Effect<string, unknown>,
 ): Effect.Effect<readonly TextResource[], AgentError, FileSystem.FileSystem | Logging> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const source = kind === "skill" ? SKILL_SOURCE : CONTEXT_FILE_SOURCE;
     return yield* Effect.forEach(paths, (path) => TRACE(
       source,
-      fileSystem.readFileString(path).pipe(
+      read(path, fileSystem).pipe(
         Effect.map((content) => ({ path, content })),
         Effect.mapError((cause) => resourceError(kind, path, cause)),
         Effect.tapError((error) => Effect.sync(() => resourceEvent(request, {
@@ -173,6 +180,20 @@ function loadTextResources(
   }).pipe(Effect.mapError((cause) => cause instanceof AgentError ? cause : agentError("unknown", cause)));
 }
 
+function loadTextResources(
+  request: AgentRequest,
+  kind: "context-file" | "skill",
+  paths: readonly string[],
+): Effect.Effect<readonly TextResource[], AgentError, FileSystem.FileSystem | Logging> {
+  return loadResourceGroup(
+    request,
+    kind,
+    paths,
+    kind === "skill" ? SKILL_SOURCE : CONTEXT_FILE_SOURCE,
+    (path, fileSystem) => fileSystem.readFileString(path),
+  );
+}
+
 /** Read a skill's content. A skill path may be either a directory (Agent Skills
  * spec: `skills/<name>/SKILL.md`) or a flat markdown file. The returned `path`
  * stays the directory/file path handed to the SDK (`additionalSkillPaths`), so
@@ -182,29 +203,12 @@ function loadSkillResources(
   request: AgentRequest,
   skillPaths: readonly string[],
 ): Effect.Effect<readonly TextResource[], AgentError, FileSystem.FileSystem | Logging> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    return yield* Effect.forEach(skillPaths, (skillPath) => TRACE(
-      SKILL_SOURCE,
-      fileSystem.stat(skillPath).pipe(
-        Effect.flatMap((stats) => {
-          const filePath = stats.type === "Directory" ? join(skillPath, "SKILL.md") : skillPath;
-          return fileSystem.readFileString(filePath).pipe(
-            Effect.map((content) => ({ path: skillPath, content })),
-          );
-        }),
-        Effect.mapError((cause) => resourceError("skill", skillPath, cause)),
-        Effect.tapError((error) => Effect.sync(() => resourceEvent(request, {
-          kind: "skill",
-          status: "failed",
-          source: "workflow",
-          path: skillPath,
-          error: error.message,
-        }))),
-      ),
-      { path: skillPath },
+  return loadResourceGroup(request, "skill", skillPaths, SKILL_SOURCE, (skillPath, fileSystem) =>
+    fileSystem.stat(skillPath).pipe(
+      Effect.flatMap((stats) => fileSystem.readFileString(
+        stats.type === "Directory" ? join(skillPath, "SKILL.md") : skillPath,
+      )),
     ));
-  }).pipe(Effect.mapError((cause) => cause instanceof AgentError ? cause : agentError("unknown", cause)));
 }
 
 function providerForModel(runtime: PiModelRuntime, modelId: string): string | undefined {
