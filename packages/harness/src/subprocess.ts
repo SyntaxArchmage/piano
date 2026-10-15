@@ -307,6 +307,24 @@ interface AttemptPlan {
   readonly dshResumeId: string | undefined;
 }
 
+/** Fail one attempt the way every failure path does: surface the typed error as
+ * an event, persist the events observed so far as the attempt's evidence, then
+ * fail — optionally carrying the continuation the retry boundary needs to
+ * reopen this attempt's conversation instead of starting over. */
+function attemptFailure(
+  emit: (event: AgentEvent) => void,
+  observed: readonly AgentEvent[],
+  provisionalId: string,
+): (error: AgentError, continuation?: AgentContinuation) => Effect.Effect<never, AgentError, Logging | FileSystem.FileSystem> {
+  return (error, continuation) => Effect.gen(function* () {
+    emit({ type: "error", errorType: error.kind, message: error.message });
+    yield* persistAgentEvents(observed, provisionalId);
+    return yield* Effect.fail(
+      continuation === undefined ? error : withFailedContinuation(error, continuation),
+    );
+  });
+}
+
 function prepareAttempt(input: {
   readonly harness: HarnessName;
   readonly request: AgentRequest;
@@ -332,11 +350,7 @@ function prepareAttempt(input: {
     // Pre-spawn guards keep stale generated homes and incomplete web-search
     // configuration from becoming opaque child failures or memory-only A/B
     // runs.
-    const failBeforeSpawn = (error: AgentError) => Effect.gen(function* () {
-      emit({ type: "error", errorType: error.kind, message: error.message });
-      yield* persistAgentEvents(observed, provisionalId);
-      return yield* Effect.fail(error);
-    });
+    const failBeforeSpawn = attemptFailure(emit, observed, provisionalId);
     const requireOverlay = (
       path: string,
       kind: "model-not-found" | "session-artifact",
@@ -470,6 +484,7 @@ function runSubprocessAttempt(
       : { ...request, continuation: attempt.continuation };
     const plan = yield* prepareAttempt({ harness, request: retryRequest, options, config, thinking, observed, emit });
     const { accumulator, provisionalId, transcriptPath, environment, argv, dshHome, dshResumeId } = plan;
+    const failAttempt = attemptFailure(emit, observed, provisionalId);
     const startedAt = Date.now();
     const dshMapper = harness === "dsh" ? createDshEventMapper(accumulator, emit) : undefined;
     // dsh storage is keyed by cwd, and a resumed map slot's cwd embeds the
@@ -487,6 +502,12 @@ function runSubprocessAttempt(
     // running turn's tool calls, before the next LLM call.
     let childControl: ChildStdinControl | undefined;
     let unbindSteering: (() => void) | undefined;
+    // Every streaming-input backend steers the same way once the child exists:
+    // take the control handle and bind the channel's steer to its write path.
+    const adoptControl = (control: ChildStdinControl): void => {
+      childControl = control;
+      unbindSteering = request.steering?.bind({ steer: (text) => control.writeFrame(text) });
+    };
     // pi RPC is acknowledged on stdout and dsh on stderr, so both steer
     // through a broker rather than the raw stdin writer: the channel's `steer`
     // resolves only once the child accepts the frame, and a refusal lands on
@@ -500,10 +521,7 @@ function runSubprocessAttempt(
       ? {
         initialFrame: userFrame(retryRequest.prompt),
         frame: (text) => ({ json: userFrame(text) }),
-        onControl: (control) => {
-          childControl = control;
-          unbindSteering = request.steering?.bind({ steer: (text) => control.writeFrame(text) });
-        },
+        onControl: adoptControl,
       }
       : dshAcks === undefined
         ? piRpc === undefined || piPrompt === undefined
@@ -514,24 +532,18 @@ function runSubprocessAttempt(
             settle: (value) => piRpc.settle(value),
             onClose: (reason) => piRpc.abort(reason),
             onControl: (control) => {
-              childControl = control;
+              adoptControl(control);
               // pi declines a prompt and then waits for a command that will
               // never come; the refusal arrives on the returned frame, so the
               // only place that can end the child is here.
               piRpc.onPromptRefusal = () => control.windDown();
-              unbindSteering = request.steering?.bind({
-                steer: (text) => control.writeFrame(text),
-              });
             },
           }
         : {
           frame: (text) => dshAcks.frame(text),
           onStderr: (line) => dshAcks.accept(line),
           onClose: (reason) => dshAcks.abort(reason),
-          onControl: (control) => {
-            childControl = control;
-            unbindSteering = request.steering?.bind({ steer: (text) => control.writeFrame(text) });
-          },
+          onControl: adoptControl,
         };
     let outcome: ChildOutcome;
     // The attempt's resumable identity, announced as soon as it exists and
@@ -580,9 +592,7 @@ function runSubprocessAttempt(
         );
       }
       const error = cause instanceof AgentError ? cause : agentError("harness-unavailable", cause);
-      emit({ type: "error", errorType: error.kind, message: error.message });
-      yield* persistAgentEvents(observed, provisionalId);
-      return yield* Effect.fail(error);
+      return yield* failAttempt(error);
     }
     const tailedDshEvidence = dshTailer === undefined
       ? undefined
@@ -642,17 +652,15 @@ function runSubprocessAttempt(
         message: `the resumed dsh session ${dshResumeId} could not be read back under `
           + `${dshHome}/sessions, so this turn has no transcript of its own${child}`,
       });
-      emit({ type: "error", errorType: error.kind, message: error.message });
-      yield* persistAgentEvents(observed, provisionalId);
       // The actor keeps its identity, so a stage that retries returns to the
       // same conversation and fails the same way rather than silently starting
       // over with none of its memory.
-      return yield* Effect.fail(withFailedContinuation(error, {
+      return yield* failAttempt(error, {
         harness,
         sessionId: provisionalId,
         nativeSessionId: dshResumeId,
         transcriptPath,
-      }));
+      });
     }
     // The transcript is the harness's audit trail in the canonical message
     // dialect (see canonical-transcript.ts) — the record the analyzers and any
@@ -703,6 +711,13 @@ function runSubprocessAttempt(
       },
       catch: (cause) => agentError("session-artifact", cause),
     }).pipe(Effect.tapError((error) => Effect.sync(() => emit({ type: "error", errorType: error.kind, message: error.message }))));
+    // The file a retry reopens: for pi/pi-cli that is pi's own session — the
+    // one argv named — not the audit trail, which pi never wrote and could not
+    // continue from. `piSessionPath` is a fixed point for continuations, so a
+    // retry that also fails stashes the same path again.
+    const continuationTranscriptPath = harness === "pi" || harness === "pi-cli"
+      ? piSessionPath(retryRequest, transcriptPath)
+      : transcriptPath;
     if (childFailed) {
       const refusal = piRpc?.promptRefusal;
       const error = refusal !== undefined
@@ -710,27 +725,18 @@ function runSubprocessAttempt(
         // child's exit code carries no information about it.
         ? refusal
         : subprocessError(harness, outcome, sourcePath);
-      emit({ type: "error", errorType: error.kind, message: error.message });
-      yield* persistAgentEvents(observed, provisionalId);
       // Stash the attempt's session identity so the shared retry boundary
       // reopens this transcript instead of starting a new session. The native
       // handle is what this attempt actually observed — or what it inherited
       // when it died before announcing one — never the fabricated logical id,
       // which no harness can resolve.
       const native = accumulator.sessionId ?? retryRequest.continuation?.nativeSessionId;
-      return yield* Effect.fail(withFailedContinuation(error, {
+      return yield* failAttempt(error, {
         harness,
         sessionId: provisionalId,
         ...(native === undefined ? {} : { nativeSessionId: native }),
-        // Same rule as the success path: a pi retry reopens the file argv
-        // named — pi's own session — not the audit trail, which pi never
-        // wrote and could not continue from. `piSessionPath` is a fixed
-        // point for continuations, so a retry that also fails stashes the
-        // same path again.
-        transcriptPath: harness === "pi" || harness === "pi-cli"
-          ? piSessionPath(retryRequest, transcriptPath)
-          : transcriptPath,
-      }));
+        transcriptPath: continuationTranscriptPath,
+      });
     }
     // The headless dsh runner always mints a new native id. For a continued
     // Piano actor, preserve the actor's logical child id rather than replacing
@@ -753,13 +759,8 @@ function runSubprocessAttempt(
         // the two diverge (a continued dsh actor keeps its logical id while
         // the headless runner mints a fresh native one per epoch).
         ...(accumulator.sessionId === undefined ? {} : { nativeSessionId: accumulator.sessionId }),
-        // The file the *harness* reopens, which for pi/pi-cli is its own
-        // session — never the audit trail, whose entries pi did not write.
-        // It is the same path argv named, so what pi opens next turn is the
-        // file it has been writing all along.
-        transcriptPath: harness === "pi" || harness === "pi-cli"
-          ? piSessionPath(retryRequest, transcriptPath)
-          : transcriptPath,
+        // The file the *harness* reopens (same rule as the failure path).
+        transcriptPath: continuationTranscriptPath,
       } satisfies AgentContinuation,
     };
     emit({ type: "done", exitStatus: 0, sessionId, transcriptPath: auditPath });
