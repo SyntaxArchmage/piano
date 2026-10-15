@@ -4824,6 +4824,47 @@ workflow:
     }
   });
 
+  it("allocates the next job ordinal from the run's own evidence, not a stale hint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-next-ordinal-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const run = (execution?: WorkflowExecutionContinuation) => runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, executionId: session.id, cwd: root, prompt: "answer",
+        ...(execution === undefined ? {} : { execution }),
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          return {
+            sessionId: "respond-session",
+            transcriptPath: "/tmp/respond-session.jsonl",
+            text: "ans = 4",
+            continuation: continuation("respond-session"),
+          };
+        }),
+      }));
+
+      await run();
+      // A prompt with no resume state at all still follows job 1: the run's
+      // own evidence, not the caller's hint, decides what is next.
+      await run();
+      // A stale hint (the state says 0) is a floor, never the answer.
+      await run({ id: session.id, promptIndex: 0, actors: new Map() });
+
+      const ordinals = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n")
+        .map((line) => JSON.parse(line) as { kind?: string; jobOrdinal?: number })
+        .filter((record) => record.kind === "execution-started")
+        .map((record) => record.jobOrdinal);
+      expect(ordinals).toEqual([1, 2, 3]);
+      // The trees follow the ordinals: three jobs, no job writing over another.
+      expect((await readdir(join(session.runDir, "prompts"))).sort()).toEqual(["1", "2", "3"]);
+      expect(calls).toHaveLength(3);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to resume an actor that recorded a turn but no continuation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-unresumable-actor-"));
     try {

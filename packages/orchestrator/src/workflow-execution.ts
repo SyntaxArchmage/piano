@@ -1,5 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
+import { join } from "node:path";
 import {
   failureDetails,
   isCancellation,
@@ -105,11 +106,14 @@ import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
+  parseProgressStreamRecord,
   workflowProgressPath,
   workflowProgressSnapshotPath,
   type WorkflowProgressRegionFinalizedRecord,
+  type WorkflowProgressStreamRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
+import { foldJobSpans, nextJobOrdinal } from "./job-spans.js";
 import {
 } from "./contract-snapshot.js";
 import {
@@ -339,6 +343,32 @@ function createExecutionDirectory(
     Effect.flatMap((fs) => fs.makeDirectory(runDir, { recursive: true })),
     Effect.mapError((cause) => workflowError("schedule", runDir, String(cause))),
   );
+}
+
+/** The next job ordinal, read from what the run has already recorded: the
+ * ledger's spans and the `prompts/<n>` trees, with the resume state's index as
+ * a floor only. Evidence beats a hint — a hint that lags behind cannot reopen
+ * an ordinal another job's evidence already holds. */
+function nextJobOrdinalForRun(
+  runDir: string,
+  hint: number | undefined,
+): Effect.Effect<number, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
+      Effect.orElseSucceed(() => ""),
+    );
+    const records = ledger.split("\n")
+      .map((line) => parseProgressStreamRecord(line))
+      .filter((record): record is WorkflowProgressStreamRecord => record !== undefined);
+    const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
+      Effect.orElseSucceed(() => [] as readonly string[]),
+    );
+    const recordedOrdinals = entries
+      .map((entry) => Number(entry))
+      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    return nextJobOrdinal(foldJobSpans(records), recordedOrdinals, hint);
+  });
 }
 
 
@@ -672,8 +702,10 @@ export function executeWorkflow(
     const progressPlan = workflowProgressPlan(compiled);
     // A continue repeats its job's ordinal: the span belongs to the same job,
     // so its evidence lands in the same prompts/<i>/ tree and the stream
-    // groups the spans together. A fresh job takes the next ordinal.
-    const promptIndex = request.continueJob?.jobOrdinal ?? (request.execution?.promptIndex ?? 0) + 1;
+    // groups the spans together. A fresh job takes the next ordinal the run's
+    // own evidence leaves — the resume state's index is only a floor there.
+    const promptIndex = request.continueJob?.jobOrdinal ??
+      (yield* nextJobOrdinalForRun(request.runDir, request.execution?.promptIndex));
     const knownLoopIterations = new Map<string, number>();
     yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, executionId);
