@@ -51,10 +51,8 @@ export {
   toolGrantsCapability,
   unknownToolNames,
 } from "./tool-names.js";
-export {
-  dshProjectKey,
-  executeSubprocessAgent,
-} from "./subprocess.js";
+export { executeSubprocessAgent } from "./subprocess.js";
+export { dshProjectKey } from "./dshSessionStorage.js";
 export {
   normalizeSubprocessLine,
   type SubprocessAccumulator,
