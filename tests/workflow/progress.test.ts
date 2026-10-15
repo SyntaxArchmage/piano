@@ -309,6 +309,22 @@ describe("workflow progress stream", () => {
     expect(progressRecordKind(accepted)).toBe("stage-accepted");
   });
 
+  it("skips an execution marker it cannot read instead of failing the view", () => {
+    // A torn or hand-written line can carry a valid envelope and still lack a
+    // kind's own fields. The reader contract is to skip it, not to take the
+    // whole state document down with it.
+    const shapeless = {
+      version: 1, kind: "execution-started", timestamp: "2026-01-01T00:00:06.000Z",
+      runId: "execution", jobOrdinal: 2, prompt: "second", resumed: false,
+    } as unknown as WorkflowProgressStreamRecord;
+    const before = applyProgressRecord(undefined, {
+      version: 1, kind: "execution-started", timestamp: "2026-01-01T00:00:00.000Z",
+      runId: "execution", jobOrdinal: 1, prompt: "first", resumed: false,
+      plan: { plannedStages: 1, stageCounts: {} },
+    } as unknown as WorkflowProgressStreamRecord);
+    expect(applyProgressRecord(before, shapeless)).toEqual(before);
+  });
+
   it("reads a line with a kind it does not recognize as nothing, not as an accepted stage", () => {
     // A newer writer's record riding the same stream: a valid envelope with a
     // discriminator this reader has no meaning for. Folding it into the

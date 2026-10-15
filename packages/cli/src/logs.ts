@@ -18,12 +18,12 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
-import { foldJobSpans, jobs, parseProgressStreamRecord, runStatusPath, type JobView } from "@piano/orchestrator";
+import { foldJobSpans, jobs, parseProgressStreamRecord, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { formatRunId, oneLine } from "./session-resume.js";
 
-const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>]`;
+const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`;
 const RST = "\x1b[0m";
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
@@ -45,6 +45,8 @@ interface LogsOptions {
   jobs: boolean;
   jobOrdinal?: number;
   jobsRun?: string;
+  rebuildRun?: string;
+  force: boolean;
 }
 
 export interface LogsDeps {
@@ -63,6 +65,8 @@ function parseLogsArgs(
   let checkRun: string | undefined;
   let jobsFlag = false;
   let jobOrdinal: number | undefined;
+  let rebuildRun: string | undefined;
+  let force = false;
   const positionals: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -87,6 +91,25 @@ function parseLogsArgs(
         return Effect.fail(new CliArgumentError({ message: `--jobs may be specified only once\n${usage}` }));
       }
       jobsFlag = true;
+      continue;
+    }
+    if (arg === "--rebuild") {
+      const value = args[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-")) {
+        return Effect.fail(new CliArgumentError({ message: `--rebuild requires a run id\n${usage}` }));
+      }
+      if (rebuildRun !== undefined) {
+        return Effect.fail(new CliArgumentError({ message: `--rebuild may be specified only once\n${usage}` }));
+      }
+      rebuildRun = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--force") {
+      if (force) {
+        return Effect.fail(new CliArgumentError({ message: `--force may be specified only once\n${usage}` }));
+      }
+      force = true;
       continue;
     }
     if (arg === "--job") {
@@ -118,6 +141,15 @@ function parseLogsArgs(
   if (jobsFlag && checkRun !== undefined) {
     return Effect.fail(new CliArgumentError({ message: `--jobs and --check cannot be combined\n${usage}` }));
   }
+  if (force && rebuildRun === undefined) {
+    return Effect.fail(new CliArgumentError({ message: `--force requires --rebuild\n${usage}` }));
+  }
+  if (rebuildRun !== undefined && (trace || checkRun !== undefined || jobsFlag || jobOrdinal !== undefined)) {
+    return Effect.fail(new CliArgumentError({ message: `--rebuild cannot be combined with --trace, --check or --jobs\n${usage}` }));
+  }
+  if (rebuildRun !== undefined && positionals.length > 0) {
+    return Effect.fail(new CliArgumentError({ message: `--rebuild takes its run id, not a positional\n${usage}` }));
+  }
   if (!jobsFlag && positionals.length > 0) {
     // Keep the historical surface: plain `piano logs` takes no positional.
     return Effect.fail(new CliArgumentError({ message: `unknown option: ${positionals[0] ?? ""}\n${usage}` }));
@@ -132,6 +164,8 @@ function parseLogsArgs(
     ...(checkRun === undefined ? {} : { checkRun }),
     ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
     ...(positionals[0] === undefined ? {} : { jobsRun: positionals[0] }),
+    ...(rebuildRun === undefined ? {} : { rebuildRun }),
+    force,
   });
 }
 
@@ -484,6 +518,47 @@ function jobStateStyle(view: JobView): string {
  * progress ledger into its jobs. The ledger is the evidence; the fold is the
  * same one `/continue` consumes, so this prints exactly what a continue would
  * skip. */
+/** Fold a run's ledgers back into its state document — the recovery path when
+ * the view is missing or torn. Refuses while the latest job is still open
+ * unless forced: a live run's own writer owns the view. */
+function printRebuild(
+  runsRoot: string,
+  run: string,
+  force: boolean,
+): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
+  const resolvedRunsRoot = resolve(runsRoot);
+  const runDir = resolve(resolvedRunsRoot, run);
+  if (dirname(runDir) !== resolvedRunsRoot) {
+    return Effect.fail(new LogsStorageError({
+      operation: "rebuild",
+      path: runDir,
+      message: "run id must name a direct child of the runs root",
+    }));
+  }
+  return Effect.gen(function* () {
+    const status = yield* rebuildRunStatus(runDir, { force }).pipe(
+      Effect.mapError((error) => new LogsStorageError({
+        operation: "rebuild",
+        path: runDir,
+        message: error.message,
+      })),
+    );
+    yield* Effect.sync(() => {
+      if (status === undefined) {
+        console.log(paint(COLORS.dim, `no ledgers to fold for ${run}`));
+        return;
+      }
+      const latest = status.jobs.at(-1);
+      console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Rebuilt ${run}/status.json`));
+      console.log([
+        paint(COLORS.dim, `jobs=${status.jobs.length}`),
+        paint(COLORS.dim, `turns=${status.turns?.length ?? 0}`),
+        ...(latest === undefined ? [] : [paint(COLORS.dim, `latest=#${latest.jobOrdinal} ${latest.state}`)]),
+      ].join("  "));
+    });
+  });
+}
+
 function printJobs(
   runsRoot: string,
   run: string,
@@ -600,6 +675,10 @@ export function logsCommand(
 ): Effect.Effect<void, CliError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const options = yield* parseLogsArgs(args, deps);
+    if (options.rebuildRun !== undefined) {
+      yield* printRebuild(options.runsRoot, options.rebuildRun, options.force);
+      return;
+    }
     if (options.checkRun !== undefined) {
       yield* printStaticObservability(options.runsRoot, options.checkRun);
       return;

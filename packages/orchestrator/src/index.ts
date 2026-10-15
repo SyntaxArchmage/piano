@@ -146,6 +146,7 @@ export {
 } from "./job-spans.js";
 export {
   readRunStatus,
+  rebuildRunStatus,
   refreshRunStatus,
   runStatusFromParts,
   runStatusPath,

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -342,13 +342,91 @@ describe("piano logs --jobs", () => {
     }
   });
 
-  it("refuses a run id outside the runs root", async () => {
-    const exit = await Effect.runPromiseExit(
+  it("refuses a run id outside the runs root", async () => {    const exit = await Effect.runPromiseExit(
       logsCommand(["--jobs", "../outside"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
     expect(exit._tag).toBe("Failure");
     if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
       expect(exit.cause.error._tag).toBe("LogsStorageError");
+    }
+  });
+});
+
+describe("piano logs --rebuild", () => {
+  let root: string;
+  const runId = "20260821T120000-abc123";
+
+  const writeLedger = async (records: readonly Record<string, unknown>[]) => {
+    const runDir = join(root, runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "progress.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+  };
+  const finishedJob = [
+    {
+      version: 1, kind: "execution-started", timestamp: "2026-08-21T10:00:00.000Z",
+      runId, jobOrdinal: 1, prompt: "first pass", resumed: false,
+      plan: { plannedStages: 2, stageCounts: { first: { planned: 1, completed: 0 }, second: { planned: 1, completed: 0 } } },
+    },
+    {
+      version: 1, kind: "execution-finished", timestamp: "2026-08-21T10:00:04.000Z",
+      runId: runId, status: "completed",
+    },
+  ];
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "piano-logs-rebuild-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("writes the state document back from the ledgers", async () => {
+    await writeLedger(finishedJob);
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--rebuild", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Rebuilt ${runId}/status.json`));
+      const status = JSON.parse(await readFile(join(root, runId, "status.json"), "utf8")) as {
+        runId?: string;
+        jobs?: Array<{ jobOrdinal?: number; state?: string }>;
+      };
+      expect(status.runId).toBe(runId);
+      expect(status.jobs).toMatchObject([{ jobOrdinal: 1, state: "finished" }]);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("refuses to fold over a live run's view unless forced", async () => {
+    // An open job: started and never finished — the run's own writer owns the view.
+    await writeLedger(finishedJob.slice(0, 1));
+    const refused = await Effect.runPromiseExit(
+      logsCommand(["--rebuild", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(refused._tag).toBe("Failure");
+    if (refused._tag === "Failure" && refused.cause._tag === "Fail") {
+      expect(refused.cause.error._tag).toBe("LogsStorageError");
+      expect(refused.cause.error.message).toContain("still running");
+    }
+
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--rebuild", runId, "--force"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Rebuilt ${runId}/status.json`));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("rejects --force without --rebuild and mixing --rebuild with --jobs", async () => {
+    await writeLedger(finishedJob);
+    for (const args of [["--force"], ["--rebuild", runId, "--jobs"]]) {
+      const exit = await Effect.runPromiseExit(logsCommand(args, { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+        expect(exit.cause.error._tag).toBe("CliArgumentError");
+      }
     }
   });
 });

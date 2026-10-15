@@ -510,6 +510,15 @@ export function applyProgressRecord(
   }
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
+    // A record whose plan is missing is one this fold cannot use. The reader
+    // contract is that a reader skips what it cannot read rather than failing
+    // the whole view on it — a torn or hand-written line must not take the
+    // document down, and the ledger keeps the line for whoever repairs it.
+    if ((started as { plan?: unknown }).plan === undefined) {
+      return previous === undefined
+        ? emptyProgressSnapshot(started.runId, started.timestamp)
+        : previous;
+    }
     // A resumed execution keeps the counts the previous one reached; a fresh
     // one starts them over. The flag rides the record rather than being
     // inferred from whether a snapshot happens to exist on disk.

@@ -212,8 +212,33 @@ export function refreshRunStatus(
   });
 }
 
-/** Write a run's state whole. The ledgers stay the evidence; this is the view. */
-export function writeRunStatus(
+/** Rebuild a run's state document from its ledgers — the recovery path when the
+ * view is missing or torn.
+ *
+ * Refuses while the latest job is still open: a live run's own writer owns the
+ * view, and a second fold racing it could land a stale table over a newer one.
+ * `force` folds anyway, for the operator who knows the run is not writing. */
+export function rebuildRunStatus(
+  runDir: string,
+  options: { readonly force?: boolean } = {},
+): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const status = yield* foldRunStatus(runDir);
+    if (status === undefined) return undefined;
+    const latest = status.jobs.at(-1);
+    if (latest?.state === "alive" && options.force !== true) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        runStatusPath(runDir),
+        "the latest job is still running; rebuild with --force to fold the ledgers anyway",
+      ));
+    }
+    yield* writeRunStatus(runDir, status);
+    return status;
+  });
+}
+
+/** Write a run's state whole. The ledgers stay the evidence; this is the view. */export function writeRunStatus(
   runDir: string,
   status: RunStatus,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
