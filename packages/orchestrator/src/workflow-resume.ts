@@ -1,20 +1,18 @@
 // Read actor continuation state from the run's own evidence: the ledger's
-// `actor-turn` rows first, and the resume stream for runs written before those
-// rows existed. The ledger is the one source; the stream is read until nothing
-// old is left to read.
+// `actor-turn` rows, which are the one record of each conversation-state
+// change.
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import type { AgentContinuation } from "@piano/harness";
 import { type WorkflowError } from "./errors.js";
-import { actorTableFrom, readResumeState, type ResumeActorState } from "./resume-state.js";
+import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
 import { parseProgressStreamRecord, workflowProgressPath } from "./progress.js";
 
-/** One actor's carried-over state: the complete record the state stream holds
- * for it. The identity fields are part of it because the orchestrator writes
- * its whole actor table back on every prompt — an actor projected down to its
- * `turns` alone would be dropped by that write, and the conversation behind it
- * silently abandoned.
+/** One actor's carried-over state: the complete record the ledger holds for
+ * it. The identity fields are part of it because the orchestrator appends a
+ * row for every conversation-state change — an actor projected down to its
+ * `turns` alone would lose the session the next prompt reopens.
  *
  * `continuation` is present whenever the actor is resumable at all: an entry
  * that recorded turns without one is not something this reader produces, and
@@ -35,9 +33,9 @@ export interface WorkflowExecutionContinuation {
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
 
-/** Read the actor continuation table for a run: the ledger's `actor-turn`
- * rows, or the resume stream for a run that predates them. Returns `undefined`
- * when neither exists, allowing callers to start workers fresh. */
+/** Read the actor continuation table for a run from the ledger's `actor-turn`
+ * rows. Returns `undefined` when it holds none, allowing callers to start
+ * workers fresh. */
 export function readWorkflowExecutionContinuation(
   runDir: string,
   _runId: string,
@@ -50,9 +48,8 @@ export function readWorkflowExecutionContinuation(
     const ledgerRecords = ledger.split("\n")
       .map((line) => parseProgressStreamRecord(line))
       .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
-    const stream = yield* readResumeState(runDir);
-    const table = actorTableFrom(ledgerRecords, stream);
-    const runId = ledgerRecords.find((record) => record.runId !== undefined)?.runId ?? stream?.runId;
+    const table = actorTableFrom(ledgerRecords);
+    const runId = ledgerRecords.find((record) => record.runId !== undefined)?.runId;
     if (runId === undefined) return undefined;
     return finish(runId, table.promptIndex, table.actors);
   });

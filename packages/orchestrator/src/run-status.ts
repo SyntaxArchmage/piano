@@ -2,16 +2,15 @@
  * The run's state, as one document.
  *
  * A run records its work in append-only ledgers — `progress.jsonl` for what the
- * workflow did, `trajectory.jsonl` for what the agent said, `resume.jsonl` for
- * which harness sessions hold the conversations. This is the one view of them.
+ * workflow did and which harness sessions hold the conversations, and
+ * `trajectory.jsonl` for what the agent said. This is the one view of them.
  * Every reader asks for the run's state here instead of folding its own, so
  * "how is this run doing" has exactly one answer and cannot disagree with
  * itself between the log picker, the TUI and a resume.
  *
  * The ledgers stay the only evidence. Nothing here is written that cannot be
- * rebuilt by folding them, which is what lets the per-source documents
- * (`progress.json`, `resume.json`, `trajectory.json`) go away without losing
- * a run.
+ * rebuilt by folding them, which is what lets the per-source documents that
+ * used to sit beside them go away without losing a run.
  */
 
 import { FileSystem } from "@effect/platform";
@@ -31,7 +30,7 @@ import {
   type WorkflowProgressStageCount,
   type WorkflowProgressStreamRecord,
 } from "./progress.js";
-import { actorTableFrom, resumeStreamPath, type ResumeActorState, type ResumeState } from "./resume-state.js";
+import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
 
 /** One job, as the state document holds it.
  *
@@ -116,7 +115,6 @@ export function runStatusPath(runDir: string): string {
  * run — the same answer a run dir with no evidence gives. */
 export function runStatusFromParts(parts: {
   readonly progressStream?: string;
-  readonly resume?: string;
   readonly trajectoryStream?: string;
 }): RunStatus | undefined {
   const records = parseProgressLines(parts.progressStream);
@@ -124,14 +122,12 @@ export function runStatusFromParts(parts: {
     (folded, record) => applyProgressRecord(folded, record),
     undefined,
   );
-  const resume = parts.resume === undefined ? undefined : parseResumeTable(parts.resume);
   const trajectory = parseTrajectory(parts.trajectoryStream);
-  if (progress === undefined && resume === undefined && trajectory === undefined) return undefined;
-  // The actors a run has: the ledger's own rows when it records them, the
-  // resume stream for a run that predates them.
-  const actors = actorTableFrom(records, resume);
+  if (progress === undefined && trajectory === undefined) return undefined;
+  // The actors a run has: the ledger's own `actor-turn` rows.
+  const actors = actorTableFrom(records);
 
-  const runId = progress?.runId ?? resume?.runId ?? trajectory?.runId;
+  const runId = progress?.runId ?? trajectory?.runId;
   const status = progress?.status ?? trajectory?.status;
   const updatedAt = progress?.updatedAt ?? trajectory?.updatedAt;
   // A run that has said neither when it is nor how it is has not recorded
@@ -188,14 +184,12 @@ function foldRunStatus(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const read = (path: string) => fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const [progressStream, resume, trajectoryStream] = yield* Effect.all([
+    const [progressStream, trajectoryStream] = yield* Effect.all([
       read(workflowProgressPath(runDir)),
-      read(resumeStreamPath(runDir)),
       read(trajectoryStreamPath(runDir)),
     ], { concurrency: "unbounded" });
     return runStatusFromParts({
       ...(progressStream === undefined ? {} : { progressStream }),
-      ...(resume === undefined ? {} : { resume }),
       ...(trajectoryStream === undefined ? {} : { trajectoryStream }),
     });
   });
@@ -284,29 +278,4 @@ function parseProgressLines(raw: string | undefined): readonly WorkflowProgressS
     if (record !== undefined) records.push(record);
   }
   return records;
-}
-
-/** The resume stream's newest table, or the document a pre-stream run left.
- *
- * The document is one table whole; the stream appends one per write and the
- * newest is the state. */
-function parseResumeTable(raw: string): ResumeState | undefined {
-  const whole = tryParseObject(raw);
-  if (whole !== undefined && typeof whole.runId === "string") return whole as unknown as ResumeState;
-  for (const line of raw.split("\n").reverse()) {
-    const table = tryParseObject(line);
-    if (table !== undefined && typeof table.runId === "string") return table as unknown as ResumeState;
-  }
-  return undefined;
-}
-
-function tryParseObject(raw: string): Record<string, unknown> | undefined {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
