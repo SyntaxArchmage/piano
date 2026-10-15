@@ -1,7 +1,7 @@
 // Pure trajectory ledger reducer for Piano — folds the rich, SDK-native
 // AgentEvent stream into a compact 8-kind ledger (decision 0027). Kept in the
 // CLI (not /orchestrator) because the orchestrator already forwards raw events through `onEvent` and
-// `main.ts` persists the raw `events` array to `trajectory.json`; the folded
+// `main.ts` appends the raw `events` to `trajectory.jsonl`; the folded
 // ledger is only consumed by the on-screen side panel, so there is no other
 // caller. It has no pi-tui or theme dependency — the renderer lives in
 // trajectory-panel.ts.

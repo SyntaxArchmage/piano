@@ -5,7 +5,7 @@
 //  1. The run list is unbounded and grows with every run, so it is enumerated in
 //     full (newest first — a run id sorts chronologically) but only the rows
 //     inside the viewport are rendered, and only those rows have their
-//     `trajectory.json` read. Metadata loading is therefore proportional to what
+//     `status.json` read. Metadata loading is therefore proportional to what
 //     the user looks at, not to how many runs they have ever made.
 //  2. Filtering needs metadata the list itself does not carry (name, first
 //     prompt). Rows load lazily, so a query can only match what has been read;
