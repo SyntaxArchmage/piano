@@ -115,7 +115,12 @@ export interface StageRunnerContext {
   readonly dependsOnByStage: ReadonlyMap<string, readonly string[]>;
 }
 
-function rebuildAcceptedStage(
+/** Rebuild an accepted invocation's result from the evidence it left, so a
+ * continue can skip its worker turn. `undefined` means the producer record is
+ * gone or unreadable — the caller falls through to re-running the invocation.
+ * Exported for the scope walker's region skip: a finalized region rebuilds
+ * every invocation it accepted through the same rule. */
+export function rebuildAcceptedStage(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
   cursor: NonNullable<WorkflowExecutionRequest["continueJob"]>,

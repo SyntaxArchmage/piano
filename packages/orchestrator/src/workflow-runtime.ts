@@ -89,12 +89,45 @@ export function runtimeInvocationId(invocation: WorkflowRuntimeInvocation): stri
 
 /** The runtime instance of one region: its frame chain plus the region id.
  * The single spelling `region-finalized` records are keyed by — written and
- * read through this function so the two can never disagree. */
+ * read through this function so the two can never disagree. A frame chain is
+ * absent for a top-level region, so the region instance is just its id
+ * (`tune`); a slot invocation inside it spells `tune/slot-0` — the region
+ * instance plus the frame, exactly as `runtimeInstanceId` writes it. */
 export function runtimeRegionInstanceId(
   frames: readonly WorkflowRuntimeFrame[],
   regionId: string,
 ): string {
-  return `${runtimeInstanceId(frames) ?? "root"}/${regionId}`;
+  const chain = runtimeInstanceId(frames);
+  return chain === undefined ? regionId : `${chain}/${regionId}`;
+}
+
+/** Rebuild the frame chain `runtimeInstanceId` spelled — the inverse both
+ * directions test against each other. Mechanical use only: a continue that
+ * holds an accepted invocation's instance string needs the frames back to
+ * address its evidence. `undefined` for a string the speller could not have
+ * produced. */
+export function runtimeFramesFromInstanceId(
+  instance: string,
+): readonly WorkflowRuntimeFrame[] | undefined {
+  const segments = instance.split("/");
+  let index = segments[0] === "root" ? 1 : 0;
+  const frames: WorkflowRuntimeFrame[] = [];
+  while (index < segments.length) {
+    const regionId = segments[index];
+    const marker = segments[index + 1];
+    if (regionId === undefined || regionId === "" || marker === undefined) return undefined;
+    const iteration = /^iter-(\d+)$/.exec(marker);
+    const slot = /^slot-(\d+)$/.exec(marker);
+    if (iteration !== null) {
+      frames.push({ kind: "loop", regionId, iteration: Number(iteration[1]) });
+    } else if (slot !== null) {
+      frames.push({ kind: "map", regionId, slot: Number(slot[1]) });
+    } else {
+      return undefined;
+    }
+    index += 2;
+  }
+  return frames;
 }
 
 /** Path segments shared by all per-invocation evidence. Static names and frame

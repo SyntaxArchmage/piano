@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
+import type { SelectionIncumbent } from "./selection.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
 import type { ContractProjection } from "@piano/contract";
@@ -229,11 +230,17 @@ export interface WorkflowProgressRegionFinalizedRecord {
   readonly timestamp: string;
   readonly executionId: string;
   readonly jobOrdinal: number;
-  /** `<frame chain>/<regionId>` — the spelling `runtimeRegionInstanceId`
-   * produces, written and read by the same rule. */
+  /** `<frame chain>/<regionId>` — `runtimeRegionInstanceId`'s output, whose
+   * inverse is `runtimeFramesFromInstanceId`: the chain is `root` (no frames)
+   * or `regionId/iter-N` / `regionId/slot-K` pairs joined by `/`. Written and
+   * read through those two functions so the two can never disagree. */
   readonly instance: string;
   readonly regionId: string;
   readonly regionKind: "map" | "loop";
+  /** How the region's schedule ended. "the region ended early" is derived,
+   * not stored: `outcome === "terminal-blocked"` for a blocked region, or
+   * `notCarriedReason === "stopped"` for a tournament whose winner was
+   * stopped/blocked and could not be carried. */
   readonly outcome:
     | "carried"
     | "admitted-not-carried"
@@ -242,10 +249,17 @@ export interface WorkflowProgressRegionFinalizedRecord {
     | "bound-iterations"
     | "bound-duration"
     | "feedback-stop";
-  readonly stopped?: boolean;
+  /** Orthogonal to `outcome`: why the winning slot was not carried —
+   * the admission gate rejected it, or the winner itself was stopped. */
   readonly notCarriedReason?: "admission" | "stopped";
-  readonly winnerKey?: string;
+  /** The winning slot's runtime instance — the identity a skip filters the
+   * boundary by. The workspace key is deliberately not stored: it is a path
+   * spelling, derivable from the instance where a consumer needs it. */
   readonly winnerInstanceId?: string;
+  /** The tournament incumbent the admission gate compares against, as the
+   * region left it. A skipped region restores it so a later iteration's
+   * admission check compares against the same basis. */
+  readonly incumbent?: SelectionIncumbent;
   /** Completed iterations for a loop region at the moment it exited. */
   readonly iterations?: number;
 }

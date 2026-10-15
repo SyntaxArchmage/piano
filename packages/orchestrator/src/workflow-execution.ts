@@ -107,6 +107,7 @@ import {
   initializeWorkflowProgress,
   workflowProgressPath,
   workflowProgressSnapshotPath,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
 import {
@@ -143,6 +144,10 @@ export interface WorkflowExecutionRequest {
     /** Highest attempt number recorded per invocation in the job so far, so a
      * re-run's new attempt does not overwrite the evidence it follows. */
     readonly attempts: ReadonlyMap<string, number>;
+    /** Regions that already exited in this job, keyed by runtime instance.
+     * A region found here is skipped whole: its boundary is rebuilt from the
+     * accepted invocations' evidence instead of re-entering its workers. */
+    readonly regions?: ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord>;
   };
   readonly cwd: string;
   readonly prompt: string;

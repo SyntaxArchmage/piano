@@ -17,11 +17,14 @@ import {
 import {
   allocateMapWorkspace,
   executeWorkflow,
+  foldJobSpans,
+  jobs,
   loadAndExecuteWorkflow,
   loadWorkflow,
   progressRecordKind,
   readWorkflowExecutionContinuation,
   WorkflowError,
+  type WorkflowProgressStreamRecord,
   type WorkflowSignoffRequest,
   type WorkflowExecutionContinuation,
 } from "../../packages/orchestrator/src/index.js";
@@ -4502,6 +4505,89 @@ workflow:
     }
   });
 
+  it("skips a finalized region on continue without running a single worker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-map-skip-"));
+    try {
+      await writeFile(join(root, "map.yml"), MAP_WORKFLOW);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      const session = await testSession(root);
+      const firstCalls: AgentRequest[] = [];
+      const verifiedContents = new Map<string, string>();
+      const runner = (calls: AgentRequest[]) => (request: AgentRequest) => Effect.promise(async () => {
+        calls.push(request);
+        const stage = stageId(request);
+        if (stage === "propose") {
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, JSON.stringify({
+            strategies: [
+              { id: "slot-a", bottleneck: "memory", technique: "tile", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+              { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+            ],
+          }));
+        }
+        const invocation = invocationId(request);
+        if (stage === "tournament.implement") {
+          await writeFile(join(request.cwd, "kernel.py"), `candidate:${invocation}\n`);
+        }
+        if (stage === "tournament.verify") {
+          verifiedContents.set(request.cwd, await readFile(join(request.cwd, "kernel.py"), "utf8"));
+        }
+        const sessionId = `${stage}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+        return {
+          sessionId,
+          transcriptPath: `/tmp/${sessionId}.jsonl`,
+          text: `${stage}:${invocation}`,
+          continuation: continuation(sessionId),
+        };
+      });
+      const firstRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-skip", cwd: root, prompt: "map candidates",
+        agentRunner: runner(firstCalls),
+      }));
+      expect(firstCalls.length).toBeGreaterThan(0);
+
+      // The continue's cursor, folded from the run's own stream — exactly what
+      // the CLI's /continue hands over: accepted invocations and the regions
+      // that already exited.
+      const streamRecords = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as unknown);
+      const folded = jobs(foldJobSpans(streamRecords as readonly WorkflowProgressStreamRecord[]));
+      const cursor = folded.at(-1);
+      expect(cursor?.regions.size).toBe(1);
+
+      const secondCalls: AgentRequest[] = [];
+      const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-skip", cwd: root, prompt: "map candidates",
+        agentRunner: runner(secondCalls),
+        continueJob: {
+          jobOrdinal: cursor!.jobOrdinal,
+          accepted: cursor!.accepted,
+          attempts: cursor!.attempts,
+          regions: cursor!.regions,
+        },
+      }));
+      // The region was skipped whole: not one worker turn re-ran.
+      expect(secondCalls).toEqual([]);
+      // And its boundary came back from evidence alone.
+      expect(secondRun.stages.map((stage) => stage.id).sort()).toEqual(firstRun.stages.map((stage) => stage.id).sort());
+      const firstTerminal = firstRun.terminalStages[0];
+      const secondTerminal = secondRun.terminalStages[0];
+      expect(secondTerminal?.id).toBe(firstTerminal?.id);
+      expect(secondTerminal?.text).toBe(firstTerminal?.text);
+      // The skip is what keeps the evidence singular: a re-entered region
+      // would finalize again — a second region-finalized line and a second
+      // selection observation for one decision.
+      const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as { kind?: string; instance?: string });
+      expect(afterStream.filter((line) => line.kind === "region-finalized" && line.instance === "tournament")).toHaveLength(1);
+      const selectionLines = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8")).trim().split("\n");
+      expect(selectionLines).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not retry a worker failure outside validate repair", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-cancelled-no-retry-"));
     try {
@@ -4808,12 +4894,11 @@ workflow:
       expect(finalized).toHaveLength(1);
       expect(finalized[0]).toMatchObject({
         jobOrdinal: 1,
-        instance: "root/race",
+        instance: "race",
         regionId: "race",
         regionKind: "map",
         outcome: "carried",
-        winnerKey: "job-1/race/slot-1",
-        winnerInstanceId: "root/race/slot-1",
+        winnerInstanceId: "race/slot-1",
       });
       // Worker-consolidation carries no git commit but the stored provenance is
       // how the winning higher-tflops kernel reached the shared source.

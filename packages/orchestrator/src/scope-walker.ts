@@ -21,7 +21,7 @@ import {
   type WorkflowCarrying,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
-import { executeStage, type StageRunnerContext } from "./stage-runner.js";
+import { executeStage, rebuildAcceptedStage, type StageRunnerContext } from "./stage-runner.js";
 import { resultProjectionValue } from "./stage-runner-support.js";
 import { WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
@@ -36,13 +36,15 @@ import {
 import type { HandoffMapItem } from "./handoff.js";
 import {
   mapOverParts,
+  runtimeFramesFromInstanceId,
   runtimeInstanceId,
   runtimeInvocationId,
   runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeNode,
+  type WorkflowRuntimeRegionNode,
 } from "./workflow-runtime.js";
-import type { WorkflowRegionFinalizedPayload } from "./progress.js";
+import type { WorkflowProgressRegionFinalizedRecord, WorkflowRegionFinalizedPayload } from "./progress.js";
 import type { CompiledWorkflow, WorkflowRegionPlan } from "./workflow.js";
 import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
@@ -376,6 +378,8 @@ interface TournamentFinalization {
    * empty-candidate case, which writes no `region-finalized` record. */
   readonly outcome?: "carried" | "admitted-not-carried" | "no-winner" | "terminal-blocked";
   readonly notCarriedReason?: "admission" | "stopped";
+  /** The incumbent as the region left it, recorded for a skip to restore. */
+  readonly incumbent?: SelectionIncumbent;
 }
 
 // A tournament is one region: however many stages it contains, it decides
@@ -417,6 +421,13 @@ const finalizeTournament = (
   let winnerKey: string | undefined;
   let selectionReferee: SelectionReferee | undefined;
   let selectionBranches: readonly SelectionBranch[] = [];
+  /** The incumbent map as a record field, evaluated at each return so a
+   * carried winner is recorded in its post-admission state. */
+  const incumbentForRecord = (): SelectionIncumbent | undefined => {
+    if (selectionReferee === undefined) return undefined;
+    const key = tournamentIncumbentKey(region, frames);
+    return key === undefined ? undefined : tournamentIncumbents.get(key);
+  };
   if (options?.winner !== undefined) {
     // An explicit host-plugin selector overrides the metric referee.
     try {
@@ -502,6 +513,7 @@ const finalizeTournament = (
       return {
         outcome: "admitted-not-carried",
         notCarriedReason: "admission",
+        ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
         ...(winnerCandidate === undefined ? {} : { winner: winnerCandidate }),
       };
     }
@@ -525,7 +537,11 @@ const finalizeTournament = (
         keys: cleanupKeys,
         preserve: options?.preserve === true,
       });
-      return { outcome: "admitted-not-carried", notCarriedReason: "stopped" };
+      return {
+        outcome: "admitted-not-carried",
+        notCarriedReason: "stopped",
+        ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
+      };
     }
     const excludeUnder = [request.runDir];
     let consolidating: WorkflowCarrying;
@@ -649,6 +665,7 @@ const finalizeTournament = (
     : candidates.find((candidate) => candidate.key === winnerKey);
   return {
     outcome: winnerKey === undefined ? "no-winner" : "carried",
+    ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
     ...(winner === undefined ? {} : { winner }),
   };
 });
@@ -666,7 +683,97 @@ const executeScope = (
   const pending = new Map(nodes.map((node) => [node.name, node]));
   const allStages: InternalStageResult[] = [];
 
-  const runNode = (node: WorkflowRuntimeNode): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
+  /** Rebuild a finalized region's exit from evidence alone: every accepted
+   * invocation inside it, read back through the same rebuild a continue's
+   * cursor uses, then the boundary the region's own exit decided (the winner
+   * slot's exit result, all slots for a no-winner tournament, the blocked
+   * results, or the last iteration's exit for a loop). `undefined` abandons
+   * the skip: normal re-entry is slower but always answers in the same
+   * shape, so missing evidence degrades instead of guessing. */
+  const rebuildFinalizedRegion = (
+    node: WorkflowRuntimeRegionNode,
+    frames: readonly WorkflowRuntimeFrame[],
+    finalized: WorkflowProgressRegionFinalizedRecord,
+  ): Effect.Effect<NodeExecution | undefined, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
+    const cursor = request.continueJob;
+    if (cursor === undefined) return undefined;
+    const region = node.region;
+    const instance = runtimeRegionInstanceId(frames, node.id);
+    // A loop that never entered (its prerequisite was already blocked when
+    // the region was reached) owns no invocation: re-entry decides that from
+    // live inputs and runs no worker either way.
+    if (node.kind === "loop" && (finalized.iterations ?? 0) === 0) return undefined;
+    const inside = [...cursor.accepted]
+      .map((invocationId) => {
+        const at = invocationId.indexOf("@");
+        if (at <= 0) return undefined;
+        const stageId = invocationId.slice(0, at);
+        const target = invocationId.slice(at + 1);
+        if (target !== instance && !target.startsWith(`${instance}/`)) return undefined;
+        const rebuiltFrames = runtimeFramesFromInstanceId(target);
+        return rebuiltFrames === undefined ? undefined : { stageId, target, frames: rebuiltFrames };
+      })
+      .filter((entry): entry is { stageId: string; target: string; frames: readonly WorkflowRuntimeFrame[] } => entry !== undefined)
+      .sort((left, right) => left.target.localeCompare(right.target) || left.stageId.localeCompare(right.stageId));
+    if (inside.length === 0) return undefined;
+    const rebuilt: InternalStageResult[] = [];
+    for (const entry of inside) {
+      const result = yield* rebuildAcceptedStage(request.runDir, {
+        executionId,
+        promptIndex: cursor.jobOrdinal,
+        stageId: entry.stageId,
+        stageName: entry.stageId,
+        frames: entry.frames,
+      }, cursor);
+      if (result === undefined) return undefined;
+      rebuilt.push(result);
+    }
+    const exitResults = rebuilt.filter((result) => result.stageId === region.exitStageId);
+    let boundary: readonly InternalStageResult[];
+    if (node.kind === "map") {
+      if (finalized.outcome === "terminal-blocked") {
+        boundary = rebuilt.filter(isBlockedStageResult);
+      } else if (finalized.winnerInstanceId !== undefined) {
+        boundary = exitResults.filter((result) => result.instanceId === finalized.winnerInstanceId);
+      } else {
+        boundary = exitResults;
+      }
+    } else {
+      const lastIteration = `${instance}/iter-${(finalized.iterations ?? 1) - 1}`;
+      boundary = exitResults.filter((result) => result.instanceId === lastIteration);
+    }
+    if (boundary.length === 0) return undefined;
+    if (finalized.incumbent !== undefined) {
+      const incumbentKey = tournamentIncumbentKey(region, frames);
+      if (incumbentKey !== undefined) tournamentIncumbents.set(incumbentKey, finalized.incumbent);
+    }
+    // "Ended early" is derived, not stored: a blocked region, or a tournament
+    // whose winner was stopped and could not be carried.
+    const stopped = finalized.outcome === "terminal-blocked" || finalized.notCarriedReason === "stopped";
+    return {
+      boundary: { results: boundary },
+      stages: rebuilt,
+      ...(stopped ? { stopped: true } : {}),
+    } satisfies NodeExecution;
+  });
+
+  /** A region the job already finalized is skipped whole: its workers do not
+   * run again, and its boundary comes from the evidence they left. */
+  const runNode = (
+    node: WorkflowRuntimeNode,
+  ): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
+    if (node.kind !== "stage") {
+      const finalized = request.continueJob?.regions?.get(runtimeRegionInstanceId(frames, node.id));
+      if (finalized !== undefined) {
+        return rebuildFinalizedRegion(node, frames, finalized).pipe(
+          Effect.flatMap((skipped) => skipped === undefined ? runNodeDirect(node) : Effect.succeed(skipped)),
+        );
+      }
+    }
+    return runNodeDirect(node);
+  };
+
+  const runNodeDirect = (node: WorkflowRuntimeNode): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
     const directInputs = node.dependencies.flatMap((dependency) => completed.get(dependency)?.results ?? []);
     const inputs = mergeScopeInputs(inheritedInputs, directInputs);
     if (node.kind === "stage") {
@@ -700,7 +807,6 @@ const executeScope = (
             regionId: region.id,
             regionKind: "loop",
             outcome: "terminal-blocked",
-            stopped: true,
             iterations: 0,
           });
           return {
@@ -766,7 +872,6 @@ const executeScope = (
               regionId: region.id,
               regionKind: "loop",
               outcome: "terminal-blocked",
-              stopped: true,
               iterations: iteration + 1,
             });
             return {
@@ -980,10 +1085,9 @@ const executeScope = (
           regionId: region.id,
           regionKind: "map",
           outcome: finalization.outcome,
-          ...(finalization.stopped === true ? { stopped: true } : {}),
           ...(finalization.notCarriedReason === undefined ? {} : { notCarriedReason: finalization.notCarriedReason }),
+          ...(finalization.incumbent === undefined ? {} : { incumbent: finalization.incumbent }),
           ...(finalization.winner === undefined ? {} : {
-            winnerKey: finalization.winner.key,
             ...(winnerItem === undefined ? {} : {
               winnerInstanceId: `${runtimeRegionInstanceId(frames, region.id)}/slot-${winnerItem.index}`,
             }),

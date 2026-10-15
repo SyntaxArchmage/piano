@@ -6,7 +6,7 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit } from "effect";
 import { stderr, stdout } from "node:process";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import {
   createSession,
   failureDetails,
@@ -23,13 +23,17 @@ import {
   type StagingSession,
   type TrajectoryWriteInput,
 } from "@piano/logging";
+import { FileSystem } from "@effect/platform";
 import {
   closeWorkflowJob,
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
+  foldJobSpans,
+  latestJob,
   loadDefaultWorkflow,
   loadWorkflow,
+  parseProgressStreamRecord,
   readWorkflowExecutionContinuation,
   readRunStatus,
   refreshRunStatus,
@@ -38,6 +42,7 @@ import {
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
   type WorkflowDiscussDecision,
@@ -220,6 +225,23 @@ function runSessionBody(
        * that also carries each job's input. */
       const readJobState = (runDir: string) =>
         Effect.map(readRunStatus(runDir), (status) => status?.jobs ?? []);
+      /** The latest job's region-finalized records, folded fresh from the
+       * progress stream: the ledger is their only home — status.json holds
+       * derived, JSON-safe state and deliberately omits them. */
+      const readJobRegions = (runDir: string): Effect.Effect<
+        ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord> | undefined,
+        never,
+        import("@effect/platform").FileSystem.FileSystem
+      > => Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const ledger = yield* fileSystem.readFileString(join(runDir, "progress.jsonl")).pipe(
+          Effect.orElseSucceed(() => ""),
+        );
+        const records = ledger.split("\n")
+          .map((line) => parseProgressStreamRecord(line))
+          .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+        return latestJob(foldJobSpans(records))?.regions;
+      });
       const runPrompt = (
         prompt: string,
         onEvent: (event: AgentEvent) => void,
@@ -315,6 +337,7 @@ function runSessionBody(
                   return yield* Effect.fail(jobCommandRefused("continue", current.session.runDir, resolved.reason));
                 }
                 effectivePrompt = resolved.command.input;
+                const regions = yield* readJobRegions(current.session.runDir);
                 return yield* executeWorkflow(workflow, {
                   ...request,
                   prompt: effectivePrompt,
@@ -322,6 +345,7 @@ function runSessionBody(
                     jobOrdinal: resolved.command.jobOrdinal,
                     accepted: resolved.command.accepted,
                     attempts: resolved.command.attempts,
+                    ...(regions === undefined ? {} : { regions }),
                   },
                 });
               }
