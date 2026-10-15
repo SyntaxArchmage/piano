@@ -33,7 +33,6 @@ vi.mock("@piano/orchestrator", () => ({
     sessionId: "worker-session",
     transcriptPath: "/tmp/worker.jsonl",
     progressPath: "/tmp/progress.jsonl",
-    progressSnapshotPath: "/tmp/progress.json",
   })),
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
@@ -49,6 +48,7 @@ vi.mock("@piano/orchestrator", () => ({
   builtinWorkflowSelection: (name: string) => `builtin:${name}`,
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
   refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
 }));
 
 import { runTui } from "../../packages/cli/src/tui.js";

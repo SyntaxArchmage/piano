@@ -26,11 +26,11 @@ vi.mock("@piano/orchestrator", () => ({
     sessionId: "worker-session",
     transcriptPath: "/tmp/worker.jsonl",
     progressPath: "/tmp/progress.jsonl",
-    progressSnapshotPath: "/tmp/progress.json",
   })),
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
   refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
     workflowPath: "/repo/recipes/workflows/coding-pi.yml",

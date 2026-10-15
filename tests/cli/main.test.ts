@@ -24,6 +24,7 @@ vi.mock("@piano/orchestrator", () => ({
   // A fresh fixture run has no progress stream, so there is nothing to continue.
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
   refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/tmp/piano",
     workflowPath: "/tmp/piano/workflow.yml",
@@ -96,7 +97,7 @@ describe("reborn CLI entrypoint", () => {
     expect(runTui).toHaveBeenCalledWith(expect.objectContaining({
       runPrompt: expect.any(Function),
       workflowGraph: expect.objectContaining({ stages: [] }),
-      progressSnapshotPath: "/tmp/piano/.piano.runs/rebirth-test/progress.json",
+      statusPath: "/tmp/piano/.piano.runs/rebirth-test/status.json",
     }));
   });
 

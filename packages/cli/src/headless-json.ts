@@ -39,7 +39,7 @@ export function completedLine(runId: string, result: {
   sessionId: string;
   transcriptPath: string;
   progressPath?: string;
-  progressSnapshotPath?: string;
+  statusPath?: string;
 }): HeadlessJsonLine {
   return {
     event: "run.completed",
@@ -48,7 +48,7 @@ export function completedLine(runId: string, result: {
     session_id: result.sessionId,
     transcript_path: result.transcriptPath,
     ...(result.progressPath === undefined ? {} : { progress_path: result.progressPath }),
-    ...(result.progressSnapshotPath === undefined ? {} : { progress_snapshot_path: result.progressSnapshotPath }),
+    ...(result.statusPath === undefined ? {} : { status_path: result.statusPath }),
     text: result.text,
   };
 }

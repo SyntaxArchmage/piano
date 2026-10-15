@@ -33,6 +33,7 @@ import {
   readWorkflowExecutionContinuation,
   readRunStatus,
   refreshRunStatus,
+  runStatusPath,
   setWorkflowSelection,
   type LoadedWorkflow,
   type WorkflowExecutionError,
@@ -346,7 +347,9 @@ function runSessionBody(
             transcriptPath: result.transcriptPath,
             trajectoryPath: current.session.trajectory.path,
             progressPath: result.progressPath,
-            progressSnapshotPath: result.progressSnapshotPath,
+            // The run's single state document replaced the progress snapshot;
+            // the headless contract names it status_path.
+            statusPath: runStatusPath(current.session.runDir),
           })),
           Effect.onExit((exit) => Effect.uninterruptible(
             Exit.isSuccess(exit)
@@ -555,7 +558,7 @@ function runSessionBody(
             })),
             ...(context.workspaceCwd === undefined ? {} : { workspaceCwd: context.workspaceCwd }),
             ...(definition === undefined ? {} : { workflowGraph: definition }),
-            progressSnapshotPath: join(next.runDir, "progress.json"),
+            statusPath: runStatusPath(next.runDir),
           } satisfies TuiResumeResult;
         }).pipe(
           Effect.provide(NodeFileSystem.layer),
@@ -590,7 +593,7 @@ function runSessionBody(
             Effect.provideService(Logging, logging),
           ),
           ...(workflowGraph === undefined ? {} : { workflowGraph }),
-          progressSnapshotPath: join(session.runDir, "progress.json"),
+          statusPath: runStatusPath(session.runDir),
           ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
           runsRoot,
           currentRunId: session.id,
