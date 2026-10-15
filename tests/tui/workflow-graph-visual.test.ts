@@ -101,7 +101,7 @@ describe(" TUI workflow graph visual effect", () => {
         terminal,
         historyRoot: root,
         workflowGraph: { name: "basic", path: "/tmp/basic.yml", stages: [{ id: "respond", dependsOn: [] }] },
-        progressSnapshotPath: statusPath,
+        statusPath,
         runPrompt: () => Effect.async<string, never>((resume) => {
           resolvePrompt = resume;
         }),

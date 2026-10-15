@@ -82,7 +82,7 @@ describe("TUI resize adaptation", () => {
       terminal,
       historyRoot,
       workflowGraph: { stages: [{ id: "respond", dependsOn: [] }] },
-      progressSnapshotPath: join(historyRoot, "progress.json"),
+      statusPath: join(historyRoot, "status.json"),
     }));
 
     await waitFor(() => trajectoryStart(terminal.capture()) === 120 - rightColumns(DEFAULT_SPLIT_RATIO, 120));

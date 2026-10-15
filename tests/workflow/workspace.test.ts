@@ -58,7 +58,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "git-clean",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as { strategy: string; status: string };
@@ -66,7 +66,7 @@ describe(" workspace lifecycle", () => {
       await expect(readFile(join(binding.cwd, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
 
       const finalized = await runEffect(session, cleanupMapWorkspaces(session.runDir, "git-clean", { sourceCwd: root }));
-      expect(finalized[0]).toMatchObject({ key: "tournament/slot-0", status: "cleaned", phase: "cleaned" });
+      expect(finalized[0]).toMatchObject({ key: "job-1/tournament/slot-0", status: "cleaned", phase: "cleaned" });
       await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ status: "cleaned" });
     } finally {
@@ -84,7 +84,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "snapshot",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ strategy: "directory-snapshot" });
@@ -93,7 +93,7 @@ describe(" workspace lifecycle", () => {
 
       const recovered = await runEffect(session, recoverMapWorkspaces(session.runDir, "snapshot", root));
       expect(recovered).toHaveLength(1);
-      expect(recovered[0]).toMatchObject({ key: "tournament/slot-0", cwd: binding.cwd });
+      expect(recovered[0]).toMatchObject({ key: "job-1/tournament/slot-0", cwd: binding.cwd });
       await runEffect(session, applyWinnerWorkspace(session.runDir, "snapshot", binding.key, root));
       await runEffect(session, cleanupMapWorkspaces(session.runDir, "snapshot", { sourceCwd: root }));
       await expect(readFile(join(root, "winner.py"), "utf8")).resolves.toBe("selected\n");
@@ -103,7 +103,7 @@ describe(" workspace lifecycle", () => {
       const preserved = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "preserve",
-        [{ kind: "map", regionId: "tournament", slot: 1 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 1 }],
         root,
       ));
       await runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve", { sourceCwd: root, preserve: true }));
@@ -131,7 +131,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "apply-rollback",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       slotBlocked = join(binding.cwd, "blocked");
@@ -175,7 +175,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "slot-substitution",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       await replace(binding.cwd, outside);
@@ -183,7 +183,7 @@ describe(" workspace lifecycle", () => {
       await expect(runEffect(session, allocateMapWorkspace(
         session.runDir,
         "slot-substitution",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ))).rejects.toThrow(/symlink|substitution|realpath/u);
       await expect(runEffect(session, recoverMapWorkspaces(session.runDir, "slot-substitution", root)))
@@ -206,7 +206,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "slot-missing",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       await rm(binding.cwd, { recursive: true, force: true });
@@ -214,7 +214,7 @@ describe(" workspace lifecycle", () => {
       await expect(runEffect(session, allocateMapWorkspace(
         session.runDir,
         "slot-missing",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ))).rejects.toThrow(/workspace slot .* is missing at/u);
     } finally {
@@ -233,7 +233,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "internal-link",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
 
@@ -263,7 +263,7 @@ describe(" workspace lifecycle", () => {
       await expect(runEffect(session, allocateMapWorkspace(
         session.runDir,
         "fifo-source",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ))).rejects.toThrow(/unsupported filesystem node/u);
     } finally {
@@ -292,7 +292,7 @@ describe(" workspace lifecycle", () => {
       await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "run-root-replacement",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       await rm(session.runDir, { recursive: true, force: true });
@@ -306,7 +306,7 @@ describe(" workspace lifecycle", () => {
       await expect(runEffect(session, allocateMapWorkspace(
         session.runDir,
         "run-root-replacement",
-        [{ kind: "map", regionId: "other", slot: 1 }],
+        1, [{ kind: "map", regionId: "other", slot: 1 }],
         root,
       ))).rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
 
@@ -330,13 +330,13 @@ describe(" workspace lifecycle", () => {
       const first = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "scoped-cleanup",
-        [{ kind: "map", regionId: "first", slot: 0 }],
+        1, [{ kind: "map", regionId: "first", slot: 0 }],
         firstRoot,
       ));
       const second = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "scoped-cleanup",
-        [{ kind: "map", regionId: "second", slot: 0 }],
+        1, [{ kind: "map", regionId: "second", slot: 0 }],
         secondRoot,
       ));
 
@@ -374,11 +374,11 @@ describe(" workspace lifecycle", () => {
       const session = await sessionFor(root, runRoot);
       const slotA = await runEffect(session, allocateMapWorkspace(
         session.runDir, "git-winner-run",
-        [{ kind: "map", regionId: "tournament", slot: 0 }], root,
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }], root,
       ));
       const slotB = await runEffect(session, allocateMapWorkspace(
         session.runDir, "git-winner-run",
-        [{ kind: "map", regionId: "tournament", slot: 1 }], root,
+        1, [{ kind: "map", regionId: "tournament", slot: 1 }], root,
       ));
       expect(JSON.parse(await readFile(slotA.recordPath!, "utf8"))).toMatchObject({ strategy: "git-worktree" });
 
@@ -424,7 +424,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "git-cleanup-failure",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
@@ -460,7 +460,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "git-root-binding",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
@@ -488,7 +488,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "preserve-slot-substitution",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       await rm(binding.cwd, { recursive: true, force: true });
@@ -515,7 +515,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "preserve-ordinary-slot-substitution",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       await rm(binding.cwd, { recursive: true, force: true });
@@ -542,7 +542,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "preserve-marker-substitution",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as {
@@ -580,13 +580,13 @@ describe(" workspace lifecycle", () => {
       const first = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "source-binding",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       const second = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "source-binding",
-        [{ kind: "map", regionId: "tournament", slot: 1 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 1 }],
         root,
       ));
       const record = JSON.parse(await readFile(first.recordPath!, "utf8")) as Record<string, unknown>;
@@ -615,7 +615,7 @@ describe(" workspace lifecycle", () => {
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "git-ref-failure",
-        [{ kind: "map", regionId: "tournament", slot: 0 }],
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
       await writeFile(join(binding.cwd, "source.txt"), "winner\n");

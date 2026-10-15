@@ -389,11 +389,11 @@ export interface CaseResult {
   /** Append-only orchestrator accepted-stage progress stream. */
   progressPath?: string;
   progress?: readonly Record<string, unknown>[];
-  /** Latest worker-neutral workflow progress snapshot, when the run created
-   * one. This is the stable monitor view; progressPath remains the immutable
-   * accepted-stage ledger. */
-  progressSnapshotPath?: string;
-  progressSnapshot?: Record<string, unknown>;
+  /** The run's single state document. It replaced the progress snapshot
+   * (progress.json) and the trajectory/resume documents; progressPath remains
+   * the immutable accepted-stage ledger. */
+  runStatusPath?: string;
+  runStatus?: Record<string, unknown>;
   baseline?: BenchmarkMeasurement;
   baselineComparison?: BenchmarkComparison;
   evidence?: EvidenceAssessment;

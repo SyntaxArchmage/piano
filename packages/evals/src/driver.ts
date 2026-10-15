@@ -19,7 +19,7 @@
 import { Effect, Fiber } from "effect";
 import { Data } from "effect";
 import { FileSystem } from "@effect/platform";
-import { iterationOfInvocationId } from "@piano/orchestrator";
+import { iterationOfInvocationId, runStatusPath } from "@piano/orchestrator";
 import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -506,11 +506,11 @@ export function runCase(
     const stageTrajectories = runDir === undefined ? [] : collectStageTrajectories(runDir);
     const progress = runDir === undefined ? [] : progressRecords(runDir);
     const progressPath = runDir === undefined ? undefined : join(runDir, "progress.jsonl");
-    const progressSnapshotPath = runDir === undefined ? undefined : join(runDir, "progress.json");
+    const statusFilePath = runDir === undefined ? undefined : runStatusPath(runDir);
     const progressEvidence = {
       ...(progressPath !== undefined && existsSync(progressPath) ? { progressPath, progress } : {}),
-      ...(progressSnapshotPath !== undefined && existsSync(progressSnapshotPath)
-        ? { progressSnapshotPath, progressSnapshot: progressSnapshot(runDir!) }
+      ...(statusFilePath !== undefined && existsSync(statusFilePath)
+        ? { runStatusPath: statusFilePath, runStatus: readStatus(runDir!) }
         : {}),
     };
     const workflowTrajectoryOutcome = runDir === undefined
@@ -720,7 +720,9 @@ export function shellQuote(value: string): string {
 }
 
 function evidencePaths(runDir: string): Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript"> {
-  const trajectoryPath = join(runDir, "trajectory.json");
+  // The stream is the run's trajectory record; the document it used to be
+  // folded into is gone, so the path names the stream.
+  const trajectoryPath = join(runDir, "trajectory.jsonl");
   const transcriptPath = findTranscriptPath(runDir);
   return {
     runDir,
@@ -822,21 +824,14 @@ export function readHandoffRecords(runDir: string): HandoffRecord[] {
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
-  const read = (name: string): string | undefined => {
-    try {
-      return readFileSync(join(runDir, name), "utf8");
-    } catch {
-      return undefined;
-    }
-  };
-  // Both of a run's forms, the stream first: it is the record and the document
-  // beside it is folded from it, so either one describes the run.
-  const stream = read("trajectory.jsonl");
-  const document = read("trajectory.json");
-  const trajectory = parseTrajectory({
-    ...(stream === undefined ? {} : { stream }),
-    ...(document === undefined ? {} : { document }),
-  });
+  let stream: string | undefined;
+  try {
+    stream = readFileSync(join(runDir, "trajectory.jsonl"), "utf8");
+  } catch {
+    stream = undefined;
+  }
+  // The stream is the record; every consumer answers "what happened" from it.
+  const trajectory = stream === undefined ? undefined : parseTrajectory({ stream });
   const events: readonly unknown[] = trajectory?.events ?? [];
   return events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null);
 }
@@ -1075,9 +1070,9 @@ function progressRecords(runDir: string): Record<string, unknown>[] {
   }
 }
 
-function progressSnapshot(runDir: string): Record<string, unknown> | undefined {
+function readStatus(runDir: string): Record<string, unknown> | undefined {
   try {
-    const value = JSON.parse(readFileSync(join(runDir, "progress.json"), "utf8")) as unknown;
+    const value = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
     return typeof value === "object" && value !== null && !Array.isArray(value)
       ? value as Record<string, unknown>
       : undefined;
@@ -1093,7 +1088,7 @@ function progressSnapshot(runDir: string): Record<string, unknown> | undefined {
  * slightly stale (or skipped, returning undefined) tick. Exported for
  * testing; the CLI progress path is runCase's poller. */
 export function progressTickLine(label: string, runDir: string, startedAt: number): string | undefined {
-  const snapshot = progressSnapshot(runDir);
+  const snapshot = readStatus(runDir);
   const completed = typeof snapshot?.completedStages === "number" ? snapshot.completedStages : undefined;
   const planned = typeof snapshot?.plannedStages === "number" ? snapshot.plannedStages : undefined;
   const current = typeof snapshot?.current === "object" && snapshot.current !== null
@@ -1367,25 +1362,20 @@ function defaultRunSetId(): string {
 function resolveTrajectory(
   runDir: string | undefined,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
-  // Both forms, the document first: a run recorded only in its stream has no
-  // document to name, and either path resolves both files.
-  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.json"), join(runDir, "trajectory.jsonl")];
   const empty: TrajectoryMetrics = {
     messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
     toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
   };
-  return Effect.gen(function* () {
-    for (const candidate of candidates) {
-      const found = Effect.sync(() => {
-        try {
-          return statSync(candidate).isFile();
-        } catch {
-          return false;
-        }
-      });
-      if (yield* found) return yield* evaluateTrajectoryFile(candidate);
-    }
-    return empty;
+  if (runDir === undefined) return Effect.succeed(empty);
+  // The stream is the record. The folded document is gone (status.json answers
+  // "how is the run doing", the stream answers "what happened"), so evaluation
+  // reads the stream alone; a run without one evaluates as empty.
+  return Effect.try({
+    try: () => evaluateTrajectory(trajectoryEvents(runDir) as unknown as Parameters<typeof evaluateTrajectory>[0]),
+    catch: (cause) => new TrajectoryEvalError({
+      path: join(runDir, "trajectory.jsonl"),
+      message: cause instanceof Error ? cause.message : String(cause),
+    }),
   });
 }
 

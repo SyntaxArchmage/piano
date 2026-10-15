@@ -3224,8 +3224,8 @@ workflow:
         inputs: Array<{ instanceId: string; stageId: string; workspace: { key: string; cwd: string; kind: string; recordPath: string } }>;
       };
       expect(summaryInputs.inputs).toMatchObject([
-        { instanceId: "tournament/slot-0", stageId: "tournament.verify", workspace: { key: "tournament/slot-0", kind: "map-slot" } },
-        { instanceId: "tournament/slot-1", stageId: "tournament.verify", workspace: { key: "tournament/slot-1", kind: "map-slot" } },
+        { instanceId: "tournament/slot-0", stageId: "tournament.verify", workspace: { key: "job-1/tournament/slot-0", kind: "map-slot" } },
+        { instanceId: "tournament/slot-1", stageId: "tournament.verify", workspace: { key: "job-1/tournament/slot-1", kind: "map-slot" } },
       ]);
       expect(result.stages.map((stage) => stage.id)).toEqual([
         "propose@root",
@@ -3874,7 +3874,7 @@ workflow:
           await expect(runWorkflow(session, allocateMapWorkspace(
             session.runDir,
             `excluded-link-${name}`,
-            [{ kind: "map", regionId: "map", slot: 0 }],
+            1, [{ kind: "map", regionId: "map", slot: 0 }],
             root,
           ))).rejects.toThrow("symlink targets excluded or external content");
         } finally {
@@ -4725,7 +4725,7 @@ workflow:
       // The metric referee that decided the winner is recorded with the selection.
       expect(records[0]?.referee).toEqual({ name: "tflops", unit: "TFLOP/s", direction: "higher" });
       const winner = records[0]?.winnerKey;
-      expect(winner).toBe("race/slot-1");
+      expect(winner).toBe("job-1/race/slot-1");
       // Worker-consolidation carries no git commit but the stored provenance is
       // how the winning higher-tflops kernel reached the shared source.
       expect(records[0]?.commit).toBeUndefined();
@@ -4919,7 +4919,7 @@ workflow:
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({
         outcome: "carried",
-        winnerKey: "race/slot-0",
+        winnerKey: "job-1/race/slot-0",
         carrying: { kind: "worker-consolidated" },
       });
       expect(exit.value.terminalStages).toHaveLength(1);
@@ -5969,7 +5969,7 @@ workflow:
         stage.includes("/outer.race-a/") || stage.includes("/outer.race-b/"));
       expect(innerCarries).toHaveLength(4);
       for (const carry of innerCarries) expect(outerCwds.has(carry.cwd)).toBe(true);
-      expect(consolidationTargets).toContainEqual({ stage: "$consolidate/outer/slot-1", cwd: root });
+      expect(consolidationTargets).toContainEqual({ stage: "$consolidate/job-1/outer/slot-1", cwd: root });
 
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("outer-1-race-b-1\n");
       expect(result.terminalStages).toHaveLength(1);
@@ -5980,7 +5980,7 @@ workflow:
 
       const selections = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { winnerKey?: string });
-      expect(selections).toContainEqual(expect.objectContaining({ winnerKey: "outer/slot-1" }));
+      expect(selections).toContainEqual(expect.objectContaining({ winnerKey: "job-1/outer/slot-1" }));
       const records = new Map(result.stages
         .filter((stage) => stage.workspace.recordPath !== undefined)
         .map((stage) => [stage.workspace.recordPath!, stage.workspace.cwd]));

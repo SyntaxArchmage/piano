@@ -49,7 +49,7 @@ export interface TuiPromptResult {
   readonly transcriptPath?: string;
   readonly trajectoryPath?: string;
   readonly progressPath?: string;
-  readonly progressSnapshotPath?: string;
+  readonly statusPath?: string;
   readonly error?: FailureDetails;
 }
 
@@ -122,7 +122,7 @@ export interface TuiOptions {
   /** Optional compiled workflow graph and run snapshot for the read-only
    * status footer. The snapshot is never read from inside render(). */
   readonly workflowGraph?: WorkflowGraphDefinition;
-  readonly progressSnapshotPath?: string;
+  readonly statusPath?: string;
   /** Override how Ctrl+Z suspends the process. Tests inject a stub — the real
    * SIGTSTP would stop the test runner along with the TUI. */
   readonly suspendProcess?: () => void;
@@ -166,7 +166,7 @@ export interface TuiResumeResult {
   readonly turns: readonly TuiReplayTurn[];
   readonly workspaceCwd?: string;
   readonly workflowGraph?: WorkflowGraphDefinition;
-  readonly progressSnapshotPath?: string;
+  readonly statusPath?: string;
 }
 
 export type TuiTaskEvent =
@@ -533,9 +533,9 @@ export function runTui(
         sideScreen === undefined ? [missionScreen] : [missionScreen, sideScreen];
       let graph: WorkflowGraph | undefined;
       // Reassignable because `/resume` takes this TUI over to another run
-      // directory, and the workflow graph polls the snapshot of whichever run is
-      // now current.
-      let progressSnapshotPath = deps.progressSnapshotPath;
+      // directory, and the workflow graph polls the state document of whichever
+      // run is now current.
+      let statusPath = deps.statusPath;
       // Copy mode releases the mouse to the terminal so its native selection can
       // reach the transcript. Declared here, beside the other footer inputs,
       // because the footer is the only indicator that the wheel has changed hands.
@@ -571,10 +571,10 @@ export function runTui(
        * the footer should be tracking. */
       const bindGraph = (definition: WorkflowGraphDefinition): void => {
         if (graph === undefined) {
-          if (progressSnapshotPath === undefined) return;
+          if (statusPath === undefined) return;
           graph = new WorkflowGraph(
             definition,
-            () => readWorkflowSnapshot(dirname(progressSnapshotPath!)),
+            () => readWorkflowSnapshot(dirname(statusPath!)),
             theme,
             () => {
               refreshFooter();
@@ -973,7 +973,7 @@ export function runTui(
             });
           }
           if (result.workspaceCwd !== undefined) workspaceCwd = result.workspaceCwd;
-          if (result.progressSnapshotPath !== undefined) progressSnapshotPath = result.progressSnapshotPath;
+          if (result.statusPath !== undefined) statusPath = result.statusPath;
           if (result.workflowGraph !== undefined) bindGraph(result.workflowGraph);
           activeRunId = result.runId;
           // The footer counts the live run's work; the resumed run's totals are

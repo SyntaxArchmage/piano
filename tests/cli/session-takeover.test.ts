@@ -32,11 +32,11 @@ vi.mock("@piano/orchestrator", () => ({
     sessionId: "worker-session",
     transcriptPath: "/tmp/worker.jsonl",
     progressPath: "/tmp/progress.jsonl",
-    progressSnapshotPath: "/tmp/progress.json",
   })),
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
   refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
     workflowPath: "/repo/recipes/workflows/basic.yaml",
@@ -171,7 +171,7 @@ describe("in-place run takeover", () => {
     expect(result?.turns[0]?.status).toBe("completed");
     expect(result?.workspaceCwd).toBe("/repo/work");
     expect(result?.workflowGraph).toMatchObject({ name: "smoke", path: "/repo/recipes/workflows/basic.yaml" });
-    expect(result?.progressSnapshotPath).toBe(join(runsRoot, OTHER, "progress.json"));
+    expect(result?.statusPath).toBe(join(runsRoot, OTHER, "status.json"));
     // The workflow the run recorded is reloaded, not the one already open.
     expect(loadWorkflow).toHaveBeenCalledWith("/repo/recipes/workflows/basic.yaml", "/repo");
   });

@@ -160,7 +160,10 @@ describe("eval workspace destination (ISSUE-016)", () => {
   it("renders a live progress tick from the run directory files", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-eval-tick-"));
     temporaryRoots.push(runDir);
-    await writeFile(join(runDir, "progress.json"), JSON.stringify({
+    await writeFile(join(runDir, "status.json"), JSON.stringify({
+      version: 1,
+      runId: "piano-eval-tick",
+      status: "running",
       completedStages: 12,
       plannedStages: 82,
       current: { stageId: "tune.race.implement" },

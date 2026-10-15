@@ -998,7 +998,7 @@ export function formatReport(
     const verified = kase.artifact.verified ? "" : ` ${RED}(unverified)${RST}`;
     const stageCount = kase.stageTrajectories?.length ?? 0;
     const progressCount = kase.progress?.length ?? 0;
-    const snapshot = kase.progressSnapshot;
+    const snapshot = kase.runStatus;
     const completedStages = typeof snapshot?.completedStages === "number" ? snapshot.completedStages : undefined;
     const plannedStages = typeof snapshot?.plannedStages === "number" ? snapshot.plannedStages : undefined;
     const current = typeof snapshot?.current === "object" && snapshot.current !== null

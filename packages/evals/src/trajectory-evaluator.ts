@@ -57,7 +57,8 @@ function usageTokens(usage: AgentUsage | undefined): {
 /**
  * Fold a raw event stream into trajectory metrics.
  *
- * @param events The raw `AgentEvent[]` persisted by the CLI to `trajectory.json`.
+ * @param events The raw `AgentEvent[]` persisted by the CLI to the trajectory
+ * stream (`trajectory.jsonl`).
  */
 export function evaluateTrajectory(events: readonly AgentEvent[]): TrajectoryMetrics {
   const metrics: TrajectoryMetrics = { ...ZERO_METRICS };
@@ -159,7 +160,7 @@ export function evaluateTrajectoryFile(
         if (typeof document.type === "string") {
           return evaluateTrajectory([parsed as AgentEvent]);
         }
-        throw new Error("trajectory.json must contain an events array");
+        throw new Error("trajectory input must contain an events array");
       }
       // JSONL transcript: one event per line.
       const events = trimmed
