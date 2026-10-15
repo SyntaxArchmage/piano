@@ -77,13 +77,9 @@ export function runtimeInvocationPathSegments(
   ];
 }
 
-export function executionDirectory(runDir: string, _executionId: string): string {
-  return runDir;
-}
-
 export function invocationDirectory(runDir: string, invocation: WorkflowRuntimeInvocation): string {
   return join(
-    executionDirectory(runDir, invocation.executionId),
+    runDir,
     "prompts",
     String(invocation.promptIndex),
     "invocations",
@@ -154,7 +150,7 @@ export function actorSessionDirectory(
 ): string {
   const lane = actorLaneSegments(invocation.frames);
   return join(
-    executionDirectory(runDir, invocation.executionId),
+    runDir,
     "actors",
     harness,
     worker,

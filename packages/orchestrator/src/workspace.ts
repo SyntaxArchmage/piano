@@ -12,7 +12,6 @@ import { TRACE, type Logging, type Source } from "@piano/logging";
 import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import {
-  executionDirectory,
   runtimeInstanceId,
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
@@ -247,7 +246,7 @@ function workspacePath(
   executionId: string,
   key: string,
 ): string {
-  return join(executionDirectory(runDir, executionId), "workspaces", "slots", encodeURIComponent(key));
+  return join(runDir, "workspaces", "slots", encodeURIComponent(key));
 }
 
 function workspaceRecordPath(
@@ -255,7 +254,7 @@ function workspaceRecordPath(
   executionId: string,
   key: string,
 ): string {
-  return join(executionDirectory(runDir, executionId), "workspace-records", encodeURIComponent(key), "record.json");
+  return join(runDir, "workspace-records", encodeURIComponent(key), "record.json");
 }
 
 function bindingFromRecord(record: WorkflowWorkspaceRecord, recordPath: string): WorkflowWorkspaceBinding {
@@ -643,7 +642,7 @@ export function allocateMapWorkspace(
       const source = sourceIdentity.canonical;
       const runRoot = await canonicalRunRoot(runDir, true);
       const run = runRoot.canonical;
-      const workspaceRoot = join(executionDirectory(run, executionId), "workspaces");
+      const workspaceRoot = join(run, "workspaces");
       if (pathWithin(run, source) && !pathWithin(workspaceRoot, source)) {
         throw workflowError(
           "schedule",
@@ -803,15 +802,14 @@ async function readWorkspaceRecords(
 ): Promise<readonly { readonly path: string; readonly record: WorkflowWorkspaceRecord }[]> {
   await assertCanonicalRunRoot(runRoot);
   const run = runRoot.canonical;
-  const execution = executionDirectory(run, executionId);
-  const recordsRoot = join(execution, "workspace-records");
+  const recordsRoot = join(run, "workspace-records");
   try {
     await lstat(recordsRoot);
   } catch (error) {
     if (isMissingPathError(error)) return [];
     throw error;
   }
-  await assertSafeWorkspaceDirectory(execution, recordsRoot);
+  await assertSafeWorkspaceDirectory(run, recordsRoot);
   let entries;
   try {
     entries = await readdir(recordsRoot, { withFileTypes: true });
@@ -835,7 +833,7 @@ async function readWorkspaceRecords(
     }
     if (selectedKeys !== undefined && !selectedKeys.has(key)) continue;
     await assertCanonicalRunRoot(runRoot);
-    await assertSafeWorkspaceDirectory(execution, join(recordsRoot, entry.name));
+    await assertSafeWorkspaceDirectory(run, join(recordsRoot, entry.name));
     const recordPath = join(recordsRoot, entry.name, "record.json");
     const expectedCwd = workspacePath(run, executionId, key);
     const record = await readWorkspaceRecord(recordPath, {
@@ -845,7 +843,7 @@ async function readWorkspaceRecords(
     if (record === undefined) {
       throw workflowError("schedule", recordPath, "workspace record is missing");
     }
-    if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(execution, resolve(record.cwd))) {
+    if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(run, resolve(record.cwd))) {
       throw workflowError("schedule", recordPath, "workspace record points outside its execution directory");
     }
     records.push({ path: recordPath, record });
@@ -921,7 +919,6 @@ export function recoverMapWorkspaces(
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const execution = executionDirectory(runRoot.canonical, executionId);
       const records = await readWorkspaceRecords(runRoot, executionId, sourceCwd);
       const bindings: WorkflowWorkspaceBinding[] = [];
       for (const { path, record } of records) {
@@ -934,7 +931,7 @@ export function recoverMapWorkspaces(
         }
         await assertCanonicalRunRoot(runRoot);
         try {
-          await assertRunOwnedWorkspaceDirectory(execution, record.cwd, record.slotIdentity);
+          await assertRunOwnedWorkspaceDirectory(runRoot.canonical, record.cwd, record.slotIdentity);
         } catch (error) {
           if (isMissingPathError(error)) {
             throw workflowError("schedule", path, `recoverable workspace is missing at ${record.cwd}`);
@@ -965,7 +962,6 @@ export function cleanupMapWorkspaces(
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
       const records = await readWorkspaceRecords(runRoot, executionId, options.sourceCwd, options.keys);
-      const executionRoot = executionDirectory(runRoot.canonical, executionId);
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") {
@@ -977,7 +973,7 @@ export function cleanupMapWorkspaces(
           // A preserved slot is advertised as recoverable. Validate the
           // concrete directory before recording that state; metadata-only
           // preservation must never bless a substituted symlink or node.
-          await assertRunOwnedWorkspaceDirectory(executionRoot, record.cwd, record.slotIdentity);
+          await assertRunOwnedWorkspaceDirectory(runRoot.canonical, record.cwd, record.slotIdentity);
           if (record.strategy === "git-worktree") {
             if (record.gitRoot === undefined) {
               throw workflowError("schedule", path, "git workspace record has no repository root");
@@ -997,7 +993,7 @@ export function cleanupMapWorkspaces(
         }
         const cleaning: WorkflowWorkspaceRecord = { ...record, phase: "cleaning", updatedAt: now };
         await writeWorkspaceRecord(path, cleaning, runRoot);
-        await removeWorkspaceDirectory(cleaning, runRoot, executionRoot);
+        await removeWorkspaceDirectory(cleaning, runRoot, runRoot.canonical);
         const cleanedAt = new Date().toISOString();
         const cleaned: WorkflowWorkspaceRecord = {
           ...cleaning,
@@ -1859,13 +1855,13 @@ export function applyWinnerWorkspace(
       const records = await readWorkspaceRecords(runRoot, executionId, source);
       const selected = records.find(({ record }) => record.key === winnerKey);
       if (selected === undefined) {
-        throw workflowError("schedule", executionDirectory(run, executionId), `winner workspace "${winnerKey}" is not owned by this execution`);
+        throw workflowError("schedule", run, `winner workspace "${winnerKey}" is not owned by this execution`);
       }
       if (selected.record.status === "cleaned") {
         throw workflowError("schedule", selected.path, `winner workspace "${winnerKey}" was already cleaned`);
       }
       try {
-        await assertRunOwnedWorkspaceDirectory(executionDirectory(run, executionId), selected.record.cwd, selected.record.slotIdentity);
+        await assertRunOwnedWorkspaceDirectory(run, selected.record.cwd, selected.record.slotIdentity);
       } catch (error) {
         if (isMissingPathError(error)) {
           throw workflowError("schedule", selected.path, `winner workspace is missing at ${selected.record.cwd}`);

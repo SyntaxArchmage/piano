@@ -35,7 +35,6 @@ import {
 } from "./selection.js";
 import type { HandoffMapItem } from "./handoff.js";
 import {
-  executionDirectory,
   mapOverParts,
   runtimeInstanceId,
   runtimeInvocationId,
@@ -513,7 +512,7 @@ const finalizeTournament = (
       });
       return {};
     }
-    const excludeUnder = [executionDirectory(request.runDir, executionId)];
+    const excludeUnder = [request.runDir];
     let consolidating: WorkflowCarrying;
     if (winnerContentDir === undefined || winnerCandidate === undefined) {
       consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no materialised slot content` };
@@ -815,7 +814,7 @@ const executeScope = (
           try: () => snapshotWorkspaceContent(
             workspace.cwd,
             baselineContentDir,
-            [executionDirectory(request.runDir, executionId)],
+            [request.runDir],
           ),
           catch: (cause) => workflowError(
             "schedule",
@@ -846,7 +845,7 @@ const executeScope = (
             try: () => snapshotWorkspaceContent(
               slotWorkspace.cwd,
               slotBaselineContentDir,
-              [executionDirectory(request.runDir, executionId)],
+              [request.runDir],
             ),
             catch: (cause) => workflowError(
               "schedule",
