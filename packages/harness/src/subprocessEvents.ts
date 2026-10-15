@@ -7,7 +7,7 @@ import {
   type AgentUsage,
 } from "./events.js";
 import type { HarnessName } from "./harness-config.js";
-import { normalizePortableEvent } from "./portableEvents.js";
+import { accumulateStreamedText, normalizePortableEvent } from "./portableEvents.js";
 import {
   asRecord,
   nonEmptyString,
@@ -433,14 +433,7 @@ function normalizeSubprocessRecord(
     case "message_update": {
       const message = asAgentMessage(value.message);
       const update = asAgentMessageEvent(value.assistantMessageEvent);
-      if ((message.role === undefined || message.role === "assistant") && update.type === "text_delta" && typeof update.delta === "string") {
-        accumulator.text += update.delta;
-      } else if ((message.role === undefined || message.role === "assistant") && update.type === "text_end" && typeof update.content === "string") {
-        accumulator.text = update.content;
-      } else {
-        const text = messageText(message);
-        if (text !== undefined && (message.role === undefined || message.role === "assistant")) accumulator.text = text;
-      }
+      accumulator.text = accumulateStreamedText(accumulator.text, message, update);
       emit({ type: "message_update", message, assistantMessageEvent: update });
       return;
     }

@@ -1,4 +1,9 @@
-import type { AgentEvent } from "./events.js";
+import {
+  messageText,
+  type AgentEvent,
+  type AgentMessage,
+  type AgentMessageEvent,
+} from "./events.js";
 import { nonEmptyString, numberOrZero, stringList, type JsonRecord } from "./json-narrowing.js";
 
 /**
@@ -76,4 +81,28 @@ export function normalizePortableEvent(record: JsonRecord): AgentEvent | undefin
     default:
       return undefined;
   }
+}
+
+/**
+ * Fold one streamed update into the turn's text.
+ *
+ * Every dialect that streams text has the same three sources, and they differ
+ * in kind rather than in degree: a delta appends, a `text_end` *replaces* with
+ * what the far end says the block finally was, and an update carrying a whole
+ * message falls back to that message's own text. This value becomes the
+ * attempt's answer — it reaches the actor transcript and the headless JSON
+ * stream — so the rule is stated once rather than twice.
+ *
+ * A message that is not the assistant's changes nothing: a tool result
+ * carrying text is not the reply.
+ */
+export function accumulateStreamedText(
+  text: string,
+  message: AgentMessage,
+  update: AgentMessageEvent,
+): string {
+  if (message.role !== undefined && message.role !== "assistant") return text;
+  if (update.type === "text_delta" && typeof update.delta === "string") return text + update.delta;
+  if (update.type === "text_end" && typeof update.content === "string") return update.content;
+  return messageText(message) ?? text;
 }

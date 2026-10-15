@@ -20,7 +20,7 @@ import type {
   AgentResult,
 } from "./agent-contract.js";
 import { stringOr } from "./json-narrowing.js";
-import { normalizePortableEvent } from "./portableEvents.js";
+import { accumulateStreamedText, normalizePortableEvent } from "./portableEvents.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";
@@ -541,16 +541,7 @@ function bindEvents(
       case "message_update": {
         const message = asAgentMessage(event.message);
         const assistantMessageEvent = asAgentMessageEvent(event.assistantMessageEvent);
-        if (isAssistantMessage(message)) {
-          if (assistantMessageEvent.type === "text_delta" && typeof assistantMessageEvent.delta === "string") {
-            accumulator.text += assistantMessageEvent.delta;
-          } else if (assistantMessageEvent.type === "text_end" && typeof assistantMessageEvent.content === "string") {
-            accumulator.text = assistantMessageEvent.content;
-          } else {
-            const text = messageText(message);
-            if (text !== undefined) accumulator.text = text;
-          }
-        }
+        accumulator.text = accumulateStreamedText(accumulator.text, message, assistantMessageEvent);
         // Deltas carry only text; `usage` is emitted once at `message_end` from
         // the finalized message's cumulative
         // counters. Emitting it here would flood a zero-valued `usage` row per
