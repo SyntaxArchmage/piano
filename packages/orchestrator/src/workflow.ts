@@ -197,15 +197,6 @@ export interface CompiledWorkflow {
   readonly autoCommit: boolean;
 }
 
-export interface ScheduledStage {
-  readonly id: string;
-  readonly order: number;
-  readonly dependsOn: readonly string[];
-  readonly stage: WorkflowStage;
-  /** Innermost enclosing region id; absent at top level. */
-  readonly parentId?: string;
-}
-
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
 const WORKFLOW_KEYS = new Set(["name", "nodes", "autoCommit"]);
 const STAGE_KEYS = new Set([
@@ -1046,17 +1037,4 @@ export function compileWorkflow(
       ? cause
       : workflowError("compile", sourcePath, errorMessage(cause)),
   });
-}
-
-/** Production schedule: ordered leaf-stage invocations with their enclosing region. */
-export function scheduleWorkflow(
-  plan: CompiledWorkflow,
-): Effect.Effect<readonly ScheduledStage[], WorkflowError> {
-  return Effect.succeed(plan.stages.map((leaf, order) => ({
-    id: leaf.id,
-    order,
-    dependsOn: leaf.dependsOn,
-    stage: leaf.stage,
-    ...(leaf.parentId === undefined ? {} : { parentId: leaf.parentId }),
-  })));
 }

@@ -4349,7 +4349,6 @@ workflow:
       expect(log).toContain('"key":"shared-root"');
       expect(trace).toContain('"fn":"loadWorkflow"');
       expect(trace).toContain('"fn":"compileWorkflow"');
-      expect(trace).toContain('"fn":"scheduleWorkflow"');
       expect(trace).toContain('"fn":"executeWorker"');
       expect(trace).toContain('"fn":"executeAgent"');
       expect(trace).toContain('"fn":"loadSdk"');

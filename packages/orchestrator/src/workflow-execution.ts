@@ -31,7 +31,6 @@ import {
 } from "@piano/trajectory";
 import {
   compileWorkflow,
-  scheduleWorkflow,
   type CompiledWorkflow,
   type WorkflowHarness,
 } from "./workflow.js";
@@ -55,7 +54,6 @@ import {
   COMPILE_SOURCE,
   EXPLICIT_LOAD_SOURCE,
   LOAD_SOURCE,
-  SCHEDULE_SOURCE,
   WORKFLOW_LOG,
   WORKFLOW_SOURCE,
 } from "./execution-logs.js";
@@ -652,16 +650,11 @@ export function executeWorkflow(
     const preExistingDirty = autoCommit
       ? yield* snapshotDirtyFiles(sharedWorkspace.cwd)
       : new Set<string>();
-    const scheduled = yield* TRACE(
-      SCHEDULE_SOURCE,
-      scheduleWorkflow(compiled),
-      { workflow: compiled.name },
-    );
-    if (scheduled.length === 0) {
+    if (compiled.stages.length === 0) {
       return yield* Effect.fail(workflowError(
         "schedule",
         compiled.sourcePath,
-        "scheduler produced no stage",
+        "workflow compiled to no stage",
       ));
     }
     const runtimePlan = buildWorkflowRuntimePlan(compiled);
@@ -691,7 +684,7 @@ export function executeWorkflow(
       });
     yield* WORKFLOW_LOG.info("workflow.compiled", {
       data: {
-        stages: scheduled.map((invocation) => invocation.id),
+        stages: compiled.stages.map((stage) => stage.id),
         executionId,
         plannedStages: progressPlan.plannedStages,
       },
