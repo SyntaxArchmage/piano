@@ -274,13 +274,49 @@ export function dshProjectKey(cwd: string): string {
   return `--${(readable.replace(/^-+/, "") || "root").slice(0, 251)}--`;
 }
 
+/** dsh's session artifact name by shape: `session.jsonl`, optionally carrying
+ * dsh's own format version (`session.v3.jsonl.zstd` — what it writes today),
+ * optionally compressed. Matched by shape rather than enumerated because the
+ * name is dsh's to change: the literal list this replaced stopped matching the
+ * moment the version segment appeared, and every dsh transcript silently
+ * degraded to raw stdout. Both lookups below share this rule. */
+const DSH_SESSION_ARTIFACT = /^session(?:\.v(\d+))?\.jsonl(?:\.zstd)?$/;
+
+/** Ordering for the case where one session directory holds more than one
+ * artifact: newest format version first, compressed before plain, so the file
+ * dsh is currently appending to wins. Unmatched names rank -1. */
+function dshSessionArtifactRank(name: string): number {
+  const match = DSH_SESSION_ARTIFACT.exec(name);
+  if (match === null) return -1;
+  return Number(match[1] ?? 0) * 2 + (name.endsWith(".zstd") ? 1 : 0);
+}
+
+/** The session artifacts among `names`, most preferred first. */
+function dshSessionArtifacts(names: readonly string[]): readonly string[] {
+  return names
+    .filter((name) => dshSessionArtifactRank(name) >= 0)
+    .sort((left, right) => dshSessionArtifactRank(right) - dshSessionArtifactRank(left));
+}
+
+/** The names dsh may have given the artifacts inside one session directory;
+ * `undefined` when the directory cannot be read (no such session here). */
+async function dshSessionArtifactNames(sessionDir: string): Promise<readonly string[] | undefined> {
+  try {
+    const entries = await readdir(sessionDir, { withFileTypes: true });
+    return dshSessionArtifacts(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
+  } catch {
+    return undefined;
+  }
+}
+
 /** The session artifact for a known native session id, or undefined when this
  * object's storage does not hold it.
  *
  * dsh lays sessions out as
- * `<home>/sessions/<project-key>/<session-id>/session.jsonl[.zstd]`, so the
- * session id names its own directory and locates the file by itself — whatever
- * project created it, and wherever the actor's cwd has moved since.
+ * `<home>/sessions/<project-key>/<session-id>/<artifact>`, where `<artifact>`
+ * matches {@link DSH_SESSION_ARTIFACT}; the session id names its own directory
+ * and locates the file by itself — whatever project created it, and wherever
+ * the actor's cwd has moved since.
  *
  * Independence from the cwd is what a continued map lane needs: its cwd embeds
  * the loop iteration and the slot (`.../slots/<iter>/<map>/slot-N`), so the
@@ -301,14 +337,12 @@ async function sessionArtifactForId(home: string, sessionId: string): Promise<st
     return undefined;
   }
   for (const project of projects) {
-    for (const filename of ["session.jsonl.zstd", "session.jsonl"] as const) {
-      const path = join(sessionsRoot, project, sessionId, filename);
-      try {
-        if ((await stat(path)).isFile()) return path;
-      } catch {
-        // Not under this project key; keep looking.
-      }
-    }
+    const sessionDir = join(sessionsRoot, project, sessionId);
+    const names = await dshSessionArtifactNames(sessionDir);
+    // An unreadable directory means this project key does not hold the session;
+    // keep looking, exactly as a failed stat on a named candidate did.
+    if (names === undefined) continue;
+    if (names.length > 0) return join(sessionDir, names[0] ?? "");
   }
   return undefined;
 }
@@ -343,14 +377,12 @@ async function sessionArtifactPaths(home: string, cwd: string): Promise<readonly
     }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      for (const filename of ["session.jsonl.zstd", "session.jsonl"] as const) {
-        const path = join(project, entry.name, filename);
-        try {
-          if ((await stat(path)).isFile()) paths.push(path);
-        } catch {
-          // A concurrent dsh cleanup can remove an incomplete session.
-        }
-      }
+      const sessionDir = join(project, entry.name);
+      // A concurrent dsh cleanup can remove an incomplete session, which reads
+      // here as an unreadable directory.
+      const names = await dshSessionArtifactNames(sessionDir);
+      if (names === undefined) continue;
+      for (const filename of names) paths.push(join(sessionDir, filename));
     }
   }
   return paths;
@@ -1928,8 +1960,6 @@ function dshResumeSessionEnv(resumeSessionId: string | undefined): NodeJS.Proces
   return { [DSH_RESUME_SESSION_ENV]: resumeSessionId };
 }
 
-/** The official dsh launcher has its own headless protocol. It deliberately
- * receives no Pi flags: profile selection, the model overlay, and the task are
 /** The official dsh launcher has its own headless protocol. It deliberately
  * receives no Pi flags: profile selection, the model overlay, and the task are
  * the complete native invocation. Resources are made explicit in the task
