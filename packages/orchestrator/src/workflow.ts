@@ -177,12 +177,13 @@ export interface WorkflowRegionPlan {
   readonly parallel?: boolean;
 }
 
-/** A leaf stage after lowering: dotted id, region path, and its stage. */
+/** A leaf stage after lowering: dotted id, enclosing region, and its stage. */
 export interface CompiledStage {
   readonly id: string;
   readonly dependsOn: readonly string[];
-  /** Ancestor region names (dotted segments) for stages inside a loop/map. */
-  readonly regionPath: readonly string[];
+  /** Innermost enclosing region id, or undefined at top level. Regions nest via
+   * their own `parentId`, so the full ancestor chain is a pointer walk. */
+  readonly parentId?: string;
   readonly stage: WorkflowStage;
 }
 
@@ -201,8 +202,8 @@ export interface ScheduledStage {
   readonly order: number;
   readonly dependsOn: readonly string[];
   readonly stage: WorkflowStage;
-  /** Non-empty for stages nested inside a loop/map region. */
-  readonly regionPath?: readonly string[];
+  /** Innermost enclosing region id; absent at top level. */
+  readonly parentId?: string;
 }
 
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
@@ -700,7 +701,7 @@ interface Boundary {
 
 interface InternalLeaf {
   readonly id: string;
-  readonly regionPath: readonly string[];
+  readonly parentId?: string;
   readonly stage: WorkflowStage;
   dependsOn: readonly string[];
 }
@@ -712,17 +713,17 @@ interface LoweredWorkflow {
 }
 
 /** The innermost fan-out region enclosing a leaf, with the lane count a
- * per-lane model list must match. `regionPath` names the enclosing regions
- * outermost-first and a region's id is exactly that dotted path, so the deepest
- * prefix resolving to a `map` region is the one the list is indexed against. */
+ * per-lane model list must match. `parentId` names the enclosing region, and a
+ * region's `parentId` its own, so the innermost `map` ancestor is the one the
+ * list is indexed against. */
 function innermostTournament(
   leaf: InternalLeaf,
   regions: readonly WorkflowRegionPlan[],
 ): { readonly name: string; readonly count: number } | undefined {
-  for (let depth = leaf.regionPath.length; depth > 0; depth -= 1) {
-    const id = leaf.regionPath.slice(0, depth).join(".");
-    const region = regions.find((candidate) => candidate.id === id && candidate.kind === "map");
-    if (region?.count !== undefined) return { name: region.name, count: region.count };
+  const byId = new Map(regions.map((region) => [region.id, region]));
+  for (let id = leaf.parentId; id !== undefined; id = byId.get(id)?.parentId) {
+    const region = byId.get(id);
+    if (region?.kind === "map" && region.count !== undefined) return { name: region.name, count: region.count };
   }
   return undefined;
 }
@@ -805,7 +806,7 @@ function lowerNodes(
     for (const node of scopeNodes) {
       if ("stage" in node) {
         const id = runtimeId(scopePath, node.stage.name);
-        leaves.push({ id, regionPath: scopePath, stage: node.stage, dependsOn: [] });
+        leaves.push({ id, parentId, stage: node.stage, dependsOn: [] });
         boundaries.set(node.stage.name, { entryStageId: id, exitStageId: id });
         continue;
       }
@@ -1034,7 +1035,7 @@ export function compileWorkflow(
         stages: ordered.map((leaf) => ({
           id: leaf.id,
           dependsOn: leaf.dependsOn,
-          regionPath: leaf.regionPath,
+          ...(leaf.parentId === undefined ? {} : { parentId: leaf.parentId }),
           stage: leaf.stage,
         })),
         regions: lowered.regions,
@@ -1047,7 +1048,7 @@ export function compileWorkflow(
   });
 }
 
-/** Production schedule: ordered leaf-stage invocations with their region path. */
+/** Production schedule: ordered leaf-stage invocations with their enclosing region. */
 export function scheduleWorkflow(
   plan: CompiledWorkflow,
 ): Effect.Effect<readonly ScheduledStage[], WorkflowError> {
@@ -1056,6 +1057,6 @@ export function scheduleWorkflow(
     order,
     dependsOn: leaf.dependsOn,
     stage: leaf.stage,
-    ...(leaf.regionPath.length === 0 ? {} : { regionPath: leaf.regionPath }),
+    ...(leaf.parentId === undefined ? {} : { parentId: leaf.parentId }),
   })));
 }

@@ -116,7 +116,12 @@ describe("logging Effect boundary", () => {
     })));
     await Effect.runPromise(provideNode(session.trajectory.rename("fix matmul kernel")));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const raw = await readFile(join(session.runDir, "trajectory.json"), "utf8");
+    // rename must write the same compact single-line bytes as write(): the
+    // picker's byte-window regex silently returns an id-only row for a
+    // pretty-printed document, which is exactly what /rename used to produce.
+    expect(raw.trimEnd().includes("\n")).toBe(false);
+    const trajectory = JSON.parse(raw) as Record<string, unknown>;
     expect(trajectory).toMatchObject({
       name: "fix matmul kernel",
       status: "completed",
@@ -183,7 +188,7 @@ describe("logging Effect boundary", () => {
     root = await mkdtemp(join(tmpdir(), "piano-logging-"));
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const writer = new LogWriter("test", join(root, "log.jsonl"));
+    const writer = new LogWriter("test", join(root, "log.jsonl"), "trace-test");
     const exit = await Effect.runPromiseExit(provideNode(writer.append("bad.payload", { data: circular })));
 
     expect(exit._tag).toBe("Failure");

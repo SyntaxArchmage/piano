@@ -828,6 +828,7 @@ export class TrajectoryWriter {
       const fileSystem = yield* FileSystem.FileSystem;
       // The record says only what this write is about; the fold carries the
       // run's other fields forward from the writes that did speak about them.
+      // The document is a view of that fold, not a second copy to merge by hand.
       yield* appendTrajectoryRecord(fileSystem, path, {
         version: 1,
         runId,

@@ -51,7 +51,7 @@ export class TraceWriter implements ITraceWriter {
   constructor(
     readonly runId: string,
     protected path: string,
-    readonly traceId: string = runId,
+    readonly traceId: string,
   ) {}
 
   currentSpan(): Effect.Effect<TraceSpan | undefined> {
@@ -219,7 +219,7 @@ export class AsyncTraceWriter extends TraceWriter {
 
   constructor(
     runId: string,
-    traceId: string = runId,
+    traceId: string,
   ) {
     super(runId, "", traceId);
   }

@@ -19,6 +19,7 @@
 import { Effect, Fiber } from "effect";
 import { Data } from "effect";
 import { FileSystem } from "@effect/platform";
+import { iterationOfInvocationId } from "@piano/orchestrator";
 import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -1001,7 +1002,7 @@ function collectStageTrajectories(runDir: string): StageTrajectoryMetrics[] {
       : transcriptAnalysis === undefined
         ? evaluateTrajectory([])
         : trajectoryMetricsFromTranscriptAnalysis(transcriptAnalysis);
-    const iterationMatch = /(?:^|\/)iter-(\d+)$/.exec(invocationId.split("@")[1] ?? "");
+    const iteration = iterationOfInvocationId(invocationId);
     return {
       ...metrics,
       stageId: typeof workflow?.stageId === "string" ? workflow.stageId : typeof record?.stageId === "string" ? record.stageId : log?.stageId ?? "unknown",
@@ -1030,7 +1031,7 @@ function collectStageTrajectories(runDir: string): StageTrajectoryMetrics[] {
       ...(typeof workflow?.workspaceCwd === "string"
         ? { workspaceCwd: workflow.workspaceCwd }
         : typeof record?.workspace?.cwd === "string" ? { workspaceCwd: record.workspace.cwd } : log?.workspaceCwd === undefined ? {} : { workspaceCwd: log.workspaceCwd }),
-      ...(iterationMatch?.[1] === undefined ? {} : { iteration: Number(iterationMatch[1]) }),
+      ...(iteration === undefined ? {} : { iteration }),
       ...(() => {
         if (log?.startedAt === undefined || log.completedAt === undefined) return {};
         const durationMs = Date.parse(log.completedAt) - Date.parse(log.startedAt);

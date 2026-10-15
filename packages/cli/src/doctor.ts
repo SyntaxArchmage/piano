@@ -1,4 +1,5 @@
 import { execFile as spawnFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,9 +98,12 @@ async function runSubprocessProbe(
 ): Promise<HarnessProbeResult> {
   const root = await mkdtemp(join(tmpdir(), `piano-doctor-${harness}-`));
   const runId = `doctor-${harness}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  // A probe is its own throwaway session, so its trace id is minted like a
+  // session's — never the run id wearing a trace id's clothes.
+  const traceId = randomBytes(16).toString("hex");
   const logging = loggingService(
-    new LogWriter(runId, join(root, "log.jsonl")),
-    new TraceWriter(runId, join(root, "trace.jsonl")),
+    new LogWriter(runId, join(root, "log.jsonl"), traceId),
+    new TraceWriter(runId, join(root, "trace.jsonl"), traceId),
   );
   try {
     const exit = await Effect.runPromise(
@@ -378,9 +382,10 @@ async function runPiModelProbe(
   const probeApiKey = configuredApiKey(config);
   const root = await mkdtemp(join(tmpdir(), "piano-doctor-pi-"));
   const runId = `doctor-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const traceId = randomBytes(16).toString("hex");
   const logging = loggingService(
-    new LogWriter(runId, join(root, "log.jsonl")),
-    new TraceWriter(runId, join(root, "trace.jsonl")),
+    new LogWriter(runId, join(root, "log.jsonl"), traceId),
+    new TraceWriter(runId, join(root, "trace.jsonl"), traceId),
   );
   try {
     const exit = await Effect.runPromise(

@@ -21,10 +21,12 @@ describe("dsh resume overlay module resolution", () => {
       // dsh resolves a patch row's `name` against the directory the patch file
       // sits in, so the overlay climbs from `patches/` back to the runner under
       // the headless profile — where the runner's bare dsh imports resolve.
-      expect(moduleName).toBe("../profiles/headless/resume-runner.mjs");
+      // The exact spelling and the runner's `agents.resume` content are pinned
+      // by harness-home.test.ts; this file pins only the drift between the
+      // overlay literal and dshResumeRunnerPath().
+      expect(moduleName).toBeDefined();
       const resolvedModulePath = resolve(dirname(overlayPath), moduleName!);
       expect(dshResumeRunnerPath(homes.paths.dsh)).toBe(resolvedModulePath);
-      expect(await readFile(resolvedModulePath, "utf8")).toContain("agents.resume");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

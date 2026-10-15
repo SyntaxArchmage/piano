@@ -2,6 +2,9 @@
 │                          PIANO — ARCHITECTURE                              │
 │    agent tuning workflows: YAML → DAG → agent stages → durable evidence   │
 └───────────────────────────────────────────────────────────────────────────┘
+ NOTE (2026-10-15): historical document. The EVIDENCE box below shows an
+ executions/<exec>/… run layout that was never shipped; README.md documents
+ the real on-disk layout and is the authority.
 
  ┌──────────────────────────  CLI  (packages/cli)  ──────────────────────────┐
  │  main.ts · runCli · arg parsing  — one typed Effect program               │

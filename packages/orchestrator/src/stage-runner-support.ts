@@ -216,12 +216,12 @@ export function workflowProgressProjection(
     : compiled.regions.find((candidate) => candidate.id === innermostFrame.regionId);
   const stageIds = innermostRegion === undefined
     ? compiled.stages
-      .filter((stage) => stage.regionPath.length === 0)
+      .filter((stage) => stage.parentId === undefined)
       .map((stage) => stage.id)
     : compiled.stages
       // Only direct leaves belong to this scope. Nested regions report their
       // own stage ordinal when they become the innermost frame.
-      .filter((stage) => stage.regionPath.join(".") === innermostRegion.id)
+      .filter((stage) => stage.parentId === innermostRegion.id)
       .map((stage) => stage.id);
   const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
   const stageCount = stageIds.length;
@@ -311,10 +311,9 @@ export function workflowProgressPlan(
   const stageCounts: Record<string, WorkflowProgressStageCount> = {};
   for (const stage of compiled.stages) {
     let planned = 1;
-    for (let index = 0; index < stage.regionPath.length; index += 1) {
-      const regionId = stage.regionPath.slice(0, index + 1).join(".");
+    for (let regionId = stage.parentId; regionId !== undefined; ) {
       const region = regionsById.get(regionId);
-      if (region === undefined) continue;
+      if (region === undefined) break;
       if (region.kind === "loop") {
         const effectiveIterations = loopIterations.get(regionId);
         if (effectiveIterations !== undefined || region.duration !== undefined) {
@@ -323,12 +322,13 @@ export function workflowProgressPlan(
           // denominator stays ahead of the numerator and the snapshot validator's
           // `completed <= planned` invariant holds while the loop is open.
           planned *= Math.max(1, effectiveIterations ?? 1);
-          continue;
+        } else {
+          planned *= region.iterations ?? 1;
         }
-        planned *= region.iterations ?? 1;
-        continue;
+      } else {
+        planned *= region.count ?? 1;
       }
-      planned *= region.count ?? 1;
+      regionId = region.parentId;
     }
     stageCounts[stage.id] = { planned, completed: 0 };
   }
