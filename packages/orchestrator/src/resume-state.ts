@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
 import type { AgentContinuation } from "@piano/harness";
+import type { WorkflowProgressActorTurnRecord } from "./progress.js";
 
 /** The legacy single-document form. Read for runs written before the stream
  * existed; never written now. */
@@ -85,6 +86,29 @@ export function readResumeState(
     const records = yield* readStream(fs, resumeStreamPath(runDir));
     return records.reduce<ResumeState | undefined>(mergeResumeState, undefined);
   });
+}
+
+/** The actor table as the run's own ledger records it: one `actor-turn` row per
+ * state change, newest row per actor winning. This is the same table
+ * `readResumeState` folds from the resume stream — the ledger is the source
+ * that can retire the second file — and the two must agree, which is what the
+ * equivalence test pins. */
+export function foldActorTurns(
+  records: readonly { readonly kind?: unknown }[],
+): Record<string, ResumeActorState> {
+  const actors: Record<string, ResumeActorState> = {};
+  for (const record of records) {
+    if (record.kind !== "actor-turn") continue;
+    const turn = record as WorkflowProgressActorTurnRecord;
+    actors[turn.actorKey] = {
+      harness: turn.harness,
+      sessionId: turn.sessionId,
+      transcriptPath: turn.transcriptPath,
+      turns: turn.turn,
+      ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
+    };
+  }
+  return actors;
 }
 
 /** A missing stream is no actors; one that cannot be read is an error —

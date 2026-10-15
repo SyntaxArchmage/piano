@@ -32,6 +32,7 @@ import { legacyContractProjectionDeclarations } from "./legacy-contract-projecti
 import { errorMessage, WorkflowError, workflowError } from "./errors.js";
 import { WORKER_LOG, WORKER_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import {
+  actorLane,
   actorSessionDirectory,
   runtimeInstanceId,
   runtimeInvocationId,
@@ -309,6 +310,39 @@ export function executeStage(
     }
     const identity = rebuilt.handoff.actorKey ?? actorKey;
     actorContexts.set(identity, actorContextFor(identity, resources, contextFilePaths));
+  });
+  /** One actor state change, written once: the run's in-memory table, the
+   * ledger's `actor-turn` row the table can be folded from, and the resume
+   * table's own snapshot — all under the progress semaphore so a concurrent
+   * sibling cannot interleave a stale read/modify/write. A failed ledger or
+   * table write never fails the stage: the conversation it records is already
+   * on disk in the harness's own transcript. */
+  const recordActorState = (
+    state: ActorState,
+    turnAttempt: number,
+  ): Effect.Effect<void, never, FileSystem.FileSystem | Logging> => Effect.suspend(() => {
+    actors.set(actorKey, state);
+    const appendTurn = state.harness === undefined || state.sessionId === undefined || state.transcriptPath === undefined
+      ? Effect.void
+      : progressSemaphore.withPermits(1)(appendWorkflowProgress(request.runDir, {
+        kind: "actor-turn",
+        runId,
+        jobOrdinal: promptIndex,
+        invocationId: runtimeInvocationId(invocation),
+        attempt: turnAttempt,
+        actorKey,
+        harness: state.harness,
+        worker: node.stage.worker,
+        lane: actorLane(frames).join("/"),
+        sessionId: state.sessionId,
+        transcriptPath: state.transcriptPath,
+        turn: state.turns,
+        ...(state.continuation === undefined ? {} : { continuation: state.continuation }),
+      }).pipe(Effect.asVoid, Effect.catchAll(() => Effect.void)));
+    return appendTurn.pipe(
+      Effect.andThen(progressSemaphore.withPermits(1)(Effect.suspend(() => persistActors()))
+        .pipe(Effect.catchAll(() => Effect.void))),
+    );
   });
   const core = Effect.gen(function* () {
     const invocationId = runtimeInvocationId(invocation);
@@ -699,7 +733,9 @@ export function executeStage(
       const recordAnnouncedContinuation = Effect.suspend(() => {
         const announced = announcedContinuations.get(actorKey);
         if (announced === undefined) return Effect.void;
-        actors.set(actorKey, {
+        // Same serialization as the accepted-stage write; a failed state
+        // write must never mask the cancellation the user triggered.
+        return recordActorState({
           // The interrupted turn was not accepted: `turns` is unchanged, so
           // the resumed conversation picks up where it was paused.
           turns: actors.get(actorKey)?.turns ?? 0,
@@ -707,11 +743,7 @@ export function executeStage(
           sessionId: announced.sessionId,
           transcriptPath: announced.transcriptPath,
           continuation: announced,
-        });
-        // Same serialization as the accepted-stage write; a failed state
-        // write must never mask the cancellation the user triggered.
-        return progressSemaphore.withPermits(1)(Effect.suspend(() => persistActors()))
-          .pipe(Effect.catchAll(() => Effect.void));
+        }, attempt);
       });
       const workerWithAnnouncement = workerEffect.pipe(
         // Runs on success too, where the stage's own write follows with the
@@ -766,7 +798,9 @@ export function executeStage(
           ? failedAttemptContinuation(workerOutcome.left)
           : undefined;
         if (resumable !== undefined && resumable.unresolvable !== true) {
-          actors.set(actorKey, {
+          // Same serialization as the accepted-stage write; a failed state
+          // write must never mask the cancellation the user triggered.
+          yield* recordActorState({
             // Live count: an earlier turn that completed inside this same
             // prompt (rejected or awaiting repair) already counted itself
             // durable; the stale pre-attempt `previous` must not rewind it.
@@ -775,11 +809,7 @@ export function executeStage(
             sessionId: resumable.sessionId,
             transcriptPath: resumable.transcriptPath,
             continuation: resumable,
-          });
-          // Same serialization as the accepted-stage write; a failed state
-          // write must never mask the cancellation the user triggered.
-          yield* progressSemaphore.withPermits(1)(Effect.suspend(() => persistActors()))
-            .pipe(Effect.catchAll(() => Effect.void));
+          }, attempt);
         }
         if (!cancelled) {
           const waited = yield* scheduleStageRetry(
@@ -805,13 +835,13 @@ export function executeStage(
 
       // Store a successful turn before validation. The repair turn must
       // reopen this exact actor session, never any upstream transcript.
-      actors.set(actorKey, {
+      yield* recordActorState({
         turns: (actors.get(actorKey)?.turns ?? 0) + 1,
         harness: node.stage.harness,
         sessionId: worker.sessionId,
         transcriptPath: worker.transcriptPath,
         ...(worker.continuation === undefined ? {} : { continuation: worker.continuation }),
-      });
+      }, attempt);
       // A completed turn is durable the moment it lands — acceptance is not
       // the save point. A sign-off *reject* means "keep working on this":
       // the workflow does not end, it reopens this same actor session with
@@ -819,10 +849,7 @@ export function executeStage(
       // later interrupt or failure in the rework must therefore never strand
       // a conversation the harness has already written: the state stream
       // carries it from here, and the accepted-stage write below stays the
-      // final canonical state. A failed intermediate write never fails the
-      // stage.
-      yield* progressSemaphore.withPermits(1)(Effect.suspend(() => persistActors()))
-        .pipe(Effect.catchAll(() => Effect.void));
+      // final canonical state.
 
       if (validation === undefined) {
         const decision = yield* requestSignoff(worker, undefined);

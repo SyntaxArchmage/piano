@@ -312,9 +312,11 @@ describe("workflow progress stream", () => {
   it("reads a line with a kind it does not recognize as nothing, not as an accepted stage", () => {
     // A newer writer's record riding the same stream: a valid envelope with a
     // discriminator this reader has no meaning for. Folding it into the
-    // historical shape would count the marker as accepted work.
+    // historical shape would count the marker as accepted work. The name is
+    // deliberately not a candidate for a real kind — this exemplar has twice
+    // been promoted to a known one and taken the test down with it.
     const marker = {
-      kind: "actor-turn",
+      kind: "not-a-kind-this-build-knows",
       runId: "execution",
       timestamp: "2026-01-01T00:00:05.000Z",
       regionId: "sweep",

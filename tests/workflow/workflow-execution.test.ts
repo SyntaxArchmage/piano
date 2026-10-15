@@ -31,6 +31,10 @@ import {
   type WorkflowExecutionContinuation,
 } from "../../packages/orchestrator/src/index.js";
 import {
+  foldActorTurns,
+  readResumeState,
+} from "../../packages/orchestrator/src/resume-state.js";
+import {
   AgentError,
   createSteeringChannel,
   executeAgent,
@@ -4832,6 +4836,39 @@ workflow:
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("records every actor turn in the ledger, so the table folds from it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-actor-turns-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "answer",
+        agentRunner: () => Effect.promise(async () => ({
+          sessionId: "respond-session",
+          transcriptPath: "/tmp/respond-session.jsonl",
+          text: "ans = 4",
+          continuation: continuation("respond-session"),
+        })),
+      }));
+
+      const records = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .split("\n").filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { kind?: unknown; lane?: unknown });
+      const stored = await Effect.runPromise(
+        readResumeState(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      // The ledger's fold and the resume table are the same table: one can
+      // retire the other without a reader noticing.
+      expect(foldActorTurns(records)).toEqual(stored?.actors);
+      // And each row carries the lane and the turn count, not just the key.
+      const turns = records.filter((record) => record.kind === "actor-turn");
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({ lane: "root", turn: 1, worker: "basic" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   it("does not retry a worker failure outside validate repair", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-cancelled-no-retry-"));

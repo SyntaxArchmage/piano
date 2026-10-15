@@ -6,6 +6,7 @@ import { refreshRunStatus } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
+import type { AgentContinuation } from "@piano/harness";
 import type { ContractProjection } from "@piano/contract";
 
 /** Orchestrator-owned, worker-neutral progress projection. Iteration is
@@ -270,13 +271,42 @@ export type WorkflowRegionFinalizedPayload = Omit<
   "version" | "kind" | "timestamp" | "runId" | "jobOrdinal"
 >;
 
+/** One actor's conversation state after a turn that changed it. The record
+ * exists so the actor table a resume reads can be folded from this one ledger
+ * instead of a second, parallel file: newest record per `actorKey` wins.
+ * `continuation` is the harness's own pointer into the conversation and is
+ * copied verbatim — never synthesized — because a fabricated one would resume
+ * the wrong session silently. Unlike the newness record, which is a complete
+ * table, this is a delta: the fields are exactly what the writer set. */
+export interface WorkflowProgressActorTurnRecord {
+  readonly version: 1;
+  readonly kind: "actor-turn";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly jobOrdinal: number;
+  readonly invocationId: string;
+  readonly attempt: number;
+  readonly actorKey: string;
+  readonly harness: string;
+  readonly worker: string;
+  /** The map-frame lane the actor belongs to (`root` when it has none): the
+   * lane part of `actorKey`, spelled once by `actorLaneSegments`. */
+  readonly lane: string;
+  readonly sessionId: string;
+  readonly transcriptPath: string;
+  /** The actor's completed turn count at this record. */
+  readonly turn: number;
+  readonly continuation?: AgentContinuation;
+}
+
 export type WorkflowProgressStreamRecord =
   | WorkflowProgressRecord
   | WorkflowProgressStartRecord
   | WorkflowProgressExecutionStartRecord
   | WorkflowProgressExecutionFinishRecord
   | WorkflowProgressJobClosedRecord
-  | WorkflowProgressRegionFinalizedRecord;
+  | WorkflowProgressRegionFinalizedRecord
+  | WorkflowProgressActorTurnRecord;
 
 /** Kind of one progress-stream line.
  *
@@ -298,6 +328,7 @@ export function progressRecordKind(record: object | null | undefined):
   | WorkflowProgressExecutionFinishRecord["kind"]
   | WorkflowProgressJobClosedRecord["kind"]
   | WorkflowProgressRegionFinalizedRecord["kind"]
+  | WorkflowProgressActorTurnRecord["kind"]
   | "stage-accepted"
   | undefined {
   const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
@@ -307,6 +338,7 @@ export function progressRecordKind(record: object | null | undefined):
   if (kind === "execution-finished") return "execution-finished";
   if (kind === "job-closed") return "job-closed";
   if (kind === "region-finalized") return "region-finalized";
+  if (kind === "actor-turn") return "actor-turn";
   return undefined;
 }
 
@@ -465,6 +497,13 @@ export function applyProgressRecord(
   if (kind === "region-finalized") {
     // Region evidence a continue reads; the live snapshot has no field for
     // it, so the fold only advances its timestamp.
+    return previous === undefined
+      ? emptyProgressSnapshot(record.runId, record.timestamp)
+      : { ...previous, updatedAt: record.timestamp };
+  }
+  if (kind === "actor-turn") {
+    // The actor table's own fold (`foldActorTurns`) reads these; the progress
+    // snapshot carries no actor fields, so only its timestamp advances.
     return previous === undefined
       ? emptyProgressSnapshot(record.runId, record.timestamp)
       : { ...previous, updatedAt: record.timestamp };
@@ -688,7 +727,8 @@ export function markWorkflowStageStarted(
 export function appendWorkflowProgress(
   runDir: string,
   record: Omit<WorkflowProgressRecord, "version" | "timestamp">
-    | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">,
+    | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">
+    | Omit<WorkflowProgressActorTurnRecord, "version" | "timestamp">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {

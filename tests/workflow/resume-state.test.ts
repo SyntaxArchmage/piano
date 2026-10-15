@@ -11,6 +11,7 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
+  foldActorTurns,
   readResumeState,
   resumeStreamPath,
   writeResumeState,
@@ -104,5 +105,32 @@ describe("resume state persistence", () => {
 
   it("reports no state when nothing has been written", async () => {
     expect(await read(await runDir())).toBeUndefined();
+  });
+
+  it("folds the actor table from the ledger's actor-turn rows", () => {
+    const turn = (actorKey: string, turns: number, sessionId = "sess-claude") => ({
+      version: 1, kind: "actor-turn" as const, timestamp: "2026-08-21T10:00:00.000Z",
+      runId: "run-1", jobOrdinal: 1, invocationId: "coding@root", attempt: 1,
+      actorKey, harness: "claude", worker: "coding", lane: "root",
+      sessionId, transcriptPath: `/runs/${sessionId}.jsonl`, turn: turns,
+      continuation: { harness: "claude", sessionId, transcriptPath: `/runs/${sessionId}.jsonl` },
+    });
+    const folded = foldActorTurns([
+      turn("run-1/claude/coding/root", 1),
+      turn("run-1/pi/racing/race/slot-0", 1, "sess-pi"),
+      // A later row for the same actor supersedes it, the way the resume
+      // writer's own merge rule does.
+      turn("run-1/claude/coding/root", 2),
+      // Rows of other kinds are not actor state.
+      { kind: "region-finalized" },
+    ]);
+
+    expect(Object.keys(folded).sort()).toEqual([
+      "run-1/claude/coding/root",
+      "run-1/pi/racing/race/slot-0",
+    ]);
+    expect(folded["run-1/claude/coding/root"]).toEqual(actor("sess-claude", 2));
+    // The continuation is the harness's own pointer, copied verbatim.
+    expect(folded["run-1/pi/racing/race/slot-0"]?.continuation).toEqual(actor("sess-pi").continuation);
   });
 });

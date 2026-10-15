@@ -166,8 +166,9 @@ export const ACTOR_KEY_VERSION = "v2";
 
 /** Fan-out lane segments of an invocation: every active map slot is an
  * isolated actor; loop frames contribute nothing, so the same actor resumes
- * across iterations. */
-function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
+ * across iterations. Exported so the ledger's `actor-turn` record spells the
+ * lane the same way the actor key and session directory do. */
+export function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
   return frames
     .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
     .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
@@ -180,13 +181,20 @@ function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly st
  * then keep working on it" resume the same chat. Keys written before this
  * format used the stage id on the opposite reading (that two stages sharing a
  * worker must not share a chat); {@link migrateLegacyActorKey} rewrites them. */
+/** The actor's lane as path segments: `["root"]` for an actor with no map
+ * frame, the map frame pairs otherwise. The one spelling the actor key, the
+ * session directory, and the ledger's `actor-turn` row share. */
+export function actorLane(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
+  const lane = actorLaneSegments(frames);
+  return lane.length === 0 ? ["root"] : lane;
+}
+
 export function workflowActorKey(
   invocation: WorkflowRuntimeInvocation,
   harness: string,
   worker: string,
 ): string {
-  const lane = actorLaneSegments(invocation.frames);
-  return [ACTOR_KEY_VERSION, invocation.runId, harness, worker, ...(lane.length === 0 ? ["root"] : lane)].join("/");
+  return [ACTOR_KEY_VERSION, invocation.runId, harness, worker, ...actorLane(invocation.frames)].join("/");
 }
 
 /** Rewrite one legacy stage-keyed actor key into the worker-keyed form, or
@@ -212,13 +220,12 @@ export function actorSessionDirectory(
   harness: string,
   worker: string,
 ): string {
-  const lane = actorLaneSegments(invocation.frames);
   return join(
     runDir,
     "actors",
     harness,
     worker,
-    ...(lane.length === 0 ? ["root"] : lane),
+    ...actorLane(invocation.frames),
     "session",
   );
 }

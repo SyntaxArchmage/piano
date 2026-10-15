@@ -137,6 +137,11 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
       // re-entered and finalized again after a continue updates its entry.
       const owner = spans.find((candidate) => candidate.jobOrdinal === finalized.jobOrdinal) ?? span;
       owner.regions.set(finalized.instance, finalized);
+    } else if (kind === "actor-turn") {
+      // An actor's conversation state is not job-span state: it says nothing
+      // about which stages this job accepted or is running. Its own fold
+      // (`foldActorTurns`) reads it.
+      continue;
     } else {
       // A close names its job explicitly, and the job it closes is not
       // necessarily the latest one: a restart closes the paused job it
