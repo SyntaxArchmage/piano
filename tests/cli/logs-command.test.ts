@@ -179,6 +179,27 @@ describe("piano logs picker rows", () => {
     expect(label.endsWith("…")).toBe(true);
   });
 
+  it("reads the row from the run's state document, never opening the trajectory", async () => {
+    const prompt = "first ask";
+    const runDir = join(root, runId);
+    // A run written today keeps its state in one small document; the huge
+    // trajectory beside it is evidence, not the row.
+    await writeFile(join(root, runId, "trajectory.json"), "x".repeat(200_000), "utf8");
+    await writeFile(join(root, runId, "status.json"), JSON.stringify({
+      version: 1,
+      runId,
+      status: "failed",
+      workflowPath: "/home/albert/.piano/gpu-cuda-tuning.yml",
+      turns: [{ prompt, status: "failed", eventCount: 3 }],
+    }), "utf8");
+
+    expect(readRunRowMetadata(join(runDir, "trajectory.json"))).toEqual({
+      workflow: "gpu-cuda-tuning",
+      status: "failed",
+      prompt,
+    });
+  });
+
   it("omits a completed status and a missing workflow from the label", () => {
     expect(runPickerLabel(runId, { workflow: "w", status: "completed", prompt: "hi" }))
       .toBe("2026-08-21 12:00 · w · hi");

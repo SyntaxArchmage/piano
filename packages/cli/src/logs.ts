@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   KeybindingsManager,
@@ -19,6 +19,7 @@ import {
   inspectStaticObservability,
   trajectoryStreamPath,
 } from "@piano/logging";
+import { runStatusPath } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { formatRunId, oneLine } from "./session-resume.js";
@@ -249,8 +250,37 @@ function readStreamRowMetadata(streamFile: string): RunRowMetadata | undefined {
   return row;
 }
 
-/** Exported for testing; the picker calls it once per listed run. */
+/** The row the run's state document carries: the workflow it ran, how it
+ * ended, and the first prompt it was given. */
+function readStatusRow(runDir: string): RunRowMetadata | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const status = parsed as { workflowPath?: unknown; status?: unknown; turns?: unknown };
+  const row: { workflow?: string; status?: string; prompt?: string } = {};
+  if (typeof status.workflowPath === "string") {
+    row.workflow = basename(status.workflowPath).replace(/\.ya?ml$/i, "");
+  }
+  if (typeof status.status === "string") row.status = status.status;
+  if (Array.isArray(status.turns)) {
+    const first = status.turns[0] as { prompt?: unknown } | undefined;
+    if (typeof first?.prompt === "string") row.prompt = first.prompt;
+  }
+  return row;
+}
+
+/** Exported for testing; the picker calls it once per listed run.
+ *
+ * The run's state document is the row. A run written before that document
+ * existed has only the trajectory it kept, which can hold hundreds of
+ * megabytes of events, so that case still scans a bounded tail of it. */
 export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
+  const status = readStatusRow(dirname(trajectoryFile));
+  if (status !== undefined) return status;
   const tail = readTail(trajectoryFile, TAIL_WINDOW_BYTES);
   if (tail !== undefined) {
     const row = parseRunTail(tail);
