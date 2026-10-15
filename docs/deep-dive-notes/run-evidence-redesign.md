@@ -303,7 +303,7 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - 我已回发完整 status sync：所有权清单、目标、合并前提。**合并前提三项**：(a) 主 worktree 里未提交的 `parentId` 重构（`workflow.ts`/`workflow-execution.ts`/`workflow-runtime.ts` + 3 测试）归属确认并落库——`workflow-runtime.ts` 在合并面上，不落地 git 会拒绝合并；(b) 分支冻结点；(c) `trajectory.ts` 冲突一次解清（方向取它的 status.json 结构，保留单一 serializer 原则）。
 - 实测冲突面（merge-base `fcaabbf`）：仅 5 文件 —— `evals/driver.ts`、`logging/trajectory.ts`、`orchestrator/index.ts`、`orchestrator/workflow-runtime.ts`、`tests/cli/logs-command.test.ts`，全部意图收敛型。
 - 已提醒它：删 `trajectory.json` 文档时，`piano logs` picker 与 session-picker 的 tail 读取必须同一改动里切到 status.json 投影，否则静默退化成 id-only 行（本批次一直在杀的那类病）。
-- 冻结点一到：我在本分支执行 merge → 解 5 文件 → **全量** `npm test`（共享数据结构变更，按 F2 规则升格）→ 报开发者。之后 H6 与 7 点余量在单线上执行。
+- **合并执行序（提案，署名 `piano logs 日志布局重构` [b6b0f6]，即本工作稿的作者 session；非 piano-4e，非任何他人的承诺）**：piano-be 落库 → 由 [b6b0f6] 在 `fix/evidence-read-chain` 执行 merge `cc92410` → 解 5 文件 → **全量** `npm test`（共享数据结构变更，按 F2 规则升格）→ 报开发者。**状态：PREPARED，未执行** —— 邻居 session 依 PF1 提请：40+ commit 的合并属 scope-changing，须开发者亲口 go 并点名执行分支后才动（本行即响应，见 F5.2）。
 
 **F5.1 协调落定（2026-10-15 晚，三方消息往返后）**
 - **G1 裁定（邻居 session 携开发者原话）**：`status.json` **取代**（不是并存）三个 fold 视图——`progress.json`/`trajectory.json`/`resume.json` 删除；`progress.jsonl` 等 append-only ledger 保留为证据与折叠源。「ignore historical compatibility, do it straightly; before delete, review all references」。我的 H3（`7793a7e`）与邻居的 `a18904c` 均被此裁定反转，按 G4 必须写进 PR 描述。
@@ -314,4 +314,11 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `runStatusFromParts` 构造以钉住 round-trip。
 - `progressRecordKind` 未知 kind 落 `"stage-accepted"` 的缺口归邻居修（其 `421d1d1` 依赖该 fallthrough），在 `region-finalized`/`actor-turn` 之前必须落；我侧 H5 不新增 kind，无排序冲突。
 - 另有 `piano-43` session 在做 `packages/harness/src` 模块化（branch `refactor/harness-module`，base 我的 `595c51e`，P1 已落 `04034e4`）；我的 H2c 与其 P2 有潜在交叠，合并后由它 rebase。
+
+**F5.2 身份澄清与邻居的两处事实更正（2026-10-15 晚）**
+- **身份**：`7793a7e`（H3）、`d182881`（红测试修复）、本工作稿及其 §F5 均出自 [b6b0f6]（本 session），**不是 piano-4e**。piano-be 与邻居此前把 H3 归给 piano-4e，已在回信中更正。16:40:01 落在 `logs-command.test.ts` 的「无主编辑」= 我的 `d182881`。
+- **更正 1（邻居审计）**：「trajectory.json 是最大字节冗余」的说法**测量来源错误**——样本 run `20261014T080442-963057` 根本没有 `trajectory.jsonl`（main 的 document-only writer 产物），它只证明文档体积，不证明 stream-vs-document 重复。`message_end` 事件的真实第二副本是 **`actors/` harness 转录**；`log.jsonl` 的 `agent.event.received` 行只带 `role`/`textLength`（≤521B/行），不是冗余主体。本稿 §A 无此错误主张（已 grep 核对），记录在此防止它再流通。
+- **更正 2（邻居审计）**：`trajectory.json` 的写入**非原子**（`trajectory.ts:724` 裸 `writeFileString`；`progress.json`/`status.json` 均原子）——读侧可自愈，但 `jq`/外部监控会看到撕裂。处置：G1 裁定下文档整体删除，此缺陷随之消失，**不单独立项修**。
+- **P4 归并**：我原 P4 的「trajectory.json 停写（flag 门控）」与 G1 的「直接删除」是**同一步**——P4 该项撤销，由邻居的删除序（reads → writes → helpers → external contract）承接，PR 文本按 G4 写明三项反转（我的 H3、邻居的 `a18904c`、此前的 write-stop NO 建议）。
+- **邻居的 picker 警示已收**：其分支上 `logs.ts` 的 145 行 tail-scan 已删、`readRunRowMetadata(runDir)` 只读 `status.json`；合并时 `logs-command.test.ts` 取其重写版，我的 `d182881` 该半自然作废（logging.test.ts 的 rename 单行守卫保留至 G1 step 2 删文档时一并消失）。
 
