@@ -29,6 +29,11 @@ export interface HandoffProducer {
    * result without re-deriving it from the stream. Absent in records written
    * before it was kept; the cursor supplies the number there instead. */
   readonly attempt?: number;
+  /** The conversation this acceptance belongs to, so a rebuilt result re-enters
+   * the actor that produced it even when the workflow's worker or harness
+   * spelling changed since. Absent in records written before it was kept; the
+   * rebuild recomputes the current spelling there. */
+  readonly actorKey?: string;
   /** Configuration requested by the workflow before provider capability
    * resolution. Keep it separate from the effective harness values below. */
   readonly requestedModel?: string;
@@ -138,6 +143,17 @@ export function readHandoffRecord(
 /** Materialize a consumer's ordered workflow context. A configured handoff
  * file is always scoped below this exact invocation, so loop/map expansion
  * cannot overwrite a sibling's input even when they use the same DSL path. */
+/** Where a consumer's handoff context file lives — the writer's own rule,
+ * exposed so a rebuilt invocation can list the file without rewriting it. */
+export function handoffContextPath(
+  runDir: string,
+  consumer: WorkflowRuntimeInvocation,
+  configuredPath: string,
+  sourcePath: string,
+): Effect.Effect<string, WorkflowError> {
+  return safeRelativePath(join(invocationDirectory(runDir, consumer), "handoff-context"), configuredPath, sourcePath);
+}
+
 export function writeHandoffContext(
   runDir: string,
   consumer: WorkflowRuntimeInvocation,
@@ -146,8 +162,7 @@ export function writeHandoffContext(
   workspace: WorkflowWorkspaceBinding,
   sourcePath: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const base = join(invocationDirectory(runDir, consumer), "handoff-context");
-  return safeRelativePath(base, configuredPath, sourcePath).pipe(
+  return handoffContextPath(runDir, consumer, configuredPath, sourcePath).pipe(
     Effect.flatMap((contextPath) => writeJsonAtomic(contextPath, {
       version: 1,
       consumer: {
@@ -164,6 +179,12 @@ export function writeHandoffContext(
   );
 }
 
+/** Where a consumer's map item context lives — the writer's own rule, exposed
+ * so a rebuilt invocation can list the file without rewriting it. */
+export function mapItemContextPath(runDir: string, consumer: WorkflowRuntimeInvocation): string {
+  return join(invocationDirectory(runDir, consumer), "map-item.json");
+}
+
 /** Map item values are also orchestrator-owned context. They are injected only
  * into the map region's entry stage; descendants receive data through normal
  * explicit handoff files. */
@@ -173,7 +194,7 @@ export function writeMapItemContext(
   item: HandoffMapItem,
   workspace: WorkflowWorkspaceBinding,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = join(invocationDirectory(runDir, consumer), "map-item.json");
+  const path = mapItemContextPath(runDir, consumer);
   return writeJsonAtomic(path, {
     version: 1,
     consumer: {

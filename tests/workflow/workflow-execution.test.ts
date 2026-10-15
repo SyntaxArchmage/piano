@@ -19,6 +19,7 @@ import {
   executeWorkflow,
   foldJobSpans,
   jobs,
+  latestJob,
   loadAndExecuteWorkflow,
   loadWorkflow,
   progressRecordKind,
@@ -4916,6 +4917,171 @@ workflow:
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("carries a tournament winner whose exit a continue rebuilt from evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-rebuilt-carry-"));
+    try {
+      await writeFile(join(root, "race.yml"), METRIC_TOURNAMENT);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      await writeFile(join(root, "user-notes.md"), "keep my dirty note\n");
+      await mkdir(join(root, "state"), { recursive: true });
+      await writeFile(join(root, "state", "current-best.py"), "baseline\n");
+      await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
+        current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
+        history: [],
+      }));
+      const session = await testSession(root);
+
+      // Run 1 pauses mid-region: slot 1's exit is accepted and on disk, slot
+      // 0's exit never settles. That is what makes run 2 rebuild a lane.
+      const runs: AgentRequest[][] = [[], []];
+      let run = 0;
+      let hung = false;
+      let signalHanging!: () => void;
+      const hanging = new Promise<void>((resolve) => { signalHanging = resolve; });
+      const agentRunner: AgentRunner = (request) => {
+        runs[run]!.push(request);
+        const stage = stageId(request);
+        if (stage === "race.bench" && invocationId(request).includes("slot-0") && !hung) {
+          hung = true;
+          return Effect.sync(() => { signalHanging(); }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+            // Nothing resumes this: only the pause's interrupt ends the turn.
+          })));
+        }
+        return Effect.promise(async () => {
+          if (stage.startsWith("$consolidate/")) {
+            await consolidateInto(request);
+          } else if (stage === "propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              strategies: [
+                { id: "slot-0", bottleneck: "memory", technique: "warp", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                { id: "slot-1", bottleneck: "compute", technique: "tile", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+              ],
+            }));
+          } else if (stage === "race.implement") {
+            const slot = await strategySlot(request);
+            await writeFile(join(request.cwd, "kernel.py"), `kernel-${slot}\n`);
+          } else if (stage === "race.bench") {
+            // The rebuilt lane 1 holds the winning metric; lane 0's re-run does not.
+            const slot = await strategySlot(request);
+            const best = slot === 0 ? 4 : 9;
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              iteration: 0,
+              decision: "KEEP",
+              candidate: { path: "kernel.py" },
+              current_best: { path: "state/current-best.py" },
+              verification: { compile_passed: true, verify_passed: true },
+              benchmark: {
+                name: "tflops",
+                unit: "TFLOP/s",
+                direction: "higher",
+                samples: [best],
+                best,
+                median: best,
+                runs: 1,
+                warmup: 0,
+              },
+              promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
+              records: { round_path: `rounds/iter-000.json`, state_path: "state/tuning-state.json" },
+            }));
+          }
+          const sessionId = `${stage}-${invocationId(request).replaceAll("/", "-").replaceAll("@", "-")}`;
+          return {
+            sessionId,
+            transcriptPath: `/tmp/race-${stage}.jsonl`,
+            text: `${stage}:${invocationId(request)}`,
+            continuation: continuation(sessionId),
+          };
+        });
+      };
+
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, executionId: "metric-continue", cwd: root, prompt: "race two kernels",
+        agentRunner,
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await hanging;
+
+      const foldStream = async () => {
+        const raw = await readFile(join(session.runDir, "progress.jsonl"), "utf8").catch(() => "");
+        const records = raw.split("\n").filter((line) => line.trim() !== "")
+          .map((line) => JSON.parse(line) as WorkflowProgressStreamRecord);
+        return latestJob(foldJobSpans(records));
+      };
+      const deadline = Date.now() + 20_000;
+      while ((await foldStream())?.accepted.has("race.bench@race/slot-1") !== true && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect((await foldStream())?.accepted.has("race.bench@race/slot-1")).toBe(true);
+
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      // The pause landed mid-region: nothing finalized it, so the continue
+      // re-enters and the winner's lane must come back from its evidence.
+      const cursor = (await foldStream())!;
+      expect(cursor.regions.size).toBe(0);
+      // The carried conversations come from the run's own resume evidence.
+      const execution = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      expect(execution?.actors.size).toBeGreaterThan(0);
+
+      run = 1;
+      const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, executionId: "metric-continue", cwd: root, prompt: "race two kernels",
+        ...(execution === undefined ? {} : { execution }),
+        agentRunner,
+        continueJob: {
+          jobOrdinal: cursor.jobOrdinal,
+          accepted: cursor.accepted,
+          attempts: cursor.attempts,
+          regions: cursor.regions,
+        },
+      }));
+
+      const secondCalls = runs[1]!;
+      // The winner's exit came back from evidence: it never ran again.
+      expect(secondCalls.filter((call) =>
+        stageId(call) === "race.bench" && invocationId(call).includes("slot-1"))).toHaveLength(0);
+      const winnerExit = runs[0]!.find((call) =>
+        stageId(call) === "race.bench" && invocationId(call).includes("slot-1"));
+      expect(winnerExit).toBeDefined();
+      const consolidationCall = secondCalls.find((call) => stageId(call).startsWith("$consolidate/"));
+      expect(consolidationCall).toBeDefined();
+      // The rebuilt exit's actor identity is what makes the carry runnable —
+      // same chat, same context files, same system prompt as its live turn.
+      // The continuation is the winner's own, carried across the pause by the
+      // run's resume evidence.
+      expect(consolidationCall).toMatchObject({
+        continuation: continuation(`race.bench-${invocationId(winnerExit!).replaceAll("/", "-").replaceAll("@", "-")}`),
+        sessionDir: winnerExit?.sessionDir,
+        skillPaths: winnerExit?.skillPaths,
+        contextFilePaths: winnerExit?.contextFilePaths,
+      });
+      expect(consolidationCall?.systemPromptPath).toBe(winnerExit?.systemPromptPath);
+
+      // One decision, one selection: the re-entered region finalized once.
+      const selection = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(selection).toHaveLength(1);
+      expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
+      const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(afterStream.filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+      // The carried winner reached the shared source.
+      expect((await readFile(join(root, "kernel.py"), "utf8")).trim()).toBe("kernel-1");
+      expect(secondRun.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("does not promote a blocked slot with a better metric, and continues with the healthy winner", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-blocked-metric-tournament-"));
