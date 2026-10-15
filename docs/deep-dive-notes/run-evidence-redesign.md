@@ -1,5 +1,7 @@
 # run evidence（logs）重设计 — 工作稿
 
+> **历史文档（2026-10-16 标记）。** 本文记录一次已完成的迁移的设计与执行过程；§A–§C 描述的现状与目标 layout 是**迁移前**的快照，其中三处已被后续落地超越，读当时以 §F5.5 与代码为准：
+> ① `progress.json` / `trajectory.json` / `resume.json` 三个 document 已**删除**（不写也不读；`status.json` 是唯一的 view，见邻 session 的 G1）；② `resume.jsonl` 已**停写并退休 reader**（actor 表由 ledger 的 `actor-turn` 行折叠，见 §F5.5）；③ `executionId` 已改名 `runId`（G2）。现行 layout 规范以 `README.md` 为准。
 > **读者是 agent，不是人。** 目的：让下一次接手的人不必重新推导现状与结论。
 > **基线**：`worktree-lifecycle-refactor-dsf` tip `460a9dc`（未提交：`workflow-execution.ts` 改动 + `stage-runner-support.ts` 新增）。
 > **状态**：设计已定、**未实现**。所有 file:line 是 2026-10-15 实测，实现前按 §E 逐项复验。
