@@ -47,10 +47,10 @@ function validArtifacts(transcriptPath: string) {
       transcriptPath,
       handoffRecordPath: "handoffs/records/respond/root/record.json",
     }) + "\n",
-    progressSnapshot: JSON.stringify({
+    status: JSON.stringify({
       version: 1,
       updatedAt: timestamp,
-      executionId: "execution-1",
+      runId: "execution-1",
       status: "completed",
       plannedStages: 1,
       completedStages: 1,
@@ -90,7 +90,7 @@ describe(" static observability analysis", () => {
         transcriptPath: document.transcriptPath,
       })}\n`, "utf8"),
       writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
-      writeFile(join(runDir, "progress.json"), artifacts.progressSnapshot, "utf8"),
+      writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
       writeFile(transcriptPath, [
         JSON.stringify({ type: "message", message: { role: "user", content: "work" } }),
         JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
@@ -117,7 +117,7 @@ describe(" static observability analysis", () => {
       writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
       writeFile(join(runDir, "trajectory.json"), artifacts.trajectory, "utf8"),
       writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
-      writeFile(join(runDir, "progress.json"), artifacts.progressSnapshot, "utf8"),
+      writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
       writeFile(transcriptPath, [
         JSON.stringify({ type: "message", message: { role: "user", content: "work" } }),
         JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),

@@ -8,7 +8,7 @@ export type StaticObservabilityFileName =
   | "trace"
   | "trajectory"
   | "progress"
-  | "progress-snapshot";
+  | "status";
 
 export type StaticObservabilityIssueCode =
   | "missing-file"
@@ -64,7 +64,9 @@ export interface StaticObservabilityInput {
    * is enough to describe a run, and the analysis reads whichever is there. */
   readonly trajectoryStream?: string;
   readonly progress?: string;
-  readonly progressSnapshot?: string;
+  /** The run's state document (`status.json`): the one view of how a run is
+   * doing, folded from the ledgers beside it. */
+  readonly status?: string;
   /** Keys are resolved transcript paths. Missing keys represent missing files. */
   readonly transcripts?: Readonly<Record<string, string | undefined>>;
 }
@@ -429,37 +431,41 @@ function validateProgressRecords(
   }
 }
 
-function validateSnapshot(
-  snapshot: JsonRecord | undefined,
+/** The run's state document is the one view of how a run is doing, so what it
+ * must carry is small: who the run is, when it was last updated, how it ended,
+ * and how much of its plan is done. Its identity field is `runId` — the name
+ * the document settled on when the three diverged status files became one. */
+function validateStatus(
+  status: JsonRecord | undefined,
   path: string,
   issues: StaticObservabilityIssue[],
 ): void {
-  if (snapshot === undefined) return;
-  const validStatus = snapshot.status === "running" || snapshot.status === "completed" ||
-    snapshot.status === "failed" || snapshot.status === "paused";
-  const planned = snapshot.plannedStages;
-  const completed = snapshot.completedStages;
-  const accepted = snapshot.acceptedStages;
-  const remaining = snapshot.remainingStages;
+  if (status === undefined) return;
+  const validStatus = status.status === "running" || status.status === "completed" ||
+    status.status === "failed" || status.status === "paused" || status.status === "cancelled";
+  const planned = status.plannedStages;
+  const completed = status.completedStages;
+  const accepted = status.acceptedStages;
+  const remaining = status.remainingStages;
   const malformedFields: string[] = [];
-  if (snapshot.version !== 1) malformedFields.push("version");
-  if (!isTimestamp(snapshot.updatedAt)) malformedFields.push("updatedAt");
-  if (!isNonEmptyString(snapshot.executionId)) malformedFields.push("executionId");
+  if (status.version !== 1) malformedFields.push("version");
+  if (!isTimestamp(status.updatedAt)) malformedFields.push("updatedAt");
+  if (!isNonEmptyString(status.runId)) malformedFields.push("runId");
   if (!validStatus) malformedFields.push("status");
   if (!isSafeNonNegativeInteger(planned)) malformedFields.push("plannedStages");
   if (!isSafeNonNegativeInteger(completed)) malformedFields.push("completedStages");
   if (!isSafeNonNegativeInteger(accepted)) malformedFields.push("acceptedStages");
   if (!isSafeNonNegativeInteger(remaining)) malformedFields.push("remainingStages");
-  if (!isRecord(snapshot.stageCounts)) malformedFields.push("stageCounts");
+  if (!isRecord(status.stageCounts)) malformedFields.push("stageCounts");
   if (malformedFields.length > 0) {
-    issue(issues, "invalid-record", path, `progress snapshot has invalid field(s): ${malformedFields.join(", ")}`);
+    issue(issues, "invalid-record", path, `run status has invalid field(s): ${malformedFields.join(", ")}`);
     return;
   }
   if (!isSafeNonNegativeInteger(planned) || !isSafeNonNegativeInteger(completed) || !isSafeNonNegativeInteger(accepted) || !isSafeNonNegativeInteger(remaining)) {
     return;
   }
   if (completed > planned || accepted > planned || remaining > planned) {
-    issue(issues, "invalid-record", path, "progress snapshot stage counts exceed plannedStages");
+    issue(issues, "invalid-record", path, "run status stage counts exceed plannedStages");
   }
 }
 
@@ -513,7 +519,7 @@ export function analyzeStaticObservability(
   const tracePath = join(runDir, "trace.jsonl");
   const trajectoryPath = join(runDir, "trajectory.json");
   const progressPath = join(runDir, "progress.jsonl");
-  const snapshotPath = join(runDir, "progress.json");
+  const statusPath = join(runDir, "status.json");
   // A run's trajectory is recorded in two forms. The stream is the record and
   // the document beside it is folded from it, so whichever is there describes
   // the run — and the checks below read one document either way.
@@ -533,7 +539,7 @@ export function analyzeStaticObservability(
   const traceRecords = parseJsonl(tracePath, input.trace, issues);
   const progressRecords = parseJsonl(progressPath, input.progress, issues);
   const trajectory = parseJson(trajectoryPath, trajectoryText, issues);
-  const snapshot = parseJson(snapshotPath, input.progressSnapshot, issues);
+  const status = parseJson(statusPath, input.status, issues);
   if (input.log !== undefined && logRecords.length === 0 && input.log.trim() !== "") {
     issue(issues, "empty-file", logPath, "log contains no valid records");
   }
@@ -557,7 +563,7 @@ export function analyzeStaticObservability(
   }
   validateProgressRecords(progressRecords, progressPath, issues);
   for (const { value: record } of progressRecords) collectTranscriptPaths(record, runDir, transcriptPaths);
-  validateSnapshot(snapshot, snapshotPath, issues);
+  validateStatus(status, statusPath, issues);
   const transcriptContents = input.transcripts ?? {};
   for (const path of transcriptPaths) validateTranscript(path, transcriptContents[path], issues);
 
@@ -566,7 +572,7 @@ export function analyzeStaticObservability(
     fileSummary("trace", tracePath, true, input.trace, traceRecords.length),
     fileSummary("trajectory", trajectoryPath, true, trajectoryText, trajectory === undefined ? 0 : 1),
     fileSummary("progress", progressPath, false, input.progress, progressRecords.length),
-    fileSummary("progress-snapshot", snapshotPath, false, input.progressSnapshot, snapshot === undefined ? 0 : 1),
+    fileSummary("status", statusPath, false, input.status, status === undefined ? 0 : 1),
   ];
   return {
     runDir,
@@ -599,13 +605,13 @@ export function inspectStaticObservability(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const resolvedRunDir = resolve(runDir);
-    const [log, trace, trajectory, trajectoryStream, progress, progressSnapshot] = yield* Effect.all([
+    const [log, trace, trajectory, trajectoryStream, progress, status] = yield* Effect.all([
       readOptional(fileSystem, join(resolvedRunDir, "log.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "trace.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "trajectory.json")),
       readOptional(fileSystem, join(resolvedRunDir, "trajectory.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "progress.jsonl")),
-      readOptional(fileSystem, join(resolvedRunDir, "progress.json")),
+      readOptional(fileSystem, join(resolvedRunDir, "status.json")),
     ] as const, { concurrency: "unbounded" });
     const initial = analyzeStaticObservability({
       runDir: resolvedRunDir,
@@ -614,7 +620,7 @@ export function inspectStaticObservability(
       trajectory,
       trajectoryStream,
       progress,
-      progressSnapshot,
+      status,
     });
     const transcriptEntries = yield* Effect.forEach(
       initial.transcriptPaths,
@@ -628,7 +634,7 @@ export function inspectStaticObservability(
       trajectory,
       trajectoryStream,
       progress,
-      progressSnapshot,
+      status,
       transcripts: Object.fromEntries(transcriptEntries),
     });
   });
