@@ -4589,6 +4589,137 @@ workflow:
     }
   });
 
+  it("skips a finalized loop region on continue and takes its last-iteration exit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-skip-"));
+    try {
+      await writeFile(join(root, "loop.yml"), `version: 3
+workflow:
+  name: loop-then-close
+  nodes:
+    - stage:
+        name: seed
+        worker: basic
+        from: []
+    - loop:
+        name: tune
+        from: [seed]
+        entry: propose
+        exit: report
+        iterations: 2
+        nodes:
+          - stage:
+              name: propose
+              worker: basic
+              handoff: seed.json
+              validate: text-response
+              from: []
+          - stage:
+              name: report
+              worker: smoke-test-agent
+              handoff: proposal.json
+              from: [propose]
+    - stage:
+        name: close
+        worker: basic
+        from: [tune]
+`);
+      const session = await testSession(root);
+
+      // Run 1 pauses after the loop finished: `close` hangs, the loop's own
+      // exit is already on the stream.
+      const runs: AgentRequest[][] = [[], []];
+      let run = 0;
+      let hung = false;
+      let signalHanging!: () => void;
+      const hanging = new Promise<void>((resolve) => { signalHanging = resolve; });
+      const agentRunner: AgentRunner = (request) => {
+        runs[run]!.push(request);
+        const stage = stageId(request);
+        if (stage === "close" && !hung) {
+          hung = true;
+          return Effect.sync(() => { signalHanging(); }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+            // Nothing resumes this: only the pause's interrupt ends the turn.
+          })));
+        }
+        return Effect.promise(async () => {
+          const invocation = invocationId(request);
+          if (stage === "tune.propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({ text: invocation }));
+          }
+          const turn = runs[run]!.filter((call) => stageId(call) === stage).length;
+          return {
+            sessionId: `${stage}-${turn}`,
+            transcriptPath: `/tmp/${invocation.replaceAll("/", "-")}.jsonl`,
+            text: `${invocation} output`,
+            continuation: continuation(`${stage}-${turn}`),
+          };
+        });
+      };
+
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop-skip", cwd: root, prompt: "iterate",
+        agentRunner,
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await hanging;
+
+      const streamLines = async () => (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      const foldStream = async () => {
+        const records = (await streamLines()) as unknown as readonly WorkflowProgressStreamRecord[];
+        return latestJob(foldJobSpans(records));
+      };
+      const deadline = Date.now() + 20_000;
+      while ((await streamLines()).filter((line) => line.kind === "region-finalized").length !== 1 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect((await streamLines()).filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const cursor = (await foldStream())!;
+      // The loop exited before the pause: its evidence is on the stream and its
+      // exit result is the one a continue rebuilds from.
+      expect(cursor.regions.size).toBe(1);
+      expect(cursor.accepted.has("tune.report@tune/iter-1")).toBe(true);
+
+      run = 1;
+      const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop-skip", cwd: root, prompt: "iterate",
+        agentRunner,
+        continueJob: {
+          jobOrdinal: cursor.jobOrdinal,
+          accepted: cursor.accepted,
+          attempts: cursor.attempts,
+          regions: cursor.regions,
+        },
+      }));
+
+      // The loop was skipped whole: only the trailing stage ran again.
+      expect(runs[1]!.map((call) => stageId(call))).toEqual(["close"]);
+      // Its boundary is the last iteration's own exit, rebuilt from evidence.
+      expect(secondRun.stages.map((stage) => stage.id)).toEqual(expect.arrayContaining([
+        "seed@root",
+        "tune.propose@tune/iter-0",
+        "tune.report@tune/iter-0",
+        "tune.propose@tune/iter-1",
+        "tune.report@tune/iter-1",
+        "close@root",
+      ]));
+      expect(secondRun.terminalStages[0]?.stageId).toBe("close");
+      // One exit decision, one record: a re-entered loop would finalize again.
+      const afterStream = await streamLines();
+      expect(afterStream.filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("does not retry a worker failure outside validate repair", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-cancelled-no-retry-"));
     try {
