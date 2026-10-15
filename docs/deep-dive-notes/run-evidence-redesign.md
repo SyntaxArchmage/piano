@@ -324,3 +324,11 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - **P4 归并**：我原 P4 的「trajectory.json 停写（flag 门控）」与 G1 的「直接删除」是**同一步**——P4 该项撤销，由邻居的删除序（reads → writes → helpers → external contract）承接，PR 文本按 G4 写明三项反转（我的 H3、邻居的 `a18904c`、此前的 write-stop NO 建议）。
 - **邻居的 picker 警示已收**：其分支上 `logs.ts` 的 145 行 tail-scan 已删、`readRunRowMetadata(runDir)` 只读 `status.json`；合并时 `logs-command.test.ts` 取其重写版，我的 `d182881` 该半自然作废（logging.test.ts 的 rename 单行守卫保留至 G1 step 2 删文档时一并消失）。
 
+**F5.3 合并落地与 status-close 收口（2026-10-15 晚）**
+- **合并完成**（邻居执行，报告在手）：`main = 6619b4d`，全量 **1542/0**。`350952e` 合入 lifecycle（cc92410, 53 commit），`6619b4d` 合入我的分支尖（f51dfc8 + piano-be 的 c0767a4 一并）。5 文件如预测：`trajectory.ts` / `logs-command.test.ts` 取邻居方向（H3 的 read-merge-rewrite 被 append-化取代，单一 serializer 原则在 `writeTrajectoryDocument` 存续）；**预测外多一个冲突**：`workflow-execution.ts`（c0767a4 的 hunk × 分解）——邻居把 piano-be 的执行侧 hunk 从该文件弃用并**移植进 `stage-runner-support.ts`**（新家），piano-be 复核中。
+- **930d2a6 需移植而非合并**：我与邻居各自用 `git merge-base --is-ancestor` 独立确认它不在 piano-43 的 base `595c51e` 里（其尖 `9f86994` 仍缺）。已发信要求 piano-43 把 v3 `data.stream` 展开**移植**进其新模块（`dsh-session-storage.ts`），保留 `expandDshStorageRecord` 的导出并把 `tests/harness/dsh-v3-stream.test.ts` 的 import 重指；合成 chunk 无 seq、共享 `dshChunkEvents` builder 两条约束随信附上。
+- **flake 归因**：`tests/cli/continue-restart-arc.test.ts` 在并行负载下 15s 超时（复现 2 次），单独跑 357ms 绿；邻居亦报告合并后 2 次超时 + 3 次通过、且合并前已 flake 过一次 → 记为 **pre-existing 负载敏感**，非合并缺陷，未修（非本跳）。
+- **status-close-evals 分支**（我，off main @6619b4d，2 commits）：evals 三件 + headless + TUI 载体全部收口到 `status.json`——`CaseResult` 新增 `runStatusPath`/`runStatus`（`status` 名被 case 状态枚举占用，tsc 抓到的真冲突）；`trajectoryPath` 指流；legacy adapter 读 `trajectory.jsonl` 记录（逐事件校验，消息措辞随迁）；tick/报告读状态文档；headless 发 `status_path`（替代 `progress_snapshot_path`，外部契约变更，PR 写明）。**跨了邻居分工一处**：session-run 的同一映射对象同时喂 headless 与 TUI takeover（tui.ts:976），拆开改会让一侧静默丢字段，故 TUI 载体一并改名（`statusPath`），已函告邻居。全量门禁 **1543/0**（144 文件）。
+- 测试面：5 个 CLI 测试的 orchestrator mock 工厂补 `runStatusPath`（枚举式 mock 随每次新 import 漂移——第 2 次同类断点，refreshRunStatus 是第 1 次）；driver-association/driver-workspace 的 snapshot fixture 改写真 status.json（含 version/runId/status 字段）；workflow-evaluator 的 legacy fixture 改流记录形状。
+- 待办：邻居释放 main → 我 ff 合入 status-close-evals → main 全量门禁 → 汇报；此后我的分工余量 = README 契约文本 + H6。
+
