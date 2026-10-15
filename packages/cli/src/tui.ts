@@ -1,7 +1,7 @@
 import { Duration, Effect, Fiber } from "effect";
 import { stdin, stdout } from "node:process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   Container,
   CombinedAutocompleteProvider,
@@ -574,7 +574,7 @@ export function runTui(
           if (progressSnapshotPath === undefined) return;
           graph = new WorkflowGraph(
             definition,
-            () => readWorkflowSnapshot(progressSnapshotPath!),
+            () => readWorkflowSnapshot(dirname(progressSnapshotPath!)),
             theme,
             () => {
               refreshFooter();

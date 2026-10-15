@@ -741,8 +741,8 @@ export function finalizeWorkflowProgress(
     };
     yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), record);
     const previous = yield* readSnapshot(fileSystem, path);
-    if (previous === undefined) return path;
-    yield* writeSnapshotAtomic(path, applyProgressRecord(previous, record));
+    if (previous !== undefined) yield* writeSnapshotAtomic(path, applyProgressRecord(previous, record));
+    yield* refreshRunStatus(runDir);
     return path;
   });
 }

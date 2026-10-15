@@ -121,7 +121,19 @@ export function parseWorkflowGraphSnapshot(value: unknown): WorkflowGraphSnapsho
       }
     }
   }
-  return value as WorkflowGraphSnapshot;
+  // Pick the graph's fields and no others: the run's state document carries
+  // more than a graph draws, and a view that passed it all through would grow
+  // whatever the document grows.
+  return {
+    ...(value.plannedStages === undefined ? {} : { plannedStages: value.plannedStages as number }),
+    ...(value.completedStages === undefined ? {} : { completedStages: value.completedStages as number }),
+    ...(value.status === undefined ? {} : { status: value.status as WorkflowGraphSnapshot["status"] }),
+    ...(value.current === undefined ? {} : { current: value.current as WorkflowGraphSnapshot["current"] }),
+    ...(value.stageCounts === undefined ? {} : { stageCounts: value.stageCounts as WorkflowGraphSnapshot["stageCounts"] }),
+    ...(value.invocationTime === undefined
+      ? {}
+      : { invocationTime: value.invocationTime as WorkflowGraphSnapshot["invocationTime"] }),
+  };
 }
 
 export type WorkflowGraphSnapshotReader = () => Promise<WorkflowGraphSnapshot | undefined>;

@@ -1,7 +1,7 @@
-// A run's progress reaches the screen through two files: the snapshot the
-// orchestrator keeps for viewers, and the append-only stream it is a projection
-// of. Reading the snapshot is the cheap path; reading the stream is what makes
-// a missing snapshot cost a fold rather than the view.
+// A run's progress reaches the screen through the one state document it keeps,
+// folded from the append-only stream behind it. Reading the document is the
+// cheap path; reading the stream is what makes a missing document cost a fold
+// rather than the view.
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,8 +13,8 @@ import {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
+  runStatusPath,
   workflowProgressPath,
-  workflowProgressSnapshotPath,
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
@@ -76,40 +76,38 @@ async function finishedRun(): Promise<string> {
 }
 
 describe("reading a run's progress", () => {
-  it("reads the snapshot the orchestrator keeps", async () => {
+  it("reads the state document the run keeps", async () => {
     const runDir = await finishedRun();
-    const view = await readWorkflowSnapshot(workflowProgressSnapshotPath(runDir));
+    const view = await readWorkflowSnapshot(runDir);
 
     expect(view?.status).toBe("completed");
     expect(view?.completedStages).toBe(1);
     expect(view?.current?.stageId).toBe("tune");
   });
 
-  it("draws the same view from the stream when the snapshot is gone", async () => {
+  it("draws the same view from the stream when the document is gone", async () => {
     const runDir = await finishedRun();
-    const snapshotPath = workflowProgressSnapshotPath(runDir);
-    const fromSnapshot = await readWorkflowSnapshot(snapshotPath);
+    const fromDocument = await readWorkflowSnapshot(runDir);
 
-    await rm(snapshotPath);
+    await rm(runStatusPath(runDir));
 
-    expect(await readWorkflowSnapshot(snapshotPath)).toEqual(fromSnapshot);
+    expect(await readWorkflowSnapshot(runDir)).toEqual(fromDocument);
   });
 
   it("skips a line torn mid-append and keeps the records before it", async () => {
     const runDir = await finishedRun();
-    const snapshotPath = workflowProgressSnapshotPath(runDir);
-    const fromSnapshot = await readWorkflowSnapshot(snapshotPath);
+    const fromDocument = await readWorkflowSnapshot(runDir);
     await writeFile(workflowProgressPath(runDir), '{"version":1,"executionId":"execu', { flag: "a" });
 
-    await rm(snapshotPath);
+    await rm(runStatusPath(runDir));
 
-    expect(await readWorkflowSnapshot(snapshotPath)).toEqual(fromSnapshot);
+    expect(await readWorkflowSnapshot(runDir)).toEqual(fromDocument);
   });
 
   it("draws nothing when neither file can be read", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-progress-empty-"));
     roots.push(runDir);
 
-    expect(await readWorkflowSnapshot(workflowProgressSnapshotPath(runDir))).toBeUndefined();
+    expect(await readWorkflowSnapshot(runDir)).toBeUndefined();
   });
 });

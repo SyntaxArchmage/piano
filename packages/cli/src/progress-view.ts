@@ -1,33 +1,33 @@
 // Reading a run's progress for display.
 //
-// Two files describe the same run: `progress.json`, the snapshot the
-// orchestrator keeps for viewers, and `progress.jsonl`, the append-only stream
-// it is a projection of. The snapshot is the one to read — it is one small
-// file — so this module reads it, and folds the stream only when the snapshot
-// is not there to read.
+// The run keeps one state document, `status.json`, folded from the ledgers
+// that describe it. That is the file to read — it is one small file — and the
+// stream behind it is folded only for a run written before the document
+// existed.
 
 import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import {
   applyProgressRecord,
   parseProgressStreamRecord,
+  runStatusPath,
   workflowProgressPath,
   type WorkflowProgressSnapshot,
 } from "@piano/orchestrator";
 import { parseWorkflowGraphSnapshot, type WorkflowGraphSnapshot } from "./workflow-graph.js";
 
-/** The run's progress view: the snapshot file when it is readable, rebuilt
+/** The run's progress view: the state document when it is readable, rebuilt
  * from the append-only stream behind it when it is not.
  *
  * The fallback reads the whole stream, which is why it stays on the path where
  * the cheap file is gone. Missing, malformed, or concurrently replaced files
  * must not interrupt the interactive session, so every failure lands on
  * `undefined`. */
-export async function readWorkflowSnapshot(path: string): Promise<WorkflowGraphSnapshot | undefined> {
+export async function readWorkflowSnapshot(runDir: string): Promise<WorkflowGraphSnapshot | undefined> {
   try {
-    return parseWorkflowGraphSnapshot(JSON.parse(await readFile(path, "utf8")) as unknown);
+    return parseWorkflowGraphSnapshot(JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown);
   } catch {
-    return parseWorkflowGraphSnapshot(await foldProgressStream(path));
+    return parseWorkflowGraphSnapshot(await foldProgressStream(join(runDir, "progress.json")));
   }
 }
 
