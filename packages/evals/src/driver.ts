@@ -1185,24 +1185,15 @@ function mergeWorkflowTrajectory(
 
 export function findTranscriptPath(runDir: string): string | undefined {
   try {
-    const read = (name: string): string | undefined => {
-      try {
-        return readFileSync(join(runDir, name), "utf8");
-      } catch {
-        return undefined;
-      }
-    };
-    const stream = read("trajectory.jsonl");
-    const document = read("trajectory.json");
-    const trajectory = parseTrajectory({
-      ...(stream === undefined ? {} : { stream }),
-      ...(document === undefined ? {} : { document }),
-    });
-    if (typeof trajectory?.transcriptPath === "string" && existsSync(trajectory.transcriptPath)) {
-      return trajectory.transcriptPath;
+    // The run's state document says where its transcript lives. The scan below
+    // is for a run that failed before it recorded one.
+    const raw = readFileSync(join(runDir, "status.json"), "utf8");
+    const status = JSON.parse(raw) as { transcriptPath?: unknown };
+    if (typeof status.transcriptPath === "string" && existsSync(status.transcriptPath)) {
+      return status.transcriptPath;
     }
   } catch {
-    // A run can fail before trajectory persistence; fall through to evidence discovery.
+    // A run can fail before its state is recorded; fall through to evidence discovery.
   }
   const find = (directory: string): string | undefined => {
     try {
