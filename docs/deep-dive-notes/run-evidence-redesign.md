@@ -192,10 +192,36 @@ root 级（无 loop）tournament 同样报 `race/slot-0 was already cleaned` →
 **需开发者裁定**：① 落地分支与顺序（本设计叠在 lifecycle refactor 之上，而该 branch 仍在动）；② 旧 layout 是否要迁移工具 `piano migrate run-layout`；③ P4 三项触发时机；④ `summary.json` 采纳取舍；⑤ `log.jsonl` 去 trace 行的对外兼容窗口；⑥ `--rebuild` 并发守卫是否够；⑦ 旧 key workspace 记录是否要清理工具。
 
 **独立真缺陷（默认不在 scope）**：
-- **dsh 证据链静默死亡**：装机 dsh 写 `session.v3.jsonl.zstd`，`subprocess.ts` 只认 `["session.jsonl.zstd","session.jsonl"]` → `readDshSessionEvidence` 返回 undefined → canonical transcript 退化成 raw stdout markdown → `piano logs --check` 报 26 条 `transcript-invalid`。（P0 已含一行修复。）
-- `ARCHITECTURE.txt` 与 `docs/workflow-trajectory-evaluation-prd.md` 的 `executions/<exec>/` 布局与磁盘完全不符。
+- **dsh 证据链静默死亡**：装机 dsh 写 `session.v3.jsonl.zstd`，`subprocess.ts` 只认 `["session.jsonl.zstd","session.jsonl"]` → `readDshSessionEvidence` 返回 undefined → canonical transcript 退化成 raw stdout markdown → `piano logs --check` 报 26 条 `transcript-invalid`。（**已修**，H1 `ae4037e`。）
+- `ARCHITECTURE.txt` 与 `docs/workflow-trajectory-evaluation-prd.md` 的 `executions/<exec>/` 布局与磁盘完全不符。（**已标记**，`e5370c7`。）
 - `workspace.applyWinnerWorkspace` / `recoverMapWorkspaces` 两个导出无运行时调用点。
-- `piano logs` picker 在 pretty-printed `trajectory.json` 上静默退化成 id-only 行（P0 含）。
+- `piano logs` picker 在 pretty-printed `trajectory.json` 上静默退化成 id-only 行。（**已修**，H3 `7793a7e`。）
+
+### D2. 测试面盲区审计（2026-10-15，对照真实装机工具逐项核验）
+
+判据同 TASTE：fixture 不得照抄 reader 的假设。核验基准 = 盘上真实 dsh v3 artifact（8/8）+ 装机 dsh 0.1.5-rc.2 源码 + 装机 pi CLI 0.85.1 dist + codex 0.155.0 活体探针。
+
+**确认的同类盲区（a 类）与处置**：
+1. `dsh-resume-probe` fixture 写旧名 `session.jsonl` → **H2b 修复中**（改 `session.v3.jsonl` + header version 1→3）。
+2. `fakeHarness` 默认分支是嵌合体：被 harness `"pi"` 的用例消费，却发 Anthropic 的 `content_block_delta` 和 pi 永不发的 `result`/`session_id` 帧（pi RPC 以 `agent_settled` 收尾，生产注释 subprocess.ts:1226-1231 自证）→ **H2b 修复中**（默认分支改忠实 pi RPC 方言；已确认删除的 `parses chunk-split…` 用例一并处理，其 sessionId 断言正来自幻影 result 帧；补一条真正钉住 stdout 半行重组的聚焦用例）。
+3. **dsh v3 实时流已死（生产缺陷，非仅测试）**：真实 v3 文件实测 50 条 `assistant/message` 中 26 条把 packed `text-chunks` 嵌在 `data.stream`，顶层 packed 行 0 条；而 `expandDshStorageRecord`（subprocess.ts:417-459）只认 v0/v1 顶层形状 → 现装 dsh 下 TUI 回合中无任何增量文本。fixture（`dsh-stream`/`dsh-zstd-stream`）与 reader 共享 v0/v1 假设，同型盲区。→ **H2c 排队**，设计已定稿：
+   - 实测成员普查（真实文件）：carrier 只有 `assistant/message`；成员 = `chunk`(390，block-start/end 边界，跳过)、`reasoning-chunks`(50)、`tool-call-chunks`(69，`id`/`name` 在成员级)、`text-chunks`(26)；成员形状 `{type, time0, index, dt, texts|args[, id, name]}` —— 无 `seq0`、无 `data` 包装。
+   - 修法：`expandDshStorageRecord` 增前置分支——`data.stream` 为数组时返回 `[...expandedChunks, record]`（chunks 在父记录**之前**，delta 先动画、message_end 收尾）。新私有 `expandDshStreamMembers`：逐成员校验（同现有严格度：texts 全 string、dt.length === texts.length-1 且全有限数、index/time0 为数），坏成员跳过不丢父记录；`turn`/`step` 取父 `data`。chunk 形状复用现有 `text-delta`/`reasoning-delta`/`tool-call-delta` 构造（抽共享 builder，两路径一份实现）。
+   - **合成 chunk 事件必须不带 `seq`**：`dshRecordKey`（:783-791）对带 seq 的记录用 `seq:N` 去重，同父展开会全撞一个 key 被吞；无 seq 落 JSON-key 分支，成员 time/text 各异自然唯一。mapper 的 `assistant/chunk` 分支（:679-712）不读 seq，安全。
+   - 去重路径零改动：`emitAssistant → emitMessageEnd`（:1008 `lastMessageEndText`、:1379 判重）是 v0/v1 时代就有的 delta→message_end 序列防重复，v3 展开复用。
+   - canonical-transcript 零影响：`dshMessageRecords`（canonical-transcript.ts:217）只映射 `assistant/message`/`user/message`/`tool/result`，合成 chunk 进 evidence events 也不入 transcript。
+   - 红先测试：v3 形状 fixture（`assistant/message` + `data.stream` packed 成员）走既有 dsh-evidence 通道，断言 3 个 text delta + 恰好一个 message_end；保留 `dsh-stream`/`dsh-zstd-stream` 的 v0/v1 用例（盘上旧会话仍需可读）。**等 H2b 的 fixture agent 完成后再动**（同文件）。
+4. `tests/fixtures/tournament-real-run/fake-agent.mjs`：发 pi-cli 永不发的 `result` 帧，usage 挂在幻影帧上（真实 pi-cli 只在 `message_end` 带 usage）；tournament 守卫的 per-turn usage delta 因此是 reader 形状依赖 → **H2d 排队**（usage 移回 `message_end`、删 result 帧，helpers.ts 守卫跟着改）。
+
+**判定良性（b 类，不动）**：`pi-rpc-steer`/`pi-rpc-declined`（与 rpc-mode.js 逐字段对上）；claude-* 模式（有 live 观察记录 + gated e2e 兜底）；overlay 占位内容（生产 spawn 前只 `access()` 不解析，真实字节由 harness-home.test.ts 钉住）；`DSH_SESSION` 常量（与 8/8 真实 header 的 `session-<uuid>` 形状一致）；canonical-transcript.test.ts 的 dsh/pi fixture（与真实 v3 文件逐字段 diff 过）；events.test.ts（纯 Piano 内部词汇）。
+
+**未定（c 类）**：codex fixture（活体探针超时，仅确认 `thread.started`/`turn.started` 与一个 fixture 未建模的顶层 `error` 记录）；claude stream-json（repo 内无真实 stdout 捕获）。→ **H2e 排队（低优先）**：各捕获一份真实 golden 进 `tests/fixtures/golden/`，把 c 类变成可 diff 的事实。repo 目前**零** golden 捕获，这是整个盲区类的存活条件。
+
+**dsh-resume-runner.test.ts 的 HOST/STUBS**：经与装机 dsh 0.1.5-rc.2 typings/源码逐面核对为忠实镜像（b 类），gated e2e（`real-subprocess.e2e.test.ts:115-204`，同一 BLUE-HARBOR-77 种子）是漂移捕手。survey 提出的 4 条删除/放宽（P1-P4）正在对抗验证中，未验证不落。
+
+### D3. 主 worktree 的第三方在制品（2026-10-15 观察到）
+
+`workflow.ts`/`workflow-execution.ts`/`workflow-runtime.ts`（`buildWorkflowRuntimePlan` 改用 `stage.parentId`，删 `isDirectStageInScope`）+ `session-takeover`/`paper-writing`/`workflow-loop-map` 测试有**未提交的他方改动**（疑似 lifecycle 分支工作的移植）。与本稿的 hop 无文件冲突（H5 helper 在 workflow-runtime.ts 头部区域）。纪律：不碰、不提交、不回滚；门禁红时先归因（`git diff` 区分他方文件）。
 
 ---
 
@@ -243,6 +269,9 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 | H3 | `trajectory.json` 的 `/rename` 写 compact（与 `write()` 共用 `stringifyTrajectory`）；picker 测试改喂 pretty 字节保住该拼写覆盖 | ✅ 已提交 `7793a7e` · 模块门禁绿（tests/logging + logs-command + session-takeover 38/38） |
 | H4 | `trace_id` 单一来源：删 `LogWriter`/`TraceWriter`/`Async*` 四处 `traceId = runId` 默认；doctor 两 probe 自铸 random hex；5 个测试文件补显式实参 | ✅ 已应用，模块门禁绿（typecheck 全仓 + 定向 126/126 + eslint）；提交被工具层临时阻塞，待重试 |
 | H5 | iteration 共享 helper：`iterationOfInvocationId` 落 `workflow-runtime.ts`（parser 与 speller `runtimeInstanceId` 同址），barrel 导出；cli `loopIteration` 委托（名字保留）；`evals/driver.ts` 正则替换 | ✅ 已提交 `27d63eb` · 红先（map-in-loop 用例先红后绿）· 模块门禁绿（typecheck 全仓 + 19 文件/182 用例 + eslint） |
+| H2b | fixture 方言修复（D2 的 1/2 项）：删幻影帧测试、pi 默认分支改 `agent_settled` 收尾、半行重组获独立聚焦用例、`dsh-resume-probe` 写 `session.v3.jsonl`、6 处 header version 1→3 | ✅ 已提交 `eddf31b` · tests/harness 235/235 |
+| H2c | **dsh v3 实时流恢复**（生产缺陷，D2 第 3 项）：`expandDshStorageRecord` 增 `data.stream` 前置分支 + 共享 `dshChunkEvents` builder（v0/v1 与 v3 一份实现）；合成 chunk 不带 seq（`dshRecordKey` 的 `seq:N` 去重会吞掉整批）；新测试文件 `tests/harness/dsh-v3-stream.test.ts`（形状逐字段取自装机 dsh 0.1.5 真实 artifact） | ✅ 已提交 `930d2a6` · 红先（stash 生产改动后 5/5 红）· tests/harness 240/240 + tsc + eslint 绿 |
+| H2d | tournament `fake-agent.mjs` 幻影 result 帧 → usage 移回 `message_end`（D2 第 4 项） | 🔄 agent 执行中 |
 | H-doc | 本工作稿入库 `4726fb4`；`ARCHITECTURE.txt` 与 PRD §13 的 stale `executions/` 布局加历史标记 `e5370c7` | ✅ 已提交 |
 | H6 | loop/pass 碰撞修复：workspace key 补 pass 维度 + tournament snapshot create-once + 完整性 marker | ⏸ **裁定：落在 lifecycle 分支基线，不在 main 做**。理由见 F4 |
 | H7+ | audience 分离（`system-log/`、`sessions/`、`status.json`）的 dual-read 迁移 | ⏸ 同 H6：`session.ts`/`progress.ts`/`static-analysis.ts` 全是分支活跃区 |
