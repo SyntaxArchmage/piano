@@ -18,6 +18,7 @@ import {
   textDelta,
   type AgentContinuation,
   type AgentEvent,
+  type SteerDelivery,
   type SubprocessAccumulator,
 } from "../../packages/harness/src/index.js";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
@@ -242,6 +243,46 @@ case "$PIANO_FAKE_MODE" in
     printf '%s\\n' '{"id":"'"$pi_steer_id"'","type":"response","command":"steer","success":true}'
     printf '%s\\n' '{"type":"message_end","message":{"role":"user","content":"focus on the parser"}}'
     printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":"half steered"}}'
+    printf '%s\\n' '{"type":"turn_end"}'
+    printf '%s\\n' '{"type":"agent_end"}'
+    printf '%s\\n' '{"type":"agent_settled"}'
+    ;;
+  pi-rpc-steer-quiet)
+    # The same turn as pi-rpc-steer, but the steer's response never comes: the
+    # child takes the frame and goes quiet about it. Delivery reported at the
+    # pipe write would be a lie here, and a steer nobody answered must fail
+    # when the child is gone instead of resolving as delivered.
+    IFS= read -r prompt_frame
+    printf '%s\\n' "$prompt_frame" >> "$PIANO_FAKE_STDIN_LOG"
+    printf '%s\\n' '{"id":"piano-prompt","type":"response","command":"prompt","success":true}'
+    printf '%s\\n' '{"type":"agent_start"}'
+    printf '%s\\n' '{"type":"turn_start"}'
+    printf '%s\\n' '{"type":"message_start","message":{"role":"assistant","content":"half "}}'
+    IFS= read -r steer_frame
+    printf '%s\\n' "$steer_frame" >> "$PIANO_FAKE_STDIN_LOG"
+    sleep 1
+    printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":"half done"}}'
+    printf '%s\\n' '{"type":"turn_end"}'
+    printf '%s\\n' '{"type":"agent_end"}'
+    printf '%s\\n' '{"type":"agent_settled"}'
+    ;;
+  pi-rpc-steer-refused)
+    # pi's refusal of a steer, verbatim in shape (the real CLI answers every
+    # frame, and a refusal is a response with success:false). The refusal
+    # belongs to the caller that asked, so it must surface as a rejected steer
+    # — never as a delivered one, and never as run output.
+    IFS= read -r prompt_frame
+    printf '%s\\n' "$prompt_frame" >> "$PIANO_FAKE_STDIN_LOG"
+    printf '%s\\n' '{"id":"piano-prompt","type":"response","command":"prompt","success":true}'
+    printf '%s\\n' '{"type":"agent_start"}'
+    printf '%s\\n' '{"type":"turn_start"}'
+    printf '%s\\n' '{"type":"message_start","message":{"role":"assistant","content":"half "}}'
+    IFS= read -r steer_frame
+    printf '%s\\n' "$steer_frame" >> "$PIANO_FAKE_STDIN_LOG"
+    pi_steer_id=$(printf '%s' "$steer_frame" | sed -n 's/.*"id":"//; s/".*//p')
+    printf '%s\\n' '{"id":"'"$pi_steer_id"'","type":"response","command":"steer","success":false,"error":"steer refused: turn already ended"}'
+    sleep 1
+    printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":"half done"}}'
     printf '%s\\n' '{"type":"turn_end"}'
     printf '%s\\n' '{"type":"agent_end"}'
     printf '%s\\n' '{"type":"agent_settled"}'
@@ -2833,6 +2874,88 @@ describe(" subprocess harness", () => {
         expect(messages.map((entry) => entry.message?.role)).toEqual(["user", "user", "assistant"]);
         expect(messages[1]?.message?.content).toBe("focus on the parser");
       }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a pi steer unreported until pi answers it, and fails it when the child goes without answering", async () => {
+    // A pipe write proves only that the bytes left. The real pi RPC answers
+    // every frame (`{"id":…,"type":"response",…}` — verified on the installed
+    // CLI), so delivery is reported on that answer, and a steer the child
+    // never answered fails with the child's disappearance instead of
+    // resolving as delivered.
+    const root = await mkdtemp(join(tmpdir(), "piano-subprocess-pi-steer-quiet-"));
+    try {
+      const session = await testSession(root);
+      const binPath = await fakeHarness(root);
+      const channel = createSteeringChannel();
+      let steerPromise: Promise<SteerDelivery> | undefined;
+      const exit = await Effect.runPromiseExit(executeSubprocessAgent("pi", {
+        cwd: root,
+        prompt: "hello",
+        sessionDir: join(root, "subprocess-sessions"),
+        steering: channel,
+        onEvent: (event) => {
+          if (event.type === "message_start" && steerPromise === undefined) {
+            steerPromise = channel.steer("focus on the parser");
+            steerPromise.catch(() => undefined);
+          }
+        },
+      }, {
+        binPath,
+        env: { PIANO_FAKE_MODE: "pi-rpc-steer-quiet" },
+        retryDelaysMs: [],
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      expect(steerPromise).toBeDefined();
+      await expect(steerPromise).rejects.toThrow(/closed before acknowledging/);
+      expect(Exit.isSuccess(exit)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects the caller's steer when pi refuses it, instead of reporting delivery", async () => {
+    // The refusal is a response frame with success:false — the same shape the
+    // real CLI uses. It belongs to the caller that asked: a steer reported
+    // delivered over a refusal is the lie this contract exists to prevent
+    // (steering.ts: a rejected promise is the third answer, never swallowed).
+    const root = await mkdtemp(join(tmpdir(), "piano-subprocess-pi-steer-refused-"));
+    try {
+      const session = await testSession(root);
+      const binPath = await fakeHarness(root);
+      const channel = createSteeringChannel();
+      const events: AgentEvent[] = [];
+      let steerPromise: Promise<SteerDelivery> | undefined;
+      const exit = await Effect.runPromiseExit(executeSubprocessAgent("pi", {
+        cwd: root,
+        prompt: "hello",
+        sessionDir: join(root, "subprocess-sessions"),
+        steering: channel,
+        onEvent: (event) => {
+          events.push(event);
+          if (event.type === "message_start" && steerPromise === undefined) {
+            steerPromise = channel.steer("focus on the parser");
+            steerPromise.catch(() => undefined);
+          }
+        },
+      }, {
+        binPath,
+        env: { PIANO_FAKE_MODE: "pi-rpc-steer-refused" },
+        retryDelaysMs: [],
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      expect(steerPromise).toBeDefined();
+      await expect(steerPromise).rejects.toThrow(/steer refused: turn already ended/);
+      // The refusal is the caller's answer, not run output: the response frame
+      // must never leak into the event stream as an unrecognized record.
+      expect(events.some((event) => event.type === "unknown" && event.sourceType === "response")).toBe(false);
+      expect(Exit.isSuccess(exit)).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

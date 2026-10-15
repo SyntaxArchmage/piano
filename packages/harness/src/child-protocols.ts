@@ -138,13 +138,14 @@ const PI_PROMPT_REQUEST_ID = "piano-prompt";
  * The far end of pi RPC's request/response protocol.
  *
  * Every frame Piano writes carries an `id` and every reply pi sends is a
- * `type:"response"` record carrying that same id back, so a write is only
- * really delivered when its own response arrives — a successful pipe write
- * proves nothing about whether the agent accepted the message. The broker owns
- * that correlation: `request` resolves on the matching `success:true`, rejects
- * with the child's own error text on `success:false`, and rejects everything
- * still pending when the stream ends, so a caller can never await an answer
- * that has already become impossible.
+ * `type:"response"` record carrying that same id back (verified on the
+ * installed CLI: prompt and steer both answered), so a write is only really
+ * delivered when its own response arrives — a successful pipe write proves
+ * nothing about whether the agent accepted the message. The broker owns that
+ * correlation: the steer promise resolves on the matching `success:true`,
+ * rejects with the child's own error text on `success:false`, and rejects
+ * everything still pending when the stream ends, so a caller can never await an
+ * answer that has already become impossible.
  */
 export class PiRpcClient {
   private readonly acks = new PendingAcks();
@@ -188,39 +189,16 @@ export class PiRpcClient {
     return true;
   }
 
-  /** Build one steer frame carrying the id pi's response will name. */
-  frame(text: string): { readonly id: string; readonly json: string } {
+  /** Build one steer frame and the promise its acknowledgment settles. The id
+   * is this client's own sequence so a wrong answer cannot resolve a later
+   * steer; pi acknowledges a `steer` as soon as the message is queued, not when
+   * the model reads it — "accepted into the running turn's steering queue" is
+   * the strongest delivery this protocol can honestly report. A refusal rejects
+   * here and stops at this caller instead of failing the whole conversation. */
+  frame(text: string): { readonly json: string; readonly settled: Promise<void> } {
     const id = this.acks.next("piano");
-    return { id, json: JSON.stringify({ id, type: "steer", message: text }) };
-  }
-
-  /**
-   * Write one frame and resolve only once pi has acknowledged it.
-   *
-   * pi acknowledges a `steer` as soon as the message is queued, not when the
-   * model reads it: the protocol has no later signal, so "accepted into the
-   * running turn's steering queue" is the strongest delivery this backend can
-   * honestly report. A refusal rejects here and stops at this caller instead
-   * of failing the whole conversation.
-   *
-   * NOT WIRED YET: the subprocess bridge steers through `frame` + the child's
-   * own `writeFrame`, which reports delivery at the pipe write and never opens
-   * a pending entry — so a steer pi refuses is silently swallowed and the
-   * response frame falls through as an ordinary event. This is the write path
-   * that honors the steering contract (`steering.ts`: a refused steer must
-   * reject its own caller); wiring it is a behavior change and needs the
-   * developer's word.
-   */
-  async request(text: string, write: (json: string) => void): Promise<void> {
-    const { id, json } = this.frame(text);
     const settled = this.acks.open(id, "steer");
-    try {
-      write(json);
-    } catch (cause) {
-      this.acks.take(id);
-      throw cause instanceof Error ? cause : new Error(String(cause));
-    }
-    return settled;
+    return { json: JSON.stringify({ id, type: "steer", message: text }), settled };
   }
 
   /** Build the task frame and the promise pi's acknowledgment settles. The id
