@@ -5015,6 +5015,45 @@ workflow:
     }
   });
 
+  it("continues actors from the ledger alone when the resume stream is gone", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-ledger-actors-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const turn = (prompt: string, execution?: WorkflowExecutionContinuation) => runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt,
+        ...(execution === undefined ? {} : { execution }),
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          return {
+            sessionId: "respond-session",
+            transcriptPath: "/tmp/respond-session.jsonl",
+            text: "ans = 4",
+            continuation: continuation("respond-session"),
+          };
+        }),
+      }));
+
+      await turn("first");
+      // The second source of actor state is gone: only the ledger's
+      // `actor-turn` row remains, and it must carry the whole table.
+      await rm(join(session.runDir, "resume.jsonl"), { force: true });
+      const carried = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      expect(carried?.actors.size).toBe(1);
+      await turn("second", carried);
+
+      // The second turn reopens the same conversation, proven by the harness
+      // session it was handed.
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.continuation).toEqual(continuation("respond-session"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to resume an actor that recorded a turn but no continuation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-unresumable-actor-"));
     try {

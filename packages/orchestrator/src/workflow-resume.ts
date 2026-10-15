@@ -1,13 +1,19 @@
-// Read actor continuation state from resume.jsonl — the canonical state
-// stream written by the orchestrator after each accepted prompt.  This replaces
-// the previous approach of scanning progress.jsonl line-by-line, giving O(1)
-// resume load and exact IDs with no reconstruction.
+// Read actor continuation state from the run's own evidence: the ledger's
+// `actor-turn` rows first, and the resume stream for runs written before those
+// rows existed. The ledger is the one source; the stream is read until nothing
+// old is left to read.
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import type { AgentContinuation } from "@piano/harness";
 import { type WorkflowError } from "./errors.js";
-import { readResumeState } from "./resume-state.js";
+import { foldActorTurns, readResumeState, type ResumeActorState } from "./resume-state.js";
+import {
+  parseProgressStreamRecord,
+  progressRecordKind,
+  workflowProgressPath,
+  type WorkflowProgressActorTurnRecord,
+} from "./progress.js";
 
 /** One actor's carried-over state: the complete record the state stream holds
  * for it. The identity fields are part of it because the orchestrator writes
@@ -34,33 +40,51 @@ export interface WorkflowExecutionContinuation {
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
 
-/** Read the actor continuation table for a run from its state stream.
- * Returns `undefined` when the file does not exist (fresh run or legacy run
- * without a state file), allowing callers to start workers fresh. */
+/** Read the actor continuation table for a run: the ledger's `actor-turn`
+ * rows, or the resume stream for a run that predates them. Returns `undefined`
+ * when neither exists, allowing callers to start workers fresh. */
 export function readWorkflowExecutionContinuation(
   runDir: string,
   _runId: string,
 ): Effect.Effect<WorkflowExecutionContinuation | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const state = yield* readResumeState(runDir);
-    if (state === undefined) return undefined;
-    const actors = new Map<string, WorkflowActorContinuation>();
-    for (const [actorKey, actor] of Object.entries(state.actors)) {
-      // No continuation means no way back into that conversation; the
-      // orchestrator's guard, not this reader, is what tells the user.
-      if (actor.continuation === undefined) continue;
-      actors.set(actorKey, {
-        turns: actor.turns,
-        harness: actor.harness,
-        sessionId: actor.sessionId,
-        transcriptPath: actor.transcriptPath,
-        continuation: actor.continuation,
-      });
+    const fileSystem = yield* FileSystem.FileSystem;
+    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
+      Effect.orElseSucceed(() => ""),
+    );
+    const ledgerRecords = ledger.split("\n")
+      .map((line) => parseProgressStreamRecord(line))
+      .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+    const actorTurns = ledgerRecords.filter(
+      (record): record is WorkflowProgressActorTurnRecord => progressRecordKind(record) === "actor-turn",
+    );
+    if (actorTurns.length > 0) {
+      const lastTurn = actorTurns.at(-1)!;
+      return finish(lastTurn.runId, lastTurn.jobOrdinal, foldActorTurns(actorTurns));
     }
-    return actors.size === 0 ? undefined : {
-      id: state.runId,
-      promptIndex: state.promptIndex,
-      actors,
-    };
+    const stream = yield* readResumeState(runDir);
+    if (stream === undefined) return undefined;
+    return finish(stream.runId, stream.promptIndex, stream.actors);
   });
+}
+
+function finish(
+  runId: string,
+  promptIndex: number,
+  table: Record<string, ResumeActorState>,
+): WorkflowExecutionContinuation | undefined {
+  const actors = new Map<string, WorkflowActorContinuation>();
+  for (const [actorKey, actor] of Object.entries(table)) {
+    // No continuation means no way back into that conversation; the
+    // orchestrator's guard, not this reader, is what tells the user.
+    if (actor.continuation === undefined) continue;
+    actors.set(actorKey, {
+      turns: actor.turns,
+      harness: actor.harness,
+      sessionId: actor.sessionId,
+      transcriptPath: actor.transcriptPath,
+      continuation: actor.continuation,
+    });
+  }
+  return actors.size === 0 ? undefined : { id: runId, promptIndex, actors };
 }
