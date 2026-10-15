@@ -111,6 +111,27 @@ export function foldActorTurns(
   return actors;
 }
 
+/** The actor table a run's evidence carries, and the prompt index it implies.
+ *
+ * The ledger's `actor-turn` rows when it has any — those are the run's own
+ * record of each conversation-state change — and the resume stream for a run
+ * that predates them. One precedence rule, so the view (`status.json`) and the
+ * continue path cannot disagree about which actors a run has. */
+export function actorTableFrom(
+  ledger: readonly unknown[],
+  stream: ResumeState | undefined,
+): { readonly promptIndex: number; readonly actors: Readonly<Record<string, ResumeActorState>> } {
+  const turns = ledger.filter(
+    (record): record is WorkflowProgressActorTurnRecord =>
+      typeof record === "object" && record !== null && (record as { kind?: unknown }).kind === "actor-turn",
+  );
+  if (turns.length > 0) {
+    const last = turns.at(-1)!;
+    return { promptIndex: last.jobOrdinal, actors: foldActorTurns(turns) };
+  }
+  return { promptIndex: stream?.promptIndex ?? 0, actors: stream?.actors ?? {} };
+}
+
 /** A missing stream is no actors; one that cannot be read is an error —
  * starting every actor over is a worse answer than saying so. */
 function readStream(

@@ -111,6 +111,52 @@ describe("run status", () => {
     expect(runStatusFromParts({ resume: JSON.stringify({ version: 1 }) })).toBeUndefined();
   });
 
+  it("takes its actors from the ledger's actor-turn rows, not the resume stream", () => {
+    // The ledger is the run's own record of each conversation-state change, so
+    // the view stays actor-less no longer than the ledger does: a run whose
+    // resume stream is gone still describes its conversations.
+    const status = runStatusFromParts({
+      progressStream: progressStream([
+        {
+          version: 1,
+          kind: "actor-turn",
+          timestamp,
+          runId: "run-5",
+          jobOrdinal: 1,
+          invocationId: "tune@root",
+          attempt: 1,
+          actorKey: "run-5/basic/root",
+          harness: "pi",
+          worker: "basic",
+          lane: "root",
+          sessionId: "sess-5",
+          transcriptPath: "/t.jsonl",
+          turn: 2,
+        },
+      ]),
+    });
+    expect(status?.actors).toEqual({
+      "run-5/basic/root": { harness: "pi", sessionId: "sess-5", transcriptPath: "/t.jsonl", turns: 2 },
+    });
+    expect(status?.promptIndex).toBe(1);
+  });
+
+  it("takes its actors from the resume stream for a run that predates the ledger rows", () => {
+    const status = runStatusFromParts({
+      trajectoryStream: progressStream([
+        { version: 1, runId: "run-6", timestamp, status: "completed", promptLength: 1, events: [] },
+      ]),
+      resume: JSON.stringify({
+        version: 1,
+        runId: "run-6",
+        promptIndex: 3,
+        actors: { "run-6/basic/root": { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl", turns: 1 } },
+      }),
+    });
+    expect(status?.actors).toEqual({ "run-6/basic/root": { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl", turns: 1 } });
+    expect(status?.promptIndex).toBe(3);
+  });
+
   it("says which turns ran and how they ended, not where their events sit", () => {
     // The state document answers how a run is doing; the replay slices events
     // by folding the trajectory itself. So `eventCount` — a fact about the

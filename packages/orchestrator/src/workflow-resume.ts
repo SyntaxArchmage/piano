@@ -7,13 +7,8 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import type { AgentContinuation } from "@piano/harness";
 import { type WorkflowError } from "./errors.js";
-import { foldActorTurns, readResumeState, type ResumeActorState } from "./resume-state.js";
-import {
-  parseProgressStreamRecord,
-  progressRecordKind,
-  workflowProgressPath,
-  type WorkflowProgressActorTurnRecord,
-} from "./progress.js";
+import { actorTableFrom, readResumeState, type ResumeActorState } from "./resume-state.js";
+import { parseProgressStreamRecord, workflowProgressPath } from "./progress.js";
 
 /** One actor's carried-over state: the complete record the state stream holds
  * for it. The identity fields are part of it because the orchestrator writes
@@ -55,16 +50,11 @@ export function readWorkflowExecutionContinuation(
     const ledgerRecords = ledger.split("\n")
       .map((line) => parseProgressStreamRecord(line))
       .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
-    const actorTurns = ledgerRecords.filter(
-      (record): record is WorkflowProgressActorTurnRecord => progressRecordKind(record) === "actor-turn",
-    );
-    if (actorTurns.length > 0) {
-      const lastTurn = actorTurns.at(-1)!;
-      return finish(lastTurn.runId, lastTurn.jobOrdinal, foldActorTurns(actorTurns));
-    }
     const stream = yield* readResumeState(runDir);
-    if (stream === undefined) return undefined;
-    return finish(stream.runId, stream.promptIndex, stream.actors);
+    const table = actorTableFrom(ledgerRecords, stream);
+    const runId = ledgerRecords.find((record) => record.runId !== undefined)?.runId ?? stream?.runId;
+    if (runId === undefined) return undefined;
+    return finish(runId, table.promptIndex, table.actors);
   });
 }
 
