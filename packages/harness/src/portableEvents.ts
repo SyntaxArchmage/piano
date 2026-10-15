@@ -3,8 +3,9 @@ import {
   type AgentEvent,
   type AgentMessage,
   type AgentMessageEvent,
+  type AgentUsage,
 } from "./events.js";
-import { nonEmptyString, numberOrZero, stringList, type JsonRecord } from "./json-narrowing.js";
+import { nonEmptyString, numberOrZero, numberValue, stringList, type JsonRecord } from "./json-narrowing.js";
 
 /**
  * The event cases every harness dialect spells the same way.
@@ -81,6 +82,42 @@ export function normalizePortableEvent(record: JsonRecord): AgentEvent | undefin
     default:
       return undefined;
   }
+}
+
+/**
+ * Read the usage numbers off a usage object, whichever dialect spelled them.
+ *
+ * The field *names* are where the dialects differ — Anthropic says
+ * `input_tokens`, the SDK says `input`, a gateway says `inputTokens` — and the
+ * set is the same for every adapter, so it is mapped once. Where the object
+ * *sits* is the caller's business: a subprocess frame nests it under `usage`,
+ * the SDK hands it over directly.
+ *
+ * An object carrying none of the canonical numbers reads as absent rather than
+ * as a row of zeroes, so a completion with no usage recorded does not invent
+ * one.
+ */
+export function usageFromFields(usage: JsonRecord): AgentUsage | undefined {
+  const input = usage.input ?? usage.input_tokens ?? usage.inputTokens;
+  const output = usage.output ?? usage.output_tokens ?? usage.outputTokens;
+  const cacheRead = usage.cacheRead
+    ?? usage.cache_read_input_tokens
+    ?? usage.cached_input_tokens
+    ?? usage.cacheReadTokens;
+  const cacheWrite = usage.cacheWrite ?? usage.cache_creation_input_tokens ?? usage.cacheWriteTokens;
+  const result: AgentUsage = {
+    ...(numberValue(input) === undefined ? {} : { input: numberValue(input) }),
+    ...(numberValue(output) === undefined ? {} : { output: numberValue(output) }),
+    ...(numberValue(cacheRead) === undefined ? {} : { cacheRead: numberValue(cacheRead) }),
+    ...(numberValue(cacheWrite) === undefined ? {} : { cacheWrite: numberValue(cacheWrite) }),
+    ...(numberValue(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) === undefined ? {} : { cacheWrite1h: numberValue(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) }),
+    ...(numberValue(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) === undefined ? {} : { reasoning: numberValue(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) }),
+    ...(numberValue(usage.totalTokens ?? usage.total_tokens) === undefined ? {} : { totalTokens: numberValue(usage.totalTokens ?? usage.total_tokens) }),
+    ...(numberValue(usage.contextTokens ?? usage.context_tokens) === undefined ? {} : { contextTokens: numberValue(usage.contextTokens ?? usage.context_tokens) }),
+    ...(numberValue(usage.turns) === undefined ? {} : { turns: numberValue(usage.turns) }),
+    ...(usage.cost === undefined ? {} : { cost: usage.cost }),
+  };
+  return Object.keys(result).length === 0 ? undefined : result;
 }
 
 /**

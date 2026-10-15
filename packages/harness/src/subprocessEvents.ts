@@ -7,7 +7,7 @@ import {
   type AgentUsage,
 } from "./events.js";
 import type { HarnessName } from "./harness-config.js";
-import { accumulateStreamedText, normalizePortableEvent } from "./portableEvents.js";
+import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portableEvents.js";
 import {
   asRecord,
   nonEmptyString,
@@ -104,27 +104,7 @@ export function extractUsage(value: unknown): AgentUsage | undefined {
   if (record === undefined) return undefined;
   const nested = record.usage ?? record.message;
   const usage = asRecord(nested) ?? asRecord(record.delta?.valueOf());
-  if (usage === undefined) return undefined;
-  const input = usage.input ?? usage.input_tokens ?? usage.inputTokens;
-  const output = usage.output ?? usage.output_tokens ?? usage.outputTokens;
-  const cacheRead = usage.cacheRead
-    ?? usage.cache_read_input_tokens
-    ?? usage.cached_input_tokens
-    ?? usage.cacheReadTokens;
-  const cacheWrite = usage.cacheWrite ?? usage.cache_creation_input_tokens ?? usage.cacheWriteTokens;
-  const result: AgentUsage = {
-    ...(numberValue(input) === undefined ? {} : { input: numberValue(input) }),
-    ...(numberValue(output) === undefined ? {} : { output: numberValue(output) }),
-    ...(numberValue(cacheRead) === undefined ? {} : { cacheRead: numberValue(cacheRead) }),
-    ...(numberValue(cacheWrite) === undefined ? {} : { cacheWrite: numberValue(cacheWrite) }),
-    ...(numberValue(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) === undefined ? {} : { cacheWrite1h: numberValue(usage.cacheWrite1h ?? usage.cache_creation_input_tokens_1h) }),
-    ...(numberValue(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) === undefined ? {} : { reasoning: numberValue(usage.reasoning ?? usage.reasoning_tokens ?? usage.reasoning_output_tokens) }),
-    ...(numberValue(usage.totalTokens ?? usage.total_tokens) === undefined ? {} : { totalTokens: numberValue(usage.totalTokens ?? usage.total_tokens) }),
-    ...(numberValue(usage.contextTokens ?? usage.context_tokens) === undefined ? {} : { contextTokens: numberValue(usage.contextTokens ?? usage.context_tokens) }),
-    ...(numberValue(usage.turns) === undefined ? {} : { turns: numberValue(usage.turns) }),
-    ...(usage.cost === undefined ? {} : { cost: usage.cost }),
-  };
-  return Object.keys(result).length === 0 ? undefined : result;
+  return usage === undefined ? undefined : usageFromFields(usage);
 }
 
 function sessionIdFromValue(value: unknown): string | undefined {

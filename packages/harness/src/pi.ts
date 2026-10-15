@@ -19,8 +19,8 @@ import type {
   AgentRequest,
   AgentResult,
 } from "./agent-contract.js";
-import { stringOr } from "./json-narrowing.js";
-import { accumulateStreamedText, normalizePortableEvent } from "./portableEvents.js";
+import { asRecord, stringOr } from "./json-narrowing.js";
+import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portableEvents.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";
@@ -471,23 +471,8 @@ function isAssistantMessage(message: AgentMessage): boolean {
 }
 
 function extractUsage(value: unknown): AgentUsage | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
-  const usage = value as Record<string, unknown>;
-  const number = (item: unknown): number | undefined =>
-    typeof item === "number" && Number.isFinite(item) ? item : undefined;
-  const result: AgentUsage = {
-    ...(number(usage.input) === undefined ? {} : { input: number(usage.input) }),
-    ...(number(usage.output) === undefined ? {} : { output: number(usage.output) }),
-    ...(number(usage.cacheRead) === undefined ? {} : { cacheRead: number(usage.cacheRead) }),
-    ...(number(usage.cacheWrite) === undefined ? {} : { cacheWrite: number(usage.cacheWrite) }),
-    ...(number(usage.cacheWrite1h) === undefined ? {} : { cacheWrite1h: number(usage.cacheWrite1h) }),
-    ...(number(usage.reasoning) === undefined ? {} : { reasoning: number(usage.reasoning) }),
-    ...(number(usage.totalTokens) === undefined ? {} : { totalTokens: number(usage.totalTokens) }),
-    ...(number(usage.contextTokens) === undefined ? {} : { contextTokens: number(usage.contextTokens) }),
-    ...(number(usage.turns) === undefined ? {} : { turns: number(usage.turns) }),
-    ...(usage.cost === undefined ? {} : { cost: usage.cost }),
-  };
-  return Object.keys(result).length === 0 ? undefined : result;
+  const usage = asRecord(value);
+  return usage === undefined ? undefined : usageFromFields(usage);
 }
 
 function bindEvents(
