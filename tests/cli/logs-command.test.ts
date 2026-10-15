@@ -272,6 +272,26 @@ describe("piano logs --jobs", () => {
     }
   });
 
+  it("says so when the ledger predates the job ledger instead of listing nothing", async () => {
+    // The real shape every run on this machine before the refactor has: accepted
+    // lines carrying no kind and no execution anchor to group them by.
+    const legacy = [
+      {
+        version: 1, timestamp: "2026-08-20T10:00:00.000Z", executionId: runId,
+        invocationId: "tuning@root", stageId: "tuning", stage: "tuning", worker: "basic", attempt: 1,
+      },
+    ];
+    await writeFile(join(root, runId, "progress.jsonl"), legacy.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("no jobs recorded"));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
   it("prints one job's spans and accepted invocations with attempts", async () => {
     const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {

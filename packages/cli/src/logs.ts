@@ -518,6 +518,12 @@ function printJobs(
     if (jobOrdinal === undefined) {
       yield* Effect.sync(() => {
         console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
+        if (views.length === 0) {
+          // Records but no jobs: the ledger predates the job ledger, so its
+          // accepted lines carry no execution anchor to group them by. Saying
+          // so beats an empty list that reads like a bug.
+          console.log(paint(COLORS.dim, "no jobs recorded — this run's ledger predates the job ledger; /restart starts one"));
+        }
         for (const view of views) {
           const last = view.spans[view.spans.length - 1];
           const lastAt = last === undefined ? undefined : last.finishedAt ?? last.startedAt;
