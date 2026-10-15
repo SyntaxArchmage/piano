@@ -242,9 +242,10 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 | H2 | 清理 H1 波及的测试面：删 2（递归 envelope 防御分支测试、`proxyPending` 内部态断言）· 放宽 4（codex argv 整数组→有序 indexOf、banner 序列 harness 标注 dsh→claude、dsh steer id 字面量→类型、pi steer id→比较式断言）· 合并 1 对（context-file/skill 缺资源，两 arm 都保留）· 修 `dshArguments` 注释重复 | ✅ 已应用（`subprocess.test.ts` 58→57，tsc/eslint/vitest 绿；待提交）· 对抗验证驳回了 3 处过激提议（`:425` onEvent 接缝、`:880` `--mode rpc` 值、`:363` 无序化），均已按验证结论保留 |
 | H3 | `trajectory.json` 的 `/rename` 写 compact（与 `write()` 共用 `stringifyTrajectory`）；picker 测试改喂 pretty 字节保住该拼写覆盖 | ✅ 已提交 `7793a7e` · 模块门禁绿（tests/logging + logs-command + session-takeover 38/38） |
 | H4 | `trace_id` 单一来源：删 `LogWriter`/`TraceWriter`/`Async*` 四处 `traceId = runId` 默认；doctor 两 probe 自铸 random hex；5 个测试文件补显式实参 | ✅ 已应用，模块门禁绿（typecheck 全仓 + 定向 126/126 + eslint）；提交被工具层临时阻塞，待重试 |
-| H5 | iteration 共享 helper（`iterationOfInvocationId`，支持 map-in-loop），替换 `cli/trajectory.ts` 与 `evals/driver.ts` 的两处正则 | ⬜ |
-| H6 | loop/pass 碰撞修复：workspace key 补 pass 维度 + tournament snapshot create-once + 完整性 marker | ⬜ |
-| H7+ | audience 分离（`system-log/`、`sessions/`、`status.json`）的 dual-read 迁移 | ⬜ 待 H1–H6 后重排 |
+| H5 | iteration 共享 helper：`iterationOfInvocationId` 落 `workflow-runtime.ts`（parser 与 speller `runtimeInstanceId` 同址），barrel 导出；cli `loopIteration` 委托（名字保留）；`evals/driver.ts` 正则替换 | ✅ 已提交 `27d63eb` · 红先（map-in-loop 用例先红后绿）· 模块门禁绿（typecheck 全仓 + 19 文件/182 用例 + eslint） |
+| H-doc | 本工作稿入库 `4726fb4`；`ARCHITECTURE.txt` 与 PRD §13 的 stale `executions/` 布局加历史标记 `e5370c7` | ✅ 已提交 |
+| H6 | loop/pass 碰撞修复：workspace key 补 pass 维度 + tournament snapshot create-once + 完整性 marker | ⏸ **裁定：落在 lifecycle 分支基线，不在 main 做**。理由见 F4 |
+| H7+ | audience 分离（`system-log/`、`sessions/`、`status.json`）的 dual-read 迁移 | ⏸ 同 H6：`session.ts`/`progress.ts`/`static-analysis.ts` 全是分支活跃区 |
 
 ### F2. 每跳的固定动作
 
@@ -258,4 +259,12 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 ### F3. 分支
 
 `fix/evidence-read-chain`（从 `chore/drop-teach-me-and-cap-commit-msg` 切出，原名 `fix/dsh-session-artifact-name`，H3 提交时改名以承载整个 P0 批次）。开发者已授权自审自提（2026-10-15：「我后续不参与review了」），review 纪律照旧记录在 REVIEW.md/TASTE.md。
+
+### F4. 与 lifecycle-refactor-dsf 分支的协调（2026-10-15 实测）
+
+- 分支**活跃且锁定**：tip 当日从 `460a9dc` 推进到 `5eadd57`（另一 session 在提交）。
+- 分支已自行落地我 P0 清单的一项：`421d1d1` "Validate the progress stream by record kind"（= static-analysis/progressRecordKind 按 kind 分派）；`a18904c` "Read a run from either of its trajectory paths"（trajectory dual-read）与 H3 相邻。**合并时 H3 可能与 a18904c 在 trajectory.ts 冲突——两边意图一致（单一 serializer/双读），解法取并集。**
+- 分支**尚未**做 H6：`mapSlotKey(frames)` 无 pass 维度（branch workspace.ts:461），`region-finalized`/`ensureWorkspaceSnapshot`/`nextJobOrdinal` 均不存在。
+- **裁定**：H6/H7+ 等分支合并（或按 memory 的 handoff protocol 移交）后，以分支基线执行本稿 §C5 的 L0–L3；不在 main 上重复实现——main 版会是抛弃型工作且与分支的模块拆分（`scope-walker.ts`/`stage-runner.ts`）结构性冲突。
+- 本分支（`fix/evidence-read-chain`，6 commits）合并回 main 或 rebase 到分支时的预期冲突面：`trajectory.ts`（H3 vs a18904c）、`workflow-runtime.ts`（H5 纯新增，应干净）、其余无重叠。
 
