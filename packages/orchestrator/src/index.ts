@@ -44,6 +44,7 @@ export {
   type SelectionRejection,
 } from "./selection.js";
 export { WorkflowError, type WorkflowPhase } from "./errors.js";
+export { iterationOfInvocationId } from "./workflow-runtime.js";
 export {
   allocateMapWorkspace,
   cleanupMapWorkspaces,

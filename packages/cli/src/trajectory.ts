@@ -7,6 +7,7 @@
 // trajectory-panel.ts.
 
 import { messageText, type AgentEvent } from "@piano/harness";
+import { iterationOfInvocationId } from "@piano/orchestrator";
 
 /** The kind of action a trajectory entry records. */
 export type TrajectoryKind =
@@ -94,18 +95,13 @@ function contextCounts(context: { contextFiles?: readonly unknown[]; contextFile
   };
 }
 
-/** Parse the zero-based loop iteration out of a workflow `invocationId` such as
- * `tune.profile@tune/iter-3` (see `runtimeInvocationId`). Returns `undefined`
- * for non-loop invocations (root stages, `map` slots). Exported so the chat
- * renderer can reuse the same numbering for its `spawn` line. */
+/** The zero-based loop iteration of a workflow `invocationId`, or undefined
+ * for non-loop invocations. Delegates to the orchestrator's shared parser —
+ * the inverse of the `iter-N` spelling `runtimeInstanceId` produces — so the
+ * chat renderer, this ledger, and the evals driver cannot drift apart.
+ * Consumers render the value as `iteration + 1`. */
 export function loopIteration(invocationId: string | undefined): number | undefined {
-  if (invocationId === undefined) return undefined;
-  const match = /\/iter-(\d+)$/.exec(invocationId);
-  if (match === null) return undefined;
-  const value = Number(match[1]);
-  // Consumers render the zero-based value as `iteration + 1`; keep that
-  // display value within JavaScript's safe integer range as well.
-  return Number.isSafeInteger(value) && value < Number.MAX_SAFE_INTEGER ? value : undefined;
+  return iterationOfInvocationId(invocationId);
 }
 
 /** Fold one `AgentEvent` into a `TrajectoryEntry` (or null when the event

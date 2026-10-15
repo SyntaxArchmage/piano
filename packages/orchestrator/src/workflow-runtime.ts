@@ -62,6 +62,27 @@ export function runtimeInstanceId(frames: readonly WorkflowRuntimeFrame[]): stri
     : [frame.regionId, `slot-${frame.slot}`]).join("/");
 }
 
+/** The zero-based iteration of the innermost loop frame carried by an
+ * invocation id (`stageId@…/iter-N[/…]`), or undefined when it carries none.
+ * Inverse of the `iter-N` spelling {@link runtimeInstanceId} produces, kept
+ * beside it so parser and speller cannot drift. Tail-anchored patterns miss
+ * map-in-loop ids (`…/iter-2/…/slot-1`); a segment scan does not. Values that
+ * cannot be rendered safely (consumers display `iteration + 1`) yield
+ * undefined. */
+export function iterationOfInvocationId(invocationId: string | undefined): number | undefined {
+  if (invocationId === undefined) return undefined;
+  const at = invocationId.indexOf("@");
+  const instance = at === -1 ? invocationId : invocationId.slice(at + 1);
+  let iteration: number | undefined;
+  for (const segment of instance.split("/")) {
+    const match = /^iter-(\d+)$/.exec(segment);
+    if (match === null) continue;
+    const value = Number(match[1]);
+    iteration = Number.isSafeInteger(value) && value < Number.MAX_SAFE_INTEGER ? value : undefined;
+  }
+  return iteration;
+}
+
 export function runtimeInvocationId(invocation: WorkflowRuntimeInvocation): string {
   return `${invocation.stageId}@${runtimeInstanceId(invocation.frames) ?? "root"}`;
 }
