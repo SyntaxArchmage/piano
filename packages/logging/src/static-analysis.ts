@@ -387,8 +387,8 @@ function validateProgressRecords(
   issues: StaticObservabilityIssue[],
 ): void {
   const executionIds = new Set<string>();
+  // Below the kind split: an accepted stage and nothing else carries these.
   const requiredStrings = [
-    "executionId",
     "invocationId",
     "stageId",
     "stage",
@@ -398,17 +398,26 @@ function validateProgressRecords(
     "handoffRecordPath",
   ] as const;
   for (const { value: record, line } of records) {
+    // Every record kind carries these.
     const malformedFields: string[] = [];
     if (record.version !== 1) malformedFields.push("version");
     if (!isTimestamp(record.timestamp)) malformedFields.push("timestamp");
-    for (const field of requiredStrings) {
-      if (!isNonEmptyString(record[field])) malformedFields.push(field);
-    }
-    if (!isSafePositiveInteger(record.attempt)) malformedFields.push("attempt");
-    if (!isRecord(record.workspace)) malformedFields.push("workspace");
-    if (record.iteration !== undefined && !isSafeNonNegativeInteger(record.iteration)) malformedFields.push("iteration");
-    for (const field of ["instanceId", "resultPath", "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel"] as const) {
-      if (record[field] !== undefined && !isNonEmptyString(record[field])) malformedFields.push(field);
+    if (!isNonEmptyString(record.executionId)) malformedFields.push("executionId");
+    // A line that names its kind is one of the records the stream carries for
+    // a start, an end or a job close, and it holds none of the fields below.
+    // A line without one is an accepted stage — which is what every line was
+    // before the kinds existed. `progressRecordKind` owns that rule; this
+    // module only needs its consequence.
+    if (typeof record.kind !== "string") {
+      for (const field of requiredStrings) {
+        if (!isNonEmptyString(record[field])) malformedFields.push(field);
+      }
+      if (!isSafePositiveInteger(record.attempt)) malformedFields.push("attempt");
+      if (!isRecord(record.workspace)) malformedFields.push("workspace");
+      if (record.iteration !== undefined && !isSafeNonNegativeInteger(record.iteration)) malformedFields.push("iteration");
+      for (const field of ["instanceId", "resultPath", "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel"] as const) {
+        if (record[field] !== undefined && !isNonEmptyString(record[field])) malformedFields.push(field);
+      }
     }
     if (malformedFields.length > 0) {
       issue(issues, "invalid-record", path, `progress record has invalid field(s): ${malformedFields.join(", ")}`, line);

@@ -140,6 +140,54 @@ describe(" static observability analysis", () => {
     expect(formatStaticObservabilityReport(report)).toContain(`OBSERVABILITY PASS: ${runId}`);
   });
 
+  it("accepts the non-acceptance records the progress stream carries", () => {
+    // progress.jsonl used to hold accepted stages and nothing else, so every
+    // line was validated as one. It now also carries a run's start, its stage
+    // starts and its end — records that hold none of an acceptance's fields,
+    // and that a checker reading them as acceptances would call invalid on
+    // every run this build writes.
+    const transcriptPath = "/tmp/static-stream-records.jsonl";
+    const accepted = {
+      version: 1,
+      timestamp: "2026-08-25T00:00:00.000Z",
+      executionId: "execution-1",
+      invocationId: "respond@root",
+      stageId: "respond",
+      stage: "respond",
+      worker: "basic",
+      attempt: 1,
+      workspace: { key: "shared", cwd: "/tmp/workspace", kind: "shared" },
+      sessionId: "session-1",
+      transcriptPath,
+      handoffRecordPath: "handoffs/records/respond/root/record.json",
+    };
+    const records = [
+      { version: 1, kind: "execution-started", timestamp: "2026-08-25T00:00:00.000Z", executionId: "execution-1", resumed: false, plan: { plannedStages: 1, stageCounts: {} } },
+      { version: 1, kind: "stage-started", timestamp: "2026-08-25T00:00:01.000Z", executionId: "execution-1", invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic", attempt: 1 },
+      accepted,
+      { version: 1, kind: "execution-finished", timestamp: "2026-08-25T00:00:02.000Z", executionId: "execution-1", status: "completed" },
+    ];
+
+    const report = analyzeStaticObservability({
+      runDir: `/tmp/${runId}`,
+      log: "",
+      trace: "",
+      trajectory: JSON.stringify({
+        version: 1,
+        runId,
+        updatedAt: "2026-08-25T00:00:02.000Z",
+        status: "completed",
+        promptLength: 4,
+        events: [],
+        transcriptPath,
+      }),
+      progress: `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      transcripts: { [transcriptPath]: "" },
+    });
+
+    expect(report.issues.filter((issue) => issue.code === "invalid-record")).toEqual([]);
+  });
+
   it("reports cross-file identity, trace balance, and transcript failures", () => {
     const transcriptPath = "/tmp/missing-static-transcript.jsonl";
     const report = analyzeStaticObservability({
