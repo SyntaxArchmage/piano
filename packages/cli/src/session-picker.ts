@@ -12,10 +12,11 @@
 //     the footer states how many rows are still unread rather than implying the
 //     filter saw everything.
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { RST, type PianoTheme } from "./theme.js";
-import { formatRunId, oneLine, summarizeRun, trajectoryPath, trajectoryReadFailed, type RunSummary, type RunTrajectory } from "./session-resume.js";
+import { formatRunId, oneLine, readRunTrajectory, summarizeRun, type RunSummary } from "./session-resume.js";
 
 export interface SessionPickerDeps {
   readonly runsRoot: string;
@@ -228,15 +229,12 @@ export class SessionPicker implements Component {
     for (const runId of runIds) {
       if (this.summaries.has(runId) || this.loading.has(runId)) continue;
       this.loading.add(runId);
-      void readFile(trajectoryPath(this.deps.runsRoot, runId), "utf8").then(
-        (raw): RunTrajectory => ({ kind: "present", raw }),
-        (cause: unknown): RunTrajectory => trajectoryReadFailed(cause),
-      ).then((result) => {
+      void readRunTrajectory(join(this.deps.runsRoot, runId)).then((result) => {
         this.loading.delete(runId);
         if (result.kind === "absent") {
           this.runIds = this.runIds.filter((listed) => listed !== runId);
         } else {
-          this.summaries.set(runId, summarizeRun(runId, result.kind === "present" ? result.raw : undefined));
+          this.summaries.set(runId, summarizeRun(runId, result.kind === "present" ? result.document : undefined));
         }
         this.deps.onRender?.();
       });

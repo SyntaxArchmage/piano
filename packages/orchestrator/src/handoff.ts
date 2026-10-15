@@ -12,7 +12,7 @@ import {
 } from "./workflow-runtime.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
-import type { ContractProjection } from "@piano/contract";
+import type { ContractMetric, ContractProjection } from "@piano/contract";
 
 /** Immutable evidence emitted by the orchestrator after a producer has
  * completed (and, when requested, passed validation). */
@@ -25,6 +25,10 @@ export interface HandoffProducer {
   readonly text: string;
   readonly sessionId: string;
   readonly transcriptPath: string;
+  /** The attempt number this acceptance closed, so a continue can rebuild the
+   * result without re-deriving it from the stream. Absent in records written
+   * before it was kept; the cursor supplies the number there instead. */
+  readonly attempt?: number;
   /** Configuration requested by the workflow before provider capability
    * resolution. Keep it separate from the effective harness values below. */
   readonly requestedModel?: string;
@@ -34,6 +38,9 @@ export interface HandoffProducer {
   readonly workspace: WorkflowWorkspaceBinding;
   readonly resultPath?: string;
   readonly resultPayload?: unknown;
+  /** Contract-declared metrics of the accepted result, so a rebuilt result
+   * carries what tournament selection reads. */
+  readonly metrics?: readonly ContractMetric[];
   /** Named values declared by the producer contract for downstream use. */
   readonly projections?: readonly ContractProjection[];
   readonly contract?: WorkerContractReference;
@@ -99,6 +106,33 @@ export function writeHandoffRecord(
   return writeJsonAtomic(recordPath, { version: 1, producer: record }).pipe(
     Effect.as(record),
   );
+}
+
+/** Read a producer's persisted record back, or `undefined` when it is missing
+ * or unreadable. A continue rebuilds a skipped invocation's result from this
+ * record; absence makes the caller re-run the stage instead. */
+export function readHandoffRecord(
+  runDir: string,
+  invocation: WorkflowRuntimeInvocation,
+): Effect.Effect<HandoffProducer | undefined, WorkflowError, FileSystem.FileSystem> {
+  const path = handoffRecordPath(runDir, invocation);
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const raw = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
+    if (raw === undefined) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const document = parsed as { version?: unknown; producer?: unknown };
+    if (document.version !== 1 || typeof document.producer !== "object" || document.producer === null) {
+      return undefined;
+    }
+    return document.producer as HandoffProducer;
+  });
 }
 
 /** Materialize a consumer's ordered workflow context. A configured handoff

@@ -17,7 +17,7 @@ import { createSession, createStagingSession } from "@piano/logging";
 import type { AgentRunner } from "@piano/harness";
 import { runSession } from "../../packages/cli/src/session-run.js";
 import { FakeTerminal, plain, sleep, waitFor } from "../common/terminal.js";
-import { readJson } from "../common/fs.js";
+import { readJson, readResumeActors } from "../common/fs.js";
 import { settledResult, type ActorSession } from "../common/fake-runner.js";
 
 vi.mock("@piano/harness", async (importOriginal) => ({
@@ -119,9 +119,7 @@ describe("reject with feedback, then exit and resume", () => {
       const turnsA = trajectoryA.turns as Array<{ prompt: string; status: string }>;
       expect(turnsA).toHaveLength(1);
       expect(turnsA[0]?.status).toBe("completed");
-      const actorA = Object.values(
-        (await readJson(join(runsRoot, runId, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const actorA = Object.values(await readResumeActors(join(runsRoot, runId)))[0];
       expect(actorA?.sessionId).toBe("sess-reject");
       // Two completed agent attempts inside the single turn: the draft and the
       // rework that answered the reviewer's feedback.
@@ -173,9 +171,7 @@ describe("reject with feedback, then exit and resume", () => {
         "task: refactor the parser",
         "task: make it faster",
       ]);
-      const actor = Object.values(
-        (await readJson(join(runsRoot, runId, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const actor = Object.values(await readResumeActors(join(runsRoot, runId)))[0];
       expect(actor?.sessionId).toBe("sess-reject");
       // The resumed prompt added one more completed attempt to the same
       // conversation: draft + rework + prompt 2.

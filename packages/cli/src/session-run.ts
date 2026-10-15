@@ -24,12 +24,15 @@ import {
   type TrajectoryWriteInput,
 } from "@piano/logging";
 import {
+  closeWorkflowJob,
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
   loadDefaultWorkflow,
   loadWorkflow,
   readWorkflowExecutionContinuation,
+  readRunStatus,
+  refreshRunStatus,
   setWorkflowSelection,
   type LoadedWorkflow,
   type WorkflowExecutionError,
@@ -67,6 +70,10 @@ import {
 import type { CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { readResumeContext } from "./session-resume.js";
+import {
+  resolveContinueCommand,
+  resolveRestartCommand,
+} from "./job-commands.js";
 import { armStalledExitGuard } from "./stalled-exit.js";
 import type { WorkflowGraphDefinition } from "./workflow-graph.js";
 
@@ -203,11 +210,21 @@ function runSessionBody(
       // TUI passes its own channel (an overlay on the live TUI) instead.
       const headlessSignoff = headlessSignoffChannel();
       const headlessDiscuss = headlessDiscussChannel();
+      /** A refused job command is a user-facing answer, not a crash: the
+       * message says what to do instead, and it lands in the transcript the
+       * same way a failure would. */
+      const jobCommandRefused = (command: string, runDir: string, reason: string) =>
+        new WorkflowError({ phase: "schedule", path: runDir, message: `/${command} is unavailable: ${reason}` });
+      /** The jobs' shape: the run's state document, which folds the stream
+       * that also carries each job's input. */
+      const readJobState = (runDir: string) =>
+        Effect.map(readRunStatus(runDir), (status) => status?.jobs ?? []);
       const runPrompt = (
         prompt: string,
         onEvent: (event: AgentEvent) => void,
         signoff: (request: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError> = headlessSignoff,
         discuss: (request: WorkflowDiscussRequest) => Effect.Effect<WorkflowDiscussDecision, WorkflowError> = headlessDiscuss,
+        jobCommand?: "continue" | "restart",
       ) => {
         const controller = new AbortController();
         controllers.mission = controller;
@@ -221,6 +238,10 @@ function runSessionBody(
         const current = active;
         const workflow = loadedWorkflow;
         const events: AgentEvent[] = [];
+        /** The input actually run. A job command resolves its own from the
+         * recorded turns, and the trajectory turn must carry that text — not
+         * the command's spelling. */
+        let effectivePrompt = prompt;
         // A staging session materialises its run directory here — the first
         // prompt is the moment the run becomes real. Later prompts see a
         // committed session and take the direct path.
@@ -229,6 +250,7 @@ function runSessionBody(
           : current.commit(prompt);
         const persistTrajectory = (document: TrajectoryWriteInput) =>
           current.session.trajectory.write(document).pipe(
+            Effect.zipRight(refreshRunStatus(current.session.runDir)),
             Effect.tapError((error) => Effect.sync(() => {
               // A trajectory is supplementary evidence and must not replace
               // the worker result, but persistence failures must remain
@@ -260,15 +282,15 @@ function runSessionBody(
               path: session.root,
               message: `workflow load failed at ${session.root}: no workflow selected`,
             }))
-            // One run is one execution: the run id is the execution id, and each
-            // prompt continues the actors the previous prompts left behind. A
-            // resumed run therefore takes the identical path as the next prompt
-            // of a live run — there is no separate resume mode.
-            : readWorkflowExecutionContinuation(current.session.runDir, current.session.id).pipe(
-              Effect.flatMap((execution) => executeWorkflow(workflow, {
+            : Effect.gen(function* () {
+              // One run is one execution: the run id is the execution id, and
+              // each prompt continues the actors the previous prompts left
+              // behind — `/continue` takes the identical path, only carrying
+              // the paused job's cursor.
+              const execution = yield* readWorkflowExecutionContinuation(current.session.runDir, current.session.id);
+              const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
-                prompt,
                 executionId: current.session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signal: controller.signal,
@@ -277,13 +299,47 @@ function runSessionBody(
                 ...(options.agentRunner === undefined ? {} : { agentRunner: options.agentRunner }),
                 signoff,
                 discuss,
-                onEvent: (event) => {
+                onEvent: (event: AgentEvent) => {
                   events.push(event);
                   onEvent(event);
                 },
-              })),
-            )),
-        )).pipe(
+              };
+              if (jobCommand === undefined) {
+                return yield* executeWorkflow(workflow, { ...request, prompt });
+              }
+              const spans = yield* readJobState(current.session.runDir);
+              if (jobCommand === "continue") {
+                const resolved = resolveContinueCommand(spans);
+                if (resolved.kind === "refused") {
+                  return yield* Effect.fail(jobCommandRefused("continue", current.session.runDir, resolved.reason));
+                }
+                effectivePrompt = resolved.command.input;
+                return yield* executeWorkflow(workflow, {
+                  ...request,
+                  prompt: effectivePrompt,
+                  continueJob: {
+                    jobOrdinal: resolved.command.jobOrdinal,
+                    accepted: resolved.command.accepted,
+                    attempts: resolved.command.attempts,
+                  },
+                });
+              }
+              const resolved = resolveRestartCommand(spans);
+              if (resolved.kind === "refused") {
+                return yield* Effect.fail(jobCommandRefused("restart", current.session.runDir, resolved.reason));
+              }
+              if (resolved.command.closeOrdinal !== undefined) {
+                yield* closeWorkflowJob(
+                  current.session.runDir,
+                  current.session.id,
+                  resolved.command.closeOrdinal,
+                  "restarted",
+                );
+              }
+              effectivePrompt = resolved.command.input;
+              return yield* executeWorkflow(workflow, { ...request, prompt: effectivePrompt });
+            }),
+        ))).pipe(
           Effect.map((result) => ({
             text: result.text,
             sessionId: result.sessionId,
@@ -296,14 +352,16 @@ function runSessionBody(
             Exit.isSuccess(exit)
             ? persistTrajectory({
               ...context,
-              prompt,
+              prompt: effectivePrompt,
+              promptLength: effectivePrompt.length,
               status: "completed",
               sessionId: exit.value.sessionId,
               transcriptPath: exit.value.transcriptPath,
             })
             : persistTrajectory({
               ...context,
-              prompt,
+              prompt: effectivePrompt,
+              promptLength: effectivePrompt.length,
               status: isCancellation(exit.cause) ? "cancelled" : "failed",
               error: failureDetails(exit.cause),
             }))),
@@ -506,6 +564,12 @@ function runSessionBody(
         const tuiResult = yield* TRACE(TUI_SOURCE, runTui({
           runPrompt,
           runSideAgent,
+          // The job-level commands are the same prompt path with a different
+          // instruction to the engine: resolve the job, then run it. The
+          // command text is only the transcript's echo; the input actually run
+          // comes from the job's recorded turn.
+          runJobCommand: (action, onEvent, signoff, discuss) =>
+            runPrompt(action === "continue" ? "/continue" : "/restart", onEvent, signoff, discuss, action),
           historyRoot: session.root,
           workspaceCwd: activeCwd,
           onWorkspaceChange: (cwd) => Effect.sync(() => { activeCwd = cwd; }),
@@ -543,6 +607,7 @@ function runSessionBody(
           // Renaming targets whichever run the TUI is showing, so it follows a
           // takeover.
           onRename: (name) => active.session.trajectory.rename(name).pipe(
+            Effect.zipRight(refreshRunStatus(active.session.runDir)),
             Effect.provide(NodeFileSystem.layer),
           ),
         }));

@@ -24,8 +24,10 @@
 //     concrete invocation (root stage, loop iteration, or map slot), so a
 //     provider/validation retry emits another `agent_end` rather than
 //     double-counting the same attempt.
-//   - `done` marks the run terminal and preserves session id / transcript path
-//     (evidence availability).
+//   - `done` closes ONE harness turn and is not counted: a workflow runs one
+//     turn per stage, so a run has as many `done` events as it has stage
+//     attempts, and the run's own terminal comes from outside the stream
+//     through `markTerminal`.
 
 import type { AgentEvent } from "@piano/harness";
 
@@ -45,15 +47,10 @@ export interface RunStats {
   readonly completedStages: number;
   /** Failed stage invocations (agent_end with willRetry). */
   readonly failedStages: number;
-  /** Wall-clock elapsed since the run started, in milliseconds. */
-  readonly elapsedMs: number;
-  /** A terminal `done` event was observed. */
-  readonly completed: boolean;
+  /** The prompt's own outcome, folded in by `markTerminal` — never inferred
+   * from a turn ending, which says nothing about the run. Absent while the run
+   * is live, so this is also what "the run is over" reads off. */
   readonly terminal?: "completed" | "failed" | "cancelled";
-  /** Evidence availability: session id and transcript path from the terminal
-   * `done` event (preserved from the raw trajectory as source of truth). */
-  readonly sessionId?: string;
-  readonly transcriptPath?: string;
 }
 
 /** Initial run state: everything zero, nothing terminal. */
@@ -63,16 +60,12 @@ export function emptyRunStats(): RunStats {
     toolFailures: 0,
     completedStages: 0,
     failedStages: 0,
-    elapsedMs: 0,
-    completed: false,
     terminal: undefined,
     inputTokens: undefined,
     outputTokens: undefined,
     totalTokens: undefined,
     cacheReadTokens: undefined,
     cacheWriteTokens: undefined,
-    sessionId: undefined,
-    transcriptPath: undefined,
   };
 }
 
@@ -111,48 +104,31 @@ export function applyRunStat(input: RunStats, event: AgentEvent): RunStats {
         failedStages: input.failedStages + (event.willRetry ? 1 : 0),
       };
     }
-    case "done": {
-      return {
-        ...input,
-        completed: true,
-        // The harness emits `done` only on a successful exit (subprocess.ts and
-        // pi.ts both hard-code exitStatus 0); failure and cancellation
-        // surface through Effect.fail, not a `done` event. The caller marks
-        // those terminals explicitly via `markTerminal`. Keeping exitStatus's
-        // sign here is harmless and self-documenting.
-        terminal: event.exitStatus === 0 ? "completed" : "failed",
-        sessionId: event.sessionId,
-        transcriptPath: event.transcriptPath,
-      };
-    }
     default:
+      // `done` among them: it closes a harness turn, which says nothing this
+      // reducer counts and nothing about the run. The run's outcome arrives
+      // through `markTerminal` instead.
       return input;
   }
 }
 
-/** Record a non-success terminal outcome observed outside the event stream. The
- * harness reports failure/cancellation as an Effect error (not a `done` event),
- * so the TUI calls this from its tapError path to fold that outcome into the
- * cumulative stats the same way a successful `done` would. */
+/** Record the run's outcome. The harness reports failure and cancellation as an
+ * Effect error rather than an event, so the TUI folds them in from its own
+ * outcome taps; success comes the same way, so all three land in one field. */
 export function markTerminal(
   input: RunStats,
   terminal: "completed" | "failed" | "cancelled",
 ): RunStats {
-  return { ...input, completed: true, terminal };
+  return { ...input, terminal };
 }
 
-/** Fold `events` in order into a cumulative `RunStats`, advancing elapsed to
- * the difference between startTime and now. */
-export function foldRunStats(
-  events: readonly AgentEvent[],
-  startTime: number,
-  now: number,
-): RunStats {
+/** Fold `events` in order into a cumulative `RunStats`. */
+export function foldRunStats(events: readonly AgentEvent[]): RunStats {
   let stats = emptyRunStats();
   for (const event of events) {
     stats = applyRunStat(stats, event);
   }
-  return { ...stats, elapsedMs: Math.max(0, now - startTime) };
+  return stats;
 }
 
 /** Compact token formatting for the footer: values ≥1000 render as "1.2k";
@@ -168,9 +144,7 @@ export function formatTokens(value: number | undefined): string {
 /** Compact lifecycle label for the STATUS row, mirroring the workflow graph's
  * summary phrasing ("waiting" before the first stage resolves). */
 export function statsStatusLabel(stats: RunStats): string {
-  if (stats.terminal === "cancelled") return "cancelled";
-  if (stats.terminal === "failed") return "failed";
-  if (stats.completed) return "completed";
+  if (stats.terminal !== undefined) return stats.terminal;
   if (stats.completedStages > 0 || stats.failedStages > 0 || stats.toolCalls > 0) return "running";
   return "waiting";
 }

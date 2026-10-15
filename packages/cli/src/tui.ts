@@ -1,8 +1,7 @@
 import { Duration, Effect, Fiber } from "effect";
 import { stdin, stdout } from "node:process";
-import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   Container,
   CombinedAutocompleteProvider,
@@ -22,6 +21,7 @@ import {
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
 } from "@piano/orchestrator";
+import { readWorkflowSnapshot } from "./progress-view.js";
 import { TranscriptView } from "./chat-render.js";
 import { TuiError } from "./errors.js";
 import { AskQuestion, type AskQuestionAnswer, type AskQuestionSpec, type AskQuestionStyles } from "./ask-question.js";
@@ -32,12 +32,7 @@ import { resolveTheme, queryBackgroundColor, sideTheme, RST, type PianoTheme } f
 import { buildSideBanner, renderSideFooter, sideFooterRunToken } from "./side-screen.js";
 import { TrajectoryPanel } from "./trajectory-panel.js";
 import { renderStatusPanel } from "./status-panel.js";
-import {
-  parseWorkflowGraphSnapshot,
-  WorkflowGraph,
-  type WorkflowGraphDefinition,
-  type WorkflowGraphSnapshot,
-} from "./workflow-graph.js";
+import { WorkflowGraph, type WorkflowGraphDefinition } from "./workflow-graph.js";
 import { DEFAULT_SPLIT_RATIO, emptySplitDrag, isWithinRightPane, parseSgrMouse, rightColumns, stepSplitDrag } from "./split-drag.js";
 import { SideBySide } from "./tui-face.js";
 import { COPY_MODE_KEYS, ERROR_EXPAND_KEYS, TOOL_EXPAND_KEYS, dispatchShortcut, getScrollKeyBindings, matchShortcut, matchesKeyPress } from "./shortcuts.js";
@@ -71,6 +66,17 @@ export type TuiPromptRunner = (
   discuss?: (request: import("@piano/orchestrator").WorkflowDiscussRequest) => Effect.Effect<import("@piano/orchestrator").WorkflowDiscussDecision, WorkflowError>,
 ) => Effect.Effect<string | TuiPromptResult, unknown>;
 
+/** `/continue` and `/restart`: the same prompt path, with the engine told which
+ * job-level instruction to carry out. The prompt argument is only the
+ * transcript's echo — the input actually run comes from the job's recorded
+ * turn. */
+export type TuiJobCommandRunner = (
+  action: "continue" | "restart",
+  onEvent: (event: AgentEvent) => void,
+  signoff?: (request: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError>,
+  discuss?: (request: import("@piano/orchestrator").WorkflowDiscussRequest) => Effect.Effect<import("@piano/orchestrator").WorkflowDiscussDecision, WorkflowError>,
+) => Effect.Effect<string | TuiPromptResult, unknown>;
+
 export interface TuiOptions {
   readonly terminal?: Terminal;
   /** Abort the turn of one screen. `/btw` can leave the run and the side agent
@@ -87,6 +93,9 @@ export interface TuiOptions {
    * is the screen those events land on. The sign-off argument is passed but
    * unused — a lone agent call has no workflow gate. */
   readonly runSideAgent?: TuiPromptRunner;
+  /** `/continue` and `/restart`, when the caller provides them. Absent in
+   * tests that only exercise plain prompts. */
+  readonly runJobCommand?: TuiJobCommandRunner;
   /** Deliver a mid-turn steering message to the live prompt's session. The
    * channel answers per capability ("delivered" / "no-active-turn"); the TUI
    * never learns which harness is running. Absent in tests without steering. */
@@ -192,8 +201,11 @@ interface TuiScreen {
   stats: RunStats;
   /** When the current turn was submitted, for the elapsed figures. */
   startedAt: number;
-  /** True while this screen's turn is in flight. */
-  running: boolean;
+  /** Derived from `active`, never assigned: a turn is in flight exactly while
+   * this screen holds it. It was a field of its own, with its own two
+   * assignments, and the two could disagree — one exit path cleared `active`
+   * and left `running` set, so the screen went on refusing input. */
+  readonly running: boolean;
   /** The in-flight prompt, for interrupt and cancel bookkeeping. */
   active?: PromptState;
   /** Mid-turn input no steering channel took: run when this turn settles. */
@@ -427,16 +439,6 @@ function editorTheme(theme: Pick<PianoTheme, "accent" | "dim">): EditorTheme {
   };
 }
 
-async function readWorkflowSnapshot(path: string): Promise<WorkflowGraphSnapshot | undefined> {
-  try {
-    return parseWorkflowGraphSnapshot(JSON.parse(await readFile(path, "utf8")) as unknown);
-  } catch {
-    // The snapshot is a convenience view. Missing, malformed, or concurrently
-    // replaced files must not interrupt the interactive session.
-    return undefined;
-  }
-}
-
 /** Generic Piano shell: presentation and terminal input only. */
 export function runTui(
   deps: TuiOptions = {},
@@ -486,7 +488,9 @@ export function runTui(
           trajectory: new TrajectoryPanel(screenTheme, paneRows, scrollKeys.modifier),
           stats: emptyRunStats(),
           startedAt: Date.now(),
-          running: false,
+          get running(): boolean {
+            return this.active !== undefined;
+          },
         };
       };
       const missionScreen = makeScreen("mission", theme);
@@ -558,8 +562,7 @@ export function runTui(
           ).join("\n"));
           return;
         }
-        const currentStats = { ...front.stats, elapsedMs: Date.now() - front.startedAt };
-        const panel = renderStatusPanel(front.theme, terminal.columns, graph, currentStats, copyMode, scrollKeys.modifier).join("\n");
+        const panel = renderStatusPanel(front.theme, terminal.columns, graph, front.stats, copyMode, scrollKeys.modifier).join("\n");
         const notices = [exitDrainMsg].filter((line): line is string => line !== undefined);
         footer.setText([...notices, panel].join("\n"));
       };
@@ -571,7 +574,7 @@ export function runTui(
           if (progressSnapshotPath === undefined) return;
           graph = new WorkflowGraph(
             definition,
-            () => readWorkflowSnapshot(progressSnapshotPath!),
+            () => readWorkflowSnapshot(dirname(progressSnapshotPath!)),
             theme,
             () => {
               refreshFooter();
@@ -1133,7 +1136,7 @@ export function runTui(
           if (front.kind === "mission") mountScreen(ensureSideScreen());
           if (prompt !== "") submitPrompt(prompt, front);
         };
-        const submitPrompt = (prompt: string, screen: TuiScreen = front, alreadyEchoed = false): void => {
+        const submitPrompt = (prompt: string, screen: TuiScreen = front, alreadyEchoed = false, jobCommand?: "continue" | "restart"): void => {
           // The screen is captured, not read from `front` later. A turn's events
           // belong to the conversation that started them even after `/btw` moved
           // the foreground away: reading `front` inside the callbacks below would
@@ -1142,8 +1145,21 @@ export function runTui(
           // `/btw` swaps the runner, not the prompt path: steering, queueing,
           // interrupts, task events and the trajectory panel are identical for
           // the mission workflow and the side agent.
-          const runner = screen.kind === "side" ? deps.runSideAgent : deps.runPrompt;
+          const jobRunner = deps.runJobCommand;
+          const runner: TuiPromptRunner | undefined = jobCommand === undefined
+            ? (screen.kind === "side" ? deps.runSideAgent : deps.runPrompt)
+            : jobRunner === undefined || screen.kind === "side"
+              ? undefined
+              : (_candidate, onEvent, signoff, discuss) => jobRunner(jobCommand, onEvent, signoff, discuss);
           if (runner === undefined) return;
+          if (jobCommand !== undefined && screen.running) {
+            // A job command acts on the run's jobs, not on a live turn: it
+            // waits for the job to stop rather than steering text into it.
+            screen.transcript.appendText(`  ${screen.theme.dim}/${jobCommand} waits for the current job — press Esc to pause it, then run the command again${RST}`);
+            if (screen === front) chatViewport.scrollEnd();
+            tui.requestRender();
+            return;
+          }
           if (screen.running) {
             // Mid-turn input goes to the live session's steering channel
             // first; only what no session takes becomes the queued next turn.
@@ -1190,7 +1206,10 @@ export function runTui(
             );
             return;
           }
-          screen.running = true;
+          // Claiming the turn IS this assignment: `running` reads off it, so
+          // the screen is busy from here until the prompt clears it.
+          const promptState: PromptState = { cancelled: false, outcomeReported: false };
+          screen.active = promptState;
           deps.onTaskEvent?.({ type: "input.accepted", prompt });
           deps.onTaskEvent?.({ type: "agentic.task.started", prompt });
           let outcome: "completed" | "failed" | "cancelled" = "completed";
@@ -1216,8 +1235,6 @@ export function runTui(
           }
           refreshFooter();
           tui.requestRender();
-          const promptState: PromptState = { cancelled: false, outcomeReported: false };
-          screen.active = promptState;
           const promptEffect = runner(prompt, (event) => {
             screen.transcript.route(event);
             screen.trajectory.record(event);
@@ -1262,7 +1279,7 @@ export function runTui(
             // live session open for all error shapes.
             Effect.catchAll(() => Effect.succeed("")),
             Effect.ensuring(Effect.sync(() => {
-              screen.running = false;
+              // Releasing the turn is this assignment; `running` follows it.
               if (screen.active === promptState) screen.active = undefined;
               if (promptState.cancelled && !promptState.outcomeReported) {
                 promptState.outcomeReported = true;
@@ -1333,6 +1350,12 @@ export function runTui(
           // The rest are run-level commands. They address the mission, so while
           // the side screen owns the keyboard they are refused with the one
           // thing worth saying: how to get back to the run.
+          if (command === "/continue" || command === "/restart") {
+            if (missionOnly(command)) return;
+            editor.setText("");
+            submitPrompt(command, front, false, command === "/continue" ? "continue" : "restart");
+            return;
+          }
           if (command === "/workspace") {
             if (missionOnly("/workspace")) return;
             editor.setText("");

@@ -37,6 +37,7 @@ vi.mock("@piano/orchestrator", () => ({
   })),
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
     workflowPath: "/repo/recipes/workflows/basic.yaml",

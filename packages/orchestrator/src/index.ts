@@ -32,6 +32,14 @@ export {
   type WorkflowTournament,
 } from "./workflow.js";
 export {
+  ACTOR_KEY_VERSION,
+  actorSessionDirectory,
+  migrateLegacyActorKey,
+  workflowActorKey,
+  type WorkflowRuntimeFrame,
+  type WorkflowRuntimeInvocation,
+} from "./workflow-runtime.js";
+export {
   admitWinner,
   betterByDirection,
   selectWinner,
@@ -108,18 +116,43 @@ export {
 } from "./workflow-resume.js";
 export {
   appendWorkflowProgress,
+  applyProgressRecord,
+  closeWorkflowJob,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
+  parseProgressStreamRecord,
+  progressRecordKind,
   workflowProgressPath,
   workflowProgressSnapshotPath,
   type WorkflowProgressRecord,
+  type WorkflowProgressStartRecord,
+  type WorkflowProgressExecutionStartRecord,
+  type WorkflowProgressExecutionFinishRecord,
+  type WorkflowProgressJobClosedRecord,
+  type WorkflowProgressStreamRecord,
   type WorkflowProgressCurrent,
   type WorkflowProgressPlan,
   type WorkflowProgressProjection,
   type WorkflowProgressSnapshot,
   type WorkflowProgressStageCount,
 } from "./progress.js";
+export {
+  foldJobSpans,
+  jobs,
+  latestJob,
+  type JobSpan,
+  type JobView,
+} from "./job-spans.js";
+export {
+  readRunStatus,
+  refreshRunStatus,
+  runStatusFromParts,
+  runStatusPath,
+  writeRunStatus,
+  type RunJob,
+  type RunStatus,
+} from "./run-status.js";
 export {
   snapshotWorkerContract,
   type WorkerContractReference,

@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { Data } from "effect";
 import type { AgentEvent, AgentUsage } from "@piano/harness";
+import { parseTrajectory, trajectoryDocumentPath, trajectoryStreamPath } from "@piano/logging";
 import type { TrajectoryMetrics } from "./types.js";
 
 export class TrajectoryEvalError extends Data.TaggedError("TrajectoryEvalError")<{
@@ -110,16 +111,32 @@ export function evaluateTrajectory(events: readonly AgentEvent[]): TrajectoryMet
 /**
  * Load a persisted event stream and evaluate trajectory metrics.
  *
- * Accepts either a `trajectory.json` (a raw event array) or a JSONL transcript
- * (one event object per line). The CLI persists the raw `events` array to
- * `trajectory.json`, so that is the primary path.
+ * Prefers the run's append-only trajectory stream, then its document, then a
+ * plain JSONL transcript (one event object per line). `parseTrajectory` refuses
+ * anything that is not a trajectory record, so a transcript of bare events
+ * falls through to the last form rather than folding into a run.
  */
 export function evaluateTrajectoryFile(
   path: string,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
   return Effect.tryPromise({
     try: async () => {
-      const raw = await readFile(path, "utf8");
+      // Either path names both files: the document is what a run's readers
+      // read, and the stream beside it is where a run recorded only in the
+      // stream keeps its events. A caller holding one of them can read the run.
+      const documentPath = trajectoryDocumentPath(path);
+      const stream = await readFile(trajectoryStreamPath(documentPath), "utf8").catch(() => undefined);
+      const document = await readFile(documentPath, "utf8").catch(() => undefined);
+      const trajectory = parseTrajectory({
+        ...(stream === undefined ? {} : { stream }),
+        ...(document === undefined ? {} : { document }),
+      });
+      if (trajectory !== undefined) return evaluateTrajectory(trajectory.events as AgentEvent[]);
+      // Not a run's trajectory at all. The plain forms below are the old
+      // contract on the file the caller named — which is the stream when the
+      // caller named the stream and the document when it named the document,
+      // so re-read it rather than pick one of the two above.
+      const raw = await readFile(path, "utf8").catch(() => "");
       const trimmed = raw.trim();
       if (trimmed === "") return ZERO_METRICS;
       let parsed: unknown;
