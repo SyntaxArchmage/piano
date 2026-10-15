@@ -297,3 +297,21 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - **裁定**：H6/H7+ 等分支合并（或按 memory 的 handoff protocol 移交）后，以分支基线执行本稿 §C5 的 L0–L3；不在 main 上重复实现——main 版会是抛弃型工作且与分支的模块拆分（`scope-walker.ts`/`stage-runner.ts`）结构性冲突。
 - 本分支（`fix/evidence-read-chain`，6 commits）合并回 main 或 rebase 到分支时的预期冲突面：`trajectory.ts`（H3 vs a18904c）、`workflow-runtime.ts`（H5 纯新增，应干净）、其余无重叠。
 
+### F5. 跨 session 协调（2026-10-15，开发者裁定：考虑合并，两 session 直接沟通，共享本文件为 status record）
+
+- 邻居 session `lifecycle-refactor-dsf-velvet-corbato` 主动来同步：它正在做 **status.json 统一**（删 `progress.json`/`trajectory.json`/`resume.json` 三个派生视图）——与开发者第 3 点及本稿 H7 设计同向；当时未动实现，只在收集状态。
+- 我已回发完整 status sync：所有权清单、目标、合并前提。**合并前提三项**：(a) 主 worktree 里未提交的 `parentId` 重构（`workflow.ts`/`workflow-execution.ts`/`workflow-runtime.ts` + 3 测试）归属确认并落库——`workflow-runtime.ts` 在合并面上，不落地 git 会拒绝合并；(b) 分支冻结点；(c) `trajectory.ts` 冲突一次解清（方向取它的 status.json 结构，保留单一 serializer 原则）。
+- 实测冲突面（merge-base `fcaabbf`）：仅 5 文件 —— `evals/driver.ts`、`logging/trajectory.ts`、`orchestrator/index.ts`、`orchestrator/workflow-runtime.ts`、`tests/cli/logs-command.test.ts`，全部意图收敛型。
+- 已提醒它：删 `trajectory.json` 文档时，`piano logs` picker 与 session-picker 的 tail 读取必须同一改动里切到 status.json 投影，否则静默退化成 id-only 行（本批次一直在杀的那类病）。
+- 冻结点一到：我在本分支执行 merge → 解 5 文件 → **全量** `npm test`（共享数据结构变更，按 F2 规则升格）→ 报开发者。之后 H6 与 7 点余量在单线上执行。
+
+**F5.1 协调落定（2026-10-15 晚，三方消息往返后）**
+- **G1 裁定（邻居 session 携开发者原话）**：`status.json` **取代**（不是并存）三个 fold 视图——`progress.json`/`trajectory.json`/`resume.json` 删除；`progress.jsonl` 等 append-only ledger 保留为证据与折叠源。「ignore historical compatibility, do it straightly; before delete, review all references」。我的 H3（`7793a7e`）与邻居的 `a18904c` 均被此裁定反转，按 G4 必须写进 PR 描述。
+- **parentId WIP 归属确认**：`piano-be` session（同一主 worktree、同一分支上未提交的 `workflow.ts`/`workflow-runtime.ts`/`workflow-execution.ts` 3 处 + 3 测试；`regionPath: readonly string[]` → `parentId?: string`，删 `isDirectStageInScope`）。已要求其**先落库再合并**（`workflow-runtime.ts` 在合并面上，git 会拒绝带脏合并）；合并后其 3 处执行侧站点需按分支拆分后的新家重锚（`workflowProgressPlan/Projection` → `stage-runner-support.ts`）。
+- **事故记录（我的）**：H3 探针把 pretty-bytes 留在了 picker 测试里并被提交（`7793a7e` 红），由 piano-43 发现、piano-be 询问后认领；修复 `d182881`（picker 测试回到 compact 现实；H3 的真守卫移到 `logging.test.ts` rename 测试的单行字节断言）。教训：**探针改动要么还原要么转正，不能带着中间态提交**；且当跳门禁必须覆盖被改测试文件本身。
+- **合并执行序**（邻居冻结于 `cc92410`，全量 1542 绿）：piano-be 落库 → 我 merge `cc92410` 进本分支 → 5 文件按「trajectory.ts 取邻居方向（document 删除，stream 保留单一 serializer 原则）、logs-command.test.ts 取其 status.json 契约版」解 → 全量门禁 → 报告。
+- **合并后分工提案（待邻居确认）**：它 = `session-resume`/`session-picker`/`static-analysis`/三个 writer 的 G1 收口；我 = evals 三件（driver/trajectory-evaluator/legacy-run-adapter）+ README/headless 外部契约文本 + **H6**（§C5 的 L0–L3，在其 cursor 之上）。
+- **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `runStatusFromParts` 构造以钉住 round-trip。
+- `progressRecordKind` 未知 kind 落 `"stage-accepted"` 的缺口归邻居修（其 `421d1d1` 依赖该 fallthrough），在 `region-finalized`/`actor-turn` 之前必须落；我侧 H5 不新增 kind，无排序冲突。
+- 另有 `piano-43` session 在做 `packages/harness/src` 模块化（branch `refactor/harness-module`，base 我的 `595c51e`，P1 已落 `04034e4`）；我的 H2c 与其 P2 有潜在交叠，合并后由它 rebase。
+
