@@ -117,7 +117,7 @@ describe("half-way stop: Escape, /exit, and /resume in one UX", () => {
         resumeRunId: "run-1",
         onResume: (runId) => {
           resumed.push(runId);
-          return Effect.succeed({ ...resumeResult, progressSnapshotPath: snapshotPath });
+          return Effect.succeed({ ...resumeResult, statusPath: snapshotPath });
         },
         runPrompt: (prompt) => Effect.sync(() => {
           prompts.push(prompt);
