@@ -31,7 +31,7 @@ import {
   type WorkflowProgressStageCount,
   type WorkflowProgressStreamRecord,
 } from "./progress.js";
-import { resumeStreamPath, type ResumeActorState, type ResumeState } from "./resume-state.js";
+import { actorTableFrom, resumeStreamPath, type ResumeActorState, type ResumeState } from "./resume-state.js";
 
 /** One job, as the state document holds it.
  *
@@ -127,6 +127,9 @@ export function runStatusFromParts(parts: {
   const resume = parts.resume === undefined ? undefined : parseResumeTable(parts.resume);
   const trajectory = parseTrajectory(parts.trajectoryStream);
   if (progress === undefined && resume === undefined && trajectory === undefined) return undefined;
+  // The actors a run has: the ledger's own rows when it records them, the
+  // resume stream for a run that predates them.
+  const actors = actorTableFrom(records, resume);
 
   const runId = progress?.runId ?? resume?.runId ?? trajectory?.runId;
   const status = progress?.status ?? trajectory?.status;
@@ -159,8 +162,8 @@ export function runStatusFromParts(parts: {
     ...(progress?.invocationTime === undefined ? {} : { invocationTime: progress.invocationTime }),
     ...(progress?.current === undefined ? {} : { current: progress.current }),
     jobs: jobs(foldJobSpans(records)).map(asRunJob),
-    promptIndex: resume?.promptIndex ?? 0,
-    actors: resume?.actors ?? {},
+    promptIndex: actors.promptIndex,
+    actors: actors.actors,
   } satisfies RunStatus;
 }
 
