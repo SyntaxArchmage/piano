@@ -37,7 +37,7 @@ import {
   type DshSessionEvidence,
 } from "./dsh-session-storage.js";
 import { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
-import { dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
+import { DSH_API_KEY_ENV, dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
 import {
   agentConfigPath,
   resolveHarnessConfig,
@@ -199,7 +199,7 @@ function childEnv(
     if (config.authToken !== undefined) env.ANTHROPIC_AUTH_TOKEN = secret(config.authToken);
     if (config.homePath !== undefined && env.CLAUDE_CONFIG_DIR === undefined) env.CLAUDE_CONFIG_DIR = config.homePath;
   } else if (harness === "dsh") {
-    const apiKeyEnv = config.apiKeyEnv ?? "PIANO_DSH_API_KEY";
+    const apiKeyEnv = config.apiKeyEnv ?? DSH_API_KEY_ENV;
     if (config.apiKey !== undefined) env[apiKeyEnv] = secret(config.apiKey);
     // The official route uses these names. Generic pi-ai routes use the
     // explicit apiKeyEnv/baseURL values in their native dsh settings file.
@@ -421,7 +421,7 @@ function prepareAttempt(input: {
     const argv = harness === "claude"
       ? claudeArguments(request, config, thinking, resources)
       : harness === "dsh"
-        ? dshArguments(request, config, resources, dshHome, dshContext, dshResumeId)
+        ? dshArguments(request, config, resources, dshHome, dshContext)
         : harness === "codex"
           ? codexArguments(request, config, thinking, resources, options.additionalWritableDirs ?? [])
           : piArguments(request, config, thinking, resources, transcriptPath, harness === "pi");

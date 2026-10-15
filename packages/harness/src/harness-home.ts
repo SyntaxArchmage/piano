@@ -139,6 +139,11 @@ export function dshResumeOverlayPath(dshHome: string): string {
  * keeps the two sides from drifting apart silently. */
 export const DSH_RESUME_SESSION_ENV = "PIANO_DSH_RESUME_SESSION";
 
+/** The environment variable dsh reads its gateway secret from, when the user's
+ * config does not name one of its own. One name: it lands in the generated
+ * settings, the capability probe's env, and a real run's env. */
+export const DSH_API_KEY_ENV = "PIANO_DSH_API_KEY";
+
 /** Where the runner's own module lives.
  *
  * Keep it under the `headless` profile so its bare `@deepseek-ai/*` imports
@@ -208,7 +213,7 @@ function dshWebSearchOffPatch(): string {
 function dshSettings(config: ResolvedHarnessConfig, models: readonly string[]): string {
   if (config.provider === undefined && config.model === undefined) return "{}\n";
   const provider = config.provider ?? "deepseek-official";
-  const apiKeyEnv = config.apiKeyEnv ?? "PIANO_DSH_API_KEY";
+  const apiKeyEnv = config.apiKeyEnv ?? DSH_API_KEY_ENV;
   if (provider === "deepseek-official") {
     // The official route's catalog is dsh's own; only the credential and
     // endpoint are deployment settings.

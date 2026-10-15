@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
 import {
+  DSH_API_KEY_ENV,
   DSH_RESUME_SESSION_ENV,
   dshResumeOverlayPath,
   prepareHarnessHomes,
@@ -59,7 +60,7 @@ export async function probeDshResumeCapability(
       const secret = /^[A-Z][A-Z0-9_]*$/.test(config.apiKey)
         ? (env[config.apiKey] ?? config.apiKey)
         : config.apiKey;
-      env[config.apiKeyEnv ?? "PIANO_DSH_API_KEY"] = secret;
+      env[config.apiKeyEnv ?? DSH_API_KEY_ENV] = secret;
     }
     const args = [
       "--profile", config.profile ?? "headless",

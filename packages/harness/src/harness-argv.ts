@@ -50,11 +50,9 @@ export function piArguments(
   for (const path of request.skillPaths ?? []) args.push("--skill", path);
   // The pi CLI accepts `--append-system-prompt <text>` (repeatable). Inline
   // the loaded resources so agents.md and the harness appendix reach the
-  // subprocess; previously these were dropped entirely.
-  const appendix = [
-    resources.systemPrompt,
-    ...resources.contextFiles.map((file) => `# ${file.path}\n${file.content}`),
-  ].filter((value): value is string => value !== undefined && value !== "").join("\n\n");
+  // subprocess. Skills are left out on purpose: they already travel as the
+  // `--skill` paths above, so folding their text in too would double them.
+  const appendix = resourceAppendix(resources, false);
   if (appendix !== "") args.push("--append-system-prompt", appendix);
   if (request.tools !== undefined && request.tools.length > 0) {
     if (request.tools.includes(PI_WEB_SEARCH_TOOL_NAME)) args.push("--extension", piWebSearchExtensionPath);
@@ -100,18 +98,21 @@ export function codexArguments(
   return args;
 }
 
+/** A session handle that is a plain UUID — the shape Codex thread ids and
+ * Claude session ids both mint. dsh's `session-<uuid>` is a different shape and
+ * is checked separately. */
+const UUID_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Codex emits UUID-shaped thread ids. Do not hand Piano's provisional logical
  * id (`codex-<uuid>`) to `exec resume`: Codex would reject it and lose the
  * retry. A native id is preferred, while the UUID fallback keeps continuations
  * written by an older adapter readable. */
-const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 function codexResumeId(continuation: AgentContinuation | undefined): string | undefined {
   if (continuation === undefined || continuation.harness !== "codex") return undefined;
   if (continuation.nativeSessionId !== undefined && continuation.nativeSessionId !== "") {
     return continuation.nativeSessionId;
   }
-  return CODEX_THREAD_ID.test(continuation.sessionId) ? continuation.sessionId : undefined;
+  return UUID_SESSION_ID.test(continuation.sessionId) ? continuation.sessionId : undefined;
 }
 
 function resourceAppendix(resources: LoadedResources, includeSkills: boolean): string {
@@ -128,12 +129,10 @@ function resourceAppendix(resources: LoadedResources, includeSkills: boolean): s
  * cancelled turn used to kill every later prompt of a coding session. A
  * continuation that never observed a native handle therefore starts a fresh
  * session rather than being handed an id Claude cannot resolve. */
-const NATIVE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 function claudeResumeId(continuation: AgentContinuation | undefined): string | undefined {
   if (continuation === undefined || continuation.harness !== "claude") return undefined;
   const native = continuation.nativeSessionId;
-  return native !== undefined && NATIVE_SESSION_ID.test(native) ? native : undefined;
+  return native !== undefined && UUID_SESSION_ID.test(native) ? native : undefined;
 }
 
 /** The Claude CLI `--effort` label for one portable thinking level.
@@ -266,14 +265,13 @@ export function dshResumeSessionEnv(resumeSessionId: string | undefined): NodeJS
  * provider is the one Piano configured for dsh — a per-request provider has no
  * generated catalog route and stays unsupported here. The resume overlay is
  * always applied (see below); the session id itself travels as an environment
- * reference, so `resumeSessionId` no longer shapes the argv. */
+ * reference, not as an argument. */
 export function dshArguments(
   request: AgentRequest,
   config: ResolvedHarnessConfig,
   resources: LoadedResources,
   dshHome: string,
   continuationContext?: string,
-  _resumeSessionId?: string,
 ): string[] {
   const appendix = resourceAppendix(resources, true);
   const task = continuationContext === undefined
