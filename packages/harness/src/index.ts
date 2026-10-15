@@ -86,10 +86,10 @@ export {
   type HarnessHomes,
   type HarnessHomeOptions,
 } from "./harness-home.js";
+export { eventMetadata } from "./event-metadata.js";
 export {
   asAgentMessageEvent,
   asAgentMessage,
-  eventMetadata,
   shouldPersistAgentEvent,
   messageText,
   textDelta,

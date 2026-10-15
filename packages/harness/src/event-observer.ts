@@ -1,7 +1,8 @@
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { logger, type Logging, type Source } from "@piano/logging";
-import { eventMetadata, shouldPersistAgentEvent, type AgentEvent } from "./events.js";
+import { eventMetadata } from "./event-metadata.js";
+import { shouldPersistAgentEvent, type AgentEvent } from "./events.js";
 
 const EVENT_SOURCE: Source = {
   module: "harness",

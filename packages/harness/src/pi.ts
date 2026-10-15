@@ -19,6 +19,7 @@ import type {
   AgentRequest,
   AgentResult,
 } from "./agent-contract.js";
+import { eventMetadata } from "./event-metadata.js";
 import { asRecord, stringOr } from "./json-narrowing.js";
 import { accumulateStreamedText, normalizePortableEvent, usageFromFields } from "./portable-events.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
@@ -34,7 +35,6 @@ import {
 import {
   asAgentMessageEvent,
   asAgentMessage,
-  eventMetadata,
   shouldPersistAgentEvent,
   messageText,
   THINKING_LEVELS,
