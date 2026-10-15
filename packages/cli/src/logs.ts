@@ -508,10 +508,27 @@ function printJobs(
       .map((line) => parseProgressStreamRecord(line))
       .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
     if (records.length === 0) {
+      if (lines.every((line) => line.trim() === "")) {
+        return yield* Effect.fail(new LogsStorageError({
+          operation: "jobs",
+          path: ledgerPath,
+          message: "the run has no progress ledger to fold jobs from",
+        }));
+      }
+      // A ledger with lines this build cannot read is not a missing ledger: it
+      // is one written before the record contract, and saying so beats an
+      // error that reads like the file is gone.
+      if (jobOrdinal === undefined) {
+        yield* Effect.sync(() => {
+          console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
+          console.log(paint(COLORS.dim, "no records this build reads — the ledger predates the record contract"));
+        });
+        return;
+      }
       return yield* Effect.fail(new LogsStorageError({
         operation: "jobs",
         path: ledgerPath,
-        message: "the run has no progress ledger to fold jobs from",
+        message: `job #${jobOrdinal} is not in a ledger this build can read`,
       }));
     }
     const views = jobs(foldJobSpans(records));

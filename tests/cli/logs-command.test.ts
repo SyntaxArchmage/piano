@@ -286,7 +286,7 @@ describe("piano logs --jobs", () => {
     try {
       await Effect.runPromise(logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
       expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("no jobs recorded"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("no records this build reads"));
     } finally {
       output.mockRestore();
     }
