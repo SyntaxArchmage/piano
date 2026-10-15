@@ -19,6 +19,7 @@ import {
   executeWorkflow,
   loadAndExecuteWorkflow,
   loadWorkflow,
+  progressRecordKind,
   readWorkflowExecutionContinuation,
   WorkflowError,
   type WorkflowSignoffRequest,
@@ -38,6 +39,19 @@ import {
 } from "../../packages/orchestrator/src/legacy-contract-projections.js";
 
 const runFile = promisify(execFile);
+
+/** The accepted-stage records of a run's append-only progress stream, in order.
+ *
+ * The stream also carries `stage-started` records, so a reader that wants "what
+ * the orchestrator accepted" asks by kind instead of by line position. These
+ * tests are about orchestration semantics — which stages ran, in what order,
+ * with what payload — so they read the accepted records. */
+function acceptedProgress<T>(text: string): T[] {
+  return text.trim().split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((record) => progressRecordKind(record) === "stage-accepted") as T[];
+}
 
 const BASIC_WORKFLOW = `version: 3
 workflow:
@@ -762,7 +776,7 @@ describe(" workflow execution", () => {
       expect(state.current_best.source).toBe("kernel.py");
       expect(state.current_best.promoted_at).toEqual(expect.any(String));
       expect(state.history).toHaveLength(1);
-      const progress = (await readFile(result.progressPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { resultPayload?: { current_best?: { digest?: string } } });
+      const progress = acceptedProgress<{ resultPayload?: { current_best?: { digest?: string } } }>(await readFile(result.progressPath, "utf8"));
       expect(progress[0]?.resultPayload?.current_best?.digest).toBe(candidateDigest);
       const accepted = JSON.parse(await readFile(result.stages[0]!.resultPath!, "utf8")) as {
         current_best?: { path?: string; digest?: string };
@@ -1082,13 +1096,10 @@ describe(" workflow execution", () => {
       ]));
       expect(result.stages[0]?.projections?.find(({ id }) => id === "round.materialization-v1")?.value)
         .toEqual(result.stages[0]?.resultPayload);
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as {
-          resultPayload?: { decision?: string };
-          projections?: Array<{ id: string; value: unknown }>;
-        });
+      const progress = acceptedProgress<{
+        resultPayload?: { decision?: string };
+        projections?: Array<{ id: string; value: unknown }>;
+      }>(await readFile(result.progressPath, "utf8"));
       expect(progress[0]?.resultPayload?.decision).toBe("DISCARD");
       expect(progress[0]?.projections).toContainEqual(expect.objectContaining({
         id: "round.decision",
@@ -2147,10 +2158,7 @@ workflow:
       }));
       expect(calls.map(stageId)).toEqual(["setup", "summary"]);
       expect(result.stages.map((stage) => stage.stageId)).toEqual(["setup", "summary"]);
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { stageId: string; resultPayload?: { status?: string } });
+      const progress = acceptedProgress<{ stageId: string; resultPayload?: { status?: string } }>(await readFile(result.progressPath, "utf8"));
       expect(progress.map((record) => record.stageId)).toEqual(["setup", "summary"]);
       expect(progress[0]?.resultPayload?.status).toBe("blocked");
       expect(result.stages[0]?.projections).toContainEqual(expect.objectContaining({
@@ -2726,7 +2734,7 @@ workflow:
     }
   });
 
-  it("keeps distinct logical stages separate when they use the same worker plugin", async () => {
+  it("shares one conversation when two stages use the same worker plugin", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-same-worker-run-"));
     try {
       await writeFile(join(root, "same-worker.yml"), SAME_WORKER_WORKFLOW);
@@ -2752,12 +2760,13 @@ workflow:
       }));
       expect(result.stages.map((stage) => stage.id)).toEqual(["first@root", "second@root"]);
       expect(calls).toHaveLength(2);
+      // One worker, one conversation: the second stage continues the first
+      // stage's chat instead of starting a fresh one.
       expect(calls[0]?.continuation).toBeUndefined();
-      expect(calls[1]?.continuation).toBeUndefined();
+      expect(calls[1]?.continuation?.sessionId).toBe("session-first");
       expect(calls[1]?.contextFilePaths?.every((p) => p.endsWith("agents.pi.md"))).toBe(true);
-      expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(2);
-      expect(calls[0]?.sessionDir).toContain("actors/pi/first/root/session");
-      expect(calls[1]?.sessionDir).toContain("actors/pi/second/root/session");
+      expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(1);
+      expect(calls[0]?.sessionDir).toContain("actors/pi/basic/root/session");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2796,7 +2805,9 @@ workflow:
       expect(calls.map(stageId)).toEqual(["left", "right", "joined"]);
       expect(result.stages.map((stage) => stage.id)).toEqual(["left@root", "right@root", "joined@root"]);
       const joinCall = calls.find((call) => stageId(call) === "joined");
-      expect(joinCall?.continuation).toBeUndefined();
+      // All three stages share the `basic` worker, so the join continues the
+      // last accepted turn — right's.
+      expect(joinCall?.continuation?.sessionId).toBe("session-right");
       const handoffPath = joinCall?.contextFilePaths?.find((path) => path.endsWith("/joined.json"));
       const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ stage: string; text: string }> };
       expect(handoff.inputs).toMatchObject([
@@ -2835,9 +2846,11 @@ workflow:
       }));
       const proposes = calls.filter((call) => stageId(call) === "tune.propose");
       expect(proposes).toHaveLength(3);
-      expect(proposes.map((call) => call.continuation?.sessionId)).toEqual([undefined, "tune.propose-1", "tune.propose-2"]);
+      // The seed stage shares the `basic` worker, so the loop entry continues
+      // the seed's conversation; each iteration then continues the last one.
+      expect(proposes.map((call) => call.continuation?.sessionId)).toEqual(["seed-1", "tune.propose-1", "tune.propose-2"]);
       expect(new Set(proposes.map((call) => call.sessionDir))).toHaveLength(1);
-      expect(proposes[0]?.sessionDir).toContain("actors/pi/tune.propose/root/session");
+      expect(proposes[0]?.sessionDir).toContain("actors/pi/basic/root/session");
       expect(new Set(proposes.map(validationPath)).size).toBe(3);
       const proposalStages = result.stages.filter((stage) => stage.stageId === "tune.propose");
       expect(proposalStages.map((stage) => stage.handoffRecordPath)).toEqual(expect.arrayContaining([
@@ -2893,7 +2906,7 @@ workflow:
     }
   });
 
-  it("feeds an accepted prior-iteration child result back to the loop entry without resuming an upstream actor", async () => {
+  it("feeds an accepted prior-iteration child result back to the loop entry, sharing one worker conversation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-loop-feedback-run-"));
     try {
       await writeFile(join(root, "loop-feedback.yml"), LOOP_FEEDBACK_WORKFLOW);
@@ -2948,15 +2961,18 @@ workflow:
       const measures = calls.filter((call) => stageId(call) === "tune.measure");
       expect(profiles).toHaveLength(3);
       expect(measures).toHaveLength(3);
+      // seed, profile, and measure all use `basic`, so one conversation runs
+      // through the whole loop: each turn continues whatever was accepted
+      // last in the root lane. The feedback handoff below is unaffected.
       expect(profiles.map((call) => call.continuation?.sessionId)).toEqual([
-        undefined,
-        "tune.profile-session-1",
-        "tune.profile-session-2",
-      ]);
-      expect(measures.map((call) => call.continuation?.sessionId)).toEqual([
-        undefined,
+        "seed-session-1",
         "tune.measure-session-1",
         "tune.measure-session-2",
+      ]);
+      expect(measures.map((call) => call.continuation?.sessionId)).toEqual([
+        "tune.profile-session-1",
+        "tune.profile-session-2",
+        "tune.profile-session-3",
       ]);
 
       const contexts = await Promise.all(profiles.map(async (call) => {
@@ -2979,15 +2995,12 @@ workflow:
         id: "tune.measure@tune/iter-1",
         resultPayload: { text: "tune.measure@tune/iter-1" },
       });
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as {
-          stageId: string;
-          iteration?: number;
-          sessionId: string;
-          resultPayload?: { text?: string };
-        });
+      const progress = acceptedProgress<{
+        stageId: string;
+        iteration?: number;
+        sessionId: string;
+        resultPayload?: { text?: string };
+      }>(await readFile(result.progressPath, "utf8"));
       expect(progress).toHaveLength(7);
       expect(progress.filter((record) => record.stageId === "tune.profile").map((record) => record.iteration)).toEqual([0, 1, 2]);
       expect(progress.filter((record) => record.stageId === "tune.measure").map((record) => record.resultPayload?.text)).toEqual([
@@ -3181,12 +3194,17 @@ workflow:
         await expect(stat(join(call.cwd, ".piano-run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
       }
       expect(implementCalls.map((call) => call.sessionDir)).toEqual(expect.arrayContaining([
-        expect.stringContaining("actors/pi/tournament.implement/tournament/slot-0/session"),
-        expect.stringContaining("actors/pi/tournament.implement/tournament/slot-1/session"),
+        expect.stringContaining("actors/pi/basic/tournament/slot-0/session"),
+        expect.stringContaining("actors/pi/basic/tournament/slot-1/session"),
       ]));
       const verifyCalls = calls.filter((call) => stageId(call) === "tournament.verify");
       expect(verifyCalls).toHaveLength(2);
-      expect(verifyCalls.map((call) => call.continuation)).toEqual([undefined, undefined]);
+      // Within a lane one worker (and so one actor) runs verify, which
+      // continues the implement turn that produced its candidate.
+      expect(verifyCalls.map((call) => call.continuation?.sessionId).sort()).toEqual([
+        "tournament.implement-tournament.implement-tournament-slot-0",
+        "tournament.implement-tournament.implement-tournament-slot-1",
+      ]);
       for (const call of verifyCalls) {
         expect(verifiedContents.get(call.cwd)).toBe(`candidate:${invocationId(implementCalls.find((implement) => implement.cwd === call.cwd)!)}\n`);
       }
@@ -3199,7 +3217,8 @@ workflow:
         { index: 1, value: { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" } },
       ]);
       const summary = calls.find((call) => stageId(call) === "summary");
-      expect(summary?.continuation).toBeUndefined();
+      // summary shares `basic` with the root-lane propose, so it continues it.
+      expect(summary?.continuation?.sessionId).toBe("propose-propose-root");
       const summaryPath = summary?.contextFilePaths?.find((path) => path.endsWith("/candidates.json"));
       const summaryInputs = JSON.parse(await readFile(summaryPath!, "utf8")) as {
         inputs: Array<{ instanceId: string; stageId: string; workspace: { key: string; cwd: string; kind: string; recordPath: string } }>;
@@ -3248,10 +3267,7 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .filter((time) => time.stageId === "tournament.implement")
         .map((time) => time.instanceId).sort()).toEqual(["tournament/slot-0", "tournament/slot-1"]);
-      const progressRecords = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { progress?: { completedStages?: number } });
+      const progressRecords = acceptedProgress<{ progress?: { completedStages?: number } }>(await readFile(join(session.runDir, "progress.jsonl"), "utf8"));
       expect(progressRecords.map((record) => record.progress?.completedStages)).toEqual([1, 2, 3, 4, 5, 6]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -4318,7 +4334,7 @@ workflow:
       if (!Exit.isSuccess(result)) return;
       expect(result.value.text).toBe("ans = 4");
       expect(result.value.model).toBe("test-model");
-      await expect(stat(join(session.runDir, "actors", "pi", "respond", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+      await expect(stat(join(session.runDir, "actors", "pi", "basic", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
       const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
       expect(log).toContain('"event":"workflow.loaded"');
@@ -4372,7 +4388,7 @@ workflow:
         model: "stage-model",
         thinkingLevel: "high",
       });
-      const progress = JSON.parse((await readFile(result.progressPath, "utf8")).trim()) as Record<string, unknown>;
+      const [progress] = acceptedProgress<Record<string, unknown>>(await readFile(result.progressPath, "utf8"));
       expect(progress).toMatchObject({ requestedModel: "stage-model", requestedThinkingLevel: "high", model: "stage-model", thinkingLevel: "high" });
       const handoffPath = result.stages[0]?.handoffRecordPath;
       expect(handoffPath).toBeDefined();
@@ -5538,8 +5554,8 @@ workflow:
             await consolidateInto(request);
             // Replace the real resume-state target after the worker mutates the
             // parent, making the actual persistence Effect fail deterministically.
-            await rm(join(session.runDir, "resume.json"), { force: true });
-            await mkdir(join(session.runDir, "resume.json"));
+            await rm(join(session.runDir, "resume.jsonl"), { force: true });
+            await mkdir(join(session.runDir, "resume.jsonl"));
           } else if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });

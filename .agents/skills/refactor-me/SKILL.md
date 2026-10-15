@@ -68,7 +68,7 @@ Every proposal carries every slot; delete a slot that has no content rather than
 2. Paste the returned string into `裁决` verbatim, including free text typed instead of an option, then write the verdict and `理由` beside it. Do not paraphrase the answer.
 3. Accept `停` (write state and end now), `先放着` (`暂缓`), `展开` (re-present with deeper evidence and re-ask), and `拆出 P1a/P1b` (split the item, re-ask the parts). Reversing an earlier decision re-opens that item; nothing is applied yet, so revising is free.
 4. A batch answer like 都做 is valid only after it is echoed back as the exact numbered list and confirmed once. An amended scope rewrites the item's 位置, 步骤, and 检查 before it becomes 已准.
-5. When the discussion surfaces a general design position, fold it into `TASTE.md` with 出处 (`出处: 2026-10-13 P1`) and cite it in later items.
+5. When the discussion surfaces a general design position, fold it into `TASTE.md` with 出处 (`出处: 2026-10-13 P1`) and cite it in later items. An entry has to be a general design position — the kind that shapes how code is written here — not a detail of a single mechanism. A choice that only makes sense inside the mechanism the session produced stays in that item.
 
 ## Phase 3 — implement
 

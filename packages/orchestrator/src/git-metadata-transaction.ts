@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
-import { errorMessage } from "./errors.js";
+import { errorMessage, isMissingPathError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
 const MARKERS = ["ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "AUTO_MERGE", "BISECT_HEAD", "MERGE_MSG", "SQUASH_MSG"];
@@ -103,12 +103,6 @@ function liftTransaction(
   };
 }
 
-/** ENOENT is an answer rather than an error for these checks: an absent lock,
- * marker, or metadata directory is a state the transaction already describes. */
-function isMissingPath(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
-
 /** A symlinked metadata node can point the transaction at a different
  * repository, so both reads and replacements refuse one outright. */
 function assertNotSymlink(info: Awaited<ReturnType<typeof lstat>>, reason: string): void {
@@ -141,7 +135,7 @@ async function file(path: string): Promise<FileState> {
     if (!info.isFile()) throw new GitMetadataTransactionError("capture-failed", `unsupported Git metadata node: ${path}`);
     return { data: await readFile(path), mode: info.mode & 0o7777 };
   } catch (error) {
-    if (isMissingPath(error)) return undefined;
+    if (isMissingPathError(error)) return undefined;
     throw error;
   }
 }
@@ -198,14 +192,14 @@ async function lockFiles(directory: string): Promise<readonly string[]> {
     }
     return found;
   } catch (error) {
-    if (isMissingPath(error)) return [];
+    if (isMissingPathError(error)) return [];
     throw error;
   }
 }
 
 async function rootLockFiles(directory: string): Promise<readonly string[]> {
   const info = await lstat(directory).catch((error: unknown) => {
-    if (isMissingPath(error)) {
+    if (isMissingPathError(error)) {
       throw new GitMetadataTransactionError("capture-failed", `missing Git metadata directory: ${directory}`);
     }
     throw error;
@@ -230,7 +224,7 @@ async function assertMetadataRoots(gitDir: string, commonDir: string): Promise<r
   const refsRoots = [...new Set(roots.map((root) => join(root, "refs")))];
   for (const refsRoot of refsRoots) {
     const info = await lstat(refsRoot).catch((error: unknown) => {
-      if (isMissingPath(error)) return undefined;
+      if (isMissingPathError(error)) return undefined;
       throw error;
     });
     if (info) assertRealDirectory(info, `unsafe Git refs root: ${refsRoot}`);
@@ -254,7 +248,7 @@ async function assertNoMetadataLocks(repository: Repository): Promise<void> {
       await lstat(path);
       throw new GitMetadataTransactionError("unsafe-mutation", `Git metadata is locked: ${path}`);
     } catch (error) {
-      if (isMissingPath(error)) continue;
+      if (isMissingPathError(error)) continue;
       throw error;
     }
   }
@@ -319,7 +313,7 @@ async function snapshot(repository: Repository): Promise<Snapshot> {
   const operationDirs = new Map<string, boolean>();
   for (const [name, path] of repository.operationDirs) {
     const present = await lstat(path).then(() => true, (error: unknown) => {
-      if (isMissingPath(error)) return false;
+      if (isMissingPathError(error)) return false;
       throw error;
     });
     operationDirs.set(name, present);

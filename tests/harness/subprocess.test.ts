@@ -187,9 +187,9 @@ case "$PIANO_FAKE_MODE" in
     # project directory name is storage's business — the session is looked up by
     # id — so any name works here.
     if [ -n "\${PIANO_DSH_RESUME_SESSION:-}" ]; then
-      resumed="$DSH_HOME/sessions/resumed/\${PIANO_DSH_RESUME_SESSION}/session.jsonl"
+      resumed="$DSH_HOME/sessions/resumed/\${PIANO_DSH_RESUME_SESSION}/session.v3.jsonl"
       mkdir -p "$(dirname "$resumed")"
-      printf '%s\\n' '{"type":"session","version":1,"id":"resumed-session","createdAt":1,"cwd":"/resumed","delegationDepth":0}' > "$resumed"
+      printf '%s\\n' '{"type":"session","version":3,"id":"resumed-session","createdAt":1,"cwd":"/resumed","delegationDepth":0}' > "$resumed"
       printf '%s\\n' '{"type":"turn/start","seq":1,"data":{"turn":1}}' >> "$resumed"
       printf '%s\\n' '{"type":"assistant/message","data":{"turn":1,"step":1,"message":{"role":"assistant","content":[{"type":"text","text":"TURN-ONE-ANSWER"}]},"usage":{"inputTokens":3,"outputTokens":2}}}' >> "$resumed"
       printf '%s\\n' '{"type":"step/end","seq":3,"data":{"turn":1,"step":1}}' >> "$resumed"
@@ -262,16 +262,19 @@ case "$PIANO_FAKE_MODE" in
     IFS= read -r _next_command
     ;;
   *)
+    # Real pi RPC stdout: lifecycle frames, message_update text deltas,
+    # tool_execution frames, and a terminal agent_settled. Real pi never
+    # emits the Anthropic content_block_delta dialect and never a result
+    # frame: agent_settled is its terminal.
     printf '%s\\n' '{"type":"agent_start"}'
     printf '%s' '{"type":"message_update","message":{"role":"assistant","content":""},"assistantMessageEvent":{"type":"text_delta","delta":"hel'
     sleep 0.01
-    printf '%s\\n' '"}}'
-    printf '%s\\n' '{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}'
+    printf '%s\\n' 'lo"}}'
     printf '%s\\n' '{"type":"tool_execution_start","toolCallId":"tool-1","toolName":"bash","args":{"command":"echo ok"}}'
     printf '%s\\n' '{"type":"tool_execution_update","toolCallId":"tool-1","toolName":"bash","args":{},"partialResult":"ok"}'
     printf '%s\\n' '{"type":"tool_execution_end","toolCallId":"tool-1","toolName":"bash","result":"ok","isError":false}'
     printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":"hello","usage":{"input_tokens":2,"output_tokens":3}}}'
-    printf '%s' '{"type":"result","result":"hello","session_id":"fake-session","usage":{"total_tokens":5}}'
+    printf '%s\\n' '{"type":"agent_settled"}'
     printf '%s\\n' 'fake diagnostic' >&2
     ;;
 esac
@@ -332,29 +335,31 @@ function runSubprocess(
 }
 
 describe(" subprocess harness", () => {
-  it("parses chunk-split and trailing NDJSON, normalizes tools, and persists transcript/observability", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-subprocess-test-"));
+  // stdout's bytes arrive in arbitrary chunks: the parser must hold a partial
+  // line until its newline rather than hand each chunk through as its own
+  // frame. The default fixture splits one `message_update` delta mid-string
+  // ("hel" | "lo"), so a broken lineBuffer shows up as two partial deltas or a
+  // parse error instead of this single whole-text delta.
+  it("reassembles a stdout frame split across writes into one delta", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-subprocess-split-"));
     try {
       const session = await testSession(root);
       const binPath = await fakeHarness(root);
-      const exit = await runSubprocess(session, root, binPath, "success");
+      const events: AgentEvent[] = [];
+      const exit = await Effect.runPromiseExit(executeSubprocessAgent("pi", {
+        cwd: root,
+        prompt: "hello",
+        sessionDir: join(session.runDir, "subprocess-sessions"),
+        onEvent: (event) => events.push(event),
+      }, {
+        binPath,
+        env: { PIANO_FAKE_MODE: "success" },
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
       expect(Exit.isSuccess(exit)).toBe(true);
-      if (!Exit.isSuccess(exit)) return;
-      expect(exit.value).toMatchObject({ sessionId: "fake-session", text: "hello" });
-      // pi's payload is Piano's own audit trail, not a pi session file: pi owns
-      // the `--session` path it writes itself, so the adapter keeps canonical
-      // records in a sibling `.audit.jsonl` rather than becoming a second
-      // author on the conversation pi resumes from. Each record is a flat
-      // canonical message — no synthesised header, no parentId chain.
-      expect(exit.value.transcriptPath).toMatch(/\.audit\.jsonl$/);
-      const transcript = await readFile(exit.value.transcriptPath, "utf8");
-      const entries = transcript.trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
-      expect(entries.length).toBeGreaterThan(0);
-      expect(entries.every((entry) => entry.type === "message")).toBe(true);
-      expect(entries.some((entry) => (entry.message as { content?: string } | undefined)?.content === "hello")).toBe(true);
-      const log = await readFile(session.log.path, "utf8");
-      expect(log).toContain('"event":"agent.event.received"');
-      expect(log).toContain('"eventType":"tool_execution_start"');
+      expect(events.filter((event) => textDelta(event) !== undefined).map((event) => textDelta(event))).toEqual(["hello"]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1631,7 +1636,7 @@ describe(" subprocess harness", () => {
       const dshHome = await dshHomeFixture(root);
       const sessionFile = join(dshHome, "sessions", "foreign-project", "native-session", "session.jsonl");
       const nativeEvents = [
-        { type: "session", version: 1, id: "native-session", createdAt: Date.now(), cwd: root, delegationDepth: 0 },
+        { type: "session", version: 3, id: "native-session", createdAt: Date.now(), cwd: root, delegationDepth: 0 },
         { type: "turn/start", seq: 1, data: { turn: 1 } },
         { type: "step/start", seq: 2, data: { turn: 1, step: 1 } },
         { type: "assistant/message", data: {
@@ -1719,7 +1724,7 @@ describe(" subprocess harness", () => {
       await mkdir(currentCwd, { recursive: true });
       const sessionFile = join(dshHome, "sessions", "--earlier-cwd-project--", DSH_SESSION, "session.jsonl");
       const nativeEvents = [
-        { type: "session", version: 1, id: DSH_SESSION, createdAt: Date.now(), cwd: earlierCwd, delegationDepth: 0 },
+        { type: "session", version: 3, id: DSH_SESSION, createdAt: Date.now(), cwd: earlierCwd, delegationDepth: 0 },
         { type: "turn/start", seq: 1, data: { turn: 1 } },
         { type: "assistant/message", data: {
           turn: 1,
@@ -1802,7 +1807,7 @@ describe(" subprocess harness", () => {
       await mkdir(cwd, { recursive: true });
       const sessionsRoot = join(dshHome, "sessions");
       const sessionText = (id: string, text: string): string => [
-        { type: "session", version: 1, id, createdAt: Date.now(), cwd, delegationDepth: 0 },
+        { type: "session", version: 3, id, createdAt: Date.now(), cwd, delegationDepth: 0 },
         { type: "turn/start", seq: 1, data: { turn: 1 } },
         { type: "assistant/message", data: {
           turn: 1,
@@ -1893,7 +1898,7 @@ describe(" subprocess harness", () => {
       const cwd = join(root, "slots", "tune", "slot-0");
       await mkdir(cwd, { recursive: true });
       const sessionText = (id: string, text: string): string => [
-        { type: "session", version: 1, id, createdAt: Date.now(), cwd, delegationDepth: 0 },
+        { type: "session", version: 3, id, createdAt: Date.now(), cwd, delegationDepth: 0 },
         { type: "turn/start", seq: 1, data: { turn: 1 } },
         { type: "assistant/message", data: {
           turn: 1,
@@ -2125,7 +2130,7 @@ describe(" subprocess harness", () => {
         },
       });
       const nativeEvents = (lines: readonly string[]): string => [
-        JSON.stringify({ type: "session", version: 1, id: DSH_SESSION, createdAt: Date.now(), cwd, delegationDepth: 0 }),
+        JSON.stringify({ type: "session", version: 3, id: DSH_SESSION, createdAt: Date.now(), cwd, delegationDepth: 0 }),
         JSON.stringify({ type: "turn/start", seq: 1, data: { turn: 1 } }),
         ...lines,
         JSON.stringify({ type: "step/end", seq: 99, data: { turn: 1, step: 1 } }),
@@ -2209,7 +2214,7 @@ describe(" subprocess harness", () => {
       const events: AgentEvent[] = [];
       let firstDeltaAt = 0;
       let doneAt = 0;
-      const header = JSON.stringify({ type: "session", version: 1, id: "native-session", createdAt: Date.now(), cwd: root, delegationDepth: 0 });
+      const header = JSON.stringify({ type: "session", version: 3, id: "native-session", createdAt: Date.now(), cwd: root, delegationDepth: 0 });
       const turn = JSON.stringify({ type: "turn/start", seq: 1, time: Date.now(), data: { turn: 1 } });
       const row = JSON.stringify({
         type: "text-chunks",
@@ -2280,7 +2285,7 @@ describe(" subprocess harness", () => {
         DSH_HOME: dshHome,
         PIANO_FAKE_MODE: "dsh-zstd-stream",
         PIANO_DSH_SESSION_FILE: sessionFile,
-        PIANO_DSH_STREAM_HEADER: JSON.stringify({ type: "session", version: 1, id: "native-session", createdAt: now, cwd: root, delegationDepth: 0 }),
+        PIANO_DSH_STREAM_HEADER: JSON.stringify({ type: "session", version: 3, id: "native-session", createdAt: now, cwd: root, delegationDepth: 0 }),
         PIANO_DSH_STREAM_TURN: JSON.stringify({ type: "turn/start", seq: 1, time: now + 1, data: { turn: 1 } }),
         PIANO_DSH_STREAM_ROW: JSON.stringify({ type: "text-chunks", seq0: 2, time0: now + 2, data: { turn: 1, step: 1, index: 0, dt: [1, 1], texts: ["one", " two", " three"] } }),
         PIANO_DSH_STREAM_ASSISTANT: JSON.stringify({ type: "assistant/message", seq: 5, time: now + 5, data: { turn: 1, step: 1, message: { role: "assistant", content: [{ type: "text", text: "one two three" }] } } }),

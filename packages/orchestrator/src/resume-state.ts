@@ -1,10 +1,15 @@
 import { FileSystem } from "@effect/platform";
-import { Effect, Option } from "effect";
-import { join } from "node:path";
+import { Effect } from "effect";
+import { dirname, join } from "node:path";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
+import { refreshRunStatus } from "./run-status.js";
 import type { AgentContinuation } from "@piano/harness";
 
-const RESUME_STATE_NAME = "resume.json";
+/** The legacy single-document form. Read for runs written before the stream
+ * existed; never written now. */
+const RESUME_DOCUMENT_NAME = "resume.json";
+/** The append-only form: one complete table per line, newest last. */
+const RESUME_STREAM_NAME = "resume.jsonl";
 
 export interface ResumeActorState {
   readonly harness: string;
@@ -21,74 +26,111 @@ export interface ResumeState {
   readonly actors: Record<string, ResumeActorState>;
 }
 
+/** Path of the legacy document. Kept for readers that predate the stream. */
 export function resumeStatePath(runDir: string): string {
-  return join(runDir, RESUME_STATE_NAME);
+  return join(runDir, RESUME_DOCUMENT_NAME);
 }
 
-/** Where an in-flight write stages its bytes before the atomic rename. Unique
- * per process, so two writers can never interleave their bytes in one staging
- * file; a crash can leave one behind, and {@link readResumeState} reads it as a
- * recovery source rather than ignoring it. */
-function stagingPath(path: string): string {
-  return `${path}.${process.pid}.tmp`;
+/** Path of the append-only resume stream. */
+export function resumeStreamPath(runDir: string): string {
+  return join(runDir, RESUME_STREAM_NAME);
 }
 
-/** Write the run's resume state.
+function resumeError(path: string, operation: string) {
+  return (cause: unknown) => workflowError("schedule", path, `${operation}: ${errorMessage(cause)}`);
+}
+
+/** Write the run's resume state as one more line of the stream.
  *
- * Incremental, not a replacement: the given actors are merged into whatever the
- * file already holds, so a prompt that touches a subset of the actors cannot
- * erase the others' sessions. The orchestrator passes the table it was seeded
- * with, so this is the second line of defense — a caller that lost an actor
- * upstream would otherwise delete it here.
+ * Appending is the whole write. The document this replaced was read, merged and
+ * renamed over atomically, which meant a crash could land between its bytes and
+ * the rename — so the writer kept a staged copy beside it and the reader had to
+ * recover from that copy. A record that is only ever appended has neither a
+ * half-written state to avoid nor a previous copy to rescue.
  *
- * The bytes land in a staging file that is then renamed over the target, so a
- * reader sees either the previous table or the new one and never a half-written
- * document: a crash mid-write cannot destroy state that was already durable. */
+ * The record is a complete table, not a delta: the caller holds every actor it
+ * knows, and `readResumeState` folds the stream with the same merge rule the
+ * writer used to apply by hand. */
 export function writeResumeState(
   runDir: string,
   state: ResumeState,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  const path = resumeStatePath(runDir);
+  const path = resumeStreamPath(runDir);
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const existing = yield* readResumeState(runDir);
-    const staged = stagingPath(path);
-    yield* fs.writeFileString(staged, `${JSON.stringify(mergeResumeState(existing, state), null, 2)}\n`);
-    yield* fs.rename(staged, path);
-  }).pipe(
-    Effect.mapError((cause) => workflowError("schedule", path, `resume state write: ${errorMessage(cause)}`)),
-  );
+    const line = yield* Effect.try({
+      try: () => `${JSON.stringify(state)}\n`,
+      catch: resumeError(path, "resume state serialize"),
+    });
+    yield* fs.makeDirectory(dirname(path), { recursive: true }).pipe(
+      Effect.mapError(resumeError(path, "resume state mkdir")),
+    );
+    yield* fs.writeFileString(path, line, { flag: "a" }).pipe(
+      Effect.mapError(resumeError(path, "resume state append")),
+    );
+    // The run's one state document stays in step with the ledger it is a view
+    // of.
+    yield* refreshRunStatus(runDir);
+  });
 }
 
-/** Actors already on disk survive a write that does not mention them, newest
- * write winning per actor. A state file belonging to another execution is not
- * this execution's history and is replaced outright. */
+/** Actors already on disk survive a record that does not mention them, newest
+ * record winning per actor. A table belonging to another execution is not this
+ * execution's history and is replaced outright. */
 function mergeResumeState(existing: ResumeState | undefined, next: ResumeState): ResumeState {
   if (existing === undefined || existing.executionId !== next.executionId) return next;
   return { ...next, actors: { ...existing.actors, ...next.actors } };
 }
 
+/** Read the run's actor table: fold the stream, seeded by the legacy document.
+ *
+ * Seeding from the document is what lets a run written before the stream
+ * existed carry its actors forward into the first appended record, instead of
+ * starting over. */
 export function readResumeState(
   runDir: string,
 ): Effect.Effect<ResumeState | undefined, WorkflowError, FileSystem.FileSystem> {
-  const path = resumeStatePath(runDir);
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const staged = yield* readDocument(fs, resumeStatePath(runDir));
+    const records = yield* readStream(fs, resumeStreamPath(runDir));
+    return records.reduce<ResumeState | undefined>(mergeResumeState, staged);
+  });
+}
+
+/** The legacy document, if it is there and parses. A missing file is not an
+ * error; one that cannot be read is, because starting every actor over is a
+ * worse answer than saying so. */
+function readDocument(
+  fs: FileSystem.FileSystem,
+  path: string,
+): Effect.Effect<ResumeState | undefined, WorkflowError, never> {
+  return Effect.gen(function* () {
     const exists = yield* fs.exists(path).pipe(
-      Effect.mapError((cause) => workflowError("schedule", path, `resume state exists: ${errorMessage(cause)}`)),
+      Effect.mapError(resumeError(path, "resume state exists")),
     );
-    if (exists) {
-      const raw = yield* fs.readFileString(path).pipe(
-        Effect.mapError((cause) => workflowError("schedule", path, `resume state read: ${errorMessage(cause)}`)),
-      );
-      const state = parseResumeState(raw);
-      if (state !== undefined) return state;
-    }
-    // Missing, or present but not a readable table. A write that died between
-    // its staging file and the rename leaves the only good copy staged, so read
-    // that rather than reporting no state at all: "no state" means the next
-    // prompt starts every actor over.
-    return yield* readStagedResumeState(fs, runDir);
+    if (!exists) return undefined;
+    const raw = yield* fs.readFileString(path).pipe(
+      Effect.mapError(resumeError(path, "resume state read")),
+    );
+    return parseResumeState(raw);
+  });
+}
+
+/** Every record of the stream that parses, in the order it was written.
+ *
+ * A line that does not parse is skipped rather than failing the read: a torn
+ * final line is possible if a process died mid-append, and it describes a write
+ * that never completed. Everything before it is still good. */
+function readStream(
+  fs: FileSystem.FileSystem,
+  path: string,
+): Effect.Effect<readonly ResumeState[], WorkflowError, never> {
+  return Effect.gen(function* () {
+    const raw = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
+    return raw.split("\n")
+      .map(parseResumeState)
+      .filter((record): record is ResumeState => record !== undefined);
   });
 }
 
@@ -105,29 +147,4 @@ function parseResumeState(raw: string): ResumeState | undefined {
   if (typeof doc.promptIndex !== "number") return undefined;
   if (typeof doc.actors !== "object" || doc.actors === null) return undefined;
   return value as ResumeState;
-}
-
-/** The newest staged table that parses, if a crashed write left one. Unreadable
- * candidates simply lose; recovery is best-effort and must never fail the read
- * that asked for it. */
-function readStagedResumeState(
-  fs: FileSystem.FileSystem,
-  runDir: string,
-): Effect.Effect<ResumeState | undefined, never, never> {
-  return Effect.gen(function* () {
-    const names = yield* fs.readDirectory(runDir).pipe(Effect.orElseSucceed(() => [] as Array<string>));
-    const staged = names.filter((name) => name.startsWith(RESUME_STATE_NAME) && name.endsWith(".tmp"));
-    if (staged.length === 0) return undefined;
-    const stamped = yield* Effect.forEach(staged, (name) => fs.stat(join(runDir, name)).pipe(
-      Effect.map((info) => ({ name, at: Option.getOrElse(info.mtime, () => new Date(0)).getTime() })),
-      Effect.orElseSucceed(() => ({ name, at: 0 })),
-    ));
-    for (const candidate of [...stamped].sort((left, right) => right.at - left.at)) {
-      const raw = yield* fs.readFileString(join(runDir, candidate.name)).pipe(Effect.orElseSucceed(() => undefined));
-      if (raw === undefined) continue;
-      const state = parseResumeState(raw);
-      if (state !== undefined) return state;
-    }
-    return undefined;
-  });
 }

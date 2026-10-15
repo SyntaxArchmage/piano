@@ -50,6 +50,13 @@ written outside your home directory, so the command stays private to you.
 `link:cli` does the same through the npm global prefix for a machine-wide
 install.
 
+The launcher starts `piano` from a prebuilt bundle of the CLI. The bundle is
+built on first use and rebuilt whenever a source file or the lock file no longer
+matches it, so editing sources takes effect on the next run with no reinstall
+step. `npm run build:cli` builds it up front instead — useful before a
+measurement run or in CI. The output lives in `packages/cli/dist/` and is
+ignored by git.
+
 > **Note:** `link:cli:user` only works if `~/.local/bin` is on your `PATH`,
 > which is not the case for every shell. Verify it first:
 >
@@ -378,7 +385,7 @@ piano resume <run-id>
 ```
 
 A run is one execution: resuming reopens the same run directory (a
-`resume.json` records the execution id, prompt index, and actor sessions),
+`resume.jsonl` records the execution id, prompt index, and actor sessions),
 replays the prior transcript into the chat, and continues the actors the
 previous prompts left behind — it takes the same path as sending the next
 prompt in a live session. Inside the TUI, `/resume` routes to the same
@@ -410,9 +417,10 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 ├── log.jsonl          # run + stage lifecycle events (machine-readable)
 ├── trace.jsonl        # function-level span traces
 ├── trajectory.json    # per-run summary: status, per-prompt turns, session/transcript of the latest turn
+├── trajectory.jsonl   # append-only record of each write, the summary is folded from
 ├── progress.jsonl     # append-only ledger: one line per accepted stage attempt
 ├── progress.json      # live workflow plan/status snapshot for monitors
-├── resume.json        # durable resume state (execution id, prompt index, actor sessions)
+├── resume.jsonl       # append-only resume state: newest line holds the whole actor table
 ├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
 ├── trajectories/
 │   ├── index.json                # recorder inventory, status, and errors
@@ -446,7 +454,13 @@ Key files:
   `failed` | `cancelled`), the per-prompt `turns` (`prompt`, `status`,
   `eventCount`), the latest `sessionId` and `transcriptPath`, plus
   `runId`/`workflowPath`/`workspaceCwd`, and a `name` once you `/rename` the
-  run.
+  run. Every write rewrites it whole, so it is the run's complete record and
+  the file Piano's own readers read.
+- **`trajectory.jsonl`** — the record each write appends *before* that rewrite:
+  one line carrying that write's prompt and events, or the single field a
+  rename touched. It is the only copy of a run whose document is missing or
+  was never written, and folding it is how the summary above is rebuilt from
+  it.
 - **`progress.jsonl`** — the machine-readable stage ledger. Every accepted
   stage attempt appends a line with `stageId`, `stage`, `worker`, `attempt`,
   `invocationId`, `harness`, `sessionId`, `transcriptPath`,

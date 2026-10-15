@@ -88,7 +88,7 @@
 - `tests/cli/headless-signoff.test.ts`（31 行）：自动 approve、round 3 也 approve。
 - `tests/tui/signoff-panel.test.ts`（269 行）：面板挂为 chat 最后一个 block、approve 关闭、reject→第二步自由文本、Esc 取消；`SignoffBlock` 的边框/配色/键盘行为。
 - `tests/tui/signoff.pty.test.ts`（136 行）：真 pty。
-- `tests/workflow/esc-pauses-run.test.ts:283` —"a rejected sign-off keeps the turn's session durable the moment it lands"：验证 reject→rework 期间 `resume.json` 已经落了 actor session。
+- `tests/workflow/esc-pauses-run.test.ts:283` —"a rejected sign-off keeps the turn's session durable the moment it lands"：验证 reject→rework 期间 `resume.jsonl` 已经落了 actor session。
 - `tests/workflow/workflow-execution.test.ts`、`tests/cli/session-reject-resume.test.ts`、`tests/tui/prompt-queue.test.ts`。
 
 **缺口**：见 §6.1（reject 无上限）、§6.2（取消语义与全局 Esc 冲突）、§6.4（**没有任何 shipped recipe 开这个开关**——`grep -rn signoff recipes/` 结果 0 行，只在 `docs/proposals/` 与 `docs/uml-ascii-diagrams.txt` 里出现）。

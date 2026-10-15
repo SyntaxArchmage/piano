@@ -17,6 +17,7 @@ vi.mock("@piano/orchestrator", () => ({
   loadAndExecuteWorkflow: vi.fn(),
   // A fresh fixture run has no progress stream, so there is nothing to continue.
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/tmp/piano",
     workflowPath: "/tmp/piano/workflow.yml",

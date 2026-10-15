@@ -591,6 +591,51 @@ describe("external consolidation transaction", () => {
     }
   });
 
+  it("keeps a synchronously throwing rollback on the carry path", async () => {
+    const testFixture = await fixture();
+    try {
+      const evidence = await evidenceInput(testFixture);
+      const result = await runTransaction(evidence, {
+        runTurn: async () => writeFile(join(testFixture.source, "kernel.py"), "wrong\n"),
+        gitMetadataFactory: (sourceCwd) => Effect.succeed({
+          ...nonGitTransaction(sourceCwd),
+          // The implementation throws before it ever returns an effect.
+          rollback: () => {
+            throw new Error("rollback refused");
+          },
+        }),
+      });
+      expect(result).toMatchObject({
+        kind: "carry-failed",
+        sourceState: "unknown",
+        externalEvidenceRoot: evidence.externalRoot,
+      });
+      expect(result.reason).toMatch(/Git metadata rollback failed: injected implementation ended in a defect: rollback refused/u);
+      await expect(readFile(join(testFixture.source, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
+    } finally {
+      await cleanup(testFixture.root);
+    }
+  });
+
+  it("keeps a dying worker turn on the carry path", async () => {
+    const testFixture = await fixture();
+    try {
+      const evidence = await evidenceInput(testFixture);
+      // A rejection inside `Effect.promise` is a defect, not a failure.
+      const result = await runTransaction(evidence, {
+        runTurn: async () => {
+          await writeFile(join(testFixture.source, "kernel.py"), "partial\n");
+          throw new Error("turn died");
+        },
+      });
+      expect(result).toMatchObject({ kind: "carry-failed", sourceState: "known" });
+      expect(result.reason).toMatch(/winner consolidation worker failed: injected implementation ended in a defect: turn died/u);
+      await expect(readFile(join(testFixture.source, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
+    } finally {
+      await cleanup(testFixture.root);
+    }
+  });
+
   it("routes the legacy consolidateAndGate adapter through the same external core", async () => {
     const testFixture = await fixture();
     try {

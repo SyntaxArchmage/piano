@@ -133,8 +133,9 @@ export function dshResumeOverlayPath(dshHome: string): string {
  * reopen.
  *
  * The runner is standalone Node ESM — the dsh launcher imports it inside its own
- * process, where nothing compiles `.ts` — so it cannot import this constant. The
- * runner test asserts the shipped plugin reads this exact name, which is what
+ * process, where nothing compiles `.ts` — so it cannot import this constant.
+ * `tests/harness/harness-home.test.ts` pins this exact name as a literal and
+ * the runtime resume tests fail when either side renames it, which is what
  * keeps the two sides from drifting apart silently. */
 export const DSH_RESUME_SESSION_ENV = "PIANO_DSH_RESUME_SESSION";
 

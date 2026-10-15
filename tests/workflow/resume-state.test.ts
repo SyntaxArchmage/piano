@@ -1,9 +1,10 @@
-// resume.json is the canonical resume state: the only record of which harness
+// resume.jsonl is the canonical resume state: the only record of which harness
 // session each actor's next turn must reopen. Two properties keep it reliable
-// for a long-running coding session — a write is incremental (actors it does
-// not mention survive it) and atomic (a reader never sees a half-written
-// document, and a crash cannot destroy what was already durable).
-import { mkdtemp, readFile, readdir, utimes, writeFile } from "node:fs/promises";
+// for a long-running coding session — a write is incremental (actors a record
+// does not mention survive it) and nothing is ever rewritten, so a crash can
+// lose at most the append that was in flight and can never damage an earlier
+// one.
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -12,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import {
   readResumeState,
   resumeStatePath,
+  resumeStreamPath,
   writeResumeState,
   type ResumeState,
 } from "../../packages/orchestrator/src/resume-state.js";
@@ -62,7 +64,7 @@ describe("resume state persistence", () => {
     expect(stored?.promptIndex).toBe(2);
   });
 
-  it("replaces the table when the file belongs to another execution", async () => {
+  it("replaces the table when the record belongs to another execution", async () => {
     const dir = await runDir();
     await write(dir, state({ "run-1/claude/coding/root": actor("sess-old") }));
     await write(dir, state({ "run-2/claude/coding/root": actor("sess-new") }, { executionId: "run-2" }));
@@ -72,57 +74,54 @@ describe("resume state persistence", () => {
     expect(Object.keys(stored?.actors ?? {})).toEqual(["run-2/claude/coding/root"]);
   });
 
-  it("leaves no staging file behind and never a partial document", async () => {
+  it("appends one record per write instead of rewriting what came before", async () => {
     const dir = await runDir();
     await write(dir, state({ "run-1/claude/coding/root": actor("sess-claude") }));
+    const first = await readFile(resumeStreamPath(dir), "utf8");
+    await write(dir, state({
+      "run-1/claude/coding/root": actor("sess-claude", 2),
+    }, { promptIndex: 2 }));
 
-    expect((await readdir(dir)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
-    expect(JSON.parse(await readFile(resumeStatePath(dir), "utf8"))).toMatchObject({ executionId: "run-1" });
+    const grown = await readFile(resumeStreamPath(dir), "utf8");
+
+    // The earlier bytes are untouched: this is what makes a crash able to lose
+    // only the record that was in flight.
+    expect(grown.startsWith(first)).toBe(true);
+    expect(grown.trim().split("\n")).toHaveLength(2);
   });
 
-  // The window a non-atomic write left open: killed between its bytes and the
-  // rename, the file it was overwriting is gone and the only surviving copy is
-  // the staged one. Losing it means every actor starts over.
-  it("reads the staged table a crashed write left behind", async () => {
+  it("skips a torn final record and keeps everything before it", async () => {
     const dir = await runDir();
-    await writeFile(resumeStatePath(dir), '{"version":1,"executionId":"run-1","prompt', "utf8");
-    await writeFile(`${resumeStatePath(dir)}.4242.tmp`, `${JSON.stringify(state({
-      "run-1/claude/coding/root": actor("sess-staged"),
+    await write(dir, state({ "run-1/claude/coding/root": actor("sess-claude") }));
+    // A process killed mid-append leaves a line that never finished.
+    await writeFile(
+      resumeStreamPath(dir),
+      `${await readFile(resumeStreamPath(dir), "utf8")}{"version":1,"executionId":"run-1","prompt`,
+      { flag: "a" },
+    );
+
+    expect((await read(dir))?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-claude"));
+  });
+
+  it("carries a run written before the stream existed into its first record", async () => {
+    const dir = await runDir();
+    await writeFile(resumeStatePath(dir), `${JSON.stringify(state({
+      "run-1/claude/coding/root": actor("sess-legacy"),
     }))}\n`, "utf8");
 
+    // Readable on its own...
+    expect((await read(dir))?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-legacy"));
+
+    // ...and still there once this run starts appending.
+    await write(dir, state({ "run-1/pi/coding/root": actor("sess-pi") }, { promptIndex: 2 }));
     const stored = await read(dir);
-
-    expect(stored?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-staged"));
+    expect(Object.keys(stored?.actors ?? {}).sort()).toEqual([
+      "run-1/claude/coding/root",
+      "run-1/pi/coding/root",
+    ]);
   });
 
-  it("reads the staged table when the document is missing entirely", async () => {
-    const dir = await runDir();
-    await writeFile(`${resumeStatePath(dir)}.4242.tmp`, `${JSON.stringify(state({
-      "run-1/claude/coding/root": actor("sess-staged"),
-    }))}\n`, "utf8");
-
-    expect((await read(dir))?.executionId).toBe("run-1");
-  });
-
-  it("prefers the newest staged table and skips an unreadable one", async () => {
-    const dir = await runDir();
-    const older = `${resumeStatePath(dir)}.11.tmp`;
-    const newer = `${resumeStatePath(dir)}.22.tmp`;
-    await writeFile(older, `${JSON.stringify(state({ "run-1/a": actor("sess-old") }))}\n`, "utf8");
-    await writeFile(newer, `${JSON.stringify(state({ "run-1/b": actor("sess-new") }))}\n`, "utf8");
-    await utimes(older, new Date(1_000_000), new Date(1_000_000));
-    await utimes(newer, new Date(2_000_000), new Date(2_000_000));
-
-    const stored = await read(dir);
-
-    expect(Object.keys(stored?.actors ?? {})).toEqual(["run-1/b"]);
-  });
-
-  it("reports no state when neither the document nor a staging copy parses", async () => {
-    const dir = await runDir();
-    await writeFile(resumeStatePath(dir), "not valid json\n", "utf8");
-    await writeFile(`${resumeStatePath(dir)}.4242.tmp`, "also not json\n", "utf8");
-
-    expect(await read(dir)).toBeUndefined();
+  it("reports no state when nothing has been written", async () => {
+    expect(await read(await runDir())).toBeUndefined();
   });
 });

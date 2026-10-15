@@ -27,7 +27,7 @@ describe("evals evidence discovery across run layouts", () => {
     }
   });
 
-  it("still prefers the persisted top-level transcriptPath and the legacy executions layout", async () => {
+  it("still prefers the state document's transcriptPath and the legacy executions layout", async () => {
     const runDir = await tempRunDir("piano-evals-transcript-legacy-");
     try {
       const legacy = join(runDir, "executions", "execution-1", "transcript.jsonl");
@@ -38,7 +38,7 @@ describe("evals evidence discovery across run layouts", () => {
       const top = join(runDir, "actors", "pi", "agent", "root", "session", "real.jsonl");
       await mkdir(join(top, ".."), { recursive: true });
       await writeFile(top, '{"role":"user","content":"go"}\n');
-      await writeFile(join(runDir, "trajectory.json"), JSON.stringify({ status: "completed", transcriptPath: top }));
+      await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", transcriptPath: top }));
       expect(findTranscriptPath(runDir)).toBe(top);
     } finally {
       await rm(runDir, { recursive: true, force: true });

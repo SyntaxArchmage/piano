@@ -19,5 +19,5 @@ export default tseslint.config(
       globals: { process: "readonly", console: "readonly" },
     },
   },
-  { ignores: ["dist/", "scripts/"] }
+  { ignores: ["**/dist/", "scripts/"] }
 );

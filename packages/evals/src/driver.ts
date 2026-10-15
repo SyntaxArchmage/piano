@@ -47,6 +47,7 @@ import type {
   TrajectoryMetrics,
 } from "./types.js";
 import type { AgentEvent } from "@piano/harness";
+import { parseTrajectory } from "@piano/logging";
 import {
   workflowEvaluator,
   type WorkflowTrajectoryEvaluation,
@@ -337,10 +338,16 @@ function pathExists(path: string | undefined): boolean {
   return path !== undefined && existsSync(path);
 }
 
+/** A run's trajectory is recorded in two forms and either one is the run: the
+ * document, and the append-only stream beside it. */
+function trajectoryAvailable(path: string | undefined): boolean {
+  return pathExists(path) || pathExists(path === undefined ? undefined : `${path}l`);
+}
+
 function evidenceAvailability(result: CaseResult) {
   return {
     run: pathExists(result.runDir),
-    trajectory: pathExists(result.trajectoryPath),
+    trajectory: trajectoryAvailable(result.trajectoryPath),
     workflowTrajectory: result.workflowTrajectory !== undefined,
     log: pathExists(result.logPath),
     trace: pathExists(result.tracePath),
@@ -815,14 +822,23 @@ export function readHandoffRecords(runDir: string): HandoffRecord[] {
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
-  try {
-    const value = JSON.parse(readFileSync(join(runDir, "trajectory.json"), "utf8")) as { events?: unknown };
-    return Array.isArray(value.events)
-      ? value.events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null)
-      : [];
-  } catch {
-    return [];
-  }
+  const read = (name: string): string | undefined => {
+    try {
+      return readFileSync(join(runDir, name), "utf8");
+    } catch {
+      return undefined;
+    }
+  };
+  // Both of a run's forms, the stream first: it is the record and the document
+  // beside it is folded from it, so either one describes the run.
+  const stream = read("trajectory.jsonl");
+  const document = read("trajectory.json");
+  const trajectory = parseTrajectory({
+    ...(stream === undefined ? {} : { stream }),
+    ...(document === undefined ? {} : { document }),
+  });
+  const events: readonly unknown[] = trajectory?.events ?? [];
+  return events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null);
 }
 
 interface StageLogEvidence {
@@ -1170,12 +1186,15 @@ function mergeWorkflowTrajectory(
 
 export function findTranscriptPath(runDir: string): string | undefined {
   try {
-    const trajectory = JSON.parse(readFileSync(join(runDir, "trajectory.json"), "utf8")) as { transcriptPath?: unknown };
-    if (typeof trajectory.transcriptPath === "string" && existsSync(trajectory.transcriptPath)) {
-      return trajectory.transcriptPath;
+    // The run's state document says where its transcript lives. The scan below
+    // is for a run that failed before it recorded one.
+    const raw = readFileSync(join(runDir, "status.json"), "utf8");
+    const status = JSON.parse(raw) as { transcriptPath?: unknown };
+    if (typeof status.transcriptPath === "string" && existsSync(status.transcriptPath)) {
+      return status.transcriptPath;
     }
   } catch {
-    // A run can fail before trajectory persistence; fall through to evidence discovery.
+    // A run can fail before its state is recorded; fall through to evidence discovery.
   }
   const find = (directory: string): string | undefined => {
     try {
@@ -1348,7 +1367,9 @@ function defaultRunSetId(): string {
 function resolveTrajectory(
   runDir: string | undefined,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
-  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.json")];
+  // Both forms, the document first: a run recorded only in its stream has no
+  // document to name, and either path resolves both files.
+  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.json"), join(runDir, "trajectory.jsonl")];
   const empty: TrajectoryMetrics = {
     messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
     toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,

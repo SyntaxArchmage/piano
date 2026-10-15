@@ -75,7 +75,7 @@ The header line 待决 N · 已略过 M is a checksum: N + M equals the change c
 - 编排层不直接依赖 harness 内部类型，只走 `@piano/contract` 导出的类型。 `出处: 2026-10-13 R2`
 ```
 
-Keep it small: an entry stays only while it would change a future decision, the cell is rewritten whole on every update so that any line the new statement replaces is gone, and each entry carries a 出处 when one exists (`出处: AGENTS.md #7`, `出处: 2026-10-13 R2`). On first creation, seed the file from `AGENTS.md` and `CLAUDE.md`, because those rules are already design positions. Where a repository rule and a taste entry disagree, the repository rule wins and the disagreement becomes a review item.
+Keep it small: an entry stays only while it would change a future decision, the cell is rewritten whole on every update so that any line the new statement replaces is gone, and each entry carries a 出处 when one exists (`出处: AGENTS.md #7`, `出处: 2026-10-13 R2`). An entry has to be a general design position — the kind that shapes how code is written here — not a detail of a single mechanism. A choice that only makes sense inside the mechanism the session produced stays in that item. On first creation, seed the file from `AGENTS.md` and `CLAUDE.md`, because those rules are already design positions. Where a repository rule and a taste entry disagree, the repository rule wins and the disagreement becomes a review item.
 
 ## Phase 1 — review
 

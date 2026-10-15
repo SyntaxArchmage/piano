@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 
@@ -7,8 +9,16 @@ import { Type } from "typebox";
  * the tool, both by the Pi SDK and by pi-cli. */
 export const PI_WEB_SEARCH_TOOL_NAME = "web_search";
 
-/** The path handed to pi-cli's `--extension` option. */
-export const piWebSearchExtensionPath = fileURLToPath(import.meta.url);
+/** The path handed to pi-cli's `--extension` option: the extension must be a
+ * file pi-cli can load on its own. From sources this module is that file. Inside
+ * the prebuilt CLI bundle this code travels in the bundle and the extension is
+ * the sidecar the build emits beside it, named the same as this file —
+ * `packages/cli/scripts/cli-bundle.mjs` owns that name. */
+export const piWebSearchExtensionPath = (() => {
+  const self = fileURLToPath(import.meta.url);
+  const sidecar = join(dirname(self), "pi-web-search.js");
+  return existsSync(sidecar) ? sidecar : self;
+})();
 
 const DEFAULT_API_VERSION = "2023-06-01";
 const DEFAULT_MAX_TOKENS = 4096;

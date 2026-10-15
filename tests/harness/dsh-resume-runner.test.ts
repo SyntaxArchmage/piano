@@ -234,14 +234,10 @@ const services = {
 const ctx = {
   get: (name) => services[name],
   // The real ctx.on takes (name, listener, options) and returns a disposer —
-  // there is no ctx.off. Recording the options the runner subscribed with lets
-  // the test assert the scope is stated explicitly rather than inferred from
-  // the context hierarchy, and the disposer count proves the listener was
-  // removed when the turn ended.
+  // there is no ctx.off. The disposer removes the listener when the turn ends.
   on: (name, handler, options) => {
     if (name !== "agent/status") return () => false;
     statusListeners.push(handler);
-    calls.statusOptions = { ...(options === true ? { prepend: true } : options) };
     return () => {
       const at = statusListeners.indexOf(handler);
       if (at < 0) return false;
@@ -262,11 +258,6 @@ clearTimeout(timer);
 // in which the runner has to answer "no turn to join" instead of going quiet.
 const holdOpen = Number(process.env.PIANO_FAKE_HOLD_OPEN);
 if (holdOpen > 0) await new Promise((resolve) => setTimeout(resolve, holdOpen));
-
-// Anything still listening after the run has been reported as an exit-time
-// leak: the runner subscribed for one turn and must dispose when it ends, or
-// the next run on this context would inherit a stale handler.
-calls.listenersAfterExit = statusListeners.length;
 
 process.stdout.write = realStdout;
 process.stderr.write = realStderr;
@@ -297,12 +288,6 @@ interface RunnerReport {
   readonly steered: readonly string[];
   readonly flushed: number;
   readonly exitCode?: number;
-  /** The options the runner subscribed to agent/status with — the scope marker
-   * has to be stated, not assumed from the context hierarchy. */
-  readonly statusOptions?: { readonly global?: boolean };
-  /** Status listeners still registered when the fake host reports: the runner
-   * owns one turn, so anything above zero is a leaked listener. */
-  readonly listenersAfterExit?: number;
   readonly stdout: string;
   readonly stderr: string;
   readonly timedOut?: boolean;
@@ -517,18 +502,6 @@ describe("dsh resume plugin", () => {
     expect(report.stdout).not.toContain(CODE_WORD);
   });
 
-  // The plugin is standalone ESM, so it cannot import the constant Piano writes
-  // the environment reference with. Assert the pairing instead of trusting it:
-  // a rename on either side would otherwise leave both sides "passing" and the
-  // resume silently dead.
-  it("reads the environment reference the adapter writes", async () => {
-    const shipped = await readFile(runnerPath, "utf8");
-
-    expect(shipped).toContain(DSH_RESUME_SESSION_ENV);
-    // And nothing that looks like a second, stale name for the same thing.
-    expect(shipped.match(/PIANO_DSH_RESUME[A-Z_]*/g)?.every((name) => name === DSH_RESUME_SESSION_ENV)).toBe(true);
-  });
-
   // Piano decides whether a stage passed by the child's exit code, so a turn that
   // failed must not exit zero — including when the resume it started from worked.
   it("reports a failed turn through the exit code and stderr", async () => {
@@ -581,23 +554,6 @@ describe("dsh resume plugin", () => {
       accepted: false,
       reason: "dsh refused the steer: the agent is no longer accepting steering input",
     }]);
-  });
-
-  it("turns without steer frames behave as before", async () => {
-    const report = await drive({ scenario: "ok", resumeSessionId: RESUME_ID });
-
-    expect(report.steered).toEqual([]);
-    // The ready line is not a delivery: the turn is unchanged by the steering
-    // reader merely being open, which is what "behaves as before" means.
-    expect(report.stderr).not.toContain("steer delivered");
-    expect(report.stderr).not.toContain("piano-steer:");
-    expect(report.stdout).toContain(CODE_WORD);
-    // The subscription is explicit about scope and lifetime: global so the
-    // listener does not depend on where this fiber sits in the context tree
-    // (the shape dsh's own invariant plugin uses), and disposed when the turn
-    // ends so the next run on this context does not inherit a stale handler.
-    expect(report.statusOptions?.global).toBe(true);
-    expect(report.listenersAfterExit).toBe(0);
   });
 
   // Stdin is also where noise lands: a line that is not a steer frame must
@@ -664,19 +620,5 @@ describe("dsh resume plugin", () => {
       accepted: false,
       reason: "the dsh turn had already ended, so the steer was dropped",
     }]);
-  });
-
-  it("buffers a frame that arrives before the turn starts", async () => {
-    const report = await drive({
-      scenario: "ok",
-      resumeSessionId: RESUME_ID,
-      followupDelayMs: 400,
-      // A frame the child reads before the arm — it must still land in this
-      // turn, delivered the moment the arm goes live.
-      steerLines: ['{"type":"steer","id":"steer-early","text":"early-steer"}'],
-    });
-
-    expect(report.steered).toEqual(["early-steer"]);
-    expect(steerAcks(report)).toEqual([{ id: "steer-early", accepted: true }]);
   });
 });

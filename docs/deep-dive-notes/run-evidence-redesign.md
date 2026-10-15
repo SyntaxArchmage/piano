@@ -192,10 +192,38 @@ root 级（无 loop）tournament 同样报 `race/slot-0 was already cleaned` →
 **需开发者裁定**：① 落地分支与顺序（本设计叠在 lifecycle refactor 之上，而该 branch 仍在动）；② 旧 layout 是否要迁移工具 `piano migrate run-layout`；③ P4 三项触发时机；④ `summary.json` 采纳取舍；⑤ `log.jsonl` 去 trace 行的对外兼容窗口；⑥ `--rebuild` 并发守卫是否够；⑦ 旧 key workspace 记录是否要清理工具。
 
 **独立真缺陷（默认不在 scope）**：
-- **dsh 证据链静默死亡**：装机 dsh 写 `session.v3.jsonl.zstd`，`subprocess.ts` 只认 `["session.jsonl.zstd","session.jsonl"]` → `readDshSessionEvidence` 返回 undefined → canonical transcript 退化成 raw stdout markdown → `piano logs --check` 报 26 条 `transcript-invalid`。（P0 已含一行修复。）
-- `ARCHITECTURE.txt` 与 `docs/workflow-trajectory-evaluation-prd.md` 的 `executions/<exec>/` 布局与磁盘完全不符。
+- **dsh 证据链静默死亡**：装机 dsh 写 `session.v3.jsonl.zstd`，`subprocess.ts` 只认 `["session.jsonl.zstd","session.jsonl"]` → `readDshSessionEvidence` 返回 undefined → canonical transcript 退化成 raw stdout markdown → `piano logs --check` 报 26 条 `transcript-invalid`。（**已修**，H1 `ae4037e`。）
+- `ARCHITECTURE.txt` 与 `docs/workflow-trajectory-evaluation-prd.md` 的 `executions/<exec>/` 布局与磁盘完全不符。（**已标记**，`e5370c7`。）
 - `workspace.applyWinnerWorkspace` / `recoverMapWorkspaces` 两个导出无运行时调用点。
-- `piano logs` picker 在 pretty-printed `trajectory.json` 上静默退化成 id-only 行（P0 含）。
+- `piano logs` picker 在 pretty-printed `trajectory.json` 上静默退化成 id-only 行。（**已修**，H3 `7793a7e`。）
+
+### D2. 测试面盲区审计（2026-10-15，对照真实装机工具逐项核验）
+
+判据同 TASTE：fixture 不得照抄 reader 的假设。核验基准 = 盘上真实 dsh v3 artifact（8/8）+ 装机 dsh 0.1.5-rc.2 源码 + 装机 pi CLI 0.85.1 dist + codex 0.155.0 活体探针。
+
+**确认的同类盲区（a 类）与处置**：
+1. `dsh-resume-probe` fixture 写旧名 `session.jsonl` → **H2b 修复中**（改 `session.v3.jsonl` + header version 1→3）。
+2. `fakeHarness` 默认分支是嵌合体：被 harness `"pi"` 的用例消费，却发 Anthropic 的 `content_block_delta` 和 pi 永不发的 `result`/`session_id` 帧（pi RPC 以 `agent_settled` 收尾，生产注释 subprocess.ts:1226-1231 自证）→ **H2b 修复中**（默认分支改忠实 pi RPC 方言；已确认删除的 `parses chunk-split…` 用例一并处理，其 sessionId 断言正来自幻影 result 帧；补一条真正钉住 stdout 半行重组的聚焦用例）。
+3. **dsh v3 实时流已死（生产缺陷，非仅测试）**：真实 v3 文件实测 50 条 `assistant/message` 中 26 条把 packed `text-chunks` 嵌在 `data.stream`，顶层 packed 行 0 条；而 `expandDshStorageRecord`（subprocess.ts:417-459）只认 v0/v1 顶层形状 → 现装 dsh 下 TUI 回合中无任何增量文本。fixture（`dsh-stream`/`dsh-zstd-stream`）与 reader 共享 v0/v1 假设，同型盲区。→ **H2c 排队**，设计已定稿：
+   - 实测成员普查（真实文件）：carrier 只有 `assistant/message`；成员 = `chunk`(390，block-start/end 边界，跳过)、`reasoning-chunks`(50)、`tool-call-chunks`(69，`id`/`name` 在成员级)、`text-chunks`(26)；成员形状 `{type, time0, index, dt, texts|args[, id, name]}` —— 无 `seq0`、无 `data` 包装。
+   - 修法：`expandDshStorageRecord` 增前置分支——`data.stream` 为数组时返回 `[...expandedChunks, record]`（chunks 在父记录**之前**，delta 先动画、message_end 收尾）。新私有 `expandDshStreamMembers`：逐成员校验（同现有严格度：texts 全 string、dt.length === texts.length-1 且全有限数、index/time0 为数），坏成员跳过不丢父记录；`turn`/`step` 取父 `data`。chunk 形状复用现有 `text-delta`/`reasoning-delta`/`tool-call-delta` 构造（抽共享 builder，两路径一份实现）。
+   - **合成 chunk 事件必须不带 `seq`**：`dshRecordKey`（:783-791）对带 seq 的记录用 `seq:N` 去重，同父展开会全撞一个 key 被吞；无 seq 落 JSON-key 分支，成员 time/text 各异自然唯一。mapper 的 `assistant/chunk` 分支（:679-712）不读 seq，安全。
+   - 去重路径零改动：`emitAssistant → emitMessageEnd`（:1008 `lastMessageEndText`、:1379 判重）是 v0/v1 时代就有的 delta→message_end 序列防重复，v3 展开复用。
+   - canonical-transcript 零影响：`dshMessageRecords`（canonical-transcript.ts:217）只映射 `assistant/message`/`user/message`/`tool/result`，合成 chunk 进 evidence events 也不入 transcript。
+   - 红先测试：v3 形状 fixture（`assistant/message` + `data.stream` packed 成员）走既有 dsh-evidence 通道，断言 3 个 text delta + 恰好一个 message_end；保留 `dsh-stream`/`dsh-zstd-stream` 的 v0/v1 用例（盘上旧会话仍需可读）。**等 H2b 的 fixture agent 完成后再动**（同文件）。
+4. `tests/fixtures/tournament-real-run/fake-agent.mjs`：发 pi-cli 永不发的 `result` 帧，usage 挂在幻影帧上（真实 pi-cli 只在 `message_end` 带 usage）；tournament 守卫的 per-turn usage delta 因此是 reader 形状依赖 → **H2d 排队**（usage 移回 `message_end`、删 result 帧，helpers.ts 守卫跟着改）。
+
+**判定良性（b 类，不动）**：`pi-rpc-steer`/`pi-rpc-declined`（与 rpc-mode.js 逐字段对上）；claude-* 模式（有 live 观察记录 + gated e2e 兜底）；overlay 占位内容（生产 spawn 前只 `access()` 不解析，真实字节由 harness-home.test.ts 钉住）；`DSH_SESSION` 常量（与 8/8 真实 header 的 `session-<uuid>` 形状一致）；canonical-transcript.test.ts 的 dsh/pi fixture（与真实 v3 文件逐字段 diff 过）；events.test.ts（纯 Piano 内部词汇）。
+
+**未定（c 类）**：codex fixture（活体探针超时，仅确认 `thread.started`/`turn.started` 与一个 fixture 未建模的顶层 `error` 记录）；claude stream-json（repo 内无真实 stdout 捕获）。→ **H2e 排队（低优先）**：各捕获一份真实 golden 进 `tests/fixtures/golden/`，把 c 类变成可 diff 的事实。repo 目前**零** golden 捕获，这是整个盲区类的存活条件。
+
+**dsh-resume-runner.test.ts 的 HOST/STUBS**：经与装机 dsh 0.1.5-rc.2 typings/源码逐面核对为忠实镜像（b 类），gated e2e（`real-subprocess.e2e.test.ts:115-204`，同一 BLUE-HARBOR-77 种子）是漂移捕手。survey 提出的 4 条删除/放宽（P1-P4）**已经独立对抗验证全部成立**（无一构造出消费者可见回归），落于 `9333bb7`：P1 删 overlay-path 的精确拼写与 `agents.resume` 断言（`harness-home.test.ts:208/:216` 已钉同一字节）；P2 删 env-reference 字面量测试（运行时 resume 测试 + `harness-home.test.ts:218` 支配；coherent rename 下它本就不设防）；P3 删 no-steer-frames（与首条 resume 测试同场景，`{global:true}`/`listenersAfterExit` 无消费者：插件一进程一任务，runner 每帧查 `isLive()` 且 `whenIdle` 后无条件 `close()` 兜底）；P4 删 pre-arm buffering（reader attach 与 arm 在同一同步块，分支结构性不可达）。**显式决定**：P2 一并放弃了「源码无第二个形似名」正则（lint 性质，stale 别名无人读则无害、有人读则 resume 断言先红）。HOST 的 disposer plumbing 保留（ctx.on 返回 disposer 是真实 API 面，runner 会调用——保真而非死脚手架）；被删的是 `calls.*` 记录与 RunnerReport 字段。**遗留**：runner 的 pre-arm queue（`dsh-resume-runner.mjs:179/:204-208/:222-228`）成为无测试死代码，且文件头注释描述的 buffering 机制与实际送达路径（管道缓冲 + arm 后 live 路径）不符——生产侧改动属 piano-43 领地，待合并后统一处理。
+
+**多 session 身份混淆（2026-10-15 晚，需在合并前厘清）**：`piano-4e` session 声称拥有本分支的 H1/H2b/H2c（`ae4037e`/`eddf31b`/`930d2a6`）与 H3（`7793a7e`），并把 §D2 称为「my working notes」；`piano-be` 也把 H3 归给 piano-4e。**事实**：`fix/evidence-read-chain` 上全部 14 个 commit 均由本 session（`piano logs 日志布局重构` [b6b0f6]）做出；`9333bb7`（P1-P4 批次）在 piano-4e 来信时刚提交，其「三文件 dirty 且是我的」描述与提交后状态不符。若 piano-4e 在并行执行同一 mission，属重复劳动，由开发者裁定归并。其 H2d「held」计划与我在跑的 H2d agent（tournament fixture）重复，已发信叫停。
+
+### D3. 主 worktree 的第三方在制品（2026-10-15 观察到）
+
+`workflow.ts`/`workflow-execution.ts`/`workflow-runtime.ts`（`buildWorkflowRuntimePlan` 改用 `stage.parentId`，删 `isDirectStageInScope`）+ `session-takeover`/`paper-writing`/`workflow-loop-map` 测试有**未提交的他方改动**（疑似 lifecycle 分支工作的移植）。与本稿的 hop 无文件冲突（H5 helper 在 workflow-runtime.ts 头部区域）。纪律：不碰、不提交、不回滚；门禁红时先归因（`git diff` 区分他方文件）。
 
 ---
 
@@ -243,6 +271,9 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 | H3 | `trajectory.json` 的 `/rename` 写 compact（与 `write()` 共用 `stringifyTrajectory`）；picker 测试改喂 pretty 字节保住该拼写覆盖 | ✅ 已提交 `7793a7e` · 模块门禁绿（tests/logging + logs-command + session-takeover 38/38） |
 | H4 | `trace_id` 单一来源：删 `LogWriter`/`TraceWriter`/`Async*` 四处 `traceId = runId` 默认；doctor 两 probe 自铸 random hex；5 个测试文件补显式实参 | ✅ 已应用，模块门禁绿（typecheck 全仓 + 定向 126/126 + eslint）；提交被工具层临时阻塞，待重试 |
 | H5 | iteration 共享 helper：`iterationOfInvocationId` 落 `workflow-runtime.ts`（parser 与 speller `runtimeInstanceId` 同址），barrel 导出；cli `loopIteration` 委托（名字保留）；`evals/driver.ts` 正则替换 | ✅ 已提交 `27d63eb` · 红先（map-in-loop 用例先红后绿）· 模块门禁绿（typecheck 全仓 + 19 文件/182 用例 + eslint） |
+| H2b | fixture 方言修复（D2 的 1/2 项）：删幻影帧测试、pi 默认分支改 `agent_settled` 收尾、半行重组获独立聚焦用例、`dsh-resume-probe` 写 `session.v3.jsonl`、6 处 header version 1→3 | ✅ 已提交 `eddf31b` · tests/harness 235/235 |
+| H2c | **dsh v3 实时流恢复**（生产缺陷，D2 第 3 项）：`expandDshStorageRecord` 增 `data.stream` 前置分支 + 共享 `dshChunkEvents` builder（v0/v1 与 v3 一份实现）；合成 chunk 不带 seq（`dshRecordKey` 的 `seq:N` 去重会吞掉整批）；新测试文件 `tests/harness/dsh-v3-stream.test.ts`（形状逐字段取自装机 dsh 0.1.5 真实 artifact） | ✅ 已提交 `930d2a6` · 红先（stash 生产改动后 5/5 红）· tests/harness 240/240 + tsc + eslint 绿 |
+| H2d | tournament `fake-agent.mjs` 幻影 result 帧 → usage 移回 `message_end`（D2 第 4 项） | 🔄 agent 执行中 |
 | H-doc | 本工作稿入库 `4726fb4`；`ARCHITECTURE.txt` 与 PRD §13 的 stale `executions/` 布局加历史标记 `e5370c7` | ✅ 已提交 |
 | H6 | loop/pass 碰撞修复：workspace key 补 pass 维度 + tournament snapshot create-once + 完整性 marker | ⏸ **裁定：落在 lifecycle 分支基线，不在 main 做**。理由见 F4 |
 | H7+ | audience 分离（`system-log/`、`sessions/`、`status.json`）的 dual-read 迁移 | ⏸ 同 H6：`session.ts`/`progress.ts`/`static-analysis.ts` 全是分支活跃区 |
@@ -267,4 +298,29 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - 分支**尚未**做 H6：`mapSlotKey(frames)` 无 pass 维度（branch workspace.ts:461），`region-finalized`/`ensureWorkspaceSnapshot`/`nextJobOrdinal` 均不存在。
 - **裁定**：H6/H7+ 等分支合并（或按 memory 的 handoff protocol 移交）后，以分支基线执行本稿 §C5 的 L0–L3；不在 main 上重复实现——main 版会是抛弃型工作且与分支的模块拆分（`scope-walker.ts`/`stage-runner.ts`）结构性冲突。
 - 本分支（`fix/evidence-read-chain`，6 commits）合并回 main 或 rebase 到分支时的预期冲突面：`trajectory.ts`（H3 vs a18904c）、`workflow-runtime.ts`（H5 纯新增，应干净）、其余无重叠。
+
+### F5. 跨 session 协调（2026-10-15，开发者裁定：考虑合并，两 session 直接沟通，共享本文件为 status record）
+
+- 邻居 session `lifecycle-refactor-dsf-velvet-corbato` 主动来同步：它正在做 **status.json 统一**（删 `progress.json`/`trajectory.json`/`resume.json` 三个派生视图）——与开发者第 3 点及本稿 H7 设计同向；当时未动实现，只在收集状态。
+- 我已回发完整 status sync：所有权清单、目标、合并前提。**合并前提三项**：(a) 主 worktree 里未提交的 `parentId` 重构（`workflow.ts`/`workflow-execution.ts`/`workflow-runtime.ts` + 3 测试）归属确认并落库——`workflow-runtime.ts` 在合并面上，不落地 git 会拒绝合并；(b) 分支冻结点；(c) `trajectory.ts` 冲突一次解清（方向取它的 status.json 结构，保留单一 serializer 原则）。
+- 实测冲突面（merge-base `fcaabbf`）：仅 5 文件 —— `evals/driver.ts`、`logging/trajectory.ts`、`orchestrator/index.ts`、`orchestrator/workflow-runtime.ts`、`tests/cli/logs-command.test.ts`，全部意图收敛型。
+- 已提醒它：删 `trajectory.json` 文档时，`piano logs` picker 与 session-picker 的 tail 读取必须同一改动里切到 status.json 投影，否则静默退化成 id-only 行（本批次一直在杀的那类病）。
+- **合并执行序（提案，署名 `piano logs 日志布局重构` [b6b0f6]，即本工作稿的作者 session；非 piano-4e，非任何他人的承诺）**：piano-be 落库 → 由 [b6b0f6] 在 `fix/evidence-read-chain` 执行 merge `cc92410` → 解 5 文件 → **全量** `npm test`（共享数据结构变更，按 F2 规则升格）→ 报开发者。**状态：PREPARED，未执行** —— 邻居 session 依 PF1 提请：40+ commit 的合并属 scope-changing，须开发者亲口 go 并点名执行分支后才动（本行即响应，见 F5.2）。
+
+**F5.1 协调落定（2026-10-15 晚，三方消息往返后）**
+- **G1 裁定（邻居 session 携开发者原话）**：`status.json` **取代**（不是并存）三个 fold 视图——`progress.json`/`trajectory.json`/`resume.json` 删除；`progress.jsonl` 等 append-only ledger 保留为证据与折叠源。「ignore historical compatibility, do it straightly; before delete, review all references」。我的 H3（`7793a7e`）与邻居的 `a18904c` 均被此裁定反转，按 G4 必须写进 PR 描述。
+- **parentId WIP 归属确认**：`piano-be` session（同一主 worktree、同一分支上未提交的 `workflow.ts`/`workflow-runtime.ts`/`workflow-execution.ts` 3 处 + 3 测试；`regionPath: readonly string[]` → `parentId?: string`，删 `isDirectStageInScope`）。已要求其**先落库再合并**（`workflow-runtime.ts` 在合并面上，git 会拒绝带脏合并）；合并后其 3 处执行侧站点需按分支拆分后的新家重锚（`workflowProgressPlan/Projection` → `stage-runner-support.ts`）。
+- **事故记录（我的）**：H3 探针把 pretty-bytes 留在了 picker 测试里并被提交（`7793a7e` 红），由 piano-43 发现、piano-be 询问后认领；修复 `d182881`（picker 测试回到 compact 现实；H3 的真守卫移到 `logging.test.ts` rename 测试的单行字节断言）。教训：**探针改动要么还原要么转正，不能带着中间态提交**；且当跳门禁必须覆盖被改测试文件本身。
+- **合并执行序**（邻居冻结于 `cc92410`，全量 1542 绿）：piano-be 落库 → 我 merge `cc92410` 进本分支 → 5 文件按「trajectory.ts 取邻居方向（document 删除，stream 保留单一 serializer 原则）、logs-command.test.ts 取其 status.json 契约版」解 → 全量门禁 → 报告。
+- **合并后分工提案（待邻居确认）**：它 = `session-resume`/`session-picker`/`static-analysis`/三个 writer 的 G1 收口；我 = evals 三件（driver/trajectory-evaluator/legacy-run-adapter）+ README/headless 外部契约文本 + **H6**（§C5 的 L0–L3，在其 cursor 之上）。
+- **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `runStatusFromParts` 构造以钉住 round-trip。
+- `progressRecordKind` 未知 kind 落 `"stage-accepted"` 的缺口归邻居修（其 `421d1d1` 依赖该 fallthrough），在 `region-finalized`/`actor-turn` 之前必须落；我侧 H5 不新增 kind，无排序冲突。
+- 另有 `piano-43` session 在做 `packages/harness/src` 模块化（branch `refactor/harness-module`，base 我的 `595c51e`，P1 已落 `04034e4`）；我的 H2c 与其 P2 有潜在交叠，合并后由它 rebase。
+
+**F5.2 身份澄清与邻居的两处事实更正（2026-10-15 晚）**
+- **身份**：`7793a7e`（H3）、`d182881`（红测试修复）、本工作稿及其 §F5 均出自 [b6b0f6]（本 session），**不是 piano-4e**。piano-be 与邻居此前把 H3 归给 piano-4e，已在回信中更正。16:40:01 落在 `logs-command.test.ts` 的「无主编辑」= 我的 `d182881`。
+- **更正 1（邻居审计）**：「trajectory.json 是最大字节冗余」的说法**测量来源错误**——样本 run `20261014T080442-963057` 根本没有 `trajectory.jsonl`（main 的 document-only writer 产物），它只证明文档体积，不证明 stream-vs-document 重复。`message_end` 事件的真实第二副本是 **`actors/` harness 转录**；`log.jsonl` 的 `agent.event.received` 行只带 `role`/`textLength`（≤521B/行），不是冗余主体。本稿 §A 无此错误主张（已 grep 核对），记录在此防止它再流通。
+- **更正 2（邻居审计）**：`trajectory.json` 的写入**非原子**（`trajectory.ts:724` 裸 `writeFileString`；`progress.json`/`status.json` 均原子）——读侧可自愈，但 `jq`/外部监控会看到撕裂。处置：G1 裁定下文档整体删除，此缺陷随之消失，**不单独立项修**。
+- **P4 归并**：我原 P4 的「trajectory.json 停写（flag 门控）」与 G1 的「直接删除」是**同一步**——P4 该项撤销，由邻居的删除序（reads → writes → helpers → external contract）承接，PR 文本按 G4 写明三项反转（我的 H3、邻居的 `a18904c`、此前的 write-stop NO 建议）。
+- **邻居的 picker 警示已收**：其分支上 `logs.ts` 的 145 行 tail-scan 已删、`readRunRowMetadata(runDir)` 只读 `status.json`；合并时 `logs-command.test.ts` 取其重写版，我的 `d182881` 该半自然作废（logging.test.ts 的 rename 单行守卫保留至 G1 step 2 删文档时一并消失）。
 

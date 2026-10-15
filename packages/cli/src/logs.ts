@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   KeybindingsManager,
@@ -18,6 +18,7 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
+import { runStatusPath } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { formatRunId, oneLine } from "./session-resume.js";
@@ -121,83 +122,41 @@ function runIds(runsRoot: string): Effect.Effect<string[], LogsStorageError, Fil
   });
 }
 
-/** A run's `trajectory.json` can hold hundreds of megabytes of events, so the
- * picker reads only a bounded tail window: the document's trailing block sits
- * after the huge `events` array and carries `workflowPath`, `status`, and the
- * compact `turns` entries (`{prompt, status, eventCount}`). Missing pieces
- * degrade to an id+time row, never a failure. Runs whose handoff prompts push
- * that trailing block past the small window pay one bigger read (`prompts` of
- * tens of kilobytes per turn are common in tuning workflows). */
-const TAIL_WINDOW_BYTES = 64 * 1024;
-const TAIL_WINDOW_CAP_BYTES = 1024 * 1024;
-
 interface RunRowMetadata {
   readonly workflow?: string;
   readonly status?: string;
   readonly prompt?: string;
 }
 
-function readJsonStringLiteral(match: RegExpExecArray): string | undefined {
+/** The row the run's state document carries: the workflow it ran, how it
+ * ended, and the first prompt it was given. */
+function readStatusRow(runDir: string): RunRowMetadata | undefined {
+  let parsed: unknown;
   try {
-    const value: unknown = JSON.parse(`"${match[1]}"`);
-    return typeof value === "string" ? value : undefined;
+    parsed = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
   } catch {
-    // The window cut the literal mid-escape; treat the field as missing.
     return undefined;
   }
-}
-
-/** Last `bytes` of the file decoded as utf8, or undefined when unreadable. */
-function readTail(trajectoryFile: string, bytes: number): string | undefined {
-  try {
-    const fd = openSync(trajectoryFile, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.allocUnsafe(length);
-      readSync(fd, buffer, 0, length, size - length);
-      return buffer.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // No trajectory (legacy run) or unreadable — an id-only row is correct.
-    return undefined;
-  }
-}
-
-function parseRunTail(tail: string): RunRowMetadata {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const status = parsed as { workflowPath?: unknown; status?: unknown; turns?: unknown };
   const row: { workflow?: string; status?: string; prompt?: string } = {};
-  const workflow = /"workflowPath":"((?:[^"\\]|\\.)*)"/.exec(tail);
-  if (workflow !== null) {
-    const value = readJsonStringLiteral(workflow);
-    if (value !== undefined) row.workflow = basename(value).replace(/\.ya?ml$/i, "");
-    // The document-level status is the first one after workflowPath; the
-    // per-turn statuses come later inside `turns`.
-    const status = /"status":"(completed|failed|cancelled)"/.exec(tail.slice(workflow.index));
-    if (status !== null) row.status = status[1];
+  if (typeof status.workflowPath === "string") {
+    row.workflow = basename(status.workflowPath).replace(/\.ya?ml$/i, "");
   }
-  const turns = tail.lastIndexOf('"turns":[');
-  if (turns !== -1) {
-    const prompt = /"prompt":"((?:[^"\\]|\\.)*)"/.exec(tail.slice(turns));
-    if (prompt !== null) {
-      const value = readJsonStringLiteral(prompt);
-      if (value !== undefined) row.prompt = value;
-    }
+  if (typeof status.status === "string") row.status = status.status;
+  if (Array.isArray(status.turns)) {
+    const first = status.turns[0] as { prompt?: unknown } | undefined;
+    if (typeof first?.prompt === "string") row.prompt = first.prompt;
   }
   return row;
 }
 
-/** Exported for testing; the picker calls it once per listed run. */
-export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
-  const tail = readTail(trajectoryFile, TAIL_WINDOW_BYTES);
-  if (tail === undefined) return {};
-  const row = parseRunTail(tail);
-  if (row.workflow !== undefined) return row;
-  const bigger = readTail(trajectoryFile, TAIL_WINDOW_CAP_BYTES);
-  // Shorter means the file already fit the small window; nothing more to find.
-  if (bigger === undefined || bigger.length <= tail.length) return row;
-  return parseRunTail(bigger);
+/** Exported for testing; the picker calls it once per listed run.
+ *
+ * The run's state document is the row. It is one small file, so reading it is
+ * the whole cost of listing a run. */
+export function readRunRowMetadata(runDir: string): RunRowMetadata {
+  return readStatusRow(runDir) ?? {};
 }
 
 /** One picker label: `2026-09-03 01:07 · gpu-cuda-tuning · [failed] · <prompt
@@ -238,7 +197,7 @@ function pickRun(
           // eat exactly the prompt tail this label exists to show. The full
           // payload lives in the label; the raw id still prints in the
           // `Logs: <run-id>` header after selection.
-          const row = readRunRowMetadata(join(runsRoot, id, "trajectory.json"));
+          const row = readRunRowMetadata(join(runsRoot, id));
           return { value: id, label: runPickerLabel(id, row) };
         }),
         Effect.mapError((cause) => new LogsStorageError({
