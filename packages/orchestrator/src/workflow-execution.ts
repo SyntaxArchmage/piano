@@ -729,6 +729,10 @@ export function executeWorkflow(
     /** Shared with the scope walker: it records a workspace that must survive a
      * failed run for recovery, and the finalizer here honors it. */
     const workspaceState: WalkerWorkspaceState = { preserve: false };
+    /** Set by the exit classifier below before the finalizer runs: a human
+     * pause (`/exit`, Escape on a stuck prompt) must keep this job's slots so
+     * a continue can rebind them instead of finding swept tombstones. */
+    let pausedExit = false;
     // A continue's snapshot starts where the job left off: the invocations
     // accepted in earlier spans are not re-run, so nothing would count them
     // again and the run's counts would restart from the continue instead.
@@ -816,13 +820,16 @@ export function executeWorkflow(
      * re-running the invocation, which is slower but answers in the same
      * shape. */
 
-    const finalizeWorkspaces = (): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
+    const finalizeWorkspaces = (preserveSlots: boolean): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
       Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, executionId, {
         // A nested map slot legitimately records its immediate parent slot as
         // sourceCwd. The execution id and run-owned record path already bound
         // this backstop to the current run; applying the root source identity
         // here would reject valid nested (including already-cleaned) records.
-        preserve: request.workspace?.preserve === true || workspaceState.preserve,
+        preserve: preserveSlots || request.workspace?.preserve === true || workspaceState.preserve,
+        // Only this job's slots: a completed prompt must never sweep the
+        // preserved slots a paused job left for its continue to rebind.
+        keyPrefix: `job-${promptIndex}/`,
       }).pipe(Effect.asVoid)));
 
 
@@ -1057,7 +1064,7 @@ export function executeWorkflow(
         progressSnapshotPath: workflowProgressSnapshotPath(request.runDir),
       };
     });
-    const cleanupAfterFailure = finalizeWorkspaces().pipe(
+    const cleanupAfterExit = (preserveSlots: boolean) => finalizeWorkspaces(preserveSlots).pipe(
       Effect.tapError((error) => WORKFLOW_LOG.error("workspace.cleanup.failed", {
         outcome: "failure",
         data: { executionId, error: failureDetails(error) },
@@ -1077,6 +1084,7 @@ export function executeWorkflow(
       // fails, and a cleanup that wedges must not be able to swallow it.
       Effect.onExit((exit) => Exit.isFailure(exit) ? Effect.gen(function* () {
         const cancelled = isCancellation(exit.cause);
+        pausedExit = cancelled;
         const details = failureDetails(exit.cause);
         // An execution that failed before it had an identity never opened a
         // stream or a snapshot, so it has no outcome of its own to record.
@@ -1104,7 +1112,7 @@ export function executeWorkflow(
       Effect.onExit((exit) => closeWorkflowTrajectory(
         Exit.isSuccess(exit) ? "completed" : isCancellation(exit.cause) ? "cancelled" : "failed",
       )),
-      Effect.ensuring(cleanupAfterFailure),
+      Effect.ensuring(Effect.suspend(() => cleanupAfterExit(pausedExit))),
     );
   }));
 }

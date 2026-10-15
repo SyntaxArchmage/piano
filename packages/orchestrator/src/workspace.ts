@@ -811,6 +811,11 @@ export interface WorkflowWorkspaceCleanupOptions {
   /** Limit finalization to these exact run-owned workspace keys. Omitted
    * retains the legacy execution-wide cleanup behaviour. */
   readonly keys?: readonly string[];
+  /** Limit finalization to run-owned keys with this prefix (e.g. `job-2/`).
+   * The run-end backstop passes the current job's prefix so one job's
+   * completion never sweeps a paused job's preserved slots — those exist
+   * precisely so a continue can rebind them. */
+  readonly keyPrefix?: string;
   /** Preserve slot directories and mark them reusable for recovery. */
   readonly preserve?: boolean;
 }
@@ -982,7 +987,11 @@ export function cleanupMapWorkspaces(
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const records = await readWorkspaceRecords(runRoot, executionId, options.sourceCwd, options.keys);
+      const all = await readWorkspaceRecords(runRoot, executionId, options.sourceCwd, options.keys);
+      const prefix = options.keyPrefix;
+      const records = prefix === undefined
+        ? all
+        : all.filter(({ record }) => record.key.startsWith(prefix));
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") {

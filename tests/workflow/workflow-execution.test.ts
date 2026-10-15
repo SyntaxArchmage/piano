@@ -6,7 +6,7 @@ import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
-import { Cause, Effect, Exit, Option } from "effect";
+import { Cause, Effect, Exit, Fiber, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import { projectContractProjections } from "@piano/contract";
 import {
@@ -4422,6 +4422,81 @@ workflow:
       expect(log).toContain('"event":"stage.validation.retrying"');
       expect(log).toContain('"event":"stage.failed"');
       expect(trace).toContain('"fn":"validateStageResult"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a paused run's map slots preserved for a later continue", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-map-pause-"));
+    try {
+      await writeFile(join(root, "map.yml"), MAP_WORKFLOW);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      let startedImplementations = 0;
+      let signalBothStarted!: () => void;
+      const bothStarted = new Promise<void>((resolve) => { signalBothStarted = resolve; });
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-pause", cwd: root, prompt: "map candidates",
+        agentRunner: (request) => {
+          const stage = stageId(request);
+          if (stage === "tournament.implement") {
+            // Both lanes hold until the human pause interrupts this run: the
+            // slots exist and are mid-flight, exactly what a continue rebinds.
+            return Effect.sync(() => {
+              calls.push(request);
+              startedImplementations += 1;
+              if (startedImplementations === 2) signalBothStarted();
+            }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+              // Nothing resumes this: only interruption ends the turn.
+            })));
+          }
+          return Effect.promise(async () => {
+            calls.push(request);
+            if (stage === "propose") {
+              const path = validationPath(request);
+              await mkdir(dirname(path), { recursive: true });
+              await writeFile(path, JSON.stringify({
+                strategies: [
+                  { id: "slot-a", bottleneck: "memory", technique: "tile", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                  { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+                ],
+              }));
+            }
+            const invocation = invocationId(request);
+            const sessionId = `${stage}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+            return {
+              sessionId,
+              transcriptPath: `/tmp/${sessionId}.jsonl`,
+              text: `${stage}:${invocation}`,
+              continuation: continuation(sessionId),
+            };
+          });
+        },
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await bothStarted;
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      // The run-end backstop ran (uninterruptible) before the interrupt
+      // settled: a human pause must leave the slots rebindable, never swept.
+      const recordsDir = join(session.runDir, "workspace-records");
+      const entries = await readdir(recordsDir);
+      expect(entries).toHaveLength(2);
+      for (const entry of entries) {
+        const record = JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
+          key: string;
+          cwd: string;
+          status: string;
+        };
+        expect(record.key).toMatch(/^job-1\/tournament\/slot-[01]$/u);
+        expect(record.status).toBe("preserved");
+        expect((await stat(record.cwd)).isDirectory()).toBe(true);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
