@@ -2,6 +2,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
+import { refreshRunStatus } from "./run-status.js";
 import type { AgentContinuation } from "@piano/harness";
 
 /** The legacy single-document form. Read for runs written before the stream
@@ -67,6 +68,9 @@ export function writeResumeState(
     yield* fs.writeFileString(path, line, { flag: "a" }).pipe(
       Effect.mapError(resumeError(path, "resume state append")),
     );
+    // The run's one state document stays in step with the ledger it is a view
+    // of.
+    yield* refreshRunStatus(runDir);
   });
 }
 

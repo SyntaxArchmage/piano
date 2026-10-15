@@ -48,6 +48,7 @@ vi.mock("@piano/orchestrator", () => ({
   setWorkflowSelection: vi.fn(() => Effect.void),
   builtinWorkflowSelection: (name: string) => `builtin:${name}`,
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
 }));
 
 import { runTui } from "../../packages/cli/src/tui.js";

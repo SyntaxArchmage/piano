@@ -34,6 +34,7 @@ import {
   loadWorkflow,
   parseProgressStreamRecord,
   readWorkflowExecutionContinuation,
+  refreshRunStatus,
   setWorkflowSelection,
   workflowProgressPath,
   type LoadedWorkflow,
@@ -261,6 +262,7 @@ function runSessionBody(
           : current.commit(prompt);
         const persistTrajectory = (document: TrajectoryWriteInput) =>
           current.session.trajectory.write(document).pipe(
+            Effect.zipRight(refreshRunStatus(current.session.runDir)),
             Effect.tapError((error) => Effect.sync(() => {
               // A trajectory is supplementary evidence and must not replace
               // the worker result, but persistence failures must remain
@@ -617,6 +619,7 @@ function runSessionBody(
           // Renaming targets whichever run the TUI is showing, so it follows a
           // takeover.
           onRename: (name) => active.session.trajectory.rename(name).pipe(
+            Effect.zipRight(refreshRunStatus(active.session.runDir)),
             Effect.provide(NodeFileSystem.layer),
           ),
         }));

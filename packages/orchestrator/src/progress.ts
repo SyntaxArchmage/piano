@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
+import { refreshRunStatus } from "./run-status.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
 import type { ContractProjection } from "@piano/contract";
@@ -650,6 +651,10 @@ function appendAndFold(
     yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), record);
     const previous = yield* readSnapshot(fileSystem, snapshotPath);
     yield* writeSnapshotAtomic(snapshotPath, applyProgressRecord(previous, record));
+    // The run's one state document stays in step with the ledger it is a view
+    // of. `run-status` folds this module's records back, which is why the two
+    // import each other's functions rather than one owning the other.
+    yield* refreshRunStatus(runDir);
   });
 }
 

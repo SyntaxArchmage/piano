@@ -158,6 +158,20 @@ export function readRunStatus(
   });
 }
 
+/** Fold the ledgers and write the view.
+ *
+ * Called after a record lands so the view a reader picks up is the one the
+ * record describes. The fold is the same one a reader performs, so what a
+ * write leaves behind is by construction what reading it back would give. */
+export function refreshRunStatus(
+  runDir: string,
+): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const status = yield* readRunStatus(runDir);
+    if (status !== undefined) yield* writeRunStatus(runDir, status);
+  });
+}
+
 /** Write a run's state whole. The ledgers stay the evidence; this is the view. */
 export function writeRunStatus(
   runDir: string,
