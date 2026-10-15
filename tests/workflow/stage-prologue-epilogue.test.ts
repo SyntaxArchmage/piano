@@ -130,7 +130,7 @@ async function runStage(
   const result = await runWorkflow(session, loadWorkflow(path, root, recipeRepositoryRoot).pipe(
     Effect.flatMap((loaded) => executeWorkflow(loaded, {
       runDir: session.runDir,
-      executionId: "prologue-epilogue",
+      runId: "prologue-epilogue",
       cwd: root,
       prompt: "the whole task",
       agentRunner: runner,

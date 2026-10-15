@@ -33,7 +33,7 @@ const PLAN: WorkflowProgressPlan = {
 
 function record(): Omit<WorkflowProgressRecord, "version" | "timestamp"> {
   return {
-    executionId: "execution",
+    runId: "execution",
     invocationId: "tune@root",
     stageId: "tune",
     stage: "tune",

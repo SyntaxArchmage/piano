@@ -25,7 +25,7 @@ import {
 /** One run interval of a job. */
 export interface JobSpan {
   readonly jobOrdinal: number;
-  readonly executionId: string;
+  readonly runId: string;
   readonly startedAt: string;
   readonly finishedAt?: string;
   readonly status: "running" | "completed" | "failed" | "paused";
@@ -51,7 +51,7 @@ export interface JobSpan {
 /** One job across all of its spans. */
 export interface JobView {
   readonly jobOrdinal: number;
-  readonly executionId: string;
+  readonly runId: string;
   /** `alive` while the last span runs; `paused` after a human stop; `finished`
    * once a span closed with an outcome. */
   readonly state: "alive" | "paused" | "finished";
@@ -73,7 +73,7 @@ export interface JobView {
 
 interface MutableSpan {
   jobOrdinal: number;
-  executionId: string;
+  runId: string;
   startedAt: string;
   finishedAt?: string;
   status: JobSpan["status"];
@@ -104,7 +104,7 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
         // A span that does not name its job is a new one: streams written
         // before continues existed held no other kind of span.
         jobOrdinal: started.jobOrdinal ?? (spans.at(-1)?.jobOrdinal ?? 0) + 1,
-        executionId: started.executionId,
+        runId: started.runId,
         startedAt: started.timestamp,
         status: "running",
         accepted: new Set(),
@@ -219,7 +219,7 @@ function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
     : last?.status === "running" ? "alive" : last?.status === "paused" ? "paused" : "finished";
   return {
     jobOrdinal,
-    executionId: last?.executionId ?? "",
+    runId: last?.runId ?? "",
     state,
     ...(state === "finished" && outcome !== undefined ? { outcome } : {}),
     accepted,

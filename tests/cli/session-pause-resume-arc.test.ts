@@ -60,17 +60,17 @@ const ACTOR: ActorSession = {
 /** Progress snapshot for a run, read synchronously so waitFor can poll it. */
 function progressStatus(runsRoot: string, runId: string): string | undefined {
   try {
-    const raw = readFileSync(join(runsRoot, runId, "progress.json"), "utf8");
+    const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
     return (JSON.parse(raw) as { status?: string }).status;
   } catch {
     return undefined;
   }
 }
 
-/** Turn entries recorded in a run's trajectory so far (undefined mid-write). */
+/** Turn entries recorded in a run's state so far (undefined mid-write). */
 function recordedTurns(runsRoot: string, runId: string): Array<{ prompt: string; status: string }> | undefined {
   try {
-    const raw = readFileSync(join(runsRoot, runId, "trajectory.json"), "utf8");
+    const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
     const document = JSON.parse(raw) as { turns?: Array<{ prompt: string; status: string }> };
     return Array.isArray(document.turns) ? document.turns : [];
   } catch {
@@ -185,8 +185,8 @@ describe("one run across finish → exit → resume → Escape → exit → resu
         expect(continuation?.sessionId).toBe("sess-arc");
       }
       expect((await readdir(runsRoot)).sort()).toEqual([runId]);
-      expect((await readJson(join(runsRoot, runId, "progress.json"))).status).toBe("completed");
-      const trajectory = await readJson(join(runsRoot, runId, "trajectory.json"));
+      expect((await readJson(join(runsRoot, runId, "status.json"))).status).toBe("completed");
+      const trajectory = await readJson(join(runsRoot, runId, "status.json"));
       const turns = trajectory.turns as Array<{ prompt: string; status: string; eventCount: number }>;
       expect(turns.map((turn) => turn.status)).toEqual(["completed", "cancelled", "completed"]);
       expect(turns.map((turn) => turn.prompt)).toEqual([

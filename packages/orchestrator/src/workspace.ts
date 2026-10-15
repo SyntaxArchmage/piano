@@ -249,7 +249,7 @@ function pathFromRecord(value: unknown): value is Record<string, unknown> {
 
 function workspacePath(
   runDir: string,
-  executionId: string,
+  runId: string,
   key: string,
 ): string {
   return join(runDir, "workspaces", "slots", encodeURIComponent(key));
@@ -257,7 +257,7 @@ function workspacePath(
 
 function workspaceRecordPath(
   runDir: string,
-  executionId: string,
+  runId: string,
   key: string,
 ): string {
   return join(runDir, "workspace-records", encodeURIComponent(key), "record.json");
@@ -489,20 +489,20 @@ function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[])
 
 function mapWorkspacePath(
   runDir: string,
-  executionId: string,
+  runId: string,
   jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
 ): string {
-  return workspacePath(runDir, executionId, mapSlotKey(jobOrdinal, frames));
+  return workspacePath(runDir, runId, mapSlotKey(jobOrdinal, frames));
 }
 
 function mapWorkspaceRecordPath(
   runDir: string,
-  executionId: string,
+  runId: string,
   jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
 ): string {
-  return workspaceRecordPath(runDir, executionId, mapSlotKey(jobOrdinal, frames));
+  return workspaceRecordPath(runDir, runId, mapSlotKey(jobOrdinal, frames));
 }
 
 async function inspectGitSource(
@@ -645,7 +645,7 @@ export function sharedWorkspaceBinding(cwd: string): WorkflowWorkspaceBinding {
  * unsaved source changes remain available to the plugin. */
 export function allocateMapWorkspace(
   runDir: string,
-  executionId: string,
+  runId: string,
   jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
   sourceCwd: string,
@@ -670,11 +670,11 @@ export function allocateMapWorkspace(
         throw workflowError("schedule", source, "workspace source must be a directory");
       }
       const key = mapSlotKey(jobOrdinal, frames);
-      const cwd = mapWorkspacePath(run, executionId, jobOrdinal, frames);
+      const cwd = mapWorkspacePath(run, runId, jobOrdinal, frames);
       if (!pathWithin(source, run) && pathWithin(source, cwd)) {
         throw workflowError("schedule", cwd, `workspace for map slot "${key}" cannot be nested inside its source`);
       }
-      const recordPath = mapWorkspaceRecordPath(run, executionId, jobOrdinal, frames);
+      const recordPath = mapWorkspaceRecordPath(run, runId, jobOrdinal, frames);
       await assertCanonicalRunRoot(runRoot);
       await assertSafeWorkspacePathAncestors(run, dirname(recordPath));
       const existing = await readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
@@ -797,7 +797,7 @@ export function allocateMapWorkspace(
       : workflowError("schedule", sourceCwd, errorMessage(cause)),
   }), {
     runDir,
-    executionId,
+    runId,
     sourceCwd: resolve(sourceCwd),
     instanceId: runtimeInstanceId(frames),
   }).pipe(Effect.mapError((cause) => cause instanceof WorkflowError
@@ -822,7 +822,7 @@ export interface WorkflowWorkspaceCleanupOptions {
 
 async function readWorkspaceRecords(
   runRoot: CanonicalRunRoot,
-  executionId: string,
+  runId: string,
   sourceCwd?: string,
   keys?: readonly string[],
 ): Promise<readonly { readonly path: string; readonly record: WorkflowWorkspaceRecord }[]> {
@@ -861,7 +861,7 @@ async function readWorkspaceRecords(
     await assertCanonicalRunRoot(runRoot);
     await assertSafeWorkspaceDirectory(run, join(recordsRoot, entry.name));
     const recordPath = join(recordsRoot, entry.name, "record.json");
-    const expectedCwd = workspacePath(run, executionId, key);
+    const expectedCwd = workspacePath(run, runId, key);
     const record = await readWorkspaceRecord(recordPath, {
       key,
       cwd: expectedCwd,
@@ -939,13 +939,13 @@ async function removeWorkspaceDirectory(
  * directory so a recovery action cannot sweep another run. */
 export function recoverMapWorkspaces(
   runDir: string,
-  executionId: string,
+  runId: string,
   sourceCwd?: string,
 ): Effect.Effect<readonly WorkflowWorkspaceBinding[], WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const records = await readWorkspaceRecords(runRoot, executionId, sourceCwd);
+      const records = await readWorkspaceRecords(runRoot, runId, sourceCwd);
       const bindings: WorkflowWorkspaceBinding[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") continue;
@@ -981,13 +981,13 @@ export function recoverMapWorkspaces(
  * finish an interrupted cleanup. */
 export function cleanupMapWorkspaces(
   runDir: string,
-  executionId: string,
+  runId: string,
   options: WorkflowWorkspaceCleanupOptions = {},
 ): Effect.Effect<readonly WorkflowWorkspaceRecord[], WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const all = await readWorkspaceRecords(runRoot, executionId, options.sourceCwd, options.keys);
+      const all = await readWorkspaceRecords(runRoot, runId, options.sourceCwd, options.keys);
       const prefix = options.keyPrefix;
       const records = prefix === undefined
         ? all
@@ -1838,7 +1838,7 @@ export async function restoreWorkspaceChanges(
  * winner). */
 async function mergeGitWorktreeWinner(
   record: WorkflowWorkspaceRecord,
-  executionId: string,
+  runId: string,
   sourceIdentity: WorkspaceDirectoryIdentity,
 ): Promise<{ readonly commit: string; readonly changed: boolean; readonly merged: boolean; readonly reason?: string }> {
   const gitRoot = record.gitRoot;
@@ -1865,7 +1865,7 @@ async function mergeGitWorktreeWinner(
     "-m", `piano: apply winning tournament slot ${record.key}`,
   ], { encoding: "utf8" });
   const commit = (await execFileAsync("git", ["-C", record.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
-  const refName = `refs/piano/${executionId}/${record.key.replace(/[^A-Za-z0-9._/-]/g, "_")}`;
+  const refName = `refs/piano/${runId}/${record.key.replace(/[^A-Za-z0-9._/-]/g, "_")}`;
   await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git ref update");
   try {
     await execFileAsync("git", ["-C", gitRoot, "update-ref", refName, commit], { encoding: "utf8" });
@@ -1912,7 +1912,7 @@ export interface WorkflowWinnerResult {
  * `skipped` rather than destroying source state. */
 export function applyWinnerWorkspace(
   runDir: string,
-  executionId: string,
+  runId: string,
   winnerKey: string,
   sourceCwd: string,
 ): Effect.Effect<WorkflowWinnerResult, WorkflowError, FileSystem.FileSystem | Logging> {
@@ -1922,7 +1922,7 @@ export function applyWinnerWorkspace(
       const sourceIdentity = await captureWorkspaceDirectoryIdentity(sourceCwd, "workspace source");
       const source = sourceIdentity.canonical;
       const run = runRoot.canonical;
-      const records = await readWorkspaceRecords(runRoot, executionId, source);
+      const records = await readWorkspaceRecords(runRoot, runId, source);
       const selected = records.find(({ record }) => record.key === winnerKey);
       if (selected === undefined) {
         throw workflowError("schedule", run, `winner workspace "${winnerKey}" is not owned by this execution`);
@@ -1947,7 +1947,7 @@ export function applyWinnerWorkspace(
       await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
       await assertCanonicalRunRoot(runRoot);
       if (applying.strategy === "git-worktree") {
-        const merged = await mergeGitWorktreeWinner(applying, executionId, sourceIdentity);
+        const merged = await mergeGitWorktreeWinner(applying, runId, sourceIdentity);
         const result: WorkflowWinnerResult = {
           key: applying.key,
           method: merged.changed === true ? "git-ff" : "git-no-changes",

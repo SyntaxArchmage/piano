@@ -27,7 +27,7 @@ function validArtifacts(transcriptPath: string) {
     trajectory: JSON.stringify({
       version: 1,
       runId,
-      updatedAt: "2026-08-25T00:00:00.000Z",
+      timestamp: "2026-08-25T00:00:00.000Z",
       status: "completed",
       promptLength: 4,
       events: [{ type: "done" }],
@@ -36,7 +36,7 @@ function validArtifacts(transcriptPath: string) {
     progress: JSON.stringify({
       version: 1,
       timestamp,
-      executionId: "execution-1",
+      runId: "execution-1",
       invocationId: "respond@root",
       stageId: "respond",
       stage: "respond",
@@ -47,10 +47,10 @@ function validArtifacts(transcriptPath: string) {
       transcriptPath,
       handoffRecordPath: "handoffs/records/respond/root/record.json",
     }) + "\n",
-    progressSnapshot: JSON.stringify({
+    status: JSON.stringify({
       version: 1,
       updatedAt: timestamp,
-      executionId: "execution-1",
+      runId: "execution-1",
       status: "completed",
       plannedStages: 1,
       completedStages: 1,
@@ -68,44 +68,6 @@ describe(" static observability analysis", () => {
     if (root !== undefined) await rm(root, { recursive: true, force: true });
   });
 
-  it("passes a run whose trajectory is recorded only in its stream", async () => {
-    root = await mkdtemp(join(tmpdir(), "piano-static-analysis-"));
-    const runDir = join(root, runId);
-    const transcriptPath = join(runDir, "transcript.jsonl");
-    await mkdir(runDir, { recursive: true });
-    const artifacts = validArtifacts(transcriptPath);
-    // The same run, in the form every new one is written in: one append-only
-    // record instead of the document folded from it.
-    const document = JSON.parse(artifacts.trajectory) as Record<string, unknown>;
-    await Promise.all([
-      writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
-      writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
-      writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({
-        version: 1,
-        runId: document.runId,
-        timestamp: document.updatedAt,
-        status: document.status,
-        promptLength: document.promptLength,
-        events: document.events,
-        transcriptPath: document.transcriptPath,
-      })}\n`, "utf8"),
-      writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
-      writeFile(join(runDir, "progress.json"), artifacts.progressSnapshot, "utf8"),
-      writeFile(transcriptPath, [
-        JSON.stringify({ type: "message", message: { role: "user", content: "work" } }),
-        JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
-        "",
-      ].join("\n"), "utf8"),
-    ]);
-
-    const report = await Effect.runPromise(inspectStaticObservability(runDir).pipe(
-      Effect.provide(NodeFileSystem.layer),
-    ));
-
-    // No missing-trajectory issue: the stream is the run's trajectory.
-    expect(report).toMatchObject({ runId, valid: true, transcriptPaths: [transcriptPath], issues: [] });
-  });
-
   it("passes a complete log/trace/trajectory/progress/transcript evidence set", async () => {
     root = await mkdtemp(join(tmpdir(), "piano-static-analysis-"));
     const runDir = join(root, runId);
@@ -115,9 +77,9 @@ describe(" static observability analysis", () => {
     await Promise.all([
       writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
       writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
-      writeFile(join(runDir, "trajectory.json"), artifacts.trajectory, "utf8"),
+      writeFile(join(runDir, "trajectory.jsonl"), artifacts.trajectory, "utf8"),
       writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
-      writeFile(join(runDir, "progress.json"), artifacts.progressSnapshot, "utf8"),
+      writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
       writeFile(transcriptPath, [
         JSON.stringify({ type: "message", message: { role: "user", content: "work" } }),
         JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
@@ -150,7 +112,7 @@ describe(" static observability analysis", () => {
     const accepted = {
       version: 1,
       timestamp: "2026-08-25T00:00:00.000Z",
-      executionId: "execution-1",
+      runId: "execution-1",
       invocationId: "respond@root",
       stageId: "respond",
       stage: "respond",
@@ -162,10 +124,10 @@ describe(" static observability analysis", () => {
       handoffRecordPath: "handoffs/records/respond/root/record.json",
     };
     const records = [
-      { version: 1, kind: "execution-started", timestamp: "2026-08-25T00:00:00.000Z", executionId: "execution-1", resumed: false, plan: { plannedStages: 1, stageCounts: {} } },
-      { version: 1, kind: "stage-started", timestamp: "2026-08-25T00:00:01.000Z", executionId: "execution-1", invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic", attempt: 1 },
+      { version: 1, kind: "execution-started", timestamp: "2026-08-25T00:00:00.000Z", runId: "execution-1", resumed: false, plan: { plannedStages: 1, stageCounts: {} } },
+      { version: 1, kind: "stage-started", timestamp: "2026-08-25T00:00:01.000Z", runId: "execution-1", invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic", attempt: 1 },
       accepted,
-      { version: 1, kind: "execution-finished", timestamp: "2026-08-25T00:00:02.000Z", executionId: "execution-1", status: "completed" },
+      { version: 1, kind: "execution-finished", timestamp: "2026-08-25T00:00:02.000Z", runId: "execution-1", status: "completed" },
     ];
 
     const report = analyzeStaticObservability({

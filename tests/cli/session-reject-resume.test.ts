@@ -99,7 +99,7 @@ describe("reject with feedback, then exit and resume", () => {
       // The approval echo lands before the session loop persists the turn's
       // trajectory; wait for that durable write so /exit cannot interrupt a
       // still-finishing run.
-      const trajectoryPath = join(runsRoot, runId, "trajectory.json");
+      const trajectoryPath = join(runsRoot, runId, "status.json");
       await waitFor("turn 1 persisted", () => {
         try {
           const document = JSON.parse(readFileSync(trajectoryPath, "utf8")) as { turns?: unknown };
@@ -114,8 +114,8 @@ describe("reject with feedback, then exit and resume", () => {
 
       // The completed turn is durable: one run, one conversation, one turn.
       expect((await readdir(runsRoot)).sort()).toEqual([runId]);
-      expect((await readJson(join(runsRoot, runId, "progress.json"))).status).toBe("completed");
-      const trajectoryA = await readJson(join(runsRoot, runId, "trajectory.json"));
+      expect((await readJson(join(runsRoot, runId, "status.json"))).status).toBe("completed");
+      const trajectoryA = await readJson(join(runsRoot, runId, "status.json"));
       const turnsA = trajectoryA.turns as Array<{ prompt: string; status: string }>;
       expect(turnsA).toHaveLength(1);
       expect(turnsA[0]?.status).toBe("completed");
@@ -163,8 +163,8 @@ describe("reject with feedback, then exit and resume", () => {
       expect((requests[2] as { continuation?: { sessionId?: string } }).continuation?.sessionId)
         .toBe("sess-reject");
       expect((await readdir(runsRoot)).sort()).toEqual([runId]);
-      expect((await readJson(join(runsRoot, runId, "progress.json"))).status).toBe("completed");
-      const trajectory = await readJson(join(runsRoot, runId, "trajectory.json"));
+      expect((await readJson(join(runsRoot, runId, "status.json"))).status).toBe("completed");
+      const trajectory = await readJson(join(runsRoot, runId, "status.json"));
       const turns = trajectory.turns as Array<{ prompt: string; status: string }>;
       expect(turns.map((turn) => turn.status)).toEqual(["completed", "completed"]);
       expect(turns.map((turn) => turn.prompt)).toEqual([

@@ -17,7 +17,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { parseTrajectory, trajectoryStreamPath, type TrajectoryTurn } from "@piano/logging";
+import { parseTrajectory, trajectoryStreamPath } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
@@ -54,10 +54,19 @@ export interface RunJob {
   readonly input?: string;
 }
 
+/** One turn as the state document records it: what the turn was asked and how
+ * it ended. Where its events begin and end is a question about the evidence —
+ * `eventCount` — and the answer comes from folding the trajectory, which is
+ * what the replay does. The view does not carry it. */
+export interface RunTurn {
+  readonly prompt: string;
+  readonly status: "completed" | "failed" | "cancelled";
+}
+
 /** The run's state.
  *
  * One of each thing a run used to say once per file: `runId` (which the
- * progress and resume documents called `executionId`), one `status`, one
+ * progress and resume documents called `runId`), one `status`, one
  * `error`, one `updatedAt`. Everything else is what a reader asks for. */
 export interface RunStatus {
   readonly version: 1;
@@ -75,8 +84,8 @@ export interface RunStatus {
   readonly transcriptPath?: string;
   readonly sessionId?: string;
   readonly promptLength: number;
-  /** One entry per turn, so a replay slices its events by `eventCount`. */
-  readonly turns?: readonly TrajectoryTurn[];
+  /** The turns this run has run, oldest first. */
+  readonly turns?: readonly RunTurn[];
   /** The plan this run was given, and how much of it is done. */
   readonly plannedStages: number;
   readonly completedStages: number;
@@ -109,7 +118,6 @@ export function runStatusFromParts(parts: {
   readonly progressStream?: string;
   readonly resume?: string;
   readonly trajectoryStream?: string;
-  readonly trajectoryDocument?: string;
 }): RunStatus | undefined {
   const records = parseProgressLines(parts.progressStream);
   const progress = records.reduce<WorkflowProgressSnapshot | undefined>(
@@ -117,13 +125,10 @@ export function runStatusFromParts(parts: {
     undefined,
   );
   const resume = parts.resume === undefined ? undefined : parseResumeTable(parts.resume);
-  const trajectory = parseTrajectory({
-    ...(parts.trajectoryStream === undefined ? {} : { stream: parts.trajectoryStream }),
-    ...(parts.trajectoryDocument === undefined ? {} : { document: parts.trajectoryDocument }),
-  });
+  const trajectory = parseTrajectory(parts.trajectoryStream);
   if (progress === undefined && resume === undefined && trajectory === undefined) return undefined;
 
-  const runId = progress?.executionId ?? resume?.executionId ?? trajectory?.runId;
+  const runId = progress?.runId ?? resume?.runId ?? trajectory?.runId;
   const status = progress?.status ?? trajectory?.status;
   const updatedAt = progress?.updatedAt ?? trajectory?.updatedAt;
   // A run that has said neither when it is nor how it is has not recorded
@@ -143,7 +148,9 @@ export function runStatusFromParts(parts: {
     ...(trajectory?.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
     ...(trajectory?.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
     promptLength: trajectory?.promptLength ?? 0,
-    ...(trajectory?.turns === undefined ? {} : { turns: trajectory.turns }),
+    ...(trajectory?.turns === undefined
+      ? {}
+      : { turns: trajectory.turns.map((turn): RunTurn => ({ prompt: turn.prompt, status: turn.status })) }),
     plannedStages: progress?.plannedStages ?? 0,
     completedStages: progress?.completedStages ?? 0,
     acceptedStages: progress?.acceptedStages ?? 0,
@@ -178,17 +185,15 @@ function foldRunStatus(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const read = (path: string) => fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const [progressStream, resume, trajectoryStream, trajectoryDocument] = yield* Effect.all([
+    const [progressStream, resume, trajectoryStream] = yield* Effect.all([
       read(workflowProgressPath(runDir)),
       read(resumeStreamPath(runDir)),
-      read(trajectoryStreamPath(join(runDir, "trajectory.json"))),
-      read(join(runDir, "trajectory.json")),
+      read(trajectoryStreamPath(runDir)),
     ], { concurrency: "unbounded" });
     return runStatusFromParts({
       ...(progressStream === undefined ? {} : { progressStream }),
       ...(resume === undefined ? {} : { resume }),
       ...(trajectoryStream === undefined ? {} : { trajectoryStream }),
-      ...(trajectoryDocument === undefined ? {} : { trajectoryDocument }),
     });
   });
 }
@@ -259,10 +264,10 @@ function parseProgressLines(raw: string | undefined): readonly WorkflowProgressS
  * newest is the state. */
 function parseResumeTable(raw: string): ResumeState | undefined {
   const whole = tryParseObject(raw);
-  if (whole !== undefined && typeof whole.executionId === "string") return whole as unknown as ResumeState;
+  if (whole !== undefined && typeof whole.runId === "string") return whole as unknown as ResumeState;
   for (const line of raw.split("\n").reverse()) {
     const table = tryParseObject(line);
-    if (table !== undefined && typeof table.executionId === "string") return table as unknown as ResumeState;
+    if (table !== undefined && typeof table.runId === "string") return table as unknown as ResumeState;
   }
   return undefined;
 }

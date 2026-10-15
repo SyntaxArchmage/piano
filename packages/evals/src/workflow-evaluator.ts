@@ -169,7 +169,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
         ["tool-calls", tools],
         ["selection", selections],
       ] as const) {
-        const mismatches = records.filter((record) => record.executionId !== index.executionId).length;
+        const mismatches = records.filter((record) => record.runId !== index.runId).length;
         if (mismatches > 0) issues.push(`${stream}: ${mismatches} record(s) belong to another execution`);
       }
       for (const digest of new Set(benchmarks.map((record) => record.contract.digest))) {

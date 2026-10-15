@@ -170,7 +170,7 @@ function runWorkflow<A>(session: Awaited<ReturnType<typeof testSession>>, effect
  * point of this suite is that resolution happens at all, then that it is
  * honest. */
 async function readFinalProgress(runDir: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readFile(join(runDir, "progress.json"), "utf8")) as Record<string, unknown>;
+  return JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as Record<string, unknown>;
 }
 
 describe("workflow ends when its scripted workers finish", () => {
@@ -181,7 +181,7 @@ describe("workflow ends when its scripted workers finish", () => {
       const session = await testSession(root);
       const stages: string[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "one.yml"), runDir: session.runDir, executionId: "end-single", cwd: root, prompt: "answer",
+        root, workflowPath: join(root, "one.yml"), runDir: session.runDir, runId: "end-single", cwd: root, prompt: "answer",
         agentRunner: (request) => Effect.promise(async () => {
           stages.push(stageId(request));
           return {
@@ -207,7 +207,7 @@ describe("workflow ends when its scripted workers finish", () => {
       const session = await testSession(root);
       const stages: string[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "fan.yml"), runDir: session.runDir, executionId: "end-fanout", cwd: root, prompt: "join",
+        root, workflowPath: join(root, "fan.yml"), runDir: session.runDir, runId: "end-fanout", cwd: root, prompt: "join",
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           stages.push(stage);
@@ -237,7 +237,7 @@ describe("workflow ends when its scripted workers finish", () => {
       const session = await testSession(root);
       const stages: string[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "end-loop", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "end-loop", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           stages.push(stage);
@@ -282,7 +282,7 @@ describe("workflow ends when its scripted workers finish", () => {
       );
       const result = await runWorkflow(session, executeWorkflow(loaded, {
         runDir: session.runDir,
-        executionId: "end-loop-stop",
+        runId: "end-loop-stop",
         cwd: root,
         prompt: "iterate until done",
         agentRunner: (request) => Effect.promise(async () => {

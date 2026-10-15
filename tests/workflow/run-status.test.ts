@@ -15,7 +15,7 @@ describe("run status", () => {
           version: 1,
           kind: "execution-started",
           timestamp,
-          executionId: "run-1",
+          runId: "run-1",
           jobOrdinal: 1,
           prompt: "do the work",
           resumed: false,
@@ -25,7 +25,7 @@ describe("run status", () => {
           version: 1,
           kind: "stage-accepted",
           timestamp,
-          executionId: "run-1",
+          runId: "run-1",
           invocationId: "tune@root",
           stageId: "tune",
           stage: "tune",
@@ -39,7 +39,7 @@ describe("run status", () => {
       ]),
       resume: JSON.stringify({
         version: 1,
-        executionId: "run-1",
+        runId: "run-1",
         promptIndex: 1,
         actors: {
           "run-1/basic/root": { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl", turns: 1 },
@@ -70,7 +70,7 @@ describe("run status", () => {
       updatedAt: timestamp,
       status: "running",
       promptLength: 3,
-      turns: [{ prompt: "do the work", status: "completed", eventCount: 0 }],
+      turns: [{ prompt: "do the work", status: "completed" }],
       plannedStages: 2,
       stageCounts: { tune: { planned: 2, completed: 0 } },
       promptIndex: 1,
@@ -89,17 +89,19 @@ describe("run status", () => {
     expect(status).toMatchObject({ runId: "run-2", status: "failed", error: "boom" });
   });
 
-  it("reads a run recorded before the ledgers existed", () => {
+  it("reads a run recorded only in its trajectory stream", () => {
     const status = runStatusFromParts({
-      trajectoryDocument: JSON.stringify({
-        version: 1,
-        runId: "run-3",
-        updatedAt: timestamp,
-        status: "completed",
-        promptLength: 2,
-        events: [],
-        workflowPath: "/w.yaml",
-      }),
+      trajectoryStream: progressStream([
+        {
+          version: 1,
+          runId: "run-3",
+          timestamp,
+          status: "completed",
+          promptLength: 2,
+          events: [],
+          workflowPath: "/w.yaml",
+        },
+      ]),
     });
     expect(status).toMatchObject({ runId: "run-3", status: "completed", workflowPath: "/w.yaml", jobs: [] });
   });
@@ -107,5 +109,25 @@ describe("run status", () => {
   it("has no state for a run nothing describes", () => {
     expect(runStatusFromParts({})).toBeUndefined();
     expect(runStatusFromParts({ resume: JSON.stringify({ version: 1 }) })).toBeUndefined();
+  });
+
+  it("says which turns ran and how they ended, not where their events sit", () => {
+    // The state document answers how a run is doing; the replay slices events
+    // by folding the trajectory itself. So `eventCount` — a fact about the
+    // evidence — never reaches the view, even though the fold computes it.
+    const status = runStatusFromParts({
+      trajectoryStream: progressStream([
+        {
+          version: 1,
+          runId: "run-4",
+          timestamp,
+          status: "completed",
+          promptLength: 2,
+          prompt: "first",
+          events: [{ type: "done" }],
+        },
+      ]),
+    });
+    expect(status?.turns).toEqual([{ prompt: "first", status: "completed" }]);
   });
 });

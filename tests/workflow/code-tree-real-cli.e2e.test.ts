@@ -3,6 +3,7 @@
 // shipped CLI and the shipped coding workflow; only the provider call is gated
 // behind PIANO_HARNESS_REAL_E2E because it consumes real quota.
 import { describe, expect, it } from "vitest";
+import { parseTrajectory } from "@piano/logging";
 import { spawn as spawnProcess } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -259,7 +260,7 @@ async function assertRunEvidence(
   for (const file of expectedFileNames) expect(toolOutput).toContain(file);
 
   const runDir = join(home, ".piano", "runs", runId);
-  const trajectory = await readJson(join(runDir, "trajectory.json"));
+  const trajectory = (parseTrajectory(await readFile(join(runDir, "trajectory.jsonl"), "utf8")) ?? {}) as Record<string, unknown>;
   expect(trajectory).toMatchObject({
     status: "completed",
     workflowPath,

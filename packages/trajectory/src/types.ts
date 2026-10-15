@@ -11,7 +11,7 @@ export interface TrajectoryContractReference {
 export interface TrajectoryRecordContext {
   readonly version: 1;
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly invocationId: string;
   readonly stageId: string;
   readonly stage: string;
@@ -83,7 +83,7 @@ export type WorkflowObservation =
   }
   | {
     readonly type: "selection";
-    readonly executionId: string;
+    readonly runId: string;
     readonly timestamp: string;
     /** The identity (referee) the winning branch was ranked by. */
     readonly referee?: { readonly name: string; readonly unit: string; readonly direction: "higher" | "lower" };
@@ -273,7 +273,7 @@ export interface TrajectoryIndexStream extends TrajectoryStreamDescriptor {
 
 export interface TrajectoryIndex {
   readonly version: 1;
-  readonly executionId: string;
+  readonly runId: string;
   readonly updatedAt: string;
   readonly status: "running" | "completed" | "failed" | "cancelled";
   readonly streams: readonly TrajectoryIndexStream[];

@@ -10,7 +10,7 @@ import type { ResumeState } from "../../packages/orchestrator/src/resume-state.j
 function resumeState(overrides: Partial<ResumeState> = {}): ResumeState {
   return {
     version: 1,
-    executionId: "run-1",
+    runId: "run-1",
     promptIndex: 1,
     actors: {
       "run-1/pi/plan": { harness: "pi", sessionId: "sess-a", transcriptPath: "/runs/run-1/plan.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-a", transcriptPath: "/runs/run-1/plan.jsonl" } },
@@ -21,13 +21,13 @@ function resumeState(overrides: Partial<ResumeState> = {}): ResumeState {
 
 async function runDirWithState(state: ResumeState): Promise<string> {
   const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
-  await writeFile(join(runDir, "resume.json"), `${JSON.stringify(state)}\n`, "utf8");
+  await writeFile(join(runDir, "resume.jsonl"), `${JSON.stringify(state)}\n`, "utf8");
   return runDir;
 }
 
-function read(runDir: string, executionId: string) {
+function read(runDir: string, runId: string) {
   return Effect.runPromise(
-    readWorkflowExecutionContinuation(runDir, executionId).pipe(Effect.provide(NodeFileSystem.layer)),
+    readWorkflowExecutionContinuation(runDir, runId).pipe(Effect.provide(NodeFileSystem.layer)),
   );
 }
 
@@ -132,15 +132,15 @@ describe("readWorkflowExecutionContinuation", () => {
     expect(await read(empty, "run-1")).toBeUndefined();
   });
 
-  it("returns undefined when resume.json is malformed", async () => {
+  it("returns undefined when resume.jsonl is malformed", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
-    await writeFile(join(runDir, "resume.json"), "not valid json\n", "utf8");
+    await writeFile(join(runDir, "resume.jsonl"), "not valid json\n", "utf8");
     expect(await read(runDir, "run-1")).toBeUndefined();
   });
 
-  it("fails with a typed workflow error when resume.json is a directory", async () => {
+  it("fails with a typed workflow error when resume.jsonl is a directory", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
-    await mkdir(join(runDir, "resume.json"), { recursive: true });
+    await mkdir(join(runDir, "resume.jsonl"), { recursive: true });
 
     const exit = await Effect.runPromiseExit(
       readWorkflowExecutionContinuation(runDir, "run-1").pipe(Effect.provide(NodeFileSystem.layer)),

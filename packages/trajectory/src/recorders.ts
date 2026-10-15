@@ -28,12 +28,12 @@ import type {
 } from "./types.js";
 import { TrajectoryRecordError } from "./types.js";
 
-function attemptKey(observation: { readonly context: { readonly executionId: string; readonly invocationId: string; readonly attempt: number } }): string {
+function attemptKey(observation: { readonly context: { readonly runId: string; readonly invocationId: string; readonly attempt: number } }): string {
   const context = observation.context;
-  return `${context.executionId}\u0000${context.invocationId}\u0000${context.attempt}`;
+  return `${context.runId}\u0000${context.invocationId}\u0000${context.attempt}`;
 }
 
-function toolKey(observation: { readonly context: { readonly executionId: string; readonly invocationId: string; readonly attempt: number }; readonly toolCallId: string }): string {
+function toolKey(observation: { readonly context: { readonly runId: string; readonly invocationId: string; readonly attempt: number }; readonly toolCallId: string }): string {
   return `${attemptKey(observation)}\u0000${observation.toolCallId}`;
 }
 
@@ -366,10 +366,10 @@ export class SelectionRecorder implements TrajectoryRecorder<SelectionRecord, Se
     // Only drain the self-contained selection variant; other recorders ignore
     // stage-level observations and this one ignores everything but selection.
     if (observation.type !== "selection") return Effect.void;
-    const { type, executionId, timestamp, referee, outcome, winnerKey, commit, skipped, carrying } = observation;
+    const { type, runId, timestamp, referee, outcome, winnerKey, commit, skipped, carrying } = observation;
     return appendRecord(this.runDir, this.descriptor, selectionRecordSchema, {
       type,
-      executionId,
+      runId,
       timestamp,
       outcome,
       ...(referee === undefined ? {} : { referee }),

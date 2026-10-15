@@ -32,7 +32,7 @@ function context(iteration: number, invocationId = `measure@loop/iter-${iteratio
   return {
     version: 1,
     timestamp: new Date().toISOString(),
-    executionId: "execution-1",
+    runId: "execution-1",
     invocationId,
     stageId: "loop.measure",
     stage: "measure",

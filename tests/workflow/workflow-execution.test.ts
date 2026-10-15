@@ -741,7 +741,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "promotion",
+        runId: "promotion",
         cwd: root,
         prompt: "close a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -822,7 +822,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "promotion-exhaust",
+        runId: "promotion-exhaust",
         cwd: root,
         prompt: "close a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -876,7 +876,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "missing-candidate",
+        runId: "missing-candidate",
         cwd: root,
         prompt: "close a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -929,7 +929,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "discard",
+        runId: "discard",
         cwd: root,
         prompt: "discard a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -994,7 +994,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: `binary-${decision.toLowerCase()}`,
+        runId: `binary-${decision.toLowerCase()}`,
         cwd: root,
         prompt: "materialize a binary artifact exactly",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1047,7 +1047,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "keep-regression",
+        runId: "keep-regression",
         cwd: root,
         prompt: "close a regressed round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1160,7 +1160,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "nested-gpu-protocol",
+          runId: "nested-gpu-protocol",
           cwd: root,
           prompt: "materialize the nested round",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1243,7 +1243,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "gpu-materialized-normalization",
+          runId: "gpu-materialized-normalization",
           cwd: root,
           prompt: "accept only the contract-normalized materialization",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1333,7 +1333,7 @@ workflow:
       await expect(runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "gpu-materialized-revalidation",
+          runId: "gpu-materialized-revalidation",
           cwd: root,
           prompt: "reject a materialized contract violation",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1391,7 +1391,7 @@ workflow:
       await expect(runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "incomplete-gpu-protocol",
+          runId: "incomplete-gpu-protocol",
           cwd: root,
           prompt: "do not partially materialize",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1434,7 +1434,7 @@ workflow:
           root,
           workflowPath: join(root, "round.yml"),
           runDir: session.runDir,
-          executionId: `gpu-${scenario}`,
+          runId: `gpu-${scenario}`,
           cwd: root,
           prompt: `reject ${scenario}`,
           agentRunner: (request) => Effect.promise(async () => {
@@ -1487,7 +1487,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: `gpu-unsafe-${_name.replaceAll(" ", "-")}`,
+        runId: `gpu-unsafe-${_name.replaceAll(" ", "-")}`,
         cwd: root,
         prompt: "reject unsafe artifact path",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1528,7 +1528,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-special-node",
+        runId: "gpu-special-node",
         cwd: root,
         prompt: "reject a non-file artifact",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1572,7 +1572,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-ancestor-alias",
+        runId: "gpu-ancestor-alias",
         cwd: root,
         prompt: "reject ancestor alias",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1610,7 +1610,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-malformed-state",
+        runId: "gpu-malformed-state",
         cwd: root,
         prompt: "reject malformed durable state",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1676,7 +1676,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-malformed-fields",
+        runId: "gpu-malformed-fields",
         cwd: root,
         prompt: "reject malformed durable state fields",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1727,7 +1727,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-ambiguous-alias-identity",
+        runId: "gpu-ambiguous-alias-identity",
         cwd: root,
         prompt: "reject ambiguous durable aliases",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1779,7 +1779,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "round.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "gpu-legacy-metric",
+          runId: "gpu-legacy-metric",
           cwd: root,
           prompt: "migrate the legacy metric",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1844,7 +1844,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-transaction",
+        runId: "gpu-transaction",
         cwd: root,
         prompt: "rollback materialization",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1910,7 +1910,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-temp-cleanup",
+        runId: "gpu-temp-cleanup",
         cwd: root,
         prompt: "clean a failed materialization write",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1973,7 +1973,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-windows-replace",
+        runId: "gpu-windows-replace",
         cwd: root,
         prompt: "replace current best safely",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2042,7 +2042,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-windows-replace-rollback",
+        runId: "gpu-windows-replace-rollback",
         cwd: root,
         prompt: "restore a failed Windows replacement",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2103,7 +2103,7 @@ workflow:
         await expect(runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
             runDir: session.runDir,
-            executionId: `gpu-benchmark-${mismatch}`,
+            runId: `gpu-benchmark-${mismatch}`,
             cwd: root,
             prompt: `reject benchmark ${mismatch} mismatch`,
             agentRunner: (request) => Effect.promise(async () => {
@@ -2133,7 +2133,7 @@ workflow:
         root,
         workflowPath: join(root, "blocked.yml"),
         runDir: session.runDir,
-        executionId: "blocked-loop",
+        runId: "blocked-loop",
         cwd: root,
         prompt: "tune the blocked case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2234,7 +2234,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "undeclared-block-control",
+          runId: "undeclared-block-control",
           cwd: root,
           prompt: "run despite undeclared control-looking fields",
           agentRunner: (request) => Effect.promise(async () => {
@@ -2285,7 +2285,7 @@ workflow:
         root,
         workflowPath: join(root, "timeout.yml"),
         runDir: session.runDir,
-        executionId: "stage-timeout",
+        runId: "stage-timeout",
         cwd: root,
         prompt: "explore forever",
         agentRunner: () => Effect.promise(() => new Promise(() => undefined)),
@@ -2312,7 +2312,7 @@ workflow:
         root,
         workflowPath: join(root, "absorb.yml"),
         runDir: session.runDir,
-        executionId: "absorb-loop",
+        runId: "absorb-loop",
         cwd: root,
         prompt: "tune the blocked case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2413,7 +2413,7 @@ workflow:
         root,
         workflowPath: join(root, "global.yml"),
         runDir: session.runDir,
-        executionId: "global-loop",
+        runId: "global-loop",
         cwd: root,
         prompt: "tune the blocked case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2528,7 +2528,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "mixed.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "mixed-block-scope-loop",
+          runId: "mixed-block-scope-loop",
           cwd: root,
           prompt: "stop when any blocked lane is globally scoped",
           agentRunner: (request) => Effect.promise(async () => {
@@ -2585,7 +2585,7 @@ workflow:
         root,
         workflowPath: join(root, "tune-loop.yml"),
         runDir: session.runDir,
-        executionId: "cuda-tune-loop",
+        runId: "cuda-tune-loop",
         cwd: root,
         prompt: "tune the cuda case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2695,7 +2695,7 @@ workflow:
         root,
         workflowPath: join(root, "two.yml"),
         runDir: session.runDir,
-        executionId: "two-stage",
+        runId: "two-stage",
         cwd: root,
         prompt: "solve the task",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2755,7 +2755,7 @@ workflow:
         root,
         workflowPath: join(root, "same-worker.yml"),
         runDir: session.runDir,
-        executionId: "same-worker",
+        runId: "same-worker",
         cwd: root,
         prompt: "continue the task",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2792,7 +2792,7 @@ workflow:
       let active = 0;
       let maxActive = 0;
       const execution = runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "fan-out.yml"), runDir: session.runDir, executionId: "fan-out", cwd: root, prompt: "fan out",
+        root, workflowPath: join(root, "fan-out.yml"), runDir: session.runDir, runId: "fan-out", cwd: root, prompt: "fan out",
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           calls.push(request);
@@ -2837,7 +2837,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -2886,7 +2886,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop-no-memory", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-no-memory", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -2928,7 +2928,7 @@ workflow:
         root,
         workflowPath: join(root, "loop-feedback.yml"),
         runDir: session.runDir,
-        executionId: "loop-feedback",
+        runId: "loop-feedback",
         cwd: root,
         prompt: "iterate with feedback",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2936,7 +2936,7 @@ workflow:
           const stage = stageId(request);
           const invocation = invocationId(request);
           if (calls.length === 1) {
-            const running = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+            const running = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
               status: string;
               plannedStages: number;
               completedStages: number;
@@ -3024,7 +3024,7 @@ workflow:
         "tune.profile-session-2",
         "tune.profile-session-3",
       ]);
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
         completedStages: number;
@@ -3078,7 +3078,7 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .every((time) => time.completedMs === undefined || Number.isSafeInteger(time.completedMs))).toBe(true);
       expect(snapshot.current?.progress?.hint).toContain("iter-3/3");
-      expect(snapshot.latest?.progress?.hint).toContain("7/7 stages completed");
+            expect(snapshot.current?.progress?.hint).toContain("7/7 stages completed");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3091,7 +3091,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-lane-models", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-lane-models", cwd: root, prompt: "map candidates",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3152,7 +3152,7 @@ workflow:
       let releaseImplementations!: () => void;
       const implementationGate = new Promise<void>((resolve) => { releaseImplementations = resolve; });
       const execution = runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map", cwd: root, prompt: "map candidates",
         workspace: { preserve: true },
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
@@ -3253,7 +3253,7 @@ workflow:
       }
       const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       expect(log.match(/"event":"workspace.prepared"/g)).toHaveLength(3);
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
         completedStages: number;
@@ -3300,7 +3300,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "projected-map",
+          runId: "projected-map",
           cwd: root,
           prompt: "map the contract-declared candidates",
           agentRunner: (request) => Effect.promise(async () => {
@@ -3348,7 +3348,7 @@ workflow:
       await expect(runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "legacy-map-adapter",
+          runId: "legacy-map-adapter",
           cwd: root,
           prompt: "map a contract written before semantic projections",
           agentRunner: (request) => Effect.promise(async () => {
@@ -3410,7 +3410,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "legacy-named-map-adapter",
+          runId: "legacy-named-map-adapter",
           cwd: root,
           prompt: "map a legacy named-validator result",
           agentRunner: (request) => Effect.promise(async () => {
@@ -3457,7 +3457,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-fail", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-fail", cwd: root, prompt: "map candidates",
         agentRunner: (request) => {
           calls.push(request);
           const stage = stageId(request);
@@ -3526,7 +3526,7 @@ workflow:
         root,
         workflowPath: join(root, "map.yml"),
         runDir: session.runDir,
-        executionId: "map-winner",
+        runId: "map-winner",
         cwd: root,
         prompt: "select a candidate",
         workspace: {
@@ -3641,7 +3641,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "explicit-blocked-winner",
+          runId: "explicit-blocked-winner",
           cwd: root,
           prompt: "select a candidate but never carry a blocked result",
           workspace: { winner: "first" },
@@ -3699,7 +3699,7 @@ workflow:
         root,
         workflowPath: join(root, "nested.yml"),
         runDir: session.runDir,
-        executionId: "nested",
+        runId: "nested",
         cwd: root,
         prompt: "nested map",
         agentRunner: (request) => Effect.promise(async () => {
@@ -3741,7 +3741,7 @@ workflow:
         expect(relative(outerSeed!.workspace.cwd, stage.workspace.cwd).startsWith("..")).toBe(true);
       }
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         plannedStages: number;
         completedStages: number;
         stageCounts: Record<string, { planned: number; completed: number }>;
@@ -3772,7 +3772,7 @@ workflow:
         root,
         workflowPath: join(root, "map.yml"),
         runDir: session.runDir,
-        executionId: "symlink-map",
+        runId: "symlink-map",
         cwd: linkedRoot,
         prompt: "symlink map",
         workspace: { preserve: true },
@@ -3823,7 +3823,7 @@ workflow:
         root,
         workflowPath: join(root, "map.yml"),
         runDir: session.runDir,
-        executionId: "external-link",
+        runId: "external-link",
         cwd: root,
         prompt: "external link",
         agentRunner: (request) => Effect.promise(async () => {
@@ -3904,7 +3904,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, executionId: "retry", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, runId: "retry", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3967,7 +3967,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, executionId: "retry-no-memory", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, runId: "retry-no-memory", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -4012,7 +4012,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: join(root, "run$&path"), executionId: "repair-path", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), runDir: join(root, "run$&path"), runId: "repair-path", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -4079,7 +4079,7 @@ workflow:
         root,
         workflowPath: join(root, "contract.yml"),
         runDir: session.runDir,
-        executionId: "worker-contract",
+        runId: "worker-contract",
         cwd: root,
         prompt: "measure",
         agentRunner: (request) => Effect.promise(async () => {
@@ -4199,7 +4199,7 @@ workflow:
         root,
         workflowPath: join(root, "contract-loop.yml"),
         runDir: session.runDir,
-        executionId: "worker-contract-loop",
+        runId: "worker-contract-loop",
         cwd: root,
         prompt: "measure twice",
         agentRunner: (request) => Effect.promise(async () => {
@@ -4262,7 +4262,7 @@ workflow:
         root,
         workflowPath: join(root, "validate.yml"),
         runDir: session.runDir,
-        executionId: "no-continuation",
+        runId: "no-continuation",
         cwd: root,
         prompt: "write validation",
         agentRunner: (request) => Effect.promise(async () => {
@@ -4318,7 +4318,7 @@ workflow:
       const session = await testSession(root);
       const calls: string[] = [];
       const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "broken.yml"), runDir: session.runDir, executionId: "broken", cwd: root, prompt: "fail",
+        root, workflowPath: join(root, "broken.yml"), runDir: session.runDir, runId: "broken", cwd: root, prompt: "fail",
         agentRunner: (request) => {
           calls.push(stageId(request));
           return Effect.fail(new AgentError({ kind: "unknown", message: "intentional" }));
@@ -4344,7 +4344,7 @@ workflow:
         root,
         workflowPath: join(root, "special.yml"),
         runDir: session.runDir,
-        executionId: "lifecycle",
+        runId: "lifecycle",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "test-model" },
@@ -4397,7 +4397,7 @@ workflow:
         root,
         workflowPath: join(root, "configured.yml"),
         runDir: session.runDir,
-        executionId: "configured",
+        runId: "configured",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "fallback-model" },
@@ -4430,7 +4430,7 @@ workflow:
         root,
         workflowPath: join(root, "workflow.yml"),
         runDir: session.runDir,
-        executionId: "missing-validate",
+        runId: "missing-validate",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "test-model" },
@@ -4461,7 +4461,7 @@ workflow:
       let signalBothStarted!: () => void;
       const bothStarted = new Promise<void>((resolve) => { signalBothStarted = resolve; });
       const fiber = Effect.runFork(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-pause", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-pause", cwd: root, prompt: "map candidates",
         agentRunner: (request) => {
           const stage = stageId(request);
           if (stage === "tournament.implement") {
@@ -4570,7 +4570,7 @@ workflow:
         });
       };
       const fiber = Effect.runFork(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: session.id, cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "map candidates",
         agentRunner: runner,
       }).pipe(
         Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -4597,7 +4597,7 @@ workflow:
       await runWorkflow(session, closeWorkflowJob(session.runDir, session.id, 1, "restarted"));
       run = 2;
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: session.id, cwd: root, prompt: "map candidates again",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "map candidates again",
         agentRunner: runner,
       }));
 
@@ -4656,7 +4656,7 @@ workflow:
         };
       });
       const firstRun = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-skip", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-skip", cwd: root, prompt: "map candidates",
         agentRunner: runner(firstCalls),
       }));
       expect(firstCalls.length).toBeGreaterThan(0);
@@ -4672,7 +4672,7 @@ workflow:
 
       const secondCalls: AgentRequest[] = [];
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-skip", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-skip", cwd: root, prompt: "map candidates",
         agentRunner: runner(secondCalls),
         continueJob: {
           jobOrdinal: cursor!.jobOrdinal,
@@ -4772,7 +4772,7 @@ workflow:
       };
 
       const fiber = Effect.runFork(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop-skip", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
         agentRunner,
       }).pipe(
         Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -4803,7 +4803,7 @@ workflow:
 
       run = 1;
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop-skip", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
         agentRunner,
         continueJob: {
           jobOrdinal: cursor.jobOrdinal,
@@ -4840,7 +4840,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, executionId: "cancelled", cwd: root, prompt: "answer",
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: "cancelled", cwd: root, prompt: "answer",
         agentRunner: (request) => {
           calls.push(request);
           return Effect.fail(new AgentError({ kind: "cancelled", message: "user aborted" }));
@@ -4868,7 +4868,7 @@ workflow:
       const channel = createSteeringChannel();
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, executionId: "steer-thread", cwd: root, prompt: "answer",
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: "steer-thread", cwd: root, prompt: "answer",
         steering: channel,
         agentRunner: (request) => {
           calls.push(request);
@@ -4899,7 +4899,7 @@ workflow:
         workflowPath: join(root, "basic.yml"),
         runDir: session.runDir,
         // One run is one execution, so both turns carry the same id.
-        executionId: session.id,
+        runId: session.id,
         cwd: root,
         prompt: `turn ${index}`,
         ...(execution === undefined ? {} : { execution }),
@@ -4944,7 +4944,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const run = (execution?: WorkflowExecutionContinuation) => runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, executionId: session.id, cwd: root, prompt: "answer",
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "answer",
         ...(execution === undefined ? {} : { execution }),
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
@@ -4987,13 +4987,13 @@ workflow:
         root,
         workflowPath: join(root, "basic.yml"),
         runDir: session.runDir,
-        executionId: session.id,
+        runId: session.id,
         cwd: root,
         prompt: "answer",
         execution: {
           id: session.id,
           promptIndex: 1,
-          // `<executionId>/<harness>/<stageId>/<lane>`, per `workflowActorKey`.
+          // `<runId>/<harness>/<stageId>/<lane>`, per `workflowActorKey`.
           // The cast is the point: `WorkflowActorContinuation` requires
           // `continuation`, and the reader always sets it, so this shape can only
           // arrive from a caller that built the table some other way — a JSON
@@ -5075,7 +5075,7 @@ workflow:
           root,
           workflowPath: join(root, "race.yml"),
           runDir: session.runDir,
-          executionId: "metric-race",
+          runId: "metric-race",
           cwd: root,
           prompt: "race two kernels",
           agentRunner: (request) => Effect.promise(async () => {
@@ -5285,7 +5285,7 @@ workflow:
       };
 
       const fiber = Effect.runFork(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, executionId: "metric-continue", cwd: root, prompt: "race two kernels",
+        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, runId: "metric-continue", cwd: root, prompt: "race two kernels",
         agentRunner,
       }).pipe(
         Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -5320,7 +5320,7 @@ workflow:
 
       run = 1;
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, executionId: "metric-continue", cwd: root, prompt: "race two kernels",
+        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, runId: "metric-continue", cwd: root, prompt: "race two kernels",
         ...(execution === undefined ? {} : { execution }),
         agentRunner,
         continueJob: {
@@ -5392,7 +5392,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const outcome = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root: repo, workflowPath: join(repo, "race.yml"), runDir: session.runDir, executionId: "git-race", cwd: repo, prompt: "race two kernels",
+        root: repo, workflowPath: join(repo, "race.yml"), runDir: session.runDir, runId: "git-race", cwd: repo, prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -5578,7 +5578,7 @@ workflow:
         loadWorkflow(join(root, "race.yml"), root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
             runDir: session.runDir,
-            executionId: "blocked-metric-tournament",
+            runId: "blocked-metric-tournament",
             cwd: root,
             prompt: "choose the healthy kernel and continue to summary",
             agentRunner: (request) => Effect.promise(async () => {
@@ -5669,7 +5669,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "explicit-blocked-winner",
+        runId: "explicit-blocked-winner",
         cwd: root,
         prompt: "do not carry a blocked candidate",
         workspace: { winner: "first" },
@@ -5809,7 +5809,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "mixed.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "mixed-block-scope-tournament",
+          runId: "mixed-block-scope-tournament",
           cwd: root,
           prompt: "stop when any tournament lane is globally blocked",
           agentRunner: (request) => Effect.promise(async () => {
@@ -5884,7 +5884,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "git-delta-race",
+        runId: "git-delta-race",
         cwd: root,
         prompt: "carry only the winning source change",
         agentRunner: (request) => Effect.promise(async () => {
@@ -5975,7 +5975,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "slot-baseline-failure",
+        runId: "slot-baseline-failure",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6041,7 +6041,7 @@ workflow:
           root,
           workflowPath: join(root, "race.yml"),
           runDir: session.runDir,
-          executionId: "metric-consolidation-repair",
+          runId: "metric-consolidation-repair",
           cwd: root,
           prompt: "race two kernels",
           agentRunner: (request) => Effect.promise(async () => {
@@ -6175,7 +6175,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "metric-consolidation-rollback",
+        runId: "metric-consolidation-rollback",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6273,7 +6273,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "metric-consolidation-persist-rollback",
+        runId: "metric-consolidation-persist-rollback",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6442,7 +6442,7 @@ workflow:
         loadWorkflow(join(root, "loop-race.yml"), root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "loop-race",
+          runId: "loop-race",
           cwd: root,
           prompt: "race kernels each iteration",
           agentRunner: (request) => Effect.promise(async () => {
@@ -6633,7 +6633,7 @@ workflow:
         root,
         workflowPath: join(root, "nested.yml"),
         runDir: session.runDir,
-        executionId: "nested-metric-races",
+        runId: "nested-metric-races",
         cwd: root,
         prompt: "pick by the final nested race",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6777,7 +6777,7 @@ workflow:
         loadWorkflow(workflowPath, root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
             runDir: session.runDir,
-            executionId: "multi-metric-race",
+            runId: "multi-metric-race",
             cwd: root,
             prompt: "race two kernels",
             agentRunner: (request) => Effect.promise(async () => {
@@ -6827,7 +6827,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-approve",
+        runId: "signoff-approve",
         cwd: root,
         prompt: "answer once",
         agentRunner: () => Effect.promise(async () => ({
@@ -6866,7 +6866,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-reject",
+        runId: "signoff-reject",
         cwd: root,
         prompt: "draft it",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6914,7 +6914,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-no-channel",
+        runId: "signoff-no-channel",
         cwd: root,
         prompt: "answer once",
         agentRunner: () => Effect.promise(async () => {
@@ -6949,7 +6949,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-cancel",
+        runId: "signoff-cancel",
         cwd: root,
         prompt: "answer once",
         agentRunner: () => Effect.promise(async () => {
@@ -7239,7 +7239,7 @@ workflow:
         root,
         workflowPath,
         runDir: session.runDir,
-        executionId: "demoted-keep",
+        runId: "demoted-keep",
         cwd: repo,
         prompt: "keep only a real improvement",
         agentRunner: (request) => Effect.promise(async () => {
@@ -7311,7 +7311,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "auto-commit",
+        runId: "auto-commit",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -7354,7 +7354,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "ambiguous-changed-files",
+        runId: "ambiguous-changed-files",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -7385,7 +7385,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "ambiguous-decision",
+        runId: "ambiguous-decision",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -7416,7 +7416,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "ambiguous-progress-record",
+        runId: "ambiguous-progress-record",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -7452,7 +7452,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "auto-commit-projections",
+        runId: "auto-commit-projections",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -7535,7 +7535,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "auto-commit-reject",
+        runId: "auto-commit-reject",
         cwd: repo,
         prompt: "tune gemm, no ticket in mission",
         agentRunner: tuneRunner(repo),
@@ -7571,7 +7571,7 @@ workflow:
         root,
         workflowPath: join(root, "no.yml"),
         runDir: session.runDir,
-        executionId: "no-auto-commit",
+        runId: "no-auto-commit",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),

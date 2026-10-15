@@ -73,7 +73,7 @@ export interface ScopeWalkerContext {
   readonly request: WorkflowExecutionRequest;
   readonly loaded: LoadedWorkflow;
   readonly compiled: CompiledWorkflow;
-  readonly executionId: string;
+  readonly runId: string;
   readonly promptIndex: number;
   readonly actors: Map<string, ActorState>;
   readonly announcedContinuations: Map<string, AgentContinuation>;
@@ -244,7 +244,7 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     request,
     loaded,
     compiled,
-    executionId,
+    runId,
     promptIndex,
     actors,
     actorContexts,
@@ -334,7 +334,7 @@ const failTournamentWithPreservedSlots = (
   reason: string,
 ): Effect.Effect<never, WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
   workspaceState.preserve = true;
-  const preservation = yield* cleanupMapWorkspaces(request.runDir, executionId, {
+  const preservation = yield* cleanupMapWorkspaces(request.runDir, runId, {
     sourceCwd,
     keys,
     preserve: true,
@@ -408,12 +408,12 @@ const finalizeTournament = (
     const blockedIds = terminalBlocked.map((result) => result.id);
     yield* workflowTrajectory.observe({
       type: "selection",
-      executionId,
+      runId,
       timestamp: new Date().toISOString(),
       outcome: "no-winner",
       skipped: `tournament contains terminal blocked result(s): ${blockedIds.join(", ")}`,
     }).pipe(Effect.catchAll(() => Effect.void));
-    yield* cleanupMapWorkspaces(request.runDir, executionId, {
+    yield* cleanupMapWorkspaces(request.runDir, runId, {
       sourceCwd,
       keys: candidates.map((candidate) => candidate.key),
       preserve: options?.preserve === true,
@@ -437,7 +437,7 @@ const finalizeTournament = (
         ? candidates[0]?.key
         : options.winner === "last"
           ? candidates.at(-1)?.key
-          : options.winner({ executionId, sourceCwd, candidates });
+          : options.winner({ runId, sourceCwd, candidates });
     } catch (cause) {
       return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `workspace winner selector failed: ${errorMessage(cause)}`));
     }
@@ -453,7 +453,7 @@ const finalizeTournament = (
     } else if (auto !== undefined) {
       yield* workflowTrajectory.observe({
         type: "selection",
-        executionId,
+        runId,
         timestamp: new Date().toISOString(),
         outcome: "no-winner",
         referee: auto.referee,
@@ -461,7 +461,7 @@ const finalizeTournament = (
     } else {
       yield* workflowTrajectory.observe({
         type: "selection",
-        executionId,
+        runId,
         timestamp: new Date().toISOString(),
         outcome: "metricless",
       }).pipe(Effect.catchAll(() => Effect.void));
@@ -500,14 +500,14 @@ const finalizeTournament = (
       const carrying: WorkflowCarrying = { kind: "admitted-not-carried", reason: admission.detail };
       yield* workflowTrajectory.observe({
         type: "selection",
-        executionId,
+        runId,
         timestamp: new Date().toISOString(),
         outcome: "no-winner",
         referee: selectionReferee,
         winnerKey,
         carrying,
       }).pipe(Effect.catchAll(() => Effect.void));
-      yield* cleanupMapWorkspaces(request.runDir, executionId, {
+      yield* cleanupMapWorkspaces(request.runDir, runId, {
         sourceCwd,
         keys: cleanupKeys,
         preserve: options?.preserve === true,
@@ -527,14 +527,14 @@ const finalizeTournament = (
       };
       yield* workflowTrajectory.observe({
         type: "selection",
-        executionId,
+        runId,
         timestamp: new Date().toISOString(),
         outcome: "no-winner",
         ...(selectionReferee === undefined ? {} : { referee: selectionReferee }),
         winnerKey,
         carrying,
       }).pipe(Effect.catchAll(() => Effect.void));
-      yield* cleanupMapWorkspaces(request.runDir, executionId, {
+      yield* cleanupMapWorkspaces(request.runDir, runId, {
         sourceCwd,
         keys: cleanupKeys,
         preserve: options?.preserve === true,
@@ -557,7 +557,7 @@ const finalizeTournament = (
       // worker turn. A source that cannot fast-forward is a carry failure:
       // the winner's work did not reach the parent, and saying otherwise
       // would be the silent loss the delta gate exists to catch.
-      const applied = yield* applyWinnerWorkspace(request.runDir, executionId, winnerKey, sourceCwd).pipe(
+      const applied = yield* applyWinnerWorkspace(request.runDir, runId, winnerKey, sourceCwd).pipe(
         Effect.map((result): WorkflowCarrying => result.skipped === undefined
           ? { kind: "git-merged", ...(result.commit === undefined ? {} : { commit: result.commit }) }
           : {
@@ -653,11 +653,11 @@ const finalizeTournament = (
     }
     yield* WORKFLOW_LOG.info("workspace.winner.consolidated", {
       outcome: carryLanded(consolidating.kind) ? "success" : "no-winner",
-      data: { executionId, winnerKey, sourceCwd, carrying: consolidating },
+      data: { runId, winnerKey, sourceCwd, carrying: consolidating },
     }).pipe(Effect.catchAll(() => Effect.void));
     yield* workflowTrajectory.observe({
       type: "selection",
-      executionId,
+      runId,
       timestamp: new Date().toISOString(),
       outcome: carryLanded(consolidating.kind) ? "carried" : "no-winner",
       ...(selectionReferee === undefined ? {} : { referee: selectionReferee }),
@@ -677,7 +677,7 @@ const finalizeTournament = (
       tournamentIncumbents.set(incumbentKey, admission.winner);
     }
   }
-  yield* cleanupMapWorkspaces(request.runDir, executionId, {
+  yield* cleanupMapWorkspaces(request.runDir, runId, {
     sourceCwd,
     keys: cleanupKeys,
     preserve: options?.preserve === true,
@@ -741,7 +741,7 @@ const executeScope = (
     const rebuilt: InternalStageResult[] = [];
     for (const entry of inside) {
       const result = yield* rebuildAcceptedStage(request.runDir, {
-        executionId,
+        runId,
         promptIndex: cursor.jobOrdinal,
         stageId: entry.stageId,
         stageName: entry.stageId,
@@ -1002,7 +1002,7 @@ const executeScope = (
           const slotFrames = [...frames, { kind: "map" as const, regionId: region.id, slot: item.index }];
           const slotWorkspace = yield* allocateMapWorkspace(
             request.runDir,
-            executionId,
+            runId,
             promptIndex,
             slotFrames,
             workspace.cwd,
@@ -1035,7 +1035,7 @@ const executeScope = (
           });
           yield* WORKFLOW_LOG.info("workspace.prepared", {
             data: {
-              executionId,
+              runId,
               instanceId: runtimeInstanceId(slotFrames),
               workspace: slotWorkspace,
             },

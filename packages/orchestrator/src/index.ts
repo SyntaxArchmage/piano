@@ -123,7 +123,6 @@ export {
   parseProgressStreamRecord,
   progressRecordKind,
   workflowProgressPath,
-  workflowProgressSnapshotPath,
   type WorkflowProgressRecord,
   type WorkflowProgressStartRecord,
   type WorkflowProgressExecutionStartRecord,
@@ -153,6 +152,7 @@ export {
   writeRunStatus,
   type RunJob,
   type RunStatus,
+  type RunTurn,
 } from "./run-status.js";
 export {
   snapshotWorkerContract,

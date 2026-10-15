@@ -12,7 +12,6 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   readResumeState,
-  resumeStatePath,
   resumeStreamPath,
   writeResumeState,
   type ResumeState,
@@ -29,7 +28,7 @@ function actor(sessionId: string, turns = 1): ResumeState["actors"][string] {
 }
 
 function state(actors: ResumeState["actors"], overrides: Partial<ResumeState> = {}): ResumeState {
-  return { version: 1, executionId: "run-1", promptIndex: 1, actors, ...overrides };
+  return { version: 1, runId: "run-1", promptIndex: 1, actors, ...overrides };
 }
 
 async function runDir(): Promise<string> {
@@ -67,7 +66,7 @@ describe("resume state persistence", () => {
   it("replaces the table when the record belongs to another execution", async () => {
     const dir = await runDir();
     await write(dir, state({ "run-1/claude/coding/root": actor("sess-old") }));
-    await write(dir, state({ "run-2/claude/coding/root": actor("sess-new") }, { executionId: "run-2" }));
+    await write(dir, state({ "run-2/claude/coding/root": actor("sess-new") }, { runId: "run-2" }));
 
     const stored = await read(dir);
 
@@ -96,29 +95,11 @@ describe("resume state persistence", () => {
     // A process killed mid-append leaves a line that never finished.
     await writeFile(
       resumeStreamPath(dir),
-      `${await readFile(resumeStreamPath(dir), "utf8")}{"version":1,"executionId":"run-1","prompt`,
+      `${await readFile(resumeStreamPath(dir), "utf8")}{"version":1,"runId":"run-1","prompt`,
       { flag: "a" },
     );
 
     expect((await read(dir))?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-claude"));
-  });
-
-  it("carries a run written before the stream existed into its first record", async () => {
-    const dir = await runDir();
-    await writeFile(resumeStatePath(dir), `${JSON.stringify(state({
-      "run-1/claude/coding/root": actor("sess-legacy"),
-    }))}\n`, "utf8");
-
-    // Readable on its own...
-    expect((await read(dir))?.actors["run-1/claude/coding/root"]).toEqual(actor("sess-legacy"));
-
-    // ...and still there once this run starts appending.
-    await write(dir, state({ "run-1/pi/coding/root": actor("sess-pi") }, { promptIndex: 2 }));
-    const stored = await read(dir);
-    expect(Object.keys(stored?.actors ?? {}).sort()).toEqual([
-      "run-1/claude/coding/root",
-      "run-1/pi/coding/root",
-    ]);
   });
 
   it("reports no state when nothing has been written", async () => {

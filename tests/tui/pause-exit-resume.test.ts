@@ -88,11 +88,11 @@ describe("half-way stop: Escape, /exit, and /resume in one UX", () => {
     try {
       // A real progress.json saying "paused": the footer parser must accept it
       // rather than reject the snapshot (an unknown status hid the whole graph).
-      const snapshotPath = join(runsRoot, "progress.json");
+      const snapshotPath = join(runsRoot, "status.json");
       await writeFile(snapshotPath, `${JSON.stringify({
         version: 1,
         updatedAt: new Date().toISOString(),
-        executionId: "run-1",
+        runId: "run-1",
         status: "paused",
         plannedStages: 1,
         completedStages: 0,

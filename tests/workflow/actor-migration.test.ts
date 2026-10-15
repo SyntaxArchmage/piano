@@ -75,7 +75,7 @@ describe("a legacy stage-keyed actor continues under the worker key", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "keep going",
-            executionId: session.id,
+            runId: session.id,
             execution,
             agentRunner: runner,
           })),

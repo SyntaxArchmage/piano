@@ -60,7 +60,7 @@ const wait = (label: string, check: () => boolean) => waitFor(label, check, 60_0
 
 function progressStatus(runsRoot: string, runId: string): string | undefined {
   try {
-    const raw = readFileSync(join(runsRoot, runId, "progress.json"), "utf8");
+    const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
     return (JSON.parse(raw) as { status?: string }).status;
   } catch {
     return undefined;
@@ -97,10 +97,10 @@ function streamRecords(runsRoot: string, runId: string): Array<Record<string, un
   }
 }
 
-/** Turn entries recorded in a run's trajectory so far (undefined mid-write). */
+/** Turn entries recorded in a run's state so far (undefined mid-write). */
 function recordedTurns(runsRoot: string, runId: string): Array<{ prompt: string; status: string }> | undefined {
   try {
-    const raw = readFileSync(join(runsRoot, runId, "trajectory.json"), "utf8");
+    const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
     const document = JSON.parse(raw) as { turns?: Array<{ prompt: string; status: string }> };
     return Array.isArray(document.turns) ? document.turns : [];
   } catch {

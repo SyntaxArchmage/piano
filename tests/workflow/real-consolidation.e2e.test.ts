@@ -201,7 +201,7 @@ describe.skipIf(!runReal)(" real-model tournament winner consolidation (§6)", (
 
         const request: WorkflowExecutionRequest = {
           runDir: session.runDir,
-          executionId: `real-consolidation`,
+          runId: `real-consolidation`,
           cwd: root,
           prompt: `Race two kernels as separate strategies for kernel.py then let the engine pick the higher-tflops winner and let you consolidate it into the shared source.`,
           agentOptions: { ...homes.agentOptions, env: homes.env },
@@ -384,7 +384,7 @@ workflow:
 
       const request: WorkflowExecutionRequest = {
         runDir: session.runDir,
-        executionId: "real-loop-race",
+        runId: "real-loop-race",
         cwd: root,
         prompt: "Each iteration race two strategies for kernel.py; the race's winner must be consolidated into the shared source when the race region exits.",
         agentOptions: { ...homes.agentOptions, env: homes.env },

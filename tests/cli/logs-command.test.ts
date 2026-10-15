@@ -86,10 +86,10 @@ describe("piano logs commands ", () => {
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 1, depth: 0, span_id: "sp-1", parent_id: null, event: "enter", fn: "run" },
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 2, depth: 0, span_id: "sp-1", parent_id: null, event: "exit", fn: "run", ok: true, duration_ms: 1 },
       ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8"),
-      writeFile(join(runDir, "trajectory.json"), JSON.stringify({
+      writeFile(join(runDir, "trajectory.jsonl"), JSON.stringify({
         version: 1,
         runId,
-        updatedAt: timestamp,
+        timestamp,
         status: "completed",
         promptLength: 1,
         events: [],
@@ -155,7 +155,7 @@ describe("piano logs picker rows", () => {
     const prompt = 'Implement a `matmul.cu` that prints "TFLOPS: <value>"\nand nothing else.';
     // One small document is the whole row. The trajectory beside it is the
     // evidence and is never opened to list a run.
-    await writeFile(join(root, runId, "trajectory.json"), "x".repeat(200_000), "utf8");
+    await writeFile(join(root, runId, "trajectory.jsonl"), "x".repeat(200_000), "utf8");
     await writeFile(join(root, runId, "status.json"), JSON.stringify({
       version: 1,
       runId,
@@ -217,34 +217,34 @@ describe("piano logs --jobs", () => {
     const records = [
       {
         version: 1, kind: "execution-started", timestamp: "2026-08-21T10:00:00.000Z",
-        executionId: runId, jobOrdinal: 1, prompt: "fix the matmul kernel", resumed: false,
+        runId: runId, jobOrdinal: 1, prompt: "fix the matmul kernel", resumed: false,
       },
       {
         version: 1, kind: "stage-started", timestamp: "2026-08-21T10:00:01.000Z",
-        executionId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
+        runId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
         stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
       },
       {
         version: 1, timestamp: "2026-08-21T10:00:02.000Z",
-        executionId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
+        runId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
         stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 2,
       },
       {
         version: 1, timestamp: "2026-08-21T10:00:03.000Z",
-        executionId: runId, jobOrdinal: 1, invocationId: "tune.race@tune/iter-0/tune.race/slot-1",
+        runId: runId, jobOrdinal: 1, invocationId: "tune.race@tune/iter-0/tune.race/slot-1",
         stageId: "tune.race", stage: "Race", worker: "cuda-idea", attempt: 1,
       },
       {
         version: 1, kind: "execution-finished", timestamp: "2026-08-21T10:00:04.000Z",
-        executionId: runId, status: "paused",
+        runId: runId, status: "paused",
       },
       {
         version: 1, kind: "execution-started", timestamp: "2026-08-21T10:05:00.000Z",
-        executionId: runId, jobOrdinal: 2, prompt: "second pass", resumed: true,
+        runId: runId, jobOrdinal: 2, prompt: "second pass", resumed: true,
       },
       {
         version: 1, kind: "stage-started", timestamp: "2026-08-21T10:05:01.000Z",
-        executionId: runId, jobOrdinal: 2, invocationId: "tune.profile@root",
+        runId: runId, jobOrdinal: 2, invocationId: "tune.profile@root",
         stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
       },
     ];

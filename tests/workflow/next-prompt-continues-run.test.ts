@@ -1,6 +1,6 @@
 // The run's workflow execution is get-or-create, never re-created, across
 // prompts: a second prompt on a finished run continues the same execution
-// (same executionId) on the same resumed actor (same sessionId, turns 2) —
+// (same runId) on the same resumed actor (same sessionId, turns 2) —
 // the identical path /resume takes. This is the engine half of the TUI's
 // queued-next-prompt behavior (tests/tui/prompt-queue.test.ts).
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -78,7 +78,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
                 runDir: session.runDir,
                 cwd: root,
                 prompt: text,
-                executionId: session.id,
+                runId: session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signoff,
                 agentRunner: runner,
@@ -96,7 +96,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const second = await prompt("second prompt");
       expect(second.text).toBeTruthy();
       // Same run = same execution; the actor was resumed, not re-created.
-      expect(second.executionId).toBe(first.executionId);
+      expect(second.runId).toBe(first.runId);
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
@@ -142,7 +142,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
               runDir: session.runDir,
               cwd: root,
               prompt: text,
-              executionId: session.id,
+              runId: session.id,
               ...(execution === undefined ? {} : { execution }),
               signoff,
               agentRunner: runner,
@@ -195,7 +195,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
                 runDir: session.runDir,
                 cwd: root,
                 prompt: text,
-                executionId: session.id,
+                runId: session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signoff,
                 agentRunner: runner,
@@ -255,7 +255,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
                 runDir: session.runDir,
                 cwd: root,
                 prompt: text,
-                executionId: session.id,
+                runId: session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signoff,
                 agentRunner: runner,

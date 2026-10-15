@@ -6,16 +6,36 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import {
   readResumeContext,
-  readRunSummary,
-  readRunTrajectory,
+  readRunRow,
   summarizeRun,
-  trajectoryReadFailed,
 } from "../../packages/cli/src/session-resume.js";
 
-async function writeRun(root: string, runId: string, document: unknown): Promise<void> {
-  const runDir = join(root, runId);
-  await mkdir(runDir, { recursive: true });
-  await writeFile(join(runDir, "trajectory.json"), `${JSON.stringify(document)}\n`, "utf8");
+/** Write a run as the stream its readers fold: one record per turn, carrying
+ * the events that turn owns. The document form is gone; a fixture shaped like
+ * one still expresses the run exactly, down to the cumulative counts. */
+async function writeRun(root: string, runId: string, document: Record<string, unknown>): Promise<void> {
+  const events = (document.events as unknown[] | undefined) ?? [];
+  const turns = (document.turns as Array<{ prompt: string; status: string; eventCount: number }> | undefined) ?? [];
+  const scalars = Object.fromEntries(Object.entries(document).filter(([key]) => !["events", "turns", "runId", "updatedAt"].includes(key)));
+  const records: Array<Record<string, unknown>> = [];
+  let start = 0;
+  let second = 0;
+  for (const turn of turns) {
+    records.push({
+      ...scalars,
+      runId: document.runId,
+      timestamp: `${String(second).padStart(2, "0")}s` === "" ? "" : `2026-09-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+      prompt: turn.prompt,
+      status: turn.status,
+      events: events.slice(start, turn.eventCount),
+    });
+    start = turn.eventCount;
+    second += 1;
+  }
+  if (turns.length === 0) {
+    records.push({ ...scalars, runId: document.runId, timestamp: "2026-09-01T00:00:00.000Z", events });
+  }
+  await writeStreamRun(root, runId, records);
 }
 
 /** A run recorded only in its append-only stream, as every new run is. */
@@ -27,6 +47,31 @@ async function writeStreamRun(root: string, runId: string, records: readonly unk
     records.map((record) => `${JSON.stringify(record)}\n`).join(""),
     "utf8",
   );
+}
+
+/** A run's state document, the picker row's source. */
+async function writeStateRun(root: string, runId: string, status: unknown): Promise<void> {
+  const runDir = join(root, runId);
+  await mkdir(runDir, { recursive: true });
+  await writeFile(join(runDir, "status.json"), `${JSON.stringify(status)}\n`, "utf8");
+}
+
+/** The state a finished two-turn run records: the fields the row projects. */
+function stateFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: 1,
+    runId: "r",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    status: "completed",
+    promptLength: 3,
+    workflowPath: "/repo/recipes/workflows/basic.yaml",
+    workspaceCwd: "/repo/work",
+    turns: [
+      { prompt: "one", status: "completed", eventCount: 3 },
+      { prompt: "two", status: "completed", eventCount: 4 },
+    ],
+    ...overrides,
+  };
 }
 
 const twoTurns = {
@@ -173,7 +218,7 @@ describe("readResumeContext", () => {
   it("fails with a typed storage error when the trajectory is missing or malformed", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await mkdir(join(root, "run-f"), { recursive: true });
-    await writeFile(join(root, "run-f", "trajectory.json"), "{not json\n", "utf8");
+    await writeFile(join(root, "run-f", "trajectory.jsonl"), "{not json\n", "utf8");
 
     for (const runId of ["run-f", "absent"]) {
       const exit = await Effect.runPromiseExit(
@@ -184,7 +229,7 @@ describe("readResumeContext", () => {
         expect(exit.cause.error).toMatchObject({
           _tag: "LogsStorageError",
           operation: "read-trajectory",
-          path: join(root, runId, "trajectory.json"),
+          path: join(root, runId, "trajectory.jsonl"),
         });
       }
     }
@@ -192,7 +237,7 @@ describe("readResumeContext", () => {
 
   it("returns no turns for a run that recorded no events", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
-    await writeRun(root, "run-g", { version: 1, runId: "run-g", status: "failed", events: [] });
+    await writeRun(root, "run-g", { version: 1, runId: "run-g", status: "failed", promptLength: 0, events: [] });
 
     const context = await Effect.runPromise(
       readResumeContext(root, "run-g").pipe(Effect.provide(NodeFileSystem.layer)),
@@ -203,8 +248,8 @@ describe("readResumeContext", () => {
 });
 
 describe("summarizeRun", () => {
-  it("reduces a document to the picker row fields", () => {
-    expect(summarizeRun("run-a", { ...twoTurns, name: "kernel tuning" })).toEqual({
+  it("reduces a state document to the picker row fields", () => {
+    expect(summarizeRun("run-a", { ...stateFixture(), name: "kernel tuning" })).toEqual({
       runId: "run-a",
       name: "kernel tuning",
       prompt: "one",
@@ -215,21 +260,13 @@ describe("summarizeRun", () => {
     });
   });
 
-  it("yields an id-only row when there is no document to read", () => {
+  it("yields an id-only row when there is no state to read", () => {
     expect(summarizeRun("run-x", undefined)).toEqual({ runId: "run-x" });
-  });
-
-  it("reads the first prompt of a pre-turns document from its events", () => {
-    const summary = summarizeRun("run-y", {
-      version: 1,
-      events: [{ type: "context", context: { userMessage: "old prompt\n\n## Workflow stage context\nstage" } }],
-    });
-    expect(summary.prompt).toBe("old prompt");
   });
 });
 
-describe("readRunTrajectory", () => {
-  it("describes a run recorded only in its stream", async () => {
+describe("readRunRow", () => {
+  it("reads the row from the run's state document", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeStreamRun(root, "run-s", [{
       version: 1,
@@ -237,56 +274,42 @@ describe("readRunTrajectory", () => {
       timestamp: "2026-09-01T00:00:00.000Z",
       status: "completed",
       promptLength: 3,
-      workflowPath: "/repo/recipes/workflows/basic.yaml",
       prompt: "only prompt",
       events: [{ type: "done" }],
     }]);
+    await writeStateRun(root, "run-s", stateFixture({
+      turns: [{ prompt: "only prompt", status: "completed", eventCount: 1 }],
+    }));
 
-    const verdict = await readRunTrajectory(join(root, "run-s"));
-
-    expect(verdict.kind).toBe("present");
-    expect(summarizeRun("run-s", verdict.kind === "present" ? verdict.document : undefined))
-      .toMatchObject({ prompt: "only prompt", workflow: "basic", status: "completed" });
+    expect(await readRunRow(join(root, "run-s"))).toMatchObject({
+      prompt: "only prompt",
+      workflow: "basic",
+      status: "completed",
+    });
   });
 
-  it("calls a run with neither form absent, and keeps unparsable bytes listed", async () => {
+  it("keeps a run whose state document does not describe it as an id-only row", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
-    await mkdir(join(root, "bare"), { recursive: true });
-    await mkdir(join(root, "junk"), { recursive: true });
-    await writeFile(join(root, "junk", "trajectory.json"), "{not json\n", "utf8");
+    // Evidence of a run is enough to keep it listed; what the row can say
+    // about it comes from the state document, and a run that predates one —
+    // or whose state document will not parse — keeps only its id.
+    await writeStreamRun(root, "run-legacy", [{ version: 1, runId: "run-legacy", timestamp: "2026-09-01T00:00:00.000Z", status: "completed", events: [] }]);
+    await writeRun(root, "run-junk", { version: 1, runId: "run-junk" });
+    await writeStateRun(root, "run-junk", "{not json\n");
 
-    // Absent is the one outcome that drops a run from the picker...
-    expect((await readRunTrajectory(join(root, "bare"))).kind).toBe("absent");
-    // ...and unparsable bytes are not it: the run was there, so it stays.
-    const junk = await readRunTrajectory(join(root, "junk"));
-    expect(junk.kind).toBe("present");
-    expect(junk.kind === "present" ? junk.document : "unset").toBeUndefined();
+    expect(await readRunRow(join(root, "run-legacy"))).toEqual({ runId: "run-legacy" });
+    expect(await readRunRow(join(root, "run-junk"))).toEqual({ runId: "run-junk" });
   });
-});
 
-describe("readRunSummary", () => {
-  it("never fails, even for a run directory without a trajectory", async () => {
+  it("drops a run that recorded nothing to replay", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
+    // A directory left by a session that was opened and closed without a
+    // prompt — clutter, not history...
     await mkdir(join(root, "bare"), { recursive: true });
+    // ...and a run with state but no trajectory the picker could resume.
+    await writeStateRun(root, "unresumable", stateFixture());
 
-    const summary = await Effect.runPromise(
-      readRunSummary(root, "bare").pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-
-    expect(summary).toEqual({ runId: "bare" });
-  });
-});
-
-describe("trajectoryReadFailed", () => {
-  it("classifies a missing file as the one unresumable outcome", () => {
-    const error = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
-    expect(trajectoryReadFailed(error)).toEqual({ kind: "absent" });
-  });
-
-  it("keeps every other failure resumable-looking so the run stays listed", () => {
-    const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-    expect(trajectoryReadFailed(denied)).toEqual({ kind: "unreadable" });
-    expect(trajectoryReadFailed(new Error("EIO"))).toEqual({ kind: "unreadable" });
-    expect(trajectoryReadFailed("not an error")).toEqual({ kind: "unreadable" });
+    expect(await readRunRow(join(root, "bare"))).toBeUndefined();
+    expect(await readRunRow(join(root, "unresumable"))).toBeUndefined();
   });
 });

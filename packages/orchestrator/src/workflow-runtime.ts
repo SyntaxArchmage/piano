@@ -14,7 +14,7 @@ export type WorkflowRuntimeFrame =
 
 /** One concrete execution of a statically compiled stage. */
 export interface WorkflowRuntimeInvocation {
-  readonly executionId: string;
+  readonly runId: string;
   readonly promptIndex: number;
   readonly stageId: string;
   readonly stageName: string;
@@ -50,7 +50,7 @@ export const DEFAULT_EXECUTION_ID_PREFIX = "execution";
 
 /** A caller-provided execution id is deliberately narrow because it becomes
  * part of the run evidence path. Callers that omit it receive a unique id. */
-export function executionId(value?: string): string | undefined {
+export function runId(value?: string): string | undefined {
   if (value === undefined) return `${DEFAULT_EXECUTION_ID_PREFIX}-${randomUUID()}`;
   return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value) ? value : undefined;
 }
@@ -186,7 +186,7 @@ export function workflowActorKey(
   worker: string,
 ): string {
   const lane = actorLaneSegments(invocation.frames);
-  return [ACTOR_KEY_VERSION, invocation.executionId, harness, worker, ...(lane.length === 0 ? ["root"] : lane)].join("/");
+  return [ACTOR_KEY_VERSION, invocation.runId, harness, worker, ...(lane.length === 0 ? ["root"] : lane)].join("/");
 }
 
 /** Rewrite one legacy stage-keyed actor key into the worker-keyed form, or
@@ -199,11 +199,11 @@ export function migrateLegacyActorKey(
 ): string | undefined {
   if (key.startsWith(`${ACTOR_KEY_VERSION}/`)) return undefined;
   const parts = key.split("/");
-  const [executionId, harness, stageId] = parts;
-  if (executionId === undefined || harness === undefined || stageId === undefined || parts.length < 4) return undefined;
+  const [runId, harness, stageId] = parts;
+  if (runId === undefined || harness === undefined || stageId === undefined || parts.length < 4) return undefined;
   const worker = stageToWorker.get(stageId);
   if (worker === undefined) return undefined;
-  return [ACTOR_KEY_VERSION, executionId, harness, worker, ...parts.slice(3)].join("/");
+  return [ACTOR_KEY_VERSION, runId, harness, worker, ...parts.slice(3)].join("/");
 }
 
 export function actorSessionDirectory(

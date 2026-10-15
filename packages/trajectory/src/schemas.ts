@@ -3,7 +3,7 @@ import { z } from "zod";
 const context = {
   version: z.literal(1),
   timestamp: z.string().datetime(),
-  executionId: z.string().min(1),
+  runId: z.string().min(1),
   invocationId: z.string().min(1),
   stageId: z.string().min(1),
   stage: z.string().min(1),
@@ -96,7 +96,7 @@ export const selectionCarryingSchema = z.object({
  * they carry their own context rather than the per-attempt TrajectoryRecordContext. */
 export const selectionRecordSchema = z.object({
   type: z.literal("selection"),
-  executionId: z.string().min(1),
+  runId: z.string().min(1),
   timestamp: z.string().datetime(),
   referee: selectionRefereeSchema.optional(),
   outcome: z.enum(["merged", "no-winner", "metricless", "carried"]),
@@ -108,7 +108,7 @@ export const selectionRecordSchema = z.object({
 
 export const trajectoryIndexSchema = z.object({
   version: z.literal(1),
-  executionId: z.string().min(1),
+  runId: z.string().min(1),
   updatedAt: z.string().datetime(),
   status: z.enum(["running", "completed", "failed", "cancelled"]),
   streams: z.array(z.object({

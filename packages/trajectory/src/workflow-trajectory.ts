@@ -24,7 +24,7 @@ export class WorkflowTrajectory {
 
   private constructor(
     readonly runDir: string,
-    readonly executionId: string,
+    readonly runId: string,
     readonly recorders: readonly WorkflowObservationRecorder[],
   ) {
     this.streams = recorders.map((recorder) => ({
@@ -36,18 +36,18 @@ export class WorkflowTrajectory {
 
   static open(
     runDir: string,
-    executionId: string,
+    runId: string,
     recorders: readonly WorkflowObservationRecorder[] = defaultTrajectoryRecorders(runDir),
   ): Effect.Effect<WorkflowTrajectory, never, import("@effect/platform").FileSystem.FileSystem> {
-    const trajectory = new WorkflowTrajectory(runDir, executionId, recorders);
+    const trajectory = new WorkflowTrajectory(runDir, runId, recorders);
     return Effect.gen(function* () {
       const previous = yield* readTrajectoryIndex(runDir, trajectoryIndexSchema).pipe(Effect.either);
       if (previous._tag === "Left") {
         trajectory.recordIndexError(`resume read: ${previous.left.message}`);
       } else if (previous.right !== undefined) {
-        if (previous.right.executionId !== executionId) {
+        if (previous.right.runId !== runId) {
           trajectory.recordIndexError(
-            `existing index belongs to execution ${previous.right.executionId}, not ${executionId}`,
+            `existing index belongs to execution ${previous.right.runId}, not ${runId}`,
           );
         } else {
           if (previous.right.status === "running") {
@@ -125,7 +125,7 @@ export class WorkflowTrajectory {
   snapshot(): TrajectoryIndex {
     return {
       version: 1,
-      executionId: this.executionId,
+      runId: this.runId,
       updatedAt: new Date().toISOString(),
       status: this.status,
       streams: this.streams,
