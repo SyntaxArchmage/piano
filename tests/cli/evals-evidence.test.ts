@@ -20,7 +20,7 @@ describe("evals evidence discovery across run layouts", () => {
       const transcript = join(runDir, "actors", "pi", "agent", "root", "session", "2026-01-01T00-00-00-000Z_session.jsonl");
       await mkdir(join(transcript, ".."), { recursive: true });
       await writeFile(transcript, '{"role":"user","content":"go"}\n');
-      await writeFile(join(runDir, "trajectory.json"), JSON.stringify({ status: "failed" }));
+      await writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({ version: 1, runId: "r", timestamp: "2026-01-01T00:00:00.000Z", status: "failed", promptLength: 1, events: [] })}\n`);
       expect(findTranscriptPath(runDir)).toBe(transcript);
     } finally {
       await rm(runDir, { recursive: true, force: true });

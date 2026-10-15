@@ -9,10 +9,11 @@
 // logging mocks — so they prove nothing reaches disk, rather than asserting a
 // mock was not called.
 
-import { mkdtemp, mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTrajectoryRun } from "../common/trajectory-fixture.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { createStagingSession } from "@piano/logging";
@@ -57,20 +58,14 @@ import { runSession } from "../../packages/cli/src/session-run.js";
 const TARGET = "20260901T070228-target";
 
 async function seedRun(runsRoot: string, runId: string): Promise<void> {
-  await mkdir(join(runsRoot, runId), { recursive: true });
-  await writeFile(
-    join(runsRoot, runId, "trajectory.json"),
-    `${JSON.stringify({
-      version: 1,
-      runId,
-      updatedAt: "2026-09-01T07:02:28.000Z",
-      status: "completed",
-      promptLength: 5,
-      events: [],
-      turns: [{ prompt: "hello", status: "completed", eventCount: 0 }],
-    })}\n`,
-    "utf8",
-  );
+  await writeTrajectoryRun(join(runsRoot, runId), {
+    version: 1,
+    runId,
+    status: "completed",
+    promptLength: 5,
+    events: [],
+    turns: [{ prompt: "hello", status: "completed", eventCount: 0 }],
+  });
 }
 
 describe("no empty run is stranded without a prompt", () => {

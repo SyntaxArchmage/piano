@@ -155,7 +155,7 @@ describe("piano logs picker rows", () => {
     const prompt = 'Implement a `matmul.cu` that prints "TFLOPS: <value>"\nand nothing else.';
     // One small document is the whole row. The trajectory beside it is the
     // evidence and is never opened to list a run.
-    await writeFile(join(root, runId, "trajectory.json"), "x".repeat(200_000), "utf8");
+    await writeFile(join(root, runId, "trajectory.jsonl"), "x".repeat(200_000), "utf8");
     await writeFile(join(root, runId, "status.json"), JSON.stringify({
       version: 1,
       runId,

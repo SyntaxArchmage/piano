@@ -84,7 +84,7 @@ function fakeSession(id: string, runsRoot: string, cwd: string): Session {
       flush: vi.fn(() => Effect.void),
     },
     trajectory: {
-      path: join(runsRoot, id, "trajectory.json"),
+      path: join(runsRoot, id, "trajectory.jsonl"),
       write,
       rename,
       flush: vi.fn(() => Effect.void),

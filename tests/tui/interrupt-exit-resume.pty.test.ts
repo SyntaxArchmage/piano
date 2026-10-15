@@ -79,7 +79,7 @@ describe.skipIf(!runReal)("Escape, /exit and /resume over a real PTY", () => {
     const runId = runIds[0]!;
     const progress = JSON.parse(await readFile(join(runsRoot, runId, "status.json"), "utf8")) as { status?: string };
     expect(progress.status).toBe("paused");
-    const resumeState = JSON.parse(await readFile(join(runsRoot, runId, "resume.json"), "utf8")) as {
+    const resumeState = JSON.parse(await readFile(join(runsRoot, runId, "status.json"), "utf8")) as {
       actors?: Record<string, { sessionId?: string; continuation?: unknown }>;
     };
     const actor = Object.values(resumeState.actors ?? {})[0];

@@ -87,12 +87,18 @@ export function readResumeState(
   });
 }
 
+/** A missing stream is no actors; one that cannot be read is an error —
+ * starting every actor over is a worse answer than saying so. */
 function readStream(
   fs: FileSystem.FileSystem,
   path: string,
 ): Effect.Effect<readonly ResumeState[], WorkflowError, never> {
   return Effect.gen(function* () {
-    const raw = yield* fs.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
+    const raw = yield* fs.readFileString(path).pipe(
+      Effect.catchAll((cause) => cause._tag === "SystemError" && cause.reason === "NotFound"
+        ? Effect.succeed("")
+        : Effect.fail(resumeError(path, "resume state read")(cause))),
+    );
     return raw.split("\n")
       .map(parseResumeState)
       .filter((record): record is ResumeState => record !== undefined);
