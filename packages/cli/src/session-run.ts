@@ -3,7 +3,6 @@
 // prompt was supplied. Extracted from main.ts so both the default entrypoint
 // and `resume` can drive the same loop without a circular import.
 
-import { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit } from "effect";
 import { stderr, stdout } from "node:process";
@@ -29,14 +28,12 @@ import {
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
-  foldJobSpans,
   loadDefaultWorkflow,
   loadWorkflow,
-  parseProgressStreamRecord,
   readWorkflowExecutionContinuation,
+  readRunStatus,
   refreshRunStatus,
   setWorkflowSelection,
-  workflowProgressPath,
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
@@ -218,19 +215,10 @@ function runSessionBody(
        * same way a failure would. */
       const jobCommandRefused = (command: string, runDir: string, reason: string) =>
         new WorkflowError({ phase: "schedule", path: runDir, message: `/${command} is unavailable: ${reason}` });
-      /** The jobs' shape: folded from the append-only stream, which also
-       * carries each job's input. */
+      /** The jobs' shape: the run's state document, which folds the stream
+       * that also carries each job's input. */
       const readJobState = (runDir: string) =>
-        Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const raw = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-            Effect.orElseSucceed(() => ""),
-          );
-          return foldJobSpans(raw.split("\n").flatMap((line) => {
-            const record = parseProgressStreamRecord(line);
-            return record === undefined ? [] : [record];
-          }));
-        });
+        Effect.map(readRunStatus(runDir), (status) => status?.jobs ?? []);
       const runPrompt = (
         prompt: string,
         onEvent: (event: AgentEvent) => void,

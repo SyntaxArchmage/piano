@@ -3,11 +3,7 @@
 // runs its input again as a fresh one. Both read the job's input from the job
 // itself — the stream records it with the job — so turn positions, which
 // continues make ambiguous, are never consulted.
-import {
-  jobs,
-  latestJob,
-  type JobSpan,
-} from "@piano/orchestrator";
+import { type JobView } from "@piano/orchestrator";
 
 /** What `/continue` resolved to: resume this job from the cursor it left. */
 export interface ContinueCommand {
@@ -34,9 +30,9 @@ export type Resolved<Command> =
  * has since finished — the alive job is by construction the latest, so any
  * paused job is an older one waiting for exactly this command. */
 export function resolveContinueCommand(
-  spans: readonly JobSpan[],
+  jobList: readonly JobView[],
 ): Resolved<ContinueCommand> {
-  const paused = jobs(spans).filter((job) => job.state === "paused").at(-1);
+  const paused = jobList.filter((job) => job.state === "paused").at(-1);
   if (paused === undefined) return { kind: "refused", reason: "no paused job to continue" };
   if (paused.input === undefined) return { kind: "refused", reason: "the paused job's input is not recorded" };
   return {
@@ -54,9 +50,9 @@ export function resolveContinueCommand(
  * paused job is closed explicitly, because only that makes it stop being
  * offered to `/continue`; a finished one has nothing left to close. */
 export function resolveRestartCommand(
-  spans: readonly JobSpan[],
+  jobList: readonly JobView[],
 ): Resolved<RestartCommand> {
-  const latest = latestJob(spans);
+  const latest = jobList.at(-1);
   if (latest === undefined) return { kind: "refused", reason: "this run has no job to restart" };
   if (latest.state === "alive") return { kind: "refused", reason: "a job is running; interrupt it first" };
   if (latest.input === undefined) return { kind: "refused", reason: "the job's input is not recorded" };
