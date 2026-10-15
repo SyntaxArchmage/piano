@@ -152,15 +152,8 @@ export function actorSessionDirectory(
   );
 }
 
-function isDirectStageInScope(stageId: string, scopeId: string | undefined): boolean {
-  const prefix = scopeId === undefined ? "" : `${scopeId}.`;
-  if (!stageId.startsWith(prefix)) return false;
-  const relative = stageId.slice(prefix.length);
-  return relative.length > 0 && !relative.includes(".");
-}
-
-/** Reconstruct lexical runtime scopes from the compiler's stable flattened
- * leaves and region boundaries. The compiler remains responsible for graph
+/** Reconstruct lexical runtime scopes from the compiler's leaves and their
+ * enclosing-region pointers. The compiler remains responsible for graph
  * validation; this structure only controls dynamic loop/map expansion. */
 export function buildWorkflowRuntimePlan(
   compiled: CompiledWorkflow,
@@ -168,7 +161,7 @@ export function buildWorkflowRuntimePlan(
   const orderById = new Map(compiled.stages.map((stage, order) => [stage.id, order]));
   const buildScope = (scopeId: string | undefined): readonly WorkflowRuntimeNode[] => {
     const stages: WorkflowRuntimeNode[] = compiled.stages
-      .filter((stage) => isDirectStageInScope(stage.id, scopeId))
+      .filter((stage) => stage.parentId === scopeId)
       .map((stage) => ({
         kind: "stage" as const,
         name: stage.stage.name,

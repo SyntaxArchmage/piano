@@ -117,13 +117,12 @@ describe("paper-writing workflow template", () => {
       STAGE_ORDER.map(([name, worker]) => [name, worker]),
     );
 
-    // The loop's membership, by whose parent region is `polish`. Region ids are
-    // dotted paths, so membership is asserted through the region path instead.
+    // The loop's membership, by whose enclosing region is `polish`.
     const inLoop = compiled.stages
-      .filter((stage) => stage.regionPath.includes("polish"))
+      .filter((stage) => stage.parentId === "polish")
       .map((stage) => stage.stage.name);
     expect(inLoop).toEqual(["storyline", "figures", "write", "audit", "review", "revise"]);
-    expect(compiled.stages.find((stage) => stage.stage.name === "prepare")?.regionPath).toEqual([]);
+    expect(compiled.stages.find((stage) => stage.stage.name === "prepare")?.parentId).toBeUndefined();
   });
 
   it("assigns the specialized model team to every paper stage", async () => {
