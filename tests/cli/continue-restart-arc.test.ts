@@ -67,6 +67,25 @@ function progressStatus(runsRoot: string, runId: string): string | undefined {
   }
 }
 
+/** Submit a `/continue` or `/restart` until it takes effect. The TUI drops a
+ * job command that lands while the previous turn is still being released — its
+ * own gate, not the run's evidence, which settles first — and tells the user
+ * to "run the command again"; a human does exactly that, so the arc does too,
+ * bounded by the take-effect check. */
+async function submitJobCommand(
+  terminal: FakeTerminal,
+  command: string,
+  took: () => boolean,
+): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (!took() && Date.now() < deadline) {
+    terminal.onInput?.(command);
+    terminal.onInput?.("\r");
+    for (const until = Date.now() + 500; !took() && Date.now() < until;) await sleep(10);
+  }
+  expect(took()).toBe(true);
+}
+
 function streamRecords(runsRoot: string, runId: string): Array<Record<string, unknown>> {
   try {
     return readFileSync(join(runsRoot, runId, "progress.jsonl"), "utf8")
@@ -131,9 +150,7 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       await wait("turn 1 persisted", () => recordedTurns(runsRoot, runId)?.length === 1);
 
       // ——— /continue: resumes job 1; the accepted first stage must NOT re-run.
-      terminal.onInput?.("/continue");
-      terminal.onInput?.("\r");
-      await wait("second re-ran", () => requests.filter((request) => stageOf(request) === "second").length === 2);
+      await submitJobCommand(terminal, "/continue", () => requests.filter((request) => stageOf(request) === "second").length === 2);
       await wait("job 1 completed", () => progressStatus(runsRoot, runId) === "completed");
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(1);
       // The continue's span repeats the job's ordinal; the skipped stage is
@@ -157,9 +174,7 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       await wait("turn 3 persisted", () => recordedTurns(runsRoot, runId)?.length === 3);
 
       // ——— /restart: closes the paused job on the stream, re-runs from scratch.
-      terminal.onInput?.("/restart");
-      terminal.onInput?.("\r");
-      await wait("second re-ran from scratch", () => requests.filter((request) => stageOf(request) === "second").length === 4);
+      await submitJobCommand(terminal, "/restart", () => requests.filter((request) => stageOf(request) === "second").length === 4);
       await wait("job 3 completed", () => progressStatus(runsRoot, runId) === "completed");
       // The restart re-ran the first stage too: a fresh job, no cursor.
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(3);
