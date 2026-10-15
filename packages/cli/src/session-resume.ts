@@ -27,8 +27,8 @@ export interface ResumeTurn {
   readonly prompt: string;
   readonly status: "completed" | "failed" | "cancelled";
   readonly events: readonly AgentEvent[];
-  /** Recorded failure. Only the final turn can carry one: `trajectory.json`
-   * keeps a single document-level `error`, overwritten each turn. */
+  /** Recorded failure. Only the final turn can carry one: the trajectory
+   * records a single `error`, overwritten each turn. */
   readonly error?: FailureDetails;
 }
 
