@@ -202,6 +202,20 @@ export function userFrame(text: string): string {
   });
 }
 
+/** The pi session file a turn opens or resumes.
+ *
+ * pi owns this file: it appends entries and reads them back on the next turn.
+ * Piano only decides the name — a continuation hands back the same path so the
+ * conversation continues instead of starting over — and never writes into it,
+ * which is why the audit trail is written to a sibling path instead.
+ *
+ * Always named, never left to pi. Letting pi choose means it opens a file under
+ * its own default directory, and the continuation still has to hand back
+ * *something* pi can reopen: the only path Piano holds is the audit trail, which
+ * pi did not write and cannot continue from. The next turn would then pass pi a
+ * file it does not recognise and the conversation would silently restart. The
+ * directory is already created for the audit trail, so the name is always
+ * placeable. */
 export function piSessionPath(request: AgentRequest, transcriptPath: string): string {
   const continuation = request.continuation;
   if (continuation !== undefined) return continuation.transcriptPath;

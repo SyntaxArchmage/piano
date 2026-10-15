@@ -23,9 +23,8 @@ import {
   userFrame,
   type LoadedResources,
 } from "./harness-argv.js";
+import { DshSteerAcks, PiRpcClient } from "./child-protocols.js";
 import {
-  DshSteerAcks,
-  PiRpcClient,
   runChild,
   type ChildOutcome,
   type ChildStdinBridge,
