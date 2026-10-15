@@ -14,7 +14,7 @@ import {
 const runId = "run-static-1";
 const traceId = "trace-static-1";
 
-function validArtifacts(transcriptPath: string) {
+function validArtifacts(transcriptPath: string, handoffPath: string) {
   const timestamp = "2026-08-25T00:00:00.000Z";
   return {
     log: [
@@ -46,7 +46,7 @@ function validArtifacts(transcriptPath: string) {
       workspace: { key: "shared", cwd: "/tmp/workspace", kind: "shared" },
       sessionId: "session-1",
       transcriptPath,
-      handoffRecordPath: "handoffs/records/respond/root/record.json",
+      handoffRecordPath: handoffPath,
     }) + "\n",
     status: JSON.stringify({
       version: 1,
@@ -58,6 +58,12 @@ function validArtifacts(transcriptPath: string) {
       acceptedStages: 1,
       remainingStages: 0,
       stageCounts: { respond: { planned: 1, completed: 1 } },
+    }) + "\n",
+    // An acceptance that pins no result file: the record is present evidence,
+    // with nothing further for the reference check to follow.
+    handoff: JSON.stringify({
+      version: 1,
+      producer: { id: "respond@root", recordPath: handoffPath },
     }) + "\n",
   };
 }
@@ -75,6 +81,25 @@ function handoffRecord(resultPath: string, sha256: string): string {
   });
 }
 
+/** One acceptance whose handoff record is at `handoffPath` — the row that
+ * names the path the reference check follows. */
+function acceptedProgress(handoffPath: string): string {
+  return `${JSON.stringify({
+    version: 1,
+    timestamp: "2026-08-25T00:00:00.000Z",
+    runId: "execution-1",
+    invocationId: "respond@root",
+    stageId: "respond",
+    stage: "respond",
+    worker: "basic",
+    attempt: 1,
+    workspace: { key: "shared", cwd: "/tmp/workspace", kind: "shared" },
+    sessionId: "session-1",
+    transcriptPath: "/tmp/t.jsonl",
+    handoffRecordPath: handoffPath,
+  })}\n`;
+}
+
 describe(" static observability analysis", () => {
   let root: string | undefined;
 
@@ -86,14 +111,17 @@ describe(" static observability analysis", () => {
     root = await mkdtemp(join(tmpdir(), "piano-static-analysis-"));
     const runDir = join(root, runId);
     const transcriptPath = join(runDir, "transcript.jsonl");
+    const handoffPath = join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff", "record.json");
     await mkdir(runDir, { recursive: true });
-    const artifacts = validArtifacts(transcriptPath);
+    await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff"), { recursive: true });
+    const artifacts = validArtifacts(transcriptPath, handoffPath);
     await Promise.all([
       writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
       writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
       writeFile(join(runDir, "trajectory.jsonl"), artifacts.trajectory, "utf8"),
       writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
       writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
+      writeFile(handoffPath, artifacts.handoff, "utf8"),
       writeFile(transcriptPath, [
         JSON.stringify({ type: "message", message: { role: "user", content: "work" } }),
         JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }),
@@ -111,6 +139,7 @@ describe(" static observability analysis", () => {
       traceRecordCount: 2,
       progressRecordCount: 1,
       transcriptPaths: [transcriptPath],
+      handoffRecordPaths: [handoffPath],
       issues: [],
     });
     expect(formatStaticObservabilityReport(report)).toContain(`OBSERVABILITY PASS: ${runId}`);
@@ -233,7 +262,8 @@ describe(" static observability analysis", () => {
   });
 
   it("rejects an unsafe progress iteration", () => {
-    const artifacts = validArtifacts("/tmp/progress-iteration-transcript.jsonl");
+    const handoffPath = "/tmp/static-iteration-handoff.json";
+    const artifacts = validArtifacts("/tmp/progress-iteration-transcript.jsonl", handoffPath);
     const progress = JSON.parse(artifacts.progress) as Record<string, unknown>;
     progress.iteration = Number.MAX_SAFE_INTEGER + 1;
     const report = analyzeStaticObservability({
@@ -243,6 +273,7 @@ describe(" static observability analysis", () => {
       trajectory: artifacts.trajectory,
       progress: `${JSON.stringify(progress)}\n`,
       transcripts: { "/tmp/progress-iteration-transcript.jsonl": "{}\n" },
+      handoffRecords: { [handoffPath]: artifacts.handoff },
     });
     expect(report.issues).toContainEqual(expect.objectContaining({
       code: "invalid-record",
@@ -259,25 +290,45 @@ describe(" static observability analysis", () => {
     expect(report.issues.filter((issue) => issue.code === "missing-file")).toHaveLength(3);
   });
 
+  it("reports ref-missing when the handoff record an acceptance names is gone", () => {
+    const handoffPath = "/tmp/static-handoff/record.json";
+    const report = analyzeStaticObservability({
+      runDir: `/tmp/${runId}`,
+      progress: acceptedProgress(handoffPath),
+      handoffRecords: {},
+    });
+    const refCodes = report.issues.map((issue) => issue.code).filter((code) => code.startsWith("ref-"));
+    expect(refCodes).toEqual(["ref-missing"]);
+    expect(report.issues.find((issue) => issue.code === "ref-missing")).toMatchObject({ path: handoffPath });
+  });
+
   it("reports ref-missing when a handoff's pinned result file is gone", () => {
+    const handoffPath = "/tmp/static-handoff/record.json";
     const resultPath = "/tmp/static-pinned-result.json";
     const report = analyzeStaticObservability({
       runDir: `/tmp/${runId}`,
+      progress: acceptedProgress(handoffPath),
       handoffRecords: {
-        "/tmp/static-handoff/record.json": handoffRecord(resultPath, pinnedResult('{"ok":true}\n')),
+        [handoffPath]: handoffRecord(resultPath, pinnedResult('{"ok":true}\n')),
       },
       results: {},
     });
     const refCodes = report.issues.map((issue) => issue.code).filter((code) => code.startsWith("ref-"));
     expect(refCodes).toEqual(["ref-missing"]);
+    expect(report.issues.find((issue) => issue.code === "ref-missing")).toMatchObject({
+      path: handoffPath,
+      message: expect.stringContaining(resultPath),
+    });
   });
 
   it("reports ref-mismatch when a handoff's pinned result bytes changed", () => {
+    const handoffPath = "/tmp/static-handoff/record.json";
     const resultPath = "/tmp/static-pinned-result.json";
     const report = analyzeStaticObservability({
       runDir: `/tmp/${runId}`,
+      progress: acceptedProgress(handoffPath),
       handoffRecords: {
-        "/tmp/static-handoff/record.json": handoffRecord(resultPath, pinnedResult('{"ok":true}\n')),
+        [handoffPath]: handoffRecord(resultPath, pinnedResult('{"ok":true}\n')),
       },
       results: { [resultPath]: '{"ok":false}\n' },
     });
@@ -297,7 +348,7 @@ describe(" static observability analysis", () => {
     const resultBytes = '{"ok":true}\n';
     await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff"), { recursive: true });
     await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "attempts", "1"), { recursive: true });
-    const artifacts = validArtifacts(transcriptPath);
+    const artifacts = validArtifacts(transcriptPath, handoffPath);
     const accepted = JSON.parse(artifacts.progress) as Record<string, unknown>;
     accepted.handoffRecordPath = handoffPath;
     await Promise.all([

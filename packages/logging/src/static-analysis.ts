@@ -255,19 +255,26 @@ function collectHandoffRecordPaths(
   }
 }
 
-/** A handoff record pins the published result file it vouches for by content.
- * Check that the pin still holds: the file is there, and its bytes still hash
- * to what the record recorded. A record without that pin — written before the
- * result was pinned, or by a writer that does not pin — is not a reference and
- * is left alone. */
+/** A handoff record is the producer's canonical evidence, and it pins the
+ * published result file it vouches for by content. Check that both are still
+ * there and that the pin still holds. A record without that pin — written
+ * before the result was pinned, or by a writer that does not pin — is not a
+ * reference and its record is left alone once it is found. */
 function validateHandoffReferences(
+  handoffRecordPaths: ReadonlySet<string>,
   handoffRecords: Readonly<Record<string, string | undefined>>,
   results: Readonly<Record<string, string | undefined>>,
   runDir: string,
   issues: StaticObservabilityIssue[],
 ): void {
-  for (const [path, raw] of Object.entries(handoffRecords)) {
-    if (raw === undefined) continue;
+  for (const path of handoffRecordPaths) {
+    const raw = handoffRecords[path];
+    // A progress row that names a record nothing wrote is as incomplete as a
+    // record whose pinned result is gone: the run's evidence has a hole.
+    if (raw === undefined) {
+      issue(issues, "ref-missing", path, "referenced handoff record does not exist");
+      continue;
+    }
     const document = parseJson(path, raw, issues);
     if (document === undefined) continue;
     const producer = document.producer;
@@ -664,7 +671,7 @@ export function analyzeStaticObservability(
   validateStatus(status, statusPath, issues);
   const transcriptContents = input.transcripts ?? {};
   for (const path of transcriptPaths) validateTranscript(path, transcriptContents[path], issues);
-  validateHandoffReferences(input.handoffRecords ?? {}, input.results ?? {}, runDir, issues);
+  validateHandoffReferences(handoffRecordPaths, input.handoffRecords ?? {}, input.results ?? {}, runDir, issues);
 
   const files: readonly StaticObservabilityFile[] = [
     fileSummary("log", logPath, true, input.log, logRecords.length),
