@@ -427,13 +427,13 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │   ├── duration.jsonl            # stage-attempt durations
 │   ├── token-usage.jsonl         # token reports: cumulative plus per-attempt deltas
 │   └── tool-calls.jsonl          # tool outcomes and durations
-├── prompts/<promptIndex>/
+├── prompts/<jobOrdinal>/
 │   └── invocations/<stageId>/<instance>/
 │       ├── handoff/record.json   # immutable producer record for that invocation
 │       ├── handoff-context/<file> # immutable context injected into a consumer
 │       └── attempts/<n>/result.json # validation result per attempt
-├── actors/<harness>/<stageId>/<lane>/
-│   └── session/<session>.jsonl   # per-stage actor transcript
+├── actors/<harness>/<worker>/<lane>/
+│   └── session/<session>.jsonl   # per-worker actor transcript
 ├── side-agent/                   # `/btw` side-agent harness session files (no stage, no execution)
 ├── workspace-records/<key>/record.json   # durable map/tournament workspace evidence
 └── workspaces/slots/<key>/               # temporary map/tournament workspace copy
@@ -442,10 +442,18 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 `<instance>` is `root` for a top-level stage, `<region>/iter-<n>` inside a
 loop, and `<region>/slot-<n>` (or nested paths) for tournament lanes. A run
 may hold several prompts: each prompt's invocations live under its own
-`prompts/<promptIndex>/`, while the actors continue under `actors/` across
-prompts. `contracts/`, validated result files, handoff files, and workspace
-directories appear only when the workflow uses those features; completed runs
-normally clean up `workspaces/` while retaining `workspace-records/`.
+`prompts/<jobOrdinal>/` tree — the ordinal is a job's identity, taken from the
+highest the run's ledger and trees already record — while the actors continue
+under `actors/` across prompts, and a loop iteration or a map slot does not
+start a new one: `<lane>` carries only the map frames, so one worker keeps one
+conversation across stages, iterations, and prompts. A map slot's workspace
+`<key>` is `job-<n>/<instance>` so that two jobs' slots can never rebind
+each other; `record.json` carries the slot's `allocation` provenance (`fresh`,
+`rebound`, or `recreated-after-sweep`). `contracts/`, validated result files,
+handoff files, and workspace directories appear only when the workflow uses
+those features; completed runs normally clean up `workspaces/` while retaining
+`workspace-records/`, and a run's `/restart`ed job hands its preserved slots to
+the next job, which reclaims them.
 
 Key files:
 
@@ -462,12 +470,17 @@ Key files:
 - **`trajectory.jsonl`** — the append-only record each write appends: one line
   carrying that write's prompt and events, or the single field a rename
   touched. `status.json` is folded from it.
-- **`progress.jsonl`** — the machine-readable stage ledger. Every accepted
-  stage attempt appends a line with `stageId`, `stage`, `worker`, `attempt`,
-  `invocationId`, `harness`, `sessionId`, `transcriptPath`,
-  `handoffRecordPath`, the workspace, and the latest progress snapshot
-  (planned/completed counts). This is where you confirm a loop actually ran
-  its `iterations` times.
+- **`progress.jsonl`** — the run's single ledger, one record per line, each
+  carrying `executionId`, `jobOrdinal`, and a `kind`: `execution-started` /
+  `execution-finished` open and close a job's span, `stage-started` and
+  `stage-accepted` record an attempt's lifecycle (the accepted line also
+  carries `stageId`, `stage`, `worker`, `attempt`, `invocationId`, `harness`,
+  `sessionId`, `transcriptPath`, `handoffRecordPath`, the workspace, and the
+  latest progress snapshot), and `region-finalized` records how a loop or map
+  region exited — its outcome, its player count, and which slot won.
+  `job-closed` records an abandoned job. A reader that meets a `kind` it does
+  not know skips it rather than failing. This is where you confirm a loop
+  actually ran its `iterations` times.
 - **`trajectories/index.json`** — the versioned workflow-trajectory index. A
   `WorkflowTrajectory` drives independent benchmark, duration, token, and tool
   recorders. Recorder errors are isolated and make the index incomplete without
