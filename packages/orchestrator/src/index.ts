@@ -145,6 +145,13 @@ export {
   type JobView,
 } from "./job-spans.js";
 export {
+  readRunStatus,
+  runStatusFromParts,
+  runStatusPath,
+  writeRunStatus,
+  type RunStatus,
+} from "./run-status.js";
+export {
   snapshotWorkerContract,
   type WorkerContractReference,
 } from "./contract-snapshot.js";
