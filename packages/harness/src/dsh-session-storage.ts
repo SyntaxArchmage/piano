@@ -288,6 +288,29 @@ function dshChunkEvents(
   return events;
 }
 
+/** The validated delta parts one packed row carries, or undefined when the row
+ * is malformed. Shared by both packed-row shapes so their validation cannot
+ * drift: every part is a string, the gaps are finite numbers with exactly one
+ * fewer entry than the payload, and a tool call names itself. */
+function packedChunkParts(
+  kind: "text-chunks" | "reasoning-chunks" | "tool-call-chunks",
+  source: JsonRecord,
+): { readonly payload: readonly string[]; readonly dt: readonly number[]; readonly id?: string; readonly name?: string } | undefined {
+  const payload = source[kind === "tool-call-chunks" ? "args" : "texts"];
+  const dt = source.dt;
+  const id = nonEmptyString(source.id);
+  if (!Array.isArray(payload) || payload.some((part) => typeof part !== "string")) return undefined;
+  if (!Array.isArray(dt) || dt.length !== payload.length - 1) return undefined;
+  if (dt.some((gap) => typeof gap !== "number" || !Number.isFinite(gap))) return undefined;
+  if (kind === "tool-call-chunks" && id === undefined) return undefined;
+  return {
+    payload,
+    dt,
+    ...(id === undefined ? {} : { id }),
+    ...(typeof source.name === "string" ? { name: source.name } : {}),
+  };
+}
+
 /** Expand the packed delta members a v3 `assistant/message` carries inside
  * `data.stream`. Real v3 artifacts (verified against installed dsh 0.1.5
  * storage: 26 of 50 messages in one session) hold every text/reasoning/
@@ -307,25 +330,19 @@ function expandDshStreamMembers(data: JsonRecord): readonly JsonRecord[] {
     if (packed === undefined) continue;
     const kind = packed.type;
     if (kind !== "text-chunks" && kind !== "reasoning-chunks" && kind !== "tool-call-chunks") continue;
-    const payload = packed[kind === "tool-call-chunks" ? "args" : "texts"];
-    const gaps = packed.dt;
     const time0 = numberValue(packed.time0);
     const index = numberValue(packed.index);
-    const id = nonEmptyString(packed.id);
-    if (time0 === undefined || index === undefined
-      || !Array.isArray(payload) || payload.some((part) => typeof part !== "string")
-      || !Array.isArray(gaps) || gaps.length !== payload.length - 1
-      || gaps.some((gap) => typeof gap !== "number" || !Number.isFinite(gap))) continue;
-    if (kind === "tool-call-chunks" && id === undefined) continue;
+    const parts = packedChunkParts(kind, packed);
+    if (time0 === undefined || index === undefined || parts === undefined) continue;
     events.push(...dshChunkEvents(kind, {
       turn,
       step,
       index,
       time0,
-      dt: gaps,
-      payload,
-      ...(id === undefined ? {} : { id }),
-      ...(typeof packed.name === "string" ? { name: packed.name } : {}),
+      dt: parts.dt,
+      payload: parts.payload,
+      ...(parts.id === undefined ? {} : { id: parts.id }),
+      ...(parts.name === undefined ? {} : { name: parts.name }),
     }, undefined));
   }
   return events;
@@ -347,32 +364,68 @@ export function expandDshStorageRecord(record: JsonRecord): readonly JsonRecord[
   }
   if (record.type !== "text-chunks" && record.type !== "reasoning-chunks" && record.type !== "tool-call-chunks") return [record];
   if (data === undefined) return [record];
-  const payloadKey = record.type === "tool-call-chunks" ? "args" : "texts";
-  const payload = data[payloadKey];
   const seq0 = numberValue(record.seq0);
   const time0 = numberValue(record.time0);
   const turn = numberValue(data.turn);
   const step = numberValue(data.step);
   const index = numberValue(data.index);
-  const gaps = data.dt;
-  if (seq0 === undefined || time0 === undefined || turn === undefined || step === undefined || index === undefined
-    || !Array.isArray(payload) || payload.some((part) => typeof part !== "string")
-    || !Array.isArray(gaps) || gaps.length !== payload.length - 1
-    || gaps.some((gap) => typeof gap !== "number" || !Number.isFinite(gap))) return [record];
-  const id = nonEmptyString(data.id);
-  if (record.type === "tool-call-chunks" && id === undefined) return [record];
+  const parts = packedChunkParts(record.type, data);
+  if (seq0 === undefined || time0 === undefined || turn === undefined || step === undefined
+    || index === undefined || parts === undefined) {
+    return [record];
+  }
   return dshChunkEvents(record.type, {
     turn,
     step,
     index,
     time0,
-    dt: gaps,
-    payload,
-    ...(id === undefined ? {} : { id }),
-    ...(typeof data.name === "string" ? { name: data.name } : {}),
+    dt: parts.dt,
+    payload: parts.payload,
+    ...(parts.id === undefined ? {} : { id: parts.id }),
+    ...(parts.name === undefined ? {} : { name: parts.name }),
   }, seq0);
 }
 
+
+/** The newest session artifact under this cwd that `read` accepts, or nothing.
+ * Candidates are the attempt's own sessions — created since it started (with a
+ * second of slack for clock granularity) and never a sibling cwd's — tried
+ * newest first, because a later file may be a repair of an earlier one. A read
+ * that throws is skipped: a writer may still be publishing its first frame, or
+ * the child may have removed an incomplete file between listing and stat. */
+async function scanSessionArtifacts<T>(
+  home: string,
+  cwd: string,
+  startedAt: number,
+  read: (path: string, raw: Buffer) => T | undefined,
+): Promise<T | undefined> {
+  const candidates = await sessionArtifactPaths(home, cwd);
+  const ranked: Array<{ readonly path: string; readonly mtimeMs: number }> = [];
+  for (const path of candidates) {
+    try {
+      const identity = await stat(path);
+      if (identity.mtimeMs >= startedAt - 1000) ranked.push({ path, mtimeMs: identity.mtimeMs });
+    } catch {
+      // Unreadable between listing and stat; the next poll tries it again.
+    }
+  }
+  ranked.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  for (const candidate of ranked) {
+    try {
+      const value = read(candidate.path, await readFile(candidate.path));
+      if (value !== undefined) return value;
+    } catch {
+      // Best effort: the stdout result stays usable without native evidence.
+    }
+  }
+  return undefined;
+}
+
+/** Whether a header's cwd claim matches the cwd that is looking. A header that
+ * claims nothing is accepted — some writers omit it. */
+function headerCwdMatches(claimed: unknown, cwd: string): boolean {
+  return nonEmptyString(claimed) === undefined || nonEmptyString(claimed) === cwd;
+}
 
 async function findDshSessionArtifact(
   home: string,
@@ -386,27 +439,10 @@ async function findDshSessionArtifact(
   // stage of the same slot shares the project directory, and its file is newer
   // than the resumed one.
   if (resumeSessionId !== undefined) return sessionArtifactForId(home, resumeSessionId);
-  const candidates = await sessionArtifactPaths(home, cwd);
-  const ranked: Array<{ readonly path: string; readonly mtimeMs: number }> = [];
-  for (const path of candidates) {
-    try {
-      const identity = await stat(path);
-      if (identity.mtimeMs >= startedAt - 1000) ranked.push({ path, mtimeMs: identity.mtimeMs });
-    } catch {
-      // A session can be materialized or repaired between directory listing
-      // and stat. The next poll will try it again.
-    }
-  }
-  ranked.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  for (const candidate of ranked) {
-    try {
-      const header = dshSessionHeader(candidate.path, await readFile(candidate.path));
-      if (header !== undefined && (nonEmptyString(header.cwd) === undefined || header.cwd === cwd)) return candidate.path;
-    } catch {
-      // The writer may still be publishing the first frame.
-    }
-  }
-  return undefined;
+  return scanSessionArtifacts(home, cwd, startedAt, (path, raw) => {
+    const header = dshSessionHeader(path, raw);
+    return header !== undefined && headerCwdMatches(header.cwd, cwd) ? path : undefined;
+  });
 }
 
 function decodeDshSession(path: string, raw: Buffer): DshSessionEvidence | undefined {
@@ -459,28 +495,11 @@ export async function readDshSessionEvidence(
       return undefined;
     }
   }
-  const candidates = await sessionArtifactPaths(home, cwd);
-  const ranked: Array<{ readonly path: string; readonly mtimeMs: number }> = [];
-  for (const path of candidates) {
-    try {
-      const identity = await stat(path);
-      if (identity.mtimeMs >= startedAt - 1000) ranked.push({ path, mtimeMs: identity.mtimeMs });
-    } catch {
-      // The child may have removed an incomplete file between listing and stat.
-    }
-  }
-  ranked.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  for (const candidate of ranked) {
-    try {
-      const evidence = decodeDshSession(candidate.path, await readFile(candidate.path));
-      const header = evidence?.events.find((event) => event.type === "session");
-      if (evidence !== undefined && (nonEmptyString(header?.cwd) === undefined || header?.cwd === cwd)) return evidence;
-    } catch {
-      // Native evidence is best effort for a successful child. The stdout
-      // result remains usable, while the transcript records what was available.
-    }
-  }
-  return undefined;
+  return scanSessionArtifacts(home, cwd, startedAt, (path, raw) => {
+    const evidence = decodeDshSession(path, raw);
+    const header = evidence?.events.find((event) => event.type === "session");
+    return evidence !== undefined && headerCwdMatches(header?.cwd, cwd) ? evidence : undefined;
+  });
 }
 
 class DshSessionTailerImpl implements DshSessionTailer {
