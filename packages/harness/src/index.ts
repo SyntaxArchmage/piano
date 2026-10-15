@@ -54,9 +54,11 @@ export {
 export {
   dshProjectKey,
   executeSubprocessAgent,
+} from "./subprocess.js";
+export {
   normalizeSubprocessLine,
   type SubprocessAccumulator,
-} from "./subprocess.js";
+} from "./subprocessEvents.js";
 export {
   PI_WEB_SEARCH_TOOL_NAME,
   piWebSearchExtensionPath,
