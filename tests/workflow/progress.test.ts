@@ -367,7 +367,7 @@ describe("workflow progress stream", () => {
     // discriminator this reader has no meaning for. Folding it into the
     // historical shape would count the marker as accepted work.
     const marker = {
-      kind: "region-finalized",
+      kind: "actor-turn",
       executionId: "execution",
       timestamp: "2026-01-01T00:00:05.000Z",
       regionId: "sweep",
@@ -388,6 +388,35 @@ describe("workflow progress stream", () => {
       plan: timingPlan,
     } as unknown as WorkflowProgressStreamRecord);
     expect(applyProgressRecord(before, marker)).toBe(before);
+  });
+
+  it("reads a region-finalized line as region evidence the snapshot echoes", () => {
+    const before = applyProgressRecord(undefined, {
+      version: 1,
+      kind: "execution-started",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      executionId: "execution",
+      jobOrdinal: 1,
+      resumed: false,
+      plan: timingPlan,
+    } as unknown as WorkflowProgressStreamRecord);
+    const finalized = {
+      version: 1,
+      kind: "region-finalized",
+      timestamp: "2026-01-01T00:00:05.000Z",
+      executionId: "execution",
+      jobOrdinal: 1,
+      instance: "tune",
+      regionId: "tune",
+      regionKind: "loop",
+      outcome: "bound-iterations",
+      iterations: 3,
+    } as unknown as WorkflowProgressStreamRecord;
+    expect(progressRecordKind(finalized)).toBe("region-finalized");
+    // The snapshot has no field for region evidence, so the fold only moves
+    // its clock: no counts, status, or current invocations change.
+    const after = applyProgressRecord(before, finalized);
+    expect(after).toEqual({ ...before, updatedAt: "2026-01-01T00:00:05.000Z" });
   });
 
   it("answers which invocation is in flight, and since when, from the stream alone", async () => {

@@ -102,10 +102,12 @@ import {
 import {
 } from "./selection.js";
 import {
+  appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   workflowProgressPath,
   workflowProgressSnapshotPath,
+  type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
 import {
 } from "./contract-snapshot.js";
@@ -982,8 +984,22 @@ export function executeWorkflow(
     }
 
     const runExecution = Effect.gen(function* () {
+      /** One `region-finalized` line, appended under the same semaphore as
+       * every other ledger write: the walker owns the moment, this owns the
+       * identity the record carries. */
+      const persistRegionFinalized = (
+        payload: WorkflowRegionFinalizedPayload,
+      ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> =>
+        progressSemaphore.withPermits(1)(appendWorkflowProgress(request.runDir, {
+          kind: "region-finalized",
+          executionId,
+          jobOrdinal: promptIndex,
+          ...payload,
+        }).pipe(Effect.asVoid));
       const walker = createScopeWalker({
         stageRunnerContext,
+        progressSemaphore,
+        persistRegionFinalized,
         request,
         loaded,
         compiled,
@@ -993,7 +1009,6 @@ export function executeWorkflow(
         announcedContinuations,
         actorContexts,
         knownLoopIterations,
-        progressSemaphore,
         persistActors,
         workflowTrajectory,
         autoCommit,

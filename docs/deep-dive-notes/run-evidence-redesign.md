@@ -341,3 +341,9 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - **钢琴-be 争议红定位**：其报告的「6619b4d 红、headless-json 发 status_path」实为**测量了我的脏工作树**（该行为我当时未提交）；邻居在干净树复核 41/41 绿 + `git grep status_path 6619b4d` = 0 命中。裁决性数字 = 本段之后在 `61daca3` 上的全量门禁。
 - **遗留（我的分工余量）**：README 契约文本（`status_path`、`trajectory_path` 指向 `.jsonl`、`progress_snapshot_path` 移除）；H6b（`region-finalized` + `/continue` 整段跳过）待邻居的 `progressRecordKind` 未知 kind 修复先落。
 
+**F5.5 H6b 执行记录（2026-10-15 深夜，隔离 worktree `.claude/worktrees/piano-logs-jobs` / `feat/piano-logs-jobs`）**
+- 迁移：主 worktree 交还他方（piano-be 的 WIP 与开发者文件留守）；本 session 的全部新工作在独立 worktree，`npm ci` 装依赖后门禁自足。
+- **H6b-a（`f436ad9`，已 rebase 到 `4231fd1`）**：pause 保留槽位（exit 分类 → `pausedExit` → backstop `preserve`），backstop 增 `keyPrefix: job-<n>/` 只清本 job；`cleanupMapWorkspaces` 增 `keyPrefix` 选项。红先双证：双 job 单测（移开实现 → 红）+ `Fiber.interrupt` 集成测试（旧实现记录为 `cleaned`，新实现 `preserved`）。**已知残余**：被 `/restart` 关闭的 paused job 的 preserved 槽位无清扫者（磁盘残留，正确性无影响）——记入待办。
+- **H6b-b1（本跳）**：`region-finalized` 记录落地——`progress.ts` 新类型 + kind 判别 + fold（metadata-only：仅推进 updatedAt）+ `appendWorkflowProgress` 参数放宽；`job-spans.ts` 的 `JobSpan/JobView.regions`（跨 span 聚合、同 instance 后写 wins；**cursor 不受影响**——这正是邻居 `4231fd1` 的 skip 性质所保障的）；`workflow-runtime.ts` 新 `runtimeRegionInstanceId`（写入/读取同一拼写，`root/<region>` 与 invocation instanceId 可直接 join）；scope-walker 在 map 单出口 + loop 三出口（inherited-blocked / iteration-terminal / 汇聚出口携带 `bound` 局部：bound-iterations|bound-duration|feedback-stop）各写一次；`TournamentFinalization` 增 outcome/notCarriedReason（空 candidates 不写，carry-failed 不写——run 已失败）。集成断言挂在既有 carried tournament 测试上（`{instance:"root/race", outcome:"carried", winnerKey:"job-1/race/slot-1", winnerInstanceId:"root/race/slot-1"}`）。红先：移开 progress/job-spans 实现 → 2 测试红。邻居的「未知 kind」测试样本同步改为 `actor-turn`（`region-finalized` 已进入已知集）。
+- **H6b-b2（下一跳）**：`/continue` 的 region 整段跳过——入口查 `continueJob.regions`、以 handoff 重建 boundary（共享纯投影器）、incumbent 恢复、carry-context 重建（design §C5 的 carry 三件套）。
+

@@ -225,12 +225,12 @@ describe("piano logs --jobs", () => {
         stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
       },
       {
-        version: 1, kind: "stage-accepted", timestamp: "2026-08-21T10:00:02.000Z",
+        version: 1, timestamp: "2026-08-21T10:00:02.000Z",
         executionId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
         stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 2,
       },
       {
-        version: 1, kind: "stage-accepted", timestamp: "2026-08-21T10:00:03.000Z",
+        version: 1, timestamp: "2026-08-21T10:00:03.000Z",
         executionId: runId, jobOrdinal: 1, invocationId: "tune.race@tune/iter-0/tune.race/slot-1",
         stageId: "tune.race", stage: "Race", worker: "cuda-idea", attempt: 1,
       },

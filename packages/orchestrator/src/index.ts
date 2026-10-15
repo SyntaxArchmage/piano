@@ -50,7 +50,7 @@ export {
   type SelectionRejection,
 } from "./selection.js";
 export { WorkflowError, type WorkflowPhase } from "./errors.js";
-export { iterationOfInvocationId } from "./workflow-runtime.js";
+export { iterationOfInvocationId, runtimeRegionInstanceId } from "./workflow-runtime.js";
 export {
   allocateMapWorkspace,
   cleanupMapWorkspaces,
@@ -129,7 +129,9 @@ export {
   type WorkflowProgressExecutionStartRecord,
   type WorkflowProgressExecutionFinishRecord,
   type WorkflowProgressJobClosedRecord,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowProgressStreamRecord,
+  type WorkflowRegionFinalizedPayload,
   type WorkflowProgressCurrent,
   type WorkflowProgressPlan,
   type WorkflowProgressProjection,

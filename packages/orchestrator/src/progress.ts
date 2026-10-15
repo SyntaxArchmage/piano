@@ -219,12 +219,51 @@ export interface WorkflowProgressJobClosedRecord {
 }
 
 /** One line of the append-only progress stream. */
+/** One region's exit, recorded exactly once when the region leaves the
+ * schedule: which instance ended, why, and — for a tournament — who won.
+ * A continue reads it to skip a completed region instead of re-running its
+ * workers, and a monitor reads it to see why a loop stopped. */
+export interface WorkflowProgressRegionFinalizedRecord {
+  readonly version: 1;
+  readonly kind: "region-finalized";
+  readonly timestamp: string;
+  readonly executionId: string;
+  readonly jobOrdinal: number;
+  /** `<frame chain>/<regionId>` — the spelling `runtimeRegionInstanceId`
+   * produces, written and read by the same rule. */
+  readonly instance: string;
+  readonly regionId: string;
+  readonly regionKind: "map" | "loop";
+  readonly outcome:
+    | "carried"
+    | "admitted-not-carried"
+    | "no-winner"
+    | "terminal-blocked"
+    | "bound-iterations"
+    | "bound-duration"
+    | "feedback-stop";
+  readonly stopped?: boolean;
+  readonly notCarriedReason?: "admission" | "stopped";
+  readonly winnerKey?: string;
+  readonly winnerInstanceId?: string;
+  /** Completed iterations for a loop region at the moment it exited. */
+  readonly iterations?: number;
+}
+
+/** Everything a writer must supply for a `region-finalized` line; the append
+ * seam stamps version/timestamp, the execution stamps identity. */
+export type WorkflowRegionFinalizedPayload = Omit<
+  WorkflowProgressRegionFinalizedRecord,
+  "version" | "kind" | "timestamp" | "executionId" | "jobOrdinal"
+>;
+
 export type WorkflowProgressStreamRecord =
   | WorkflowProgressRecord
   | WorkflowProgressStartRecord
   | WorkflowProgressExecutionStartRecord
   | WorkflowProgressExecutionFinishRecord
-  | WorkflowProgressJobClosedRecord;
+  | WorkflowProgressJobClosedRecord
+  | WorkflowProgressRegionFinalizedRecord;
 
 /** Kind of one progress-stream line.
  *
@@ -245,6 +284,7 @@ export function progressRecordKind(record: object | null | undefined):
   | WorkflowProgressExecutionStartRecord["kind"]
   | WorkflowProgressExecutionFinishRecord["kind"]
   | WorkflowProgressJobClosedRecord["kind"]
+  | WorkflowProgressRegionFinalizedRecord["kind"]
   | "stage-accepted"
   | undefined {
   const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
@@ -253,6 +293,7 @@ export function progressRecordKind(record: object | null | undefined):
   if (kind === "execution-started") return "execution-started";
   if (kind === "execution-finished") return "execution-finished";
   if (kind === "job-closed") return "job-closed";
+  if (kind === "region-finalized") return "region-finalized";
   return undefined;
 }
 
@@ -467,6 +508,13 @@ export function applyProgressRecord(
     // snapshot carries only what it understands. An empty fold still gets its
     // identity established, so a known record after this one has a base.
     return previous ?? emptyProgressSnapshot(record.executionId, record.timestamp);
+  }
+  if (kind === "region-finalized") {
+    // Region evidence a continue reads; the live snapshot has no field for
+    // it, so the fold only advances its timestamp.
+    return previous === undefined
+      ? emptyProgressSnapshot(record.executionId, record.timestamp)
+      : { ...previous, updatedAt: record.timestamp };
   }
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
@@ -708,7 +756,8 @@ export function markWorkflowStageStarted(
  * workflow loop is still running, so monitors can observe completed iterations. */
 export function appendWorkflowProgress(
   runDir: string,
-  record: Omit<WorkflowProgressRecord, "version" | "timestamp">,
+  record: Omit<WorkflowProgressRecord, "version" | "timestamp">
+    | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {

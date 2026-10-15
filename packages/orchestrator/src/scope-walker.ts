@@ -38,9 +38,11 @@ import {
   mapOverParts,
   runtimeInstanceId,
   runtimeInvocationId,
+  runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeNode,
 } from "./workflow-runtime.js";
+import type { WorkflowRegionFinalizedPayload } from "./progress.js";
 import type { CompiledWorkflow, WorkflowRegionPlan } from "./workflow.js";
 import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
@@ -74,6 +76,10 @@ export interface ScopeWalkerContext {
   readonly actorContexts: Map<string, ActorExecutionContext>;
   readonly knownLoopIterations: Map<string, number>;
   readonly progressSemaphore: Effect.Semaphore;
+  /** Append one `region-finalized` line under the progress semaphore. The
+   * composer owns identity (execution id, job ordinal); the walker owns the
+   * moment a region exits. */
+  readonly persistRegionFinalized: (payload: WorkflowRegionFinalizedPayload) => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
   readonly persistActors: () => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
   readonly workflowTrajectory: WorkflowTrajectory;
   readonly autoCommit: boolean;
@@ -240,6 +246,7 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     actorContexts,
     knownLoopIterations,
     progressSemaphore,
+    persistRegionFinalized,
     persistActors,
     workflowTrajectory,
     autoCommit,
@@ -365,6 +372,10 @@ interface TournamentFinalization {
   readonly winner?: RuntimeTournamentCandidate;
   readonly terminalBlocked?: readonly InternalStageResult[];
   readonly stopped?: boolean;
+  /** Why the region exited, when it exited decisively: `undefined` for the
+   * empty-candidate case, which writes no `region-finalized` record. */
+  readonly outcome?: "carried" | "admitted-not-carried" | "no-winner" | "terminal-blocked";
+  readonly notCarriedReason?: "admission" | "stopped";
 }
 
 // A tournament is one region: however many stages it contains, it decides
@@ -401,7 +412,7 @@ const finalizeTournament = (
       keys: candidates.map((candidate) => candidate.key),
       preserve: options?.preserve === true,
     });
-    return { terminalBlocked: blockedResults, stopped: true };
+    return { terminalBlocked: blockedResults, stopped: true, outcome: "terminal-blocked" };
   }
   let winnerKey: string | undefined;
   let selectionReferee: SelectionReferee | undefined;
@@ -488,7 +499,11 @@ const finalizeTournament = (
         keys: cleanupKeys,
         preserve: options?.preserve === true,
       });
-      return { ...(winnerCandidate === undefined ? {} : { winner: winnerCandidate }) };
+      return {
+        outcome: "admitted-not-carried",
+        notCarriedReason: "admission",
+        ...(winnerCandidate === undefined ? {} : { winner: winnerCandidate }),
+      };
     }
     const winnerBlocked = winnerCandidate?.boundaryResults.some(isBlockedStageResult) === true;
     if (winnerCandidate?.stopped === true || winnerBlocked) {
@@ -510,7 +525,7 @@ const finalizeTournament = (
         keys: cleanupKeys,
         preserve: options?.preserve === true,
       });
-      return {};
+      return { outcome: "admitted-not-carried", notCarriedReason: "stopped" };
     }
     const excludeUnder = [request.runDir];
     let consolidating: WorkflowCarrying;
@@ -632,7 +647,10 @@ const finalizeTournament = (
   const winner = winnerKey === undefined
     ? undefined
     : candidates.find((candidate) => candidate.key === winnerKey);
-  return { ...(winner === undefined ? {} : { winner }) };
+  return {
+    outcome: winnerKey === undefined ? "no-winner" : "carried",
+    ...(winner === undefined ? {} : { winner }),
+  };
 });
 
 const executeScope = (
@@ -677,6 +695,14 @@ const executeScope = (
         // do not enter the loop and issue repeated agent turns.
         const inheritedBlocked = inputs.find(isBlockedStageResult);
         if (inheritedBlocked !== undefined) {
+          yield* persistRegionFinalized({
+            instance: runtimeRegionInstanceId(frames, region.id),
+            regionId: region.id,
+            regionKind: "loop",
+            outcome: "terminal-blocked",
+            stopped: true,
+            iterations: 0,
+          });
           return {
             boundary: { results: [inheritedBlocked] },
             stages: [],
@@ -694,6 +720,9 @@ const executeScope = (
           ? undefined
           : Date.now() + durationSeconds * 1000;
         let iteration = 0;
+        /** Which bound ended the loop, captured at the break so the exit can
+         * record it — a monitor reading `region-finalized` sees why. */
+        let bound: "bound-iterations" | "bound-duration" | "feedback-stop" = "bound-iterations";
         while (true) {
           // The bound is consulted *between* iterations, and never before
           // the first: a duration that has already elapsed when the region
@@ -702,7 +731,10 @@ const executeScope = (
           // therefore overshoot the bound; a stage is not interruptible
           // mid-turn by a region clock, only by `stage.timeout` or a human.
           if (iteration > 0) {
-            if (iterations !== undefined && iteration >= iterations) break;
+            if (iterations !== undefined && iteration >= iterations) {
+              bound = "bound-iterations";
+              break;
+            }
             if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
               yield* WORKFLOW_LOG.info("workflow.loop.duration.reached", {
                 data: {
@@ -711,6 +743,7 @@ const executeScope = (
                   completedIterations: iteration,
                 },
               }).pipe(Effect.catchAll(() => Effect.void));
+              bound = "bound-duration";
               break;
             }
           }
@@ -728,6 +761,14 @@ const executeScope = (
           if (child.stopped === true && loopBlockIsTerminal(child, node.entryStageId)) {
             // Global-scoped block (prerequisite gone) or entry-stage block:
             // no future round can do useful work, so terminate the loop.
+            yield* persistRegionFinalized({
+              instance: runtimeRegionInstanceId(frames, region.id),
+              regionId: region.id,
+              regionKind: "loop",
+              outcome: "terminal-blocked",
+              stopped: true,
+              iterations: iteration + 1,
+            });
             return {
               boundary: child.boundary,
               stages,
@@ -771,12 +812,20 @@ const executeScope = (
                 feedback: region.feedback,
               },
             }).pipe(Effect.catchAll(() => Effect.void));
+            bound = "feedback-stop";
             break;
           }
         }
         if (final === undefined) {
           return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `loop "${region.name}" produced no iteration`));
         }
+        yield* persistRegionFinalized({
+          instance: runtimeRegionInstanceId(frames, region.id),
+          regionId: region.id,
+          regionKind: "loop",
+          outcome: bound,
+          iterations,
+        });
         return { boundary: final.boundary, stages } satisfies NodeExecution;
       });
     }
@@ -924,6 +973,23 @@ const executeScope = (
         baselineContentDir: slot.baselineContentDir,
         ...(slots[index]?.stopped === true ? { stopped: true } : {}),
       })));
+      if (finalization.outcome !== undefined) {
+        const winnerItem = finalization.winner?.mapItem;
+        yield* persistRegionFinalized({
+          instance: runtimeRegionInstanceId(frames, region.id),
+          regionId: region.id,
+          regionKind: "map",
+          outcome: finalization.outcome,
+          ...(finalization.stopped === true ? { stopped: true } : {}),
+          ...(finalization.notCarriedReason === undefined ? {} : { notCarriedReason: finalization.notCarriedReason }),
+          ...(finalization.winner === undefined ? {} : {
+            winnerKey: finalization.winner.key,
+            ...(winnerItem === undefined ? {} : {
+              winnerInstanceId: `${runtimeRegionInstanceId(frames, region.id)}/slot-${winnerItem.index}`,
+            }),
+          }),
+        });
+      }
       const stopped = finalization.winner === undefined
         ? finalization.stopped === true || slots.some((slot) => slot.stopped === true)
         : finalization.winner.stopped === true;

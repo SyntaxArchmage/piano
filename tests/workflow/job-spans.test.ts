@@ -192,4 +192,34 @@ describe("foldJobSpans", () => {
     expect(view?.state).toBe("alive");
     expect(view?.outcome).toBeUndefined();
   });
+
+  it("attaches a region-finalized line to its job without touching the cursor", () => {
+    const region = (timestamp: string, outcome: string, iterations: number): WorkflowProgressStreamRecord => ({
+      version: 1,
+      kind: "region-finalized",
+      timestamp,
+      executionId: "run-1",
+      jobOrdinal: 1,
+      instance: "tune",
+      regionId: "tune",
+      regionKind: "loop",
+      outcome,
+      iterations,
+    } as unknown as WorkflowProgressStreamRecord);
+    const spans = foldJobSpans([
+      started(1, T(0)),
+      accepted(T(1), "first@root"),
+      region(T(2), "feedback-stop", 1),
+      // A region re-entered and finalized again: the later row wins per instance.
+      region(T(3), "bound-iterations", 3),
+      finished(T(4), "completed"),
+    ]);
+    const view = latestJob(spans);
+    // The cursor a continue skips by carries only accepted invocations: a
+    // region marker must never read as accepted work.
+    expect(view?.accepted).toEqual(new Set(["first@root"]));
+    const regions = view?.regions ?? new Map();
+    expect([...regions.keys()]).toEqual(["tune"]);
+    expect(regions.get("tune")).toMatchObject({ outcome: "bound-iterations", iterations: 3 });
+  });
 });

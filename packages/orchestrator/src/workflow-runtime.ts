@@ -87,6 +87,16 @@ export function runtimeInvocationId(invocation: WorkflowRuntimeInvocation): stri
   return `${invocation.stageId}@${runtimeInstanceId(invocation.frames) ?? "root"}`;
 }
 
+/** The runtime instance of one region: its frame chain plus the region id.
+ * The single spelling `region-finalized` records are keyed by — written and
+ * read through this function so the two can never disagree. */
+export function runtimeRegionInstanceId(
+  frames: readonly WorkflowRuntimeFrame[],
+  regionId: string,
+): string {
+  return `${runtimeInstanceId(frames) ?? "root"}/${regionId}`;
+}
+
 /** Path segments shared by all per-invocation evidence. Static names and frame
  * values originate from the validated workflow or generated integers. */
 export function runtimeInvocationPathSegments(

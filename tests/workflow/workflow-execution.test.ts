@@ -4800,6 +4800,21 @@ workflow:
       expect(records[0]?.referee).toEqual({ name: "tflops", unit: "TFLOP/s", direction: "higher" });
       const winner = records[0]?.winnerKey;
       expect(winner).toBe("job-1/race/slot-1");
+      // The region's exit is evidence of its own: one line, naming the
+      // instance, the outcome and the winner a continue skips by.
+      const progressLines = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      const finalized = progressLines.filter((line) => line.kind === "region-finalized");
+      expect(finalized).toHaveLength(1);
+      expect(finalized[0]).toMatchObject({
+        jobOrdinal: 1,
+        instance: "root/race",
+        regionId: "race",
+        regionKind: "map",
+        outcome: "carried",
+        winnerKey: "job-1/race/slot-1",
+        winnerInstanceId: "root/race/slot-1",
+      });
       // Worker-consolidation carries no git commit but the stored provenance is
       // how the winning higher-tflops kernel reached the shared source.
       expect(records[0]?.commit).toBeUndefined();
