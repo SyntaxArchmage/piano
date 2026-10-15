@@ -1,5 +1,7 @@
 # Unified Workflow Trajectory and Evaluation — PRD
 
+> 历史文档（2026-10-15 标记）：§13 的 `executions/...` 一行从未落盘；实际 run 目录布局以 README.md 的「Track and manage your run artifacts」一节为准（`prompts/<n>/invocations/...` + run 根下的 `actors/`）。
+
 - Status: **Implemented**
 - Date: 2026-09-02
 - Scope baseline: `e4c9bd0`
