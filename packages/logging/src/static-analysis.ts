@@ -388,7 +388,7 @@ function validateProgressRecords(
   path: string,
   issues: StaticObservabilityIssue[],
 ): void {
-  const executionIds = new Set<string>();
+  const runIds = new Set<string>();
   // Below the kind split: an accepted stage and nothing else carries these.
   const requiredStrings = [
     "invocationId",
@@ -404,7 +404,7 @@ function validateProgressRecords(
     const malformedFields: string[] = [];
     if (record.version !== 1) malformedFields.push("version");
     if (!isTimestamp(record.timestamp)) malformedFields.push("timestamp");
-    if (!isNonEmptyString(record.executionId)) malformedFields.push("executionId");
+    if (!isNonEmptyString(record.runId)) malformedFields.push("runId");
     // A line that names its kind is one of the records the stream carries for
     // a start, an end or a job close, and it holds none of the fields below.
     // A line without one is an accepted stage — which is what every line was
@@ -424,10 +424,10 @@ function validateProgressRecords(
     if (malformedFields.length > 0) {
       issue(issues, "invalid-record", path, `progress record has invalid field(s): ${malformedFields.join(", ")}`, line);
     }
-    if (isNonEmptyString(record.executionId)) executionIds.add(record.executionId);
+    if (isNonEmptyString(record.runId)) runIds.add(record.runId);
   }
-  if (executionIds.size > 1) {
-    issue(issues, "invalid-record", path, `progress records contain multiple execution ids: ${[...executionIds].join(", ")}`);
+  if (runIds.size > 1) {
+    issue(issues, "invalid-record", path, `progress records contain multiple execution ids: ${[...runIds].join(", ")}`);
   }
 }
 

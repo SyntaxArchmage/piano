@@ -7,7 +7,7 @@ function record(iteration: number | undefined, best: number, invocationId: strin
   return {
     version: 1,
     timestamp: "2026-09-02T00:00:00.000Z",
-    executionId: "e",
+    runId: "e",
     invocationId,
     stageId: "loop.measure",
     stage: "measure",

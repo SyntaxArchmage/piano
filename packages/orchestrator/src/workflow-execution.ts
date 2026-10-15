@@ -82,7 +82,7 @@ import { writeResumeState } from "./resume-state.js";
 import {
   actorSessionDirectory,
   buildWorkflowRuntimePlan,
-  executionId as normalizeExecutionId,
+  runId as normalizeExecutionId,
   migrateLegacyActorKey,
 } from "./workflow-runtime.js";
 import {
@@ -124,13 +124,13 @@ export interface WorkflowExecutionRequest {
   readonly runDir: string;
   /** Optional caller identity for one user task. TUI callers may use a fresh
    * value per prompt; omitted calls receive a unique execution directory. */
-  readonly executionId?: string;
+  readonly runId?: string;
   /** Continue a long-lived execution: reopen `execution.id`'s evidence
    * directory and resume each actor's prior harness session instead of opening
    * fresh chats. One Piano run is one execution, so every prompt after the first
    * arrives here. One-shot callers omit it and keep the strict
    * fresh-directory guarantee; when present it takes precedence over
-   * `executionId`. */
+   * `runId`. */
   readonly execution?: WorkflowExecutionContinuation;
   /** Continue a paused job from its cursor. Invocations already accepted in
    * any span of this job are rebuilt from their evidence instead of run
@@ -236,7 +236,7 @@ export interface WorkflowWorkspaceCandidate {
 
 
 export interface WorkflowWorkspaceSelectionContext {
-  readonly executionId: string;
+  readonly runId: string;
   readonly sourceCwd: string;
   readonly candidates: readonly WorkflowWorkspaceCandidate[];
 }
@@ -263,7 +263,7 @@ export interface LoadAndExecuteWorkflowRequest extends WorkflowExecutionRequest 
 
 export interface WorkflowExecutionResult {
   readonly workflow: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly stage: string;
   readonly worker: string;
   readonly text: string;
@@ -597,30 +597,30 @@ export function executeWorkflow(
 > {
   // Normalized outside the generator so the exit-level finalizer below can
   // name the execution it is closing, where the generator's locals are gone.
-  const executionId = normalizeExecutionId(request.execution?.id ?? request.executionId);
+  const runId = normalizeExecutionId(request.execution?.id ?? request.runId);
   return TRACE(WORKFLOW_SOURCE, Effect.gen(function* () {
     yield* WORKFLOW_LOG.info("agentic.task.started", { data: { promptLength: request.prompt.length } });
     const sharedWorkspace = sharedWorkspaceBinding(request.cwd);
     yield* validateWorkspace(sharedWorkspace);
     yield* WORKFLOW_LOG.info("workspace.prepared", {
       data: {
-        executionId: request.executionId,
+        runId: request.runId,
         workspace: sharedWorkspace,
         ownership: "shared-root",
       },
     });
-    if (executionId === undefined) {
+    if (runId === undefined) {
       return yield* Effect.fail(workflowError(
         "schedule",
         loaded.workflowPath,
-        "executionId must contain only letters, numbers, underscores, and hyphens",
+        "runId must contain only letters, numbers, underscores, and hyphens",
       ));
     }
     yield* WORKFLOW_LOG.info("workflow.loaded", {
       data: {
         path: loaded.workflowPath,
         name: loaded.document.workflow.name,
-        executionId,
+        runId,
       },
     });
     const compiled = yield* TRACE(
@@ -675,8 +675,8 @@ export function executeWorkflow(
     // groups the spans together. A fresh job takes the next ordinal.
     const promptIndex = request.continueJob?.jobOrdinal ?? (request.execution?.promptIndex ?? 0) + 1;
     const knownLoopIterations = new Map<string, number>();
-    yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
-    const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, executionId);
+    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
+    const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {
         yield* workflowTrajectory.close(status);
@@ -684,7 +684,7 @@ export function executeWorkflow(
           workflowTrajectory.snapshot().streams.filter((stream) => stream.status === "error"),
           (stream) => WORKFLOW_LOG.error("workflow.trajectory.incomplete", {
             outcome: "failure",
-            data: { executionId, stream: stream.id, errors: stream.errors },
+            data: { runId, stream: stream.id, errors: stream.errors },
           }).pipe(Effect.catchAll(() => Effect.void)),
           { discard: true },
         );
@@ -692,7 +692,7 @@ export function executeWorkflow(
     yield* WORKFLOW_LOG.info("workflow.compiled", {
       data: {
         stages: scheduled.map((invocation) => invocation.id),
-        executionId,
+        runId,
         plannedStages: progressPlan.plannedStages,
       },
     });
@@ -781,7 +781,7 @@ export function executeWorkflow(
     };
     const persistActors = () => writeResumeState(request.runDir, {
       version: 1,
-      executionId,
+      runId,
       promptIndex,
       actors: Object.fromEntries([...actors.entries()].flatMap(([key, state]) => {
         if (state.harness === undefined || state.sessionId === undefined || state.transcriptPath === undefined) return [];
@@ -800,7 +800,7 @@ export function executeWorkflow(
       request,
       loaded,
       compiled,
-      executionId,
+      runId,
       promptIndex,
       actors,
       announcedContinuations,
@@ -824,7 +824,7 @@ export function executeWorkflow(
      * shape. */
 
     const finalizeWorkspaces = (): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
-      Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, executionId, {
+      Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, runId, {
         // A nested map slot legitimately records its immediate parent slot as
         // sourceCwd. The execution id and run-owned record path already bound
         // this backstop to the current run; applying the root source identity
@@ -987,7 +987,7 @@ export function executeWorkflow(
         request,
         loaded,
         compiled,
-        executionId,
+        runId,
         promptIndex,
         actors,
         announcedContinuations,
@@ -1029,7 +1029,7 @@ export function executeWorkflow(
       if (autoCommit) {
         yield* commitSummaryProgressRecord(completed.stages, request.prompt, preExistingDirty, sharedWorkspace.cwd);
       }
-      yield* finalizeWorkflowProgress(request.runDir, executionId, "completed").pipe(
+      yield* finalizeWorkflowProgress(request.runDir, runId, "completed").pipe(
         Effect.catchAll(() => Effect.void),
       );
       yield* WORKFLOW_LOG.info("agentic.task.completed", {
@@ -1037,7 +1037,7 @@ export function executeWorkflow(
         agent: final.worker,
         outcome: "success",
         data: {
-          executionId,
+          runId,
           completedStages: completed.stages.length,
           terminalStages: terminal.map((result) => result.id),
           sessionId: final.sessionId,
@@ -1048,7 +1048,7 @@ export function executeWorkflow(
       });
       return {
         workflow: compiled.name,
-        executionId,
+        runId,
         stage: final.stage,
         worker: final.worker,
         text: final.text,
@@ -1067,7 +1067,7 @@ export function executeWorkflow(
     const cleanupAfterFailure = finalizeWorkspaces().pipe(
       Effect.tapError((error) => WORKFLOW_LOG.error("workspace.cleanup.failed", {
         outcome: "failure",
-        data: { executionId, error: failureDetails(error) },
+        data: { runId, error: failureDetails(error) },
       })),
       // Preserve the primary workflow failure/cancellation. The durable
       // record remains in its latest phase so recovery can finish cleanup.
@@ -1087,10 +1087,10 @@ export function executeWorkflow(
         const details = failureDetails(exit.cause);
         // An execution that failed before it had an identity never opened a
         // stream or a snapshot, so it has no outcome of its own to record.
-        if (executionId !== undefined) {
+        if (runId !== undefined) {
           yield* finalizeWorkflowProgress(
             request.runDir,
-            executionId,
+            runId,
             cancelled ? "paused" : "failed",
             cancelled ? undefined : details.message,
           ).pipe(

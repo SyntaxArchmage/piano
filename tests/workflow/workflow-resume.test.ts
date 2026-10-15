@@ -10,7 +10,7 @@ import type { ResumeState } from "../../packages/orchestrator/src/resume-state.j
 function resumeState(overrides: Partial<ResumeState> = {}): ResumeState {
   return {
     version: 1,
-    executionId: "run-1",
+    runId: "run-1",
     promptIndex: 1,
     actors: {
       "run-1/pi/plan": { harness: "pi", sessionId: "sess-a", transcriptPath: "/runs/run-1/plan.jsonl", turns: 1, continuation: { harness: "pi", sessionId: "sess-a", transcriptPath: "/runs/run-1/plan.jsonl" } },
@@ -25,9 +25,9 @@ async function runDirWithState(state: ResumeState): Promise<string> {
   return runDir;
 }
 
-function read(runDir: string, executionId: string) {
+function read(runDir: string, runId: string) {
   return Effect.runPromise(
-    readWorkflowExecutionContinuation(runDir, executionId).pipe(Effect.provide(NodeFileSystem.layer)),
+    readWorkflowExecutionContinuation(runDir, runId).pipe(Effect.provide(NodeFileSystem.layer)),
   );
 }
 

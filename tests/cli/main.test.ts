@@ -262,7 +262,7 @@ describe("reborn CLI entrypoint", () => {
       events.forEach((event) => request.onEvent?.(event));
       return {
         workflow: "smoke",
-        executionId: "execution-test",
+        runId: "execution-test",
         stage: "smoke-test",
         worker: "smoke-test-agent",
         text: "final text",

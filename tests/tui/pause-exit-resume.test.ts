@@ -92,7 +92,7 @@ describe("half-way stop: Escape, /exit, and /resume in one UX", () => {
       await writeFile(snapshotPath, `${JSON.stringify({
         version: 1,
         updatedAt: new Date().toISOString(),
-        executionId: "run-1",
+        runId: "run-1",
         status: "paused",
         plannedStages: 1,
         completedStages: 0,

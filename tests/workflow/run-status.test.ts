@@ -15,7 +15,7 @@ describe("run status", () => {
           version: 1,
           kind: "execution-started",
           timestamp,
-          executionId: "run-1",
+          runId: "run-1",
           jobOrdinal: 1,
           prompt: "do the work",
           resumed: false,
@@ -25,7 +25,7 @@ describe("run status", () => {
           version: 1,
           kind: "stage-accepted",
           timestamp,
-          executionId: "run-1",
+          runId: "run-1",
           invocationId: "tune@root",
           stageId: "tune",
           stage: "tune",
@@ -39,7 +39,7 @@ describe("run status", () => {
       ]),
       resume: JSON.stringify({
         version: 1,
-        executionId: "run-1",
+        runId: "run-1",
         promptIndex: 1,
         actors: {
           "run-1/basic/root": { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl", turns: 1 },

@@ -74,7 +74,7 @@ async function setup() {
             runDir: session.runDir,
             cwd: root,
             prompt,
-            executionId: session.id,
+            runId: session.id,
             ...(execution === undefined ? {} : { execution }),
             ...(continueJob === undefined ? {} : { continueJob }),
             agentRunner: scriptedRunner(calls),

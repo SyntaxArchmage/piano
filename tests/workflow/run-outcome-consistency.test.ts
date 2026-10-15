@@ -82,7 +82,7 @@ async function startRun(root: string, failWith?: "authentication") {
     runDir: session.runDir,
     cwd: root,
     prompt: "do the work",
-    executionId: session.id,
+    runId: session.id,
     ...(signal === undefined ? {} : { signal }),
     agentRunner: scriptedRunner(failWith),
   }).pipe(

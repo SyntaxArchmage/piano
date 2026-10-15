@@ -107,7 +107,7 @@ describe("reborn CLI --json event stream", () => {
     vi.mocked(executeWorkflow).mockImplementation((_loaded, request) => Effect.sync(() => {
       events.forEach((event) => request.onEvent?.(event));
       return {
-        workflow: "smoke", executionId: "execution-test", stage: "s", worker: "w", text: "final",
+        workflow: "smoke", runId: "execution-test", stage: "s", worker: "w", text: "final",
         sessionId: "sess-1", transcriptPath: "/tmp/sess-1.jsonl", stages: [], terminalStages: [], progressPath: "/tmp/progress.jsonl",
       };
     }));

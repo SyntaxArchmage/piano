@@ -22,7 +22,7 @@ const started = (
   version: 1,
   kind: "execution-started",
   timestamp,
-  executionId: "run-1",
+  runId: "run-1",
   jobOrdinal,
   ...(prompt === undefined ? {} : { prompt }),
   resumed: false,
@@ -30,7 +30,7 @@ const started = (
 });
 
 const accepted = (timestamp: string, invocationId: string, attempt = 1): WorkflowProgressStreamRecord =>
-  ({ version: 1, timestamp, executionId: "run-1", invocationId, attempt } as unknown as WorkflowProgressStreamRecord);
+  ({ version: 1, timestamp, runId: "run-1", invocationId, attempt } as unknown as WorkflowProgressStreamRecord);
 
 const finished = (
   timestamp: string,
@@ -39,7 +39,7 @@ const finished = (
   version: 1,
   kind: "execution-finished",
   timestamp,
-  executionId: "run-1",
+  runId: "run-1",
   status,
 });
 

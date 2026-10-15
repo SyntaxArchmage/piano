@@ -89,7 +89,7 @@ export interface WorkflowProgressCurrent {
 export interface WorkflowProgressRecord {
   readonly version: 1;
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly invocationId: string;
   readonly stageId: string;
   readonly stage: string;
@@ -140,7 +140,7 @@ export interface WorkflowProgressStartRecord {
   readonly version: 1;
   readonly kind: "stage-started";
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly invocationId: string;
   readonly stageId: string;
   readonly stage: string;
@@ -171,7 +171,7 @@ export interface WorkflowProgressExecutionStartRecord {
   readonly version: 1;
   readonly kind: "execution-started";
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   /** The job this span belongs to: one prompt's workflow execution. A fresh
    * job takes the next ordinal; a span that resumes a paused job repeats its
    * predecessor's, which is what ties a continue back to the job it continues.
@@ -198,7 +198,7 @@ export interface WorkflowProgressExecutionFinishRecord {
   readonly version: 1;
   readonly kind: "execution-finished";
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly status: "completed" | "failed" | "paused";
   readonly error?: string;
 }
@@ -212,7 +212,7 @@ export interface WorkflowProgressJobClosedRecord {
   readonly version: 1;
   readonly kind: "job-closed";
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly jobOrdinal: number;
   readonly outcome: "restarted";
 }
@@ -271,15 +271,15 @@ export function parseProgressStreamRecord(line: string): WorkflowProgressStreamR
   }
   if (typeof parsed !== "object" || parsed === null) return undefined;
   // Every kind carries these two, whichever shape it is.
-  const record = parsed as { executionId?: unknown; timestamp?: unknown };
-  if (typeof record.executionId !== "string" || typeof record.timestamp !== "string") return undefined;
+  const record = parsed as { runId?: unknown; timestamp?: unknown };
+  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
   return parsed as WorkflowProgressStreamRecord;
 }
 
 export interface WorkflowProgressSnapshot {
   readonly version: 1;
   readonly updatedAt: string;
-  readonly executionId: string;
+  readonly runId: string;
   /** "paused": the run stopped at a human interrupt (Escape / `/exit`) with
    * resumable state on disk; the next prompt continues the same execution. */
   readonly status: "running" | "completed" | "failed" | "paused";
@@ -363,11 +363,11 @@ function accrueInto(
 }
 
 /** A snapshot with nothing folded into it yet. */
-function emptyProgressSnapshot(executionId: string, updatedAt: string): WorkflowProgressSnapshot {
+function emptyProgressSnapshot(runId: string, updatedAt: string): WorkflowProgressSnapshot {
   return {
     version: 1,
     updatedAt,
-    executionId,
+    runId,
     status: "running",
     plannedStages: 0,
     completedStages: 0,
@@ -405,7 +405,7 @@ export function applyProgressRecord(
     // A kind this reducer does not know (a record from a newer writer): the
     // snapshot carries only what it understands. An empty fold still gets its
     // identity established, so a known record after this one has a base.
-    return previous ?? emptyProgressSnapshot(record.executionId, record.timestamp);
+    return previous ?? emptyProgressSnapshot(record.runId, record.timestamp);
   }
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
@@ -416,7 +416,7 @@ export function applyProgressRecord(
     return {
       version: 1,
       updatedAt: started.timestamp,
-      executionId: started.executionId,
+      runId: started.runId,
       status: "running",
       plannedStages: started.plan.plannedStages,
       completedStages: carried?.completedStages ?? 0,
@@ -428,7 +428,7 @@ export function applyProgressRecord(
   }
   if (kind === "stage-started") {
     const started = record as WorkflowProgressStartRecord;
-    const base = previous ?? emptyProgressSnapshot(started.executionId, started.timestamp);
+    const base = previous ?? emptyProgressSnapshot(started.runId, started.timestamp);
     const invocationTime = accrueInto(base.invocationTime, started.invocationId, {
       ...accrueInvocationTime(base.invocationTime?.[started.invocationId], started, started.timestamp),
       runningSince: started.timestamp,
@@ -436,7 +436,7 @@ export function applyProgressRecord(
     return {
       ...base,
       updatedAt: started.timestamp,
-      executionId: started.executionId,
+      runId: started.runId,
       status: "running",
       invocationTime,
       current: {
@@ -457,7 +457,7 @@ export function applyProgressRecord(
   }
   if (kind === "execution-finished") {
     const finished = record as WorkflowProgressExecutionFinishRecord;
-    const base = previous ?? emptyProgressSnapshot(finished.executionId, finished.timestamp);
+    const base = previous ?? emptyProgressSnapshot(finished.runId, finished.timestamp);
     return {
       ...base,
       updatedAt: finished.timestamp,
@@ -480,16 +480,16 @@ export function applyProgressRecord(
     const closed = record as WorkflowProgressJobClosedRecord;
     // The snapshot describes the latest span; a job closed by an action the
     // viewer may not even be showing moves only its timestamp.
-    const base = previous ?? emptyProgressSnapshot(closed.executionId, closed.timestamp);
+    const base = previous ?? emptyProgressSnapshot(closed.runId, closed.timestamp);
     return { ...base, updatedAt: closed.timestamp };
   }
   const accepted = record as WorkflowProgressRecord;
   const projection = accepted.progress;
-  const base = previous ?? emptyProgressSnapshot(accepted.executionId, accepted.timestamp);
+  const base = previous ?? emptyProgressSnapshot(accepted.runId, accepted.timestamp);
   return {
     ...base,
     updatedAt: accepted.timestamp,
-    executionId: accepted.executionId,
+    runId: accepted.runId,
     status: "running",
     plannedStages: projection?.plannedStages ?? base.plannedStages,
     completedStages: projection?.completedStages ?? base.completedStages,
@@ -523,7 +523,7 @@ export function applyProgressRecord(
  * long-running workflow observable even while no stage has validated yet. */
 export function initializeWorkflowProgress(
   runDir: string,
-  executionId: string,
+  runId: string,
   plan: WorkflowProgressPlan,
   jobOrdinal: number,
   prompt: string,
@@ -535,7 +535,7 @@ export function initializeWorkflowProgress(
       version: 1,
       kind: "execution-started",
       timestamp: new Date().toISOString(),
-      executionId,
+      runId,
       jobOrdinal,
       prompt,
       resumed: resume,
@@ -595,7 +595,7 @@ function appendAndFold(
  * the start. */
 export function markWorkflowStageStarted(
   runDir: string,
-  executionId: string,
+  runId: string,
   current: Omit<WorkflowProgressCurrent, "status" | "progress">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressPath(runDir);
@@ -604,7 +604,7 @@ export function markWorkflowStageStarted(
       version: 1,
       kind: "stage-started",
       timestamp: new Date().toISOString(),
-      executionId,
+      runId,
       invocationId: current.invocationId,
       stageId: current.stageId,
       stage: current.stage,
@@ -646,7 +646,7 @@ export function appendWorkflowProgress(
  * outcome. */
 export function finalizeWorkflowProgress(
   runDir: string,
-  executionId: string,
+  runId: string,
   status: "completed" | "failed" | "paused",
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
@@ -656,7 +656,7 @@ export function finalizeWorkflowProgress(
       version: 1,
       kind: "execution-finished",
       timestamp: new Date().toISOString(),
-      executionId,
+      runId,
       status,
       ...(error === undefined ? {} : { error }),
     });
@@ -669,7 +669,7 @@ export function finalizeWorkflowProgress(
  * other record; the job's own spans keep saying how they stopped. */
 export function closeWorkflowJob(
   runDir: string,
-  executionId: string,
+  runId: string,
   jobOrdinal: number,
   outcome: "restarted",
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
@@ -679,7 +679,7 @@ export function closeWorkflowJob(
       version: 1,
       kind: "job-closed",
       timestamp: new Date().toISOString(),
-      executionId,
+      runId,
       jobOrdinal,
       outcome,
     });

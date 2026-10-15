@@ -18,7 +18,7 @@ const invocation = (
   stageId: string,
   frames: readonly WorkflowRuntimeFrame[] = [],
 ): WorkflowRuntimeInvocation => ({
-  executionId: "run-1",
+  runId: "run-1",
   promptIndex: 1,
   stageId,
   stageName: stageId,
@@ -35,7 +35,7 @@ describe("workflowActorKey", () => {
     const base = workflowActorKey(invocation("a"), "pi", "basic");
     expect(workflowActorKey(invocation("a"), "pi", "other")).not.toBe(base);
     expect(workflowActorKey(invocation("a"), "claude", "basic")).not.toBe(base);
-    expect(workflowActorKey({ ...invocation("a"), executionId: "run-2" }, "pi", "basic")).not.toBe(base);
+    expect(workflowActorKey({ ...invocation("a"), runId: "run-2" }, "pi", "basic")).not.toBe(base);
   });
 
   it("ignores loop frames, separates tournament lanes, and carries the version marker", () => {

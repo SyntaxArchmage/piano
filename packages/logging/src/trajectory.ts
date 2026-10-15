@@ -11,7 +11,7 @@ export interface TrajectoryTurn {
   /** Cumulative `events` length after this turn, measured on the merged and
    * compacted array, so replay slices `[turns[i-1].eventCount, turns[i].eventCount)`.
    * Per-turn deltas would not be stable: `compactTrajectoryEvents` dedups `usage`
-   * by `workflow.invocationId`, which carries no executionId, so a later turn can
+   * by `workflow.invocationId`, which carries no runId, so a later turn can
    * collapse an event an earlier turn had already contributed. */
   readonly eventCount: number;
 }

@@ -36,7 +36,7 @@ function validArtifacts(transcriptPath: string) {
     progress: JSON.stringify({
       version: 1,
       timestamp,
-      executionId: "execution-1",
+      runId: "execution-1",
       invocationId: "respond@root",
       stageId: "respond",
       stage: "respond",
@@ -112,7 +112,7 @@ describe(" static observability analysis", () => {
     const accepted = {
       version: 1,
       timestamp: "2026-08-25T00:00:00.000Z",
-      executionId: "execution-1",
+      runId: "execution-1",
       invocationId: "respond@root",
       stageId: "respond",
       stage: "respond",
@@ -124,10 +124,10 @@ describe(" static observability analysis", () => {
       handoffRecordPath: "handoffs/records/respond/root/record.json",
     };
     const records = [
-      { version: 1, kind: "execution-started", timestamp: "2026-08-25T00:00:00.000Z", executionId: "execution-1", resumed: false, plan: { plannedStages: 1, stageCounts: {} } },
-      { version: 1, kind: "stage-started", timestamp: "2026-08-25T00:00:01.000Z", executionId: "execution-1", invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic", attempt: 1 },
+      { version: 1, kind: "execution-started", timestamp: "2026-08-25T00:00:00.000Z", runId: "execution-1", resumed: false, plan: { plannedStages: 1, stageCounts: {} } },
+      { version: 1, kind: "stage-started", timestamp: "2026-08-25T00:00:01.000Z", runId: "execution-1", invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic", attempt: 1 },
       accepted,
-      { version: 1, kind: "execution-finished", timestamp: "2026-08-25T00:00:02.000Z", executionId: "execution-1", status: "completed" },
+      { version: 1, kind: "execution-finished", timestamp: "2026-08-25T00:00:02.000Z", runId: "execution-1", status: "completed" },
     ];
 
     const report = analyzeStaticObservability({

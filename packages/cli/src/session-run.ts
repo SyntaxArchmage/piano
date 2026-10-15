@@ -292,7 +292,7 @@ function runSessionBody(
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
-                executionId: current.session.id,
+                runId: current.session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signal: controller.signal,
                 steering,

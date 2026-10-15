@@ -251,7 +251,7 @@ describe("/btw side agent through the live session", () => {
     // The side visit does not disturb the run: the next prompt still continues
     // the same execution, in the same run directory.
     expect(executeWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      executionId: RUN_ID,
+      runId: RUN_ID,
       runDir: join(runsRoot, RUN_ID),
       prompt: "carry on",
     }));

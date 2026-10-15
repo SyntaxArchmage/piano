@@ -192,7 +192,7 @@ describe("in-place run takeover", () => {
         document: { version: 3, workflow: { name: "smoke", nodes: [] } },
       }),
       expect.objectContaining({
-        executionId: OTHER,
+        runId: OTHER,
         runDir: join(runsRoot, OTHER),
         // The resumed run's workspace, not the one the session started in.
         cwd: "/repo/work",
@@ -265,7 +265,7 @@ describe("in-place run takeover", () => {
 
     expect(failure).toMatchObject({ _tag: "LogsStorageError", operation: "read-trajectory" });
     expect(executeWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      executionId: OPEN,
+      runId: OPEN,
       runDir: join(runsRoot, OPEN),
     }));
   });

@@ -39,7 +39,7 @@ export interface WorkflowExecutionContinuation {
  * without a state file), allowing callers to start workers fresh. */
 export function readWorkflowExecutionContinuation(
   runDir: string,
-  _executionId: string,
+  _runId: string,
 ): Effect.Effect<WorkflowExecutionContinuation | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const state = yield* readResumeState(runDir);
@@ -58,7 +58,7 @@ export function readWorkflowExecutionContinuation(
       });
     }
     return actors.size === 0 ? undefined : {
-      id: state.executionId,
+      id: state.runId,
       promptIndex: state.promptIndex,
       actors,
     };

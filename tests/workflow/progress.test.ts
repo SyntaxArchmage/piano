@@ -32,7 +32,7 @@ afterEach(async () => {
 
 function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowProgressRecord, "version" | "timestamp"> {
   return {
-    executionId: "execution",
+    runId: "execution",
     invocationId: "measure",
     stageId: "measure",
     stage: "measure",
@@ -254,7 +254,7 @@ describe("workflow progress stream", () => {
       version: 1,
       kind: "stage-started",
       timestamp: "2026-01-01T00:00:00.000Z",
-      executionId: "execution",
+      runId: "execution",
       invocationId: "tune@tune/iter-0",
       stageId: "tune",
       stage: "tune",
@@ -277,7 +277,7 @@ describe("workflow progress stream", () => {
       version: 1,
       kind: "execution-started",
       timestamp: "2026-01-01T00:00:00.000Z",
-      executionId: "execution",
+      runId: "execution",
       jobOrdinal: 1,
       prompt: "do the work",
       resumed: true,
@@ -295,7 +295,7 @@ describe("workflow progress stream", () => {
 
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
 
-    expect((await readStream(runDir))[0]).toMatchObject({ kind: "execution-started", executionId: "execution" });
+    expect((await readStream(runDir))[0]).toMatchObject({ kind: "execution-started", runId: "execution" });
     const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as WorkflowProgressSnapshot;
     expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
   });
@@ -315,7 +315,7 @@ describe("workflow progress stream", () => {
     // historical shape would count the marker as accepted work.
     const marker = {
       kind: "region-finalized",
-      executionId: "execution",
+      runId: "execution",
       timestamp: "2026-01-01T00:00:05.000Z",
       regionId: "sweep",
     } as unknown as WorkflowProgressStreamRecord;
@@ -329,7 +329,7 @@ describe("workflow progress stream", () => {
       version: 1,
       kind: "execution-started",
       timestamp: "2026-01-01T00:00:00.000Z",
-      executionId: "execution",
+      runId: "execution",
       jobOrdinal: 1,
       resumed: false,
       plan: timingPlan,
@@ -395,7 +395,7 @@ describe("workflow progress stream", () => {
       version: 1,
       kind: "execution-finished",
       timestamp: "2026-01-01T00:00:00.000Z",
-      executionId: "execution",
+      runId: "execution",
       status: "failed",
       error: "boom",
     });
@@ -411,7 +411,7 @@ describe("workflow progress stream", () => {
       version: 1,
       kind: "job-closed",
       timestamp: "2026-01-01T00:00:00.000Z",
-      executionId: "execution",
+      runId: "execution",
       jobOrdinal: 1,
       outcome: "restarted",
     });

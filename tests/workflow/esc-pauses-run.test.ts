@@ -118,7 +118,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: text,
-            executionId: session.id,
+            runId: session.id,
             ...(signal === undefined ? {} : { signal }),
             ...(execution === undefined ? {} : { execution: execution as never }),
             agentRunner: runner,
@@ -181,7 +181,7 @@ describe("Escape pauses a run instead of failing it", () => {
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      expect(after?.id).toBe(continued.executionId);
+      expect(after?.id).toBe(continued.runId);
       expect(after?.promptIndex).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -206,7 +206,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "long task",
-            executionId: session.id,
+            runId: session.id,
             agentRunner: stuckRunner,
           })),
           Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -264,7 +264,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "long task",
-            executionId: session.id,
+            runId: session.id,
             agentRunner: runner,
           })),
           Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -353,7 +353,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "start the work",
-            executionId: session.id,
+            runId: session.id,
             signal: controller.signal,
             agentRunner: runner,
             signoff,

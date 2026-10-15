@@ -96,7 +96,7 @@ export interface StageRunnerContext {
   readonly request: WorkflowExecutionRequest;
   readonly loaded: LoadedWorkflow;
   readonly compiled: CompiledWorkflow;
-  readonly executionId: string;
+  readonly runId: string;
   readonly promptIndex: number;
   readonly actors: Map<string, ActorState>;
   readonly announcedContinuations: Map<string, AgentContinuation>;
@@ -125,7 +125,7 @@ function rebuildAcceptedStage(
     const invocationId = runtimeInvocationId(invocation);
     if (producer === undefined) {
       yield* WORKFLOW_LOG.warn("stage.continue.evidence-missing", {
-        data: { invocationId, executionId: invocation.executionId },
+        data: { invocationId, runId: invocation.runId },
       }).pipe(Effect.catchAll(() => Effect.void));
       return undefined;
     }
@@ -169,7 +169,7 @@ export function executeStage(
     request,
     loaded,
     compiled,
-    executionId,
+    runId,
     promptIndex,
     actors,
     announcedContinuations,
@@ -189,7 +189,7 @@ export function executeStage(
   // identical inputs, identical plan.
   const progressPlan = workflowProgressPlan(compiled);
   const invocation: WorkflowRuntimeInvocation = {
-    executionId,
+    runId,
     promptIndex,
     stageId: node.id,
     stageName: node.stage.name,
@@ -219,7 +219,7 @@ export function executeStage(
     return {
       version: 1,
       timestamp: new Date().toISOString(),
-      executionId,
+      runId,
       invocationId: runtimeInvocationId(invocation),
       stageId: node.id,
       stage: node.stage.name,
@@ -527,7 +527,7 @@ export function executeStage(
       // This snapshot is a convenience monitor view. A filesystem issue
       // must not hide a real worker result; the canonical stage evidence
       // and validation path remain authoritative.
-      yield* progressSemaphore.withPermits(1)(markWorkflowStageStarted(request.runDir, executionId, {
+      yield* progressSemaphore.withPermits(1)(markWorkflowStageStarted(request.runDir, runId, {
         invocationId: runtimeInvocationId(invocation),
         stageId: node.id,
         stage: node.stage.name,
@@ -983,7 +983,7 @@ export function executeStage(
         knownLoopIterations,
       );
       const progressPath = yield* appendWorkflowProgress(request.runDir, {
-        executionId,
+        runId,
         invocationId: result.id,
         stageId: result.stageId,
         stage: result.stage,

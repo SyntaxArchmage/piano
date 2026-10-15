@@ -66,7 +66,7 @@ export interface RunTurn {
 /** The run's state.
  *
  * One of each thing a run used to say once per file: `runId` (which the
- * progress and resume documents called `executionId`), one `status`, one
+ * progress and resume documents called `runId`), one `status`, one
  * `error`, one `updatedAt`. Everything else is what a reader asks for. */
 export interface RunStatus {
   readonly version: 1;
@@ -128,7 +128,7 @@ export function runStatusFromParts(parts: {
   const trajectory = parseTrajectory(parts.trajectoryStream);
   if (progress === undefined && resume === undefined && trajectory === undefined) return undefined;
 
-  const runId = progress?.executionId ?? resume?.executionId ?? trajectory?.runId;
+  const runId = progress?.runId ?? resume?.runId ?? trajectory?.runId;
   const status = progress?.status ?? trajectory?.status;
   const updatedAt = progress?.updatedAt ?? trajectory?.updatedAt;
   // A run that has said neither when it is nor how it is has not recorded
@@ -264,10 +264,10 @@ function parseProgressLines(raw: string | undefined): readonly WorkflowProgressS
  * newest is the state. */
 function parseResumeTable(raw: string): ResumeState | undefined {
   const whole = tryParseObject(raw);
-  if (whole !== undefined && typeof whole.executionId === "string") return whole as unknown as ResumeState;
+  if (whole !== undefined && typeof whole.runId === "string") return whole as unknown as ResumeState;
   for (const line of raw.split("\n").reverse()) {
     const table = tryParseObject(line);
-    if (table !== undefined && typeof table.executionId === "string") return table as unknown as ResumeState;
+    if (table !== undefined && typeof table.runId === "string") return table as unknown as ResumeState;
   }
   return undefined;
 }

@@ -19,7 +19,7 @@ const started = (
   version: 1,
   kind: "execution-started",
   timestamp,
-  executionId: "run-1",
+  runId: "run-1",
   ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
   ...(prompt === undefined ? {} : { prompt }),
   resumed: false,
@@ -30,7 +30,7 @@ const stageStarted = (timestamp: string, invocationId: string, attempt = 1): Wor
   version: 1,
   kind: "stage-started",
   timestamp,
-  executionId: "run-1",
+  runId: "run-1",
   invocationId,
   stageId: invocationId.split("@")[0] ?? invocationId,
   stage: invocationId,
@@ -40,7 +40,7 @@ const stageStarted = (timestamp: string, invocationId: string, attempt = 1): Wor
 
 /** Only the fields the fold reads; the full accepted shape belongs to writers. */
 const accepted = (timestamp: string, invocationId: string, attempt = 1): WorkflowProgressStreamRecord =>
-  ({ version: 1, timestamp, executionId: "run-1", invocationId, attempt } as unknown as WorkflowProgressStreamRecord);
+  ({ version: 1, timestamp, runId: "run-1", invocationId, attempt } as unknown as WorkflowProgressStreamRecord);
 
 const finished = (
   timestamp: string,
@@ -49,7 +49,7 @@ const finished = (
   version: 1,
   kind: "execution-finished",
   timestamp,
-  executionId: "run-1",
+  runId: "run-1",
   status,
 });
 
@@ -57,7 +57,7 @@ const jobClosed = (jobOrdinal: number, timestamp: string): WorkflowProgressStrea
   version: 1,
   kind: "job-closed",
   timestamp,
-  executionId: "run-1",
+  runId: "run-1",
   jobOrdinal,
   outcome: "restarted",
 });
@@ -138,7 +138,7 @@ describe("foldJobSpans", () => {
       version: 1,
       kind: "region-finalized",
       timestamp: T(2),
-      executionId: "run-1",
+      runId: "run-1",
       regionId: "sweep",
     } as unknown as WorkflowProgressStreamRecord;
     const spans = foldJobSpans([

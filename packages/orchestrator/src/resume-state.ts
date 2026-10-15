@@ -20,7 +20,7 @@ export interface ResumeActorState {
 
 export interface ResumeState {
   readonly version: 1;
-  readonly executionId: string;
+  readonly runId: string;
   readonly promptIndex: number;
   readonly actors: Record<string, ResumeActorState>;
 }
@@ -72,7 +72,7 @@ export function writeResumeState(
  * record winning per actor. A table belonging to another execution is not this
  * execution's history and is replaced outright. */
 function mergeResumeState(existing: ResumeState | undefined, next: ResumeState): ResumeState {
-  if (existing === undefined || existing.executionId !== next.executionId) return next;
+  if (existing === undefined || existing.runId !== next.runId) return next;
   return { ...next, actors: { ...existing.actors, ...next.actors } };
 }
 
@@ -114,7 +114,7 @@ function parseResumeState(raw: string): ResumeState | undefined {
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const doc = value as Record<string, unknown>;
-  if (typeof doc.executionId !== "string") return undefined;
+  if (typeof doc.runId !== "string") return undefined;
   if (typeof doc.promptIndex !== "number") return undefined;
   if (typeof doc.actors !== "object" || doc.actors === null) return undefined;
   return value as ResumeState;

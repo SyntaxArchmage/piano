@@ -239,7 +239,7 @@ describe("duration-bound loop execution", () => {
         root,
         workflowPath: join(root, "duration.yml"),
         runDir: session.runDir,
-        executionId: "duration",
+        runId: "duration",
         cwd: root,
         prompt: "keep working",
         agentRunner: (request) => Effect.promise(async () => {
@@ -281,7 +281,7 @@ describe("duration-bound loop execution", () => {
         root,
         workflowPath: join(root, "duration.yml"),
         runDir: session.runDir,
-        executionId: "duration-progress",
+        runId: "duration-progress",
         cwd: root,
         prompt: "keep working",
         agentRunner: (_request) => Effect.promise(async () => {
@@ -338,7 +338,7 @@ describe("stage retry execution", () => {
         root,
         workflowPath: join(root, "retry.yml"),
         runDir: session.runDir,
-        executionId: "retry",
+        runId: "retry",
         cwd: root,
         prompt: "write something",
         agentRunner: (request) => Effect.suspend(() => {
@@ -383,7 +383,7 @@ describe("stage retry execution", () => {
         root,
         workflowPath: join(root, "retry.yml"),
         runDir: session.runDir,
-        executionId: "retry-exhausted",
+        runId: "retry-exhausted",
         cwd: root,
         prompt: "write something",
         agentRunner: () => Effect.suspend(() => {
@@ -424,7 +424,7 @@ workflow:
         root,
         workflowPath: join(root, "plain.yml"),
         runDir: session.runDir,
-        executionId: "plain",
+        runId: "plain",
         cwd: root,
         prompt: "write something",
         agentRunner: () => Effect.suspend(() => {

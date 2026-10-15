@@ -21,7 +21,7 @@ function run<A, E>(effect: Effect.Effect<A, E, import("@effect/platform").FileSy
 const context: TrajectoryRecordContext = {
   version: 1,
   timestamp: "2026-09-02T00:00:00.000Z",
-  executionId: "eval-run",
+  runId: "eval-run",
   invocationId: "measure@loop/iter-0",
   stageId: "loop.measure",
   stage: "measure",
@@ -123,7 +123,7 @@ describe("WorkflowEvaluator", () => {
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.observe({
       type: "selection",
-      executionId: "eval-run",
+      runId: "eval-run",
       timestamp: "2026-09-02T00:00:00.000Z",
       referee: { name: "throughput", unit: "items/s", direction: "higher" },
       outcome: "carried",
@@ -132,7 +132,7 @@ describe("WorkflowEvaluator", () => {
     }));
     await run(trajectory.observe({
       type: "selection",
-      executionId: "eval-run",
+      runId: "eval-run",
       timestamp: "2026-09-02T00:01:00.000Z",
       outcome: "no-winner",
     }));
