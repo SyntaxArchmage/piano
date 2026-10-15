@@ -27,6 +27,11 @@ vi.mock("@piano/orchestrator", () => ({
       stage: { name: "respond", worker: "basic", harness: "pi", from: [] },
     }],
     regions: [],
+    nodes: [{
+      id: "respond",
+      dependsOn: [],
+      stage: { name: "respond", worker: "basic", harness: "pi", from: [] },
+    }],
   })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "done",

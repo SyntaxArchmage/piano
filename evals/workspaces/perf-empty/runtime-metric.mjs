@@ -62,7 +62,7 @@ for (const t of traceLines) {
 
 // --- bucket 3: orchestration bookkeeping ---
 const bookkeepingFns = new Set([
-  "parseWorkflow", "compileWorkflow", "scheduleWorkflow", "loadWorkflow",
+  "parseWorkflow", "compileWorkflow", "loadWorkflow",
   "validateStageResult", "persistActors", "writeProgressSnapshot",
   "appendWorkflowProgress", "writeHandoffRecord",
 ]);

@@ -44,12 +44,14 @@ import {
   runtimeInvocationId,
   runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
-  type WorkflowRuntimeNode,
-  type WorkflowRuntimeRegionNode,
 } from "./workflow-runtime.js";
 import { appendWorkflowProgress, type WorkflowProgressRegionFinalizedRecord, type WorkflowRegionFinalizedPayload } from "./progress.js";
 import { actorTurnRow } from "./resume-state.js";
-import type { CompiledWorkflow, WorkflowRegionPlan } from "./workflow.js";
+import type {
+  CompiledWorkflow,
+  WorkflowRegionPlan,
+  WorkflowRuntimeNode,
+} from "./workflow.js";
 import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
   ActorExecutionContext,
@@ -133,13 +135,32 @@ export function valueAtPath(value: unknown, path: readonly string[]): unknown {
   return current;
 }
 
+/** A node's name in its scope: the stage name, or the region name. */
+function nodeName(node: WorkflowRuntimeNode): string {
+  return "stage" in node ? node.stage.name : node.name;
+}
+
+/** The local `from` names a node declares — sibling names in its own scope,
+ * before lowering rewires a leaf's edges to exit-stage ids. */
+function nodeFrom(node: WorkflowRuntimeNode): readonly string[] {
+  return "stage" in node ? node.stage.from : node.from;
+}
+
+/** Terminal results of a scope, in the order their nodes finished. A scope runs
+ * one ready node at a time and `completed` is inserted in that order, which is
+ * the dependency order of the leaf DAG — not the declaration order the tree
+ * carries. Consumers pick a run's final result from the tail of this list. */
 export function terminalGroups(
   nodes: readonly WorkflowRuntimeNode[],
   completed: ReadonlyMap<string, ResultGroup>,
 ): readonly InternalStageResult[] {
-  const consumed = new Set(nodes.flatMap((node) => node.dependencies));
-  const terminals = nodes.filter((node) => !consumed.has(node.name));
-  return terminals.flatMap((node) => completed.get(node.name)?.results ?? []);
+  const consumed = new Set(nodes.flatMap(nodeFrom));
+  const finishOrder = new Map([...completed.keys()].map((name, index) => [name, index]));
+  return nodes
+    .filter((node) => !consumed.has(nodeName(node)) && completed.has(nodeName(node)))
+    .sort((left, right) =>
+      (finishOrder.get(nodeName(left)) ?? 0) - (finishOrder.get(nodeName(right)) ?? 0))
+    .flatMap((node) => completed.get(nodeName(node))?.results ?? []);
 }
 
 /** Automatic tournament promotion, limited to the unambiguous single-referee
@@ -716,7 +737,7 @@ const executeScope = (
   workspace: WorkflowWorkspaceBinding,
 ): Effect.Effect<ScopeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.suspend(() => {
   const completed = new Map<string, ResultGroup>();
-  const pending = new Map(nodes.map((node) => [node.name, node]));
+  const pending = new Map(nodes.map((node) => [nodeName(node), node]));
   const allStages: InternalStageResult[] = [];
 
   /** Rebuild a finalized region's exit from evidence alone: every accepted
@@ -727,18 +748,17 @@ const executeScope = (
    * the skip: normal re-entry is slower but always answers in the same
    * shape, so missing evidence degrades instead of guessing. */
   const rebuildFinalizedRegion = (
-    node: WorkflowRuntimeRegionNode,
+    region: WorkflowRegionPlan,
     frames: readonly WorkflowRuntimeFrame[],
     finalized: WorkflowProgressRegionFinalizedRecord,
   ): Effect.Effect<NodeExecution | undefined, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
     const cursor = request.continueJob;
     if (cursor === undefined) return undefined;
-    const region = node.region;
-    const instance = runtimeRegionInstanceId(frames, node.id);
+    const instance = runtimeRegionInstanceId(frames, region.id);
     // A loop that never entered (its prerequisite was already blocked when
     // the region was reached) owns no invocation: re-entry decides that from
     // live inputs and runs no worker either way.
-    if (node.kind === "loop" && (finalized.iterations ?? 0) === 0) return undefined;
+    if (region.kind === "loop" && (finalized.iterations ?? 0) === 0) return undefined;
     const inside = [...cursor.accepted]
       .map((invocationId) => {
         const at = invocationId.indexOf("@");
@@ -766,7 +786,7 @@ const executeScope = (
     }
     const exitResults = rebuilt.filter((result) => result.stageId === region.exitStageId);
     let boundary: readonly InternalStageResult[];
-    if (node.kind === "map") {
+    if (region.kind === "map") {
       if (finalized.outcome === "terminal-blocked") {
         boundary = rebuilt.filter(isBlockedStageResult);
       } else if (finalized.winnerInstanceId !== undefined) {
@@ -798,7 +818,7 @@ const executeScope = (
   const runNode = (
     node: WorkflowRuntimeNode,
   ): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
-    if (node.kind !== "stage") {
+    if (!("stage" in node)) {
       const finalized = request.continueJob?.regions?.get(runtimeRegionInstanceId(frames, node.id));
       if (finalized !== undefined) {
         return rebuildFinalizedRegion(node, frames, finalized).pipe(
@@ -810,9 +830,9 @@ const executeScope = (
   };
 
   const runNodeDirect = (node: WorkflowRuntimeNode): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
-    const directInputs = node.dependencies.flatMap((dependency) => completed.get(dependency)?.results ?? []);
+    const directInputs = nodeFrom(node).flatMap((dependency) => completed.get(dependency)?.results ?? []);
     const inputs = mergeScopeInputs(inheritedInputs, directInputs);
-    if (node.kind === "stage") {
+    if ("stage" in node) {
       return executeStage(
         stageRunnerContext,
         node,
@@ -826,8 +846,8 @@ const executeScope = (
         ...(isBlockedStageResult(result) ? { stopped: true } : {}),
       })));
     }
-    const region = node.region;
-    if (node.kind === "loop") {
+    const region = node;
+    if (region.kind === "loop") {
       const iterations = region.iterations;
       const durationSeconds = region.duration;
       if (iterations === undefined && durationSeconds === undefined) {
@@ -1148,7 +1168,7 @@ const executeScope = (
   const run = (): Effect.Effect<ScopeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
     while (pending.size > 0) {
       const ready = [...pending.values()].filter((node) =>
-        node.dependencies.every((dependency) => completed.has(dependency)),
+        nodeFrom(node).every((dependency) => completed.has(dependency)),
       );
       if (ready.length === 0) {
         return yield* Effect.fail(workflowError(
@@ -1174,9 +1194,9 @@ const executeScope = (
       }
       const outcome = yield* runNode(node).pipe(Effect.either);
       if (Either.isLeft(outcome)) return yield* Effect.fail(outcome.left);
-      completed.set(node.name, outcome.right.boundary);
+      completed.set(nodeName(node), outcome.right.boundary);
       allStages.push(...outcome.right.stages);
-      pending.delete(node.name);
+      pending.delete(nodeName(node));
       // A stopped child scope (loop/map lane) returns its terminal result
       // to its parent, which may still have a downstream summary node. At
       // the root scope we therefore record the result and continue normal

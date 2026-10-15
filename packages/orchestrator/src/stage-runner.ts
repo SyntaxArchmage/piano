@@ -40,7 +40,6 @@ import {
   workflowActorKey,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeInvocation,
-  type WorkflowRuntimeNode,
 } from "./workflow-runtime.js";
 import {
   resolveWorkerResources,
@@ -48,7 +47,7 @@ import {
   type LoadedWorkflow,
   type WorkerResources,
 } from "./workflow-file.js";
-import { stageModelForSlot, type CompiledWorkflow } from "./workflow.js";
+import { stageModelForSlot, type CompiledStage, type CompiledWorkflow } from "./workflow.js";
 import { inspectGpuRound, materializeGpuPromotion } from "./gpu-round-materialization.js";
 import { stagePrompt } from "./stage-prompt.js";
 import { appendWorkflowProgress, markWorkflowStageStarted } from "./progress.js";
@@ -169,7 +168,7 @@ export function rebuildAcceptedStage(
 
 export function executeStage(
   context: StageRunnerContext,
-  node: Extract<WorkflowRuntimeNode, { kind: "stage" }>,
+  node: CompiledStage,
   frames: readonly WorkflowRuntimeFrame[],
   inputs: readonly InternalStageResult[],
   mapItem: HandoffMapItem | undefined,

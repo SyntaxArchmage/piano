@@ -18,6 +18,7 @@ vi.mock("@piano/orchestrator", () => ({
     sourcePath: "/tmp/piano/workflow.yml",
     stages: [],
     regions: [],
+    nodes: [],
   })),
   executeWorkflow: vi.fn(),
   loadAndExecuteWorkflow: vi.fn(),
@@ -84,6 +85,7 @@ describe("reborn CLI entrypoint", () => {
       sourcePath: "/tmp/piano/workflow.yml",
       stages: [],
       regions: [],
+      nodes: [],
       autoCommit: false,
     }));
     vi.mocked(executeWorkflow).mockReset();

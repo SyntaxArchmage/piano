@@ -21,6 +21,7 @@ vi.mock("@piano/orchestrator", () => ({
     sourcePath: "/repo/recipes/workflows/coding-pi.yml",
     stages: [{ id: "coding", dependsOn: [], stage: { model: undefined } }],
     regions: [],
+    nodes: [{ id: "coding", dependsOn: [], stage: { model: undefined } }],
   })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "workflow answer",

@@ -79,7 +79,6 @@ export { RETRY_DEFAULT_BACKOFF_MAX_SECONDS, RETRY_DEFAULT_BACKOFF_SECONDS, VALID
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import {
   actorSessionDirectory,
-  buildWorkflowRuntimePlan,
   runId as normalizeExecutionId,
   migrateLegacyActorKey,
 } from "./workflow-runtime.js";
@@ -723,10 +722,6 @@ export function executeWorkflow(
         "workflow compiled to no stage",
       ));
     }
-    const runtimePlan = buildWorkflowRuntimePlan(compiled);
-    if (runtimePlan.length === 0) {
-      return yield* Effect.fail(workflowError("schedule", compiled.sourcePath, "runtime planner produced no root node"));
-    }
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
     // A continue repeats its job's ordinal: the span belongs to the same job,
@@ -1069,7 +1064,7 @@ export function executeWorkflow(
         consolidate: (args) => consolidateAndGate(args),
       });
       const completed = yield* walker.executeScope(
-        runtimePlan,
+        compiled.nodes,
         undefined,
         [],
         [],

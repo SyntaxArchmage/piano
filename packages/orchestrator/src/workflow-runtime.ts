@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type {
-  CompiledWorkflow,
-  WorkflowRegionPlan,
-  WorkflowStage,
-} from "./workflow.js";
+import type { WorkflowRegionPlan } from "./workflow.js";
 
 /** One dynamic expansion frame. Loop frames identify evidence only; map frames
  * also define an independent actor lane. */
@@ -20,31 +16,6 @@ export interface WorkflowRuntimeInvocation {
   readonly stageName: string;
   readonly frames: readonly WorkflowRuntimeFrame[];
 }
-
-export interface WorkflowRuntimeStageNode {
-  readonly kind: "stage";
-  readonly name: string;
-  readonly id: string;
-  readonly entryStageId: string;
-  readonly exitStageId: string;
-  readonly dependencies: readonly string[];
-  readonly stage: WorkflowStage;
-  readonly order: number;
-}
-
-export interface WorkflowRuntimeRegionNode {
-  readonly kind: "loop" | "map";
-  readonly name: string;
-  readonly id: string;
-  readonly entryStageId: string;
-  readonly exitStageId: string;
-  readonly dependencies: readonly string[];
-  readonly region: WorkflowRegionPlan;
-  readonly children: readonly WorkflowRuntimeNode[];
-  readonly order: number;
-}
-
-export type WorkflowRuntimeNode = WorkflowRuntimeStageNode | WorkflowRuntimeRegionNode;
 
 export const DEFAULT_EXECUTION_ID_PREFIX = "execution";
 
@@ -228,45 +199,6 @@ export function actorSessionDirectory(
     ...actorLane(invocation.frames),
     "session",
   );
-}
-
-/** Reconstruct lexical runtime scopes from the compiler's leaves and their
- * enclosing-region pointers. The compiler remains responsible for graph
- * validation; this structure only controls dynamic loop/map expansion. */
-export function buildWorkflowRuntimePlan(
-  compiled: CompiledWorkflow,
-): readonly WorkflowRuntimeNode[] {
-  const orderById = new Map(compiled.stages.map((stage, order) => [stage.id, order]));
-  const buildScope = (scopeId: string | undefined): readonly WorkflowRuntimeNode[] => {
-    const stages: WorkflowRuntimeNode[] = compiled.stages
-      .filter((stage) => stage.parentId === scopeId)
-      .map((stage) => ({
-        kind: "stage" as const,
-        name: stage.stage.name,
-        id: stage.id,
-        entryStageId: stage.id,
-        exitStageId: stage.id,
-        dependencies: stage.stage.from,
-        stage: stage.stage,
-        order: orderById.get(stage.id) ?? Number.MAX_SAFE_INTEGER,
-      }));
-    const regions: WorkflowRuntimeNode[] = compiled.regions
-      .filter((region) => region.parentId === scopeId)
-      .map((region) => ({
-        kind: region.kind,
-        name: region.name,
-        id: region.id,
-        entryStageId: region.entryStageId,
-        exitStageId: region.exitStageId,
-        dependencies: region.from,
-        region,
-        children: buildScope(region.id),
-        order: orderById.get(region.entryStageId) ?? Number.MAX_SAFE_INTEGER,
-      }));
-    return [...stages, ...regions].sort((left, right) =>
-      left.order === right.order ? left.name.localeCompare(right.name) : left.order - right.order);
-  };
-  return buildScope(undefined);
 }
 
 export function mapOverParts(region: WorkflowRegionPlan): readonly [string, readonly string[]] | undefined {

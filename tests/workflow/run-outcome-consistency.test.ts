@@ -40,6 +40,31 @@ const SESSION = {
   transcriptPath: "/runs/consistency/actors/pi/session/sess-consistent.jsonl",
 };
 
+/** Two terminals in one scope, declared in an order that disagrees with the
+ * dependency order: `summary` is declared first but depends on `work`, which is
+ * declared last. A run's final result is the terminal that finished last, not
+ * the one declared last. */
+const TWO_TERMINAL_WORKFLOW = `version: 3
+workflow:
+  name: two-terminals
+  nodes:
+    - stage:
+        name: summary
+        worker: basic
+        harness: pi
+        from: [work]
+    - stage:
+        name: side
+        worker: basic
+        harness: pi
+        from: []
+    - stage:
+        name: work
+        worker: basic
+        harness: pi
+        from: []
+`;
+
 /** Every turn succeeds, except that `failWith` makes the very first one fail
  * with a non-retryable kind, and a signal that fires leaves it hanging until
  * the run is interrupted. */
@@ -67,8 +92,8 @@ function scriptedRunner(failWith?: "authentication"): AgentRunner {
   };
 }
 
-async function startRun(root: string, failWith?: "authentication") {
-  await writeFile(join(root, "workflow.yml"), TWO_STAGE_WORKFLOW, "utf8");
+async function startRun(root: string, failWith?: "authentication", source = TWO_STAGE_WORKFLOW) {
+  await writeFile(join(root, "workflow.yml"), source, "utf8");
   const session = await Effect.runPromise(
     createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
   );
@@ -164,6 +189,24 @@ describe("a run's outcome is recorded the same way everywhere", () => {
         index: "cancelled",
         openStreams: 0,
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a run's final result is its last-finished terminal", () => {
+  it("does not fall back to the last-declared one when a scope has two terminals", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-outcome-"));
+    try {
+      const { run } = await startRun(root, undefined, TWO_TERMINAL_WORKFLOW);
+      const result = await Effect.runPromise(run());
+
+      // `side` is declared before `work`, so it is the last *declared*
+      // terminal; `summary` waits on `work` and finishes after it. The run
+      // reports the one that finished last, in finishing order.
+      expect(result.terminalStages.map((stage) => stage.stage)).toEqual(["side", "summary"]);
+      expect(result.stage).toBe("summary");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

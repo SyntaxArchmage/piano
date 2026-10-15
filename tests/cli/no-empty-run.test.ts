@@ -28,7 +28,7 @@ vi.mock("@piano/harness", async (importOriginal) => ({
 }));
 
 vi.mock("@piano/orchestrator", () => ({
-  compileWorkflow: vi.fn(() => Effect.succeed({ name: "smoke", stages: [], regions: [] })),
+  compileWorkflow: vi.fn(() => Effect.succeed({ name: "smoke", stages: [], regions: [], nodes: [] })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "ok",
     sessionId: "worker-session",
