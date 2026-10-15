@@ -410,13 +410,110 @@ function dshSessionHeader(path: string, raw: Buffer): JsonRecord | undefined {
   }
 }
 
+/** The delta-chunk events both dsh packed-row shapes expand to. Shared so the
+ * top-level (v0/v1) and in-message (v3 `data.stream`) expanders cannot drift.
+ * `seq0 === undefined` omits the seq entirely: v3 members carry no sequence
+ * number to derive one from, and the tailer's dedupe then keys each chunk by
+ * content instead — synthesizing a shared seq would collapse a whole expansion
+ * into its first event. */
+function dshChunkEvents(
+  kind: "text-chunks" | "reasoning-chunks" | "tool-call-chunks",
+  parts: {
+    readonly turn: number;
+    readonly step: number;
+    readonly index: number;
+    readonly time0: number;
+    readonly dt: readonly number[];
+    readonly payload: readonly string[];
+    readonly id?: string;
+    readonly name?: string;
+  },
+  seq0: number | undefined,
+): readonly JsonRecord[] {
+  const events: JsonRecord[] = [];
+  let time = parts.time0;
+  for (let offset = 0; offset < parts.payload.length; offset += 1) {
+    if (offset > 0) time += parts.dt[offset - 1] as number;
+    const part = parts.payload[offset];
+    const chunk = kind === "text-chunks"
+      ? { type: "text-delta", index: parts.index, text: part }
+      : kind === "reasoning-chunks"
+        ? { type: "reasoning-delta", index: parts.index, text: part }
+        : {
+          type: "tool-call-delta",
+          index: parts.index,
+          ...(parts.id === undefined ? {} : { id: parts.id }),
+          ...(parts.name === undefined ? {} : { name: parts.name }),
+          argumentsDelta: part,
+        };
+    events.push({
+      type: "assistant/chunk",
+      ...(seq0 === undefined ? {} : { seq: seq0 + offset }),
+      time,
+      data: { turn: parts.turn, step: parts.step, chunk },
+    });
+  }
+  return events;
+}
+
+/** Expand the packed delta members a v3 `assistant/message` carries inside
+ * `data.stream`. Real v3 artifacts (verified against installed dsh 0.1.5
+ * storage: 26 of 50 messages in one session) hold every text/reasoning/
+ * tool-call delta there and write no top-level packed rows at all — without
+ * this expansion a live dsh turn emits zero text deltas and the TUI only sees
+ * whole messages at step boundaries. Members are validated individually: a
+ * malformed member is skipped, the parent record is never dropped. */
+function expandDshStreamMembers(data: JsonRecord): readonly JsonRecord[] {
+  const stream = data.stream;
+  if (!Array.isArray(stream)) return [];
+  const turn = number(data.turn);
+  const step = number(data.step);
+  if (turn === undefined || step === undefined) return [];
+  const events: JsonRecord[] = [];
+  for (const member of stream) {
+    const packed = asRecord(member);
+    if (packed === undefined) continue;
+    const kind = packed.type;
+    if (kind !== "text-chunks" && kind !== "reasoning-chunks" && kind !== "tool-call-chunks") continue;
+    const payload = packed[kind === "tool-call-chunks" ? "args" : "texts"];
+    const gaps = packed.dt;
+    const time0 = number(packed.time0);
+    const index = number(packed.index);
+    const id = string(packed.id);
+    if (time0 === undefined || index === undefined
+      || !Array.isArray(payload) || payload.some((part) => typeof part !== "string")
+      || !Array.isArray(gaps) || gaps.length !== payload.length - 1
+      || gaps.some((gap) => typeof gap !== "number" || !Number.isFinite(gap))) continue;
+    if (kind === "tool-call-chunks" && id === undefined) continue;
+    events.push(...dshChunkEvents(kind, {
+      turn,
+      step,
+      index,
+      time0,
+      dt: gaps,
+      payload,
+      ...(id === undefined ? {} : { id }),
+      ...(typeof packed.name === "string" ? { name: packed.name } : {}),
+    }, undefined));
+  }
+  return events;
+}
+
 /** dsh's JSONL writer packs runs of three or more delta chunks into a storage
  * row. The installed dsh reader expands these rows before exposing
  * `Session.events`; Piano must do the same at the process boundary so a packed
- * row remains a live text stream rather than an opaque unknown event. */
-function expandDshStorageRecord(record: JsonRecord): readonly JsonRecord[] {
-  if (record.type !== "text-chunks" && record.type !== "reasoning-chunks" && record.type !== "tool-call-chunks") return [record];
+ * row remains a live text stream rather than an opaque unknown event. Two
+ * physical shapes exist: v0/v1 writes packed rows top-level; v3 embeds them as
+ * members of the step's `assistant/message` record (`data.stream`). Exported
+ * for tests — the purest seam to pin both shapes against real captures. */
+export function expandDshStorageRecord(record: JsonRecord): readonly JsonRecord[] {
   const data = asRecord(record.data);
+  if (data !== undefined && Array.isArray(data.stream)) {
+    // Chunks expand ahead of their message: the live stream animates, then the
+    // terminal message_end dedupes against the assembled text as usual.
+    return [...expandDshStreamMembers(data), record];
+  }
+  if (record.type !== "text-chunks" && record.type !== "reasoning-chunks" && record.type !== "tool-call-chunks") return [record];
   if (data === undefined) return [record];
   const payloadKey = record.type === "tool-call-chunks" ? "args" : "texts";
   const payload = data[payloadKey];
@@ -432,30 +529,16 @@ function expandDshStorageRecord(record: JsonRecord): readonly JsonRecord[] {
     || gaps.some((gap) => typeof gap !== "number" || !Number.isFinite(gap))) return [record];
   const id = string(data.id);
   if (record.type === "tool-call-chunks" && id === undefined) return [record];
-  const events: JsonRecord[] = [];
-  let time = time0;
-  for (let offset = 0; offset < payload.length; offset += 1) {
-    if (offset > 0) time += gaps[offset - 1] as number;
-    const part = payload[offset];
-    const chunk = record.type === "text-chunks"
-      ? { type: "text-delta", index, text: part }
-      : record.type === "reasoning-chunks"
-        ? { type: "reasoning-delta", index, text: part }
-        : {
-          type: "tool-call-delta",
-          index,
-          id,
-          ...(typeof data.name === "string" ? { name: data.name } : {}),
-          argumentsDelta: part,
-        };
-    events.push({
-      type: "assistant/chunk",
-      seq: seq0 + offset,
-      time,
-      data: { turn, step, chunk },
-    });
-  }
-  return events;
+  return dshChunkEvents(record.type, {
+    turn,
+    step,
+    index,
+    time0,
+    dt: gaps,
+    payload,
+    ...(id === undefined ? {} : { id }),
+    ...(typeof data.name === "string" ? { name: data.name } : {}),
+  }, seq0);
 }
 
 async function findDshSessionArtifact(
