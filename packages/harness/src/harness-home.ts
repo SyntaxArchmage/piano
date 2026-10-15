@@ -10,7 +10,7 @@ import {
   type HarnessName,
   type ResolvedHarnessConfig,
 } from "./harness-config.js";
-import type { AgentHarnessOptions } from "./pi.js";
+import type { AgentHarnessOptions } from "./agent-contract.js";
 
 /** One generated directory per native config *format*, not per harness: `pi` and
  * `pi-cli` are the same agent reading the same files, so they share one. Codex

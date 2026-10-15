@@ -15,14 +15,16 @@ export {
   executeAgent,
   piAvailable,
   piLoadable,
+  type PiHarnessOptions,
+  type PiModule,
+} from "./pi.js";
+export {
   type AgentHarnessOptions,
   type AgentContinuation,
   type AgentRequest,
   type AgentResult,
   type AgentRunner,
-  type PiHarnessOptions,
-  type PiModule,
-} from "./pi.js";
+} from "./agent-contract.js";
 export {
   agentConfigPath,
   defaultAgentConfigPath,

@@ -40,7 +40,7 @@ import type {
   AgentRequest,
   AgentResult,
   AgentHarnessOptions,
-} from "./pi.js";
+} from "./agent-contract.js";
 import { PI_WEB_SEARCH_TOOL_NAME, piWebSearchExtensionPath } from "./pi-web-search.js";
 import { CLAUDE_BARE_UNAVAILABLE_TOOLS } from "./tool-names.js";
 
