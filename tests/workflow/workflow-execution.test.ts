@@ -30,10 +30,7 @@ import {
   type WorkflowSignoffRequest,
   type WorkflowExecutionContinuation,
 } from "../../packages/orchestrator/src/index.js";
-import {
-  foldActorTurns,
-  readResumeState,
-} from "../../packages/orchestrator/src/resume-state.js";
+import { foldActorTurns } from "../../packages/orchestrator/src/resume-state.js";
 import {
   AgentError,
   createSteeringChannel,
@@ -4855,12 +4852,12 @@ workflow:
       const records = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
         .split("\n").filter((line) => line.trim() !== "")
         .map((line) => JSON.parse(line) as { kind?: unknown; lane?: unknown });
-      const stored = await Effect.runPromise(
-        readResumeState(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
+      const execution = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      // The ledger's fold and the resume table are the same table: one can
-      // retire the other without a reader noticing.
-      expect(foldActorTurns(records)).toEqual(stored?.actors);
+      // The ledger's rows are the actor table now: the continue path folds the
+      // same rows, and nothing else carries the table.
+      expect(new Map(Object.entries(foldActorTurns(records)))).toEqual(execution?.actors);
       // And each row carries the lane and the turn count, not just the key.
       const turns = records.filter((record) => record.kind === "actor-turn");
       expect(turns).toHaveLength(1);
@@ -5036,9 +5033,8 @@ workflow:
       }));
 
       await turn("first");
-      // The second source of actor state is gone: only the ledger's
-      // `actor-turn` row remains, and it must carry the whole table.
-      await rm(join(session.runDir, "resume.jsonl"), { force: true });
+      // The ledger's `actor-turn` row is the only record of the table — the
+      // resume stream is retired — and it must carry the whole of it.
       const carried = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
@@ -6357,10 +6353,11 @@ workflow:
           const stage = stageId(request);
           if (stage.startsWith("$consolidate/")) {
             await consolidateInto(request);
-            // Replace the real resume-state target after the worker mutates the
-            // parent, making the actual persistence Effect fail deterministically.
-            await rm(join(session.runDir, "resume.jsonl"), { force: true });
-            await mkdir(join(session.runDir, "resume.jsonl"));
+            // Replace the ledger after the worker mutates the parent, making
+            // the actor-state persistence (an `actor-turn` append) fail
+            // deterministically.
+            await rm(join(session.runDir, "progress.jsonl"), { force: true });
+            await mkdir(join(session.runDir, "progress.jsonl"));
           } else if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });

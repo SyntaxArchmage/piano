@@ -77,7 +77,6 @@ import {
 import { VALIDATE_REPAIR_ATTEMPTS } from "./stage-runner-support.js";
 export { RETRY_DEFAULT_BACKOFF_MAX_SECONDS, RETRY_DEFAULT_BACKOFF_SECONDS, VALIDATE_REPAIR_ATTEMPTS, retryBackoffSeconds } from "./stage-runner-support.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
-import { writeResumeState } from "./resume-state.js";
 import {
   actorSessionDirectory,
   buildWorkflowRuntimePlan,
@@ -846,21 +845,6 @@ export function executeWorkflow(
       actorSemaphores.set(actorKey, created);
       return created;
     };
-    const persistActors = () => writeResumeState(request.runDir, {
-      version: 1,
-      runId,
-      promptIndex,
-      actors: Object.fromEntries([...actors.entries()].flatMap(([key, state]) => {
-        if (state.harness === undefined || state.sessionId === undefined || state.transcriptPath === undefined) return [];
-        return [[key, {
-          harness: state.harness,
-          sessionId: state.sessionId,
-          transcriptPath: state.transcriptPath,
-          turns: state.turns,
-          ...(state.continuation === undefined ? {} : { continuation: state.continuation }),
-        }]];
-      })),
-    });
 
     /** Everything the stage runner reaches outside itself. */
     const stageRunnerContext: StageRunnerContext = {
@@ -877,7 +861,6 @@ export function executeWorkflow(
       progressSemaphore,
       signoffSemaphore,
       semaphoreForActor,
-      persistActors,
       workflowTrajectory,
       agentOptions: workflowAgentOptions,
       consumersByStage,
@@ -1077,7 +1060,6 @@ export function executeWorkflow(
         announcedContinuations,
         actorContexts,
         knownLoopIterations,
-        persistActors,
         workflowTrajectory,
         autoCommit,
         preExistingDirty,

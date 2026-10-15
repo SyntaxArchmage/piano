@@ -52,6 +52,7 @@ import { stageModelForSlot, type CompiledWorkflow } from "./workflow.js";
 import { inspectGpuRound, materializeGpuPromotion } from "./gpu-round-materialization.js";
 import { stagePrompt } from "./stage-prompt.js";
 import { appendWorkflowProgress, markWorkflowStageStarted } from "./progress.js";
+import { actorTurnRow } from "./resume-state.js";
 import {
   VALIDATE_REPAIR_ATTEMPTS,
   attributeTrajectoryObservation,
@@ -111,7 +112,6 @@ export interface StageRunnerContext {
   readonly progressSemaphore: Effect.Semaphore;
   readonly signoffSemaphore: Effect.Semaphore;
   readonly semaphoreForActor: (actorKey: string) => Effect.Semaphore;
-  readonly persistActors: () => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
   readonly workflowTrajectory: WorkflowTrajectory;
   readonly agentOptions: AgentHarnessOptions;
   /** Direct consumers of each stage id, for review-note delivery. */
@@ -189,7 +189,6 @@ export function executeStage(
     progressSemaphore,
     signoffSemaphore,
     semaphoreForActor,
-    persistActors,
     workflowTrajectory,
     agentOptions,
     consumersByStage,
@@ -322,27 +321,23 @@ export function executeStage(
     turnAttempt: number,
   ): Effect.Effect<void, never, FileSystem.FileSystem | Logging> => Effect.suspend(() => {
     actors.set(actorKey, state);
-    const appendTurn = state.harness === undefined || state.sessionId === undefined || state.transcriptPath === undefined
-      ? Effect.void
-      : progressSemaphore.withPermits(1)(appendWorkflowProgress(request.runDir, {
-        kind: "actor-turn",
-        runId,
-        jobOrdinal: promptIndex,
-        invocationId: runtimeInvocationId(invocation),
-        attempt: turnAttempt,
-        actorKey,
-        harness: state.harness,
-        worker: node.stage.worker,
-        lane: actorLane(frames).join("/"),
-        sessionId: state.sessionId,
-        transcriptPath: state.transcriptPath,
-        turn: state.turns,
-        ...(state.continuation === undefined ? {} : { continuation: state.continuation }),
-      }).pipe(Effect.asVoid, Effect.catchAll(() => Effect.void)));
-    return appendTurn.pipe(
-      Effect.andThen(progressSemaphore.withPermits(1)(Effect.suspend(() => persistActors()))
-        .pipe(Effect.catchAll(() => Effect.void))),
-    );
+    const row = actorTurnRow({
+      runId,
+      jobOrdinal: promptIndex,
+      invocationId: runtimeInvocationId(invocation),
+      attempt: turnAttempt,
+      actorKey,
+      harness: node.stage.harness,
+      worker: node.stage.worker,
+      lane: actorLane(frames).join("/"),
+      state,
+    });
+    if (row === undefined) return Effect.void;
+    // Same serialization as the accepted-stage write; a failed state write
+    // never fails the stage — the conversation it records is already on disk
+    // in the harness's own transcript.
+    return progressSemaphore.withPermits(1)(appendWorkflowProgress(request.runDir, row))
+      .pipe(Effect.asVoid, Effect.catchAll(() => Effect.void));
   });
   const core = Effect.gen(function* () {
     const invocationId = runtimeInvocationId(invocation);
@@ -1118,9 +1113,8 @@ export function executeStage(
         ...(result.projections === undefined ? {} : { projections: result.projections }),
         ...(result.contract === undefined ? {} : { contract: result.contract }),
       });
-      // Write the canonical resume state file so the next prompt can
-      // restore the exact actor table without scanning progress.jsonl.
-      yield* persistActors();
+      // The actor table needs no second write here: this stage's turn already
+      // appended its own `actor-turn` row, which is what a resume folds.
       return { progress, progressPath };
     }));
     const { progress, progressPath } = persistedProgress;

@@ -37,6 +37,7 @@ import {
 } from "./selection.js";
 import type { HandoffMapItem } from "./handoff.js";
 import {
+  actorLane,
   mapOverParts,
   runtimeFramesFromInstanceId,
   runtimeInstanceId,
@@ -46,7 +47,8 @@ import {
   type WorkflowRuntimeNode,
   type WorkflowRuntimeRegionNode,
 } from "./workflow-runtime.js";
-import type { WorkflowProgressRegionFinalizedRecord, WorkflowRegionFinalizedPayload } from "./progress.js";
+import { appendWorkflowProgress, type WorkflowProgressRegionFinalizedRecord, type WorkflowRegionFinalizedPayload } from "./progress.js";
+import { actorTurnRow } from "./resume-state.js";
 import type { CompiledWorkflow, WorkflowRegionPlan } from "./workflow.js";
 import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
@@ -84,7 +86,6 @@ export interface ScopeWalkerContext {
    * composer owns identity (execution id, job ordinal); the walker owns the
    * moment a region exits. */
   readonly persistRegionFinalized: (payload: WorkflowRegionFinalizedPayload) => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
-  readonly persistActors: () => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
   readonly workflowTrajectory: WorkflowTrajectory;
   readonly autoCommit: boolean;
   readonly preExistingDirty: ReadonlySet<string>;
@@ -251,7 +252,6 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     knownLoopIterations,
     progressSemaphore,
     persistRegionFinalized,
-    persistActors,
     workflowTrajectory,
     autoCommit,
     preExistingDirty,
@@ -638,14 +638,28 @@ const finalizeTournament = (
                   });
                 },
               },
-              // Consolidations can finish concurrently in nested map
-              // slots. Defer the actor-table snapshot until the same
-              // semaphore used by stage progress persistence is held;
-              // locking only the file write would still allow a stale
-              // read/modify/write snapshot to overwrite a sibling.
-              persistAfterCarry: () => progressSemaphore.withPermits(1)(
-                Effect.suspend(() => persistActors()),
-              ),
+              // The consolidation turn changes the winner actor's state, so it
+              // appends that actor's own `actor-turn` row — the one record a
+              // resume folds — and the carry needs no table snapshot of its
+              // own. Concurrent nested consolidations serialize through the
+              // same semaphore as stage progress.
+              persistAfterCarry: () => progressSemaphore.withPermits(1)(Effect.suspend(() => {
+                const winnerState = actors.get(actorContext.actorKey);
+                if (winnerState === undefined) return Effect.void;
+                const row = actorTurnRow({
+                  runId,
+                  jobOrdinal: promptIndex,
+                  invocationId: runtimeInvocationId(actorContext.invocation),
+                  attempt: winnerExitResult?.attempts ?? 1,
+                  actorKey: actorContext.actorKey,
+                  harness: winnerHarness,
+                  worker: winnerWorker,
+                  lane: actorLane(actorContext.invocation.frames).join("/"),
+                  state: winnerState,
+                });
+                if (row === undefined) return Effect.void;
+                return appendWorkflowProgress(request.runDir, row).pipe(Effect.asVoid);
+              })),
             });
           }
         }

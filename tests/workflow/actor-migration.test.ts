@@ -4,10 +4,11 @@
 // persisted table carries the new key. Silently starting a fresh chat here
 // would lose the earlier turn's memory — the exact thing worker-keyed actors
 // exist to preserve.
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
+import { readResumeActors } from "../common/fs.js";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
@@ -88,11 +89,7 @@ describe("a legacy stage-keyed actor continues under the worker key", () => {
       expect(seen).toHaveLength(1);
       expect(seen[0]?.sessionId).toBe("sess-legacy");
       // ...and the persisted table carries the worker key, not the stage key.
-      const lines = (await readFile(join(session.runDir, "resume.jsonl"), "utf8"))
-        .split("\n")
-        .filter((line) => line.trim() !== "");
-      const last = JSON.parse(lines.at(-1) ?? "{}") as { actors?: Record<string, unknown> };
-      const keys = Object.keys(last.actors ?? {});
+      const keys = Object.keys(await readResumeActors(session.runDir));
       expect(keys).toContain(`v2/${session.id}/pi/basic/root`);
       expect(keys.some((key) => key.includes("/respond/"))).toBe(false);
     } finally {

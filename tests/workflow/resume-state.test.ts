@@ -1,10 +1,9 @@
-// resume.jsonl is the canonical resume state: the only record of which harness
-// session each actor's next turn must reopen. Two properties keep it reliable
-// for a long-running coding session — a write is incremental (actors a record
-// does not mention survive it) and nothing is ever rewritten, so a crash can
-// lose at most the append that was in flight and can never damage an earlier
-// one.
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+// The legacy resume stream, read-only now: it holds the actor table for runs
+// written before the ledger's `actor-turn` rows existed. Two properties of its
+// format keep it readable — a record is incremental (actors it does not mention
+// survive it) and nothing is ever rewritten, so a crash could lose at most the
+// append that was in flight and never damage an earlier one.
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -14,7 +13,6 @@ import {
   foldActorTurns,
   readResumeState,
   resumeStreamPath,
-  writeResumeState,
   type ResumeState,
 } from "../../packages/orchestrator/src/resume-state.js";
 
@@ -36,8 +34,11 @@ async function runDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "piano-resume-state-"));
 }
 
-function write(dir: string, value: ResumeState) {
-  return Effect.runPromise(writeResumeState(dir, value).pipe(Effect.provide(NodeFileSystem.layer)));
+/** Append one table to the legacy stream exactly as the retired writer did:
+ * one complete ResumeState per line, newest last. */
+async function write(dir: string, value: ResumeState) {
+  await mkdir(dir, { recursive: true });
+  await writeFile(resumeStreamPath(dir), `${JSON.stringify(value)}\n`, { flag: "a" });
 }
 
 function read(dir: string) {

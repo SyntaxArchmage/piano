@@ -1,8 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
-import { refreshRunStatus } from "./run-status.js";
 import type { AgentContinuation } from "@piano/harness";
 import type { WorkflowProgressActorTurnRecord } from "./progress.js";
 
@@ -35,40 +34,6 @@ function resumeError(path: string, operation: string) {
   return (cause: unknown) => workflowError("schedule", path, `${operation}: ${errorMessage(cause)}`);
 }
 
-/** Write the run's resume state as one more line of the stream.
- *
- * Appending is the whole write. The document this replaced was read, merged and
- * renamed over atomically, which meant a crash could land between its bytes and
- * the rename — so the writer kept a staged copy beside it and the reader had to
- * recover from that copy. A record that is only ever appended has neither a
- * half-written state to avoid nor a previous copy to rescue.
- *
- * The record is a complete table, not a delta: the caller holds every actor it
- * knows, and `readResumeState` folds the stream with the same merge rule the
- * writer used to apply by hand. */
-export function writeResumeState(
-  runDir: string,
-  state: ResumeState,
-): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  const path = resumeStreamPath(runDir);
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const line = yield* Effect.try({
-      try: () => `${JSON.stringify(state)}\n`,
-      catch: resumeError(path, "resume state serialize"),
-    });
-    yield* fs.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError(resumeError(path, "resume state mkdir")),
-    );
-    yield* fs.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError(resumeError(path, "resume state append")),
-    );
-    // The run's one state document stays in step with the ledger it is a view
-    // of.
-    yield* refreshRunStatus(runDir);
-  });
-}
-
 /** Actors already on disk survive a record that does not mention them, newest
  * record winning per actor. A table belonging to another execution is not this
  * execution's history and is replaced outright. */
@@ -86,6 +51,48 @@ export function readResumeState(
     const records = yield* readStream(fs, resumeStreamPath(runDir));
     return records.reduce<ResumeState | undefined>(mergeResumeState, undefined);
   });
+}
+
+/** One `actor-turn` row from an actor's state, or `undefined` when the state
+ * is not durable (no session to reopen). The one place a writer turns actor
+ * state into a ledger row, so the stage path and the consolidation path cannot
+ * spell the same row differently. */
+export function actorTurnRow(input: {
+  readonly runId: string;
+  readonly jobOrdinal: number;
+  readonly invocationId: string;
+  readonly attempt: number;
+  readonly actorKey: string;
+  readonly harness: string;
+  readonly worker: string;
+  readonly lane: string;
+  readonly state: {
+    readonly harness?: string;
+    readonly sessionId?: string;
+    readonly transcriptPath?: string;
+    readonly turns: number;
+    readonly continuation?: AgentContinuation;
+  };
+}): Omit<WorkflowProgressActorTurnRecord, "version" | "timestamp"> | undefined {
+  const { state } = input;
+  if (state.harness === undefined || state.sessionId === undefined || state.transcriptPath === undefined) {
+    return undefined;
+  }
+  return {
+    kind: "actor-turn",
+    runId: input.runId,
+    jobOrdinal: input.jobOrdinal,
+    invocationId: input.invocationId,
+    attempt: input.attempt,
+    actorKey: input.actorKey,
+    harness: state.harness,
+    worker: input.worker,
+    lane: input.lane,
+    sessionId: state.sessionId,
+    transcriptPath: state.transcriptPath,
+    turn: state.turns,
+    ...(state.continuation === undefined ? {} : { continuation: state.continuation }),
+  };
 }
 
 /** The actor table as the run's own ledger records it: one `actor-turn` row per
