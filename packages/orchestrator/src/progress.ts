@@ -370,8 +370,11 @@ function readSnapshot(
     );
     try {
       return JSON.parse(raw) as WorkflowProgressSnapshot;
-    } catch (cause) {
-      return yield* Effect.fail(progressError(path, "snapshot parse", cause));
+    } catch {
+      // An unreadable view is no view. The stream holds the record of the run
+      // and this file is only its projection, so a run must not fail because
+      // the projection could not be parsed — a fresh one discards it anyway.
+      return undefined;
     }
   });
 }

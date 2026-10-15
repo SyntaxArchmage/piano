@@ -1,7 +1,7 @@
 import { NodeContext } from "@effect/platform-node";
 import type { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -334,6 +334,23 @@ describe("workflow progress stream", () => {
       resumed: true,
       plan: timingPlan,
     });
+  });
+
+  it("keeps a run going when its snapshot is unreadable", async () => {
+    at("2026-01-01T00:00:00.000Z");
+    const runDir = await newRunDir();
+    // A snapshot that no longer parses is a damaged view of the stream, not a
+    // reason to refuse the run: the record lands and the fold rewrites the
+    // view from the record it just wrote.
+    await writeFile(workflowProgressSnapshotPath(runDir), "{not json\n", "utf8");
+
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
+
+    expect((await readStream(runDir))[0]).toMatchObject({ kind: "execution-started", executionId: "execution" });
+    const snapshot = JSON.parse(
+      await readFile(workflowProgressSnapshotPath(runDir), "utf8"),
+    ) as WorkflowProgressSnapshot;
+    expect(snapshot).toMatchObject({ executionId: "execution", status: "running", plannedStages: 4 });
   });
 
   it("keeps accepted records free of the discriminator, so existing files read the same", async () => {
