@@ -561,12 +561,15 @@ export class TrajectoryWriter {
       );
       const merged = { ...previous, name };
       const content = yield* Effect.try({
-        try: () => `${JSON.stringify({
+        // One serializer for every write into this file. The picker reads the
+        // tail with a byte-window regex, so a second, prettier spelling here
+        // would silently cost the row its workflow, status and prompt.
+        try: () => `${stringifyTrajectory({
           ...merged,
           version: 1 as const,
           runId,
           updatedAt: new Date().toISOString(),
-        }, null, 2)}\n`,
+        })}\n`,
         catch: (cause) => new TrajectoryWriteError({
           operation: "serialize",
           path,
