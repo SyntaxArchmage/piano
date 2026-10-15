@@ -1,5 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Data, Effect } from "effect";
+import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { parseTrajectory } from "./trajectory.js";
 
@@ -25,7 +26,9 @@ export type StaticObservabilityIssueCode =
   | "trace-span-open"
   | "log-span-missing"
   | "transcript-missing"
-  | "transcript-invalid";
+  | "transcript-invalid"
+  | "ref-missing"
+  | "ref-mismatch";
 
 export interface StaticObservabilityIssue {
   readonly code: StaticObservabilityIssueCode;
@@ -48,6 +51,8 @@ export interface StaticObservabilityReport {
   readonly valid: boolean;
   readonly files: readonly StaticObservabilityFile[];
   readonly transcriptPaths: readonly string[];
+  /** Handoff records the stream's acceptances point at, resolved. */
+  readonly handoffRecordPaths: readonly string[];
   readonly logRecordCount: number;
   readonly traceRecordCount: number;
   readonly progressRecordCount: number;
@@ -69,6 +74,12 @@ export interface StaticObservabilityInput {
   readonly status?: string;
   /** Keys are resolved transcript paths. Missing keys represent missing files. */
   readonly transcripts?: Readonly<Record<string, string | undefined>>;
+  /** Keys are resolved handoff record paths (`producer.result` lives in these).
+   * Missing keys represent missing files. */
+  readonly handoffRecords?: Readonly<Record<string, string | undefined>>;
+  /** Keys are resolved result-file paths a handoff record pins by content.
+   * Missing keys represent missing files. */
+  readonly results?: Readonly<Record<string, string | undefined>>;
 }
 
 export class StaticObservabilityReadError extends Data.TaggedError("StaticObservabilityReadError")<{
@@ -217,6 +228,93 @@ function collectTranscriptPaths(
     }
     collectTranscriptPaths(item, runDir, paths, nextAncestors);
   }
+}
+
+/** The handoff record each acceptance points at, resolved the same way a
+ * transcript path is. The record is what pins the published result file, so it
+ * is the reference this analysis follows. */
+function collectHandoffRecordPaths(
+  value: unknown,
+  runDir: string,
+  paths: Set<string>,
+  ancestors: readonly object[] = [],
+): void {
+  if (value === null || typeof value !== "object") return;
+  if (ancestors.includes(value)) return;
+  const nextAncestors = [...ancestors, value];
+  if (Array.isArray(value)) {
+    for (const item of value) collectHandoffRecordPaths(item, runDir, paths, nextAncestors);
+    return;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "handoffRecordPath" && typeof item === "string" && item !== "") {
+      paths.add(resolve(runDir, item));
+      continue;
+    }
+    collectHandoffRecordPaths(item, runDir, paths, nextAncestors);
+  }
+}
+
+/** A handoff record pins the published result file it vouches for by content.
+ * Check that the pin still holds: the file is there, and its bytes still hash
+ * to what the record recorded. A record without that pin — written before the
+ * result was pinned, or by a writer that does not pin — is not a reference and
+ * is left alone. */
+function validateHandoffReferences(
+  handoffRecords: Readonly<Record<string, string | undefined>>,
+  results: Readonly<Record<string, string | undefined>>,
+  runDir: string,
+  issues: StaticObservabilityIssue[],
+): void {
+  for (const [path, raw] of Object.entries(handoffRecords)) {
+    if (raw === undefined) continue;
+    const document = parseJson(path, raw, issues);
+    if (document === undefined) continue;
+    const producer = document.producer;
+    if (!isRecord(producer)) continue;
+    const result = producer.result;
+    if (!isRecord(result)) continue;
+    const pinnedPath = result.path;
+    const pinnedDigest = result.sha256;
+    if (!isNonEmptyString(pinnedPath) || !isNonEmptyString(pinnedDigest)) continue;
+    const resolved = resolve(runDir, pinnedPath);
+    const content = results[resolved];
+    if (content === undefined) {
+      issue(issues, "ref-missing", path, `referenced result ${resolved} does not exist`);
+      continue;
+    }
+    const actual = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+    if (actual !== pinnedDigest) {
+      issue(
+        issues,
+        "ref-mismatch",
+        path,
+        `referenced result ${resolved} hashes to ${actual}, record pinned ${pinnedDigest}`,
+      );
+    }
+  }
+}
+
+/** The published result files a set of handoff records pin. Read before the
+ * analysis so their contents can be checked against the pin. */
+function collectResultPaths(
+  handoffRecords: Readonly<Record<string, string | undefined>>,
+  runDir: string,
+): readonly string[] {
+  const paths = new Set<string>();
+  for (const raw of Object.values(handoffRecords)) {
+    if (raw === undefined) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!isRecord(value) || !isRecord(value.producer) || !isRecord(value.producer.result)) continue;
+    const pinnedPath = value.producer.result.path;
+    if (isNonEmptyString(pinnedPath)) paths.add(resolve(runDir, pinnedPath));
+  }
+  return [...paths].sort();
 }
 
 function validateLogRecords(
@@ -552,15 +650,21 @@ export function analyzeStaticObservability(
   }
 
   const transcriptPaths = new Set<string>();
+  const handoffRecordPaths = new Set<string>();
   if (trajectory !== undefined) {
     validateTrajectory(trajectory, runId, trajectoryPath, issues);
     collectTranscriptPaths(trajectory, runDir, transcriptPaths);
+    collectHandoffRecordPaths(trajectory, runDir, handoffRecordPaths);
   }
   validateProgressRecords(progressRecords, progressPath, issues);
-  for (const { value: record } of progressRecords) collectTranscriptPaths(record, runDir, transcriptPaths);
+  for (const { value: record } of progressRecords) {
+    collectTranscriptPaths(record, runDir, transcriptPaths);
+    collectHandoffRecordPaths(record, runDir, handoffRecordPaths);
+  }
   validateStatus(status, statusPath, issues);
   const transcriptContents = input.transcripts ?? {};
   for (const path of transcriptPaths) validateTranscript(path, transcriptContents[path], issues);
+  validateHandoffReferences(input.handoffRecords ?? {}, input.results ?? {}, runDir, issues);
 
   const files: readonly StaticObservabilityFile[] = [
     fileSummary("log", logPath, true, input.log, logRecords.length),
@@ -575,6 +679,7 @@ export function analyzeStaticObservability(
     valid: issues.length === 0,
     files,
     transcriptPaths: [...transcriptPaths].sort(),
+    handoffRecordPaths: [...handoffRecordPaths].sort(),
     logRecordCount: logRecords.length,
     traceRecordCount: traceRecords.length,
     progressRecordCount: progressRecords.length,
@@ -620,6 +725,17 @@ export function inspectStaticObservability(
       (path) => readOptional(fileSystem, path).pipe(Effect.map((content) => [path, content] as const)),
       { concurrency: "unbounded" },
     );
+    const handoffEntries = yield* Effect.forEach(
+      initial.handoffRecordPaths,
+      (path) => readOptional(fileSystem, path).pipe(Effect.map((content) => [path, content] as const)),
+      { concurrency: "unbounded" },
+    );
+    const handoffRecords = Object.fromEntries(handoffEntries);
+    const resultEntries = yield* Effect.forEach(
+      collectResultPaths(handoffRecords, resolvedRunDir),
+      (path) => readOptional(fileSystem, path).pipe(Effect.map((content) => [path, content] as const)),
+      { concurrency: "unbounded" },
+    );
     return analyzeStaticObservability({
       runDir: resolvedRunDir,
       log,
@@ -628,6 +744,8 @@ export function inspectStaticObservability(
       progress,
       status,
       transcripts: Object.fromEntries(transcriptEntries),
+      handoffRecords,
+      results: Object.fromEntries(resultEntries),
     });
   });
 }
@@ -638,7 +756,7 @@ export function formatStaticObservabilityReport(report: StaticObservabilityRepor
   const lines = [
     `OBSERVABILITY ${state}: ${report.runId}`,
     `run: ${report.runDir}`,
-    `records: log=${report.logRecordCount} trace=${report.traceRecordCount} progress=${report.progressRecordCount} transcripts=${report.transcriptPaths.length}`,
+    `records: log=${report.logRecordCount} trace=${report.traceRecordCount} progress=${report.progressRecordCount} transcripts=${report.transcriptPaths.length} handoffs=${report.handoffRecordPaths.length}`,
   ];
   for (const file of report.files) {
     const marker = file.present ? "present" : file.required ? "missing" : "absent (optional)";

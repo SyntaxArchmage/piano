@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -59,6 +60,19 @@ function validArtifacts(transcriptPath: string) {
       stageCounts: { respond: { planned: 1, completed: 1 } },
     }) + "\n",
   };
+}
+
+function pinnedResult(content: string): string {
+  return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function handoffRecord(resultPath: string, sha256: string): string {
+  // Only `producer.result` is read by the reference check; the rest of the
+  // producer is the acceptance the orchestrator writes around it.
+  return JSON.stringify({
+    version: 1,
+    producer: { id: "respond@root", result: { path: resultPath, sha256, trust: "worker" } },
+  });
 }
 
 describe(" static observability analysis", () => {
@@ -243,5 +257,71 @@ describe(" static observability analysis", () => {
     ));
     expect(report.valid).toBe(false);
     expect(report.issues.filter((issue) => issue.code === "missing-file")).toHaveLength(3);
+  });
+
+  it("reports ref-missing when a handoff's pinned result file is gone", () => {
+    const resultPath = "/tmp/static-pinned-result.json";
+    const report = analyzeStaticObservability({
+      runDir: `/tmp/${runId}`,
+      handoffRecords: {
+        "/tmp/static-handoff/record.json": handoffRecord(resultPath, pinnedResult('{"ok":true}\n')),
+      },
+      results: {},
+    });
+    const refCodes = report.issues.map((issue) => issue.code).filter((code) => code.startsWith("ref-"));
+    expect(refCodes).toEqual(["ref-missing"]);
+  });
+
+  it("reports ref-mismatch when a handoff's pinned result bytes changed", () => {
+    const resultPath = "/tmp/static-pinned-result.json";
+    const report = analyzeStaticObservability({
+      runDir: `/tmp/${runId}`,
+      handoffRecords: {
+        "/tmp/static-handoff/record.json": handoffRecord(resultPath, pinnedResult('{"ok":true}\n')),
+      },
+      results: { [resultPath]: '{"ok":false}\n' },
+    });
+    const refCodes = report.issues.map((issue) => issue.code).filter((code) => code.startsWith("ref-"));
+    expect(refCodes).toEqual(["ref-mismatch"]);
+  });
+
+  it("checks the result file the progress stream's handoff record pins", async () => {
+    // The reference check is only useful if the reader finds the records the
+    // run actually wrote: the stream names each handoff record, and that record
+    // pins the published result file by content.
+    root = await mkdtemp(join(tmpdir(), "piano-static-analysis-"));
+    const runDir = join(root, runId);
+    const transcriptPath = join(runDir, "transcript.jsonl");
+    const handoffPath = join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff", "record.json");
+    const resultPath = join(runDir, "prompts", "1", "invocations", "respond", "root", "attempts", "1", "result.json");
+    const resultBytes = '{"ok":true}\n';
+    await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff"), { recursive: true });
+    await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "attempts", "1"), { recursive: true });
+    const artifacts = validArtifacts(transcriptPath);
+    const accepted = JSON.parse(artifacts.progress) as Record<string, unknown>;
+    accepted.handoffRecordPath = handoffPath;
+    await Promise.all([
+      writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
+      writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
+      writeFile(join(runDir, "trajectory.jsonl"), artifacts.trajectory, "utf8"),
+      writeFile(join(runDir, "progress.jsonl"), `${JSON.stringify(accepted)}\n`, "utf8"),
+      writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
+      writeFile(transcriptPath, JSON.stringify({ type: "message", message: { role: "user", content: "work" } }) + "\n", "utf8"),
+      writeFile(handoffPath, handoffRecord(resultPath, pinnedResult(resultBytes)), "utf8"),
+      writeFile(resultPath, resultBytes, "utf8"),
+    ]);
+
+    const pass = await Effect.runPromise(inspectStaticObservability(runDir).pipe(
+      Effect.provide(NodeFileSystem.layer),
+    ));
+    expect(pass.handoffRecordPaths).toEqual([handoffPath]);
+    expect(pass.issues).toEqual([]);
+
+    await writeFile(resultPath, '{"ok":false}\n', "utf8");
+    const fail = await Effect.runPromise(inspectStaticObservability(runDir).pipe(
+      Effect.provide(NodeFileSystem.layer),
+    ));
+    expect(fail.issues.map((issue) => issue.code)).toEqual(["ref-mismatch"]);
+    expect(fail.valid).toBe(false);
   });
 });
