@@ -18,12 +18,12 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
-import { runStatusPath } from "@piano/orchestrator";
+import { foldJobSpans, jobs, parseProgressStreamRecord, runStatusPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { formatRunId, oneLine } from "./session-resume.js";
 
-const usage = `usage: ${programName()} logs [--trace] [--check <run-id>]`;
+const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>]`;
 const RST = "\x1b[0m";
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
@@ -42,6 +42,9 @@ interface LogsOptions {
   runsRoot: string;
   trace: boolean;
   checkRun?: string;
+  jobs: boolean;
+  jobOrdinal?: number;
+  jobsRun?: string;
 }
 
 export interface LogsDeps {
@@ -58,8 +61,11 @@ function parseLogsArgs(
 ): Effect.Effect<LogsOptions, CliArgumentError> {
   let trace = false;
   let checkRun: string | undefined;
+  let jobsFlag = false;
+  let jobOrdinal: number | undefined;
+  const positionals: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+    const arg = args[index] ?? "";
     if (arg === "--trace") {
       trace = true;
       continue;
@@ -76,15 +82,56 @@ function parseLogsArgs(
       index += 1;
       continue;
     }
-    return Effect.fail(new CliArgumentError({ message: `unknown option: ${arg}\n${usage}` }));
+    if (arg === "--jobs") {
+      if (jobsFlag) {
+        return Effect.fail(new CliArgumentError({ message: `--jobs may be specified only once\n${usage}` }));
+      }
+      jobsFlag = true;
+      continue;
+    }
+    if (arg === "--job") {
+      const value = args[index + 1];
+      if (value === undefined || !/^[1-9][0-9]*$/.test(value)) {
+        return Effect.fail(new CliArgumentError({ message: `--job requires a positive job ordinal\n${usage}` }));
+      }
+      if (jobOrdinal !== undefined) {
+        return Effect.fail(new CliArgumentError({ message: `--job may be specified only once\n${usage}` }));
+      }
+      jobOrdinal = Number(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      return Effect.fail(new CliArgumentError({ message: `unknown option: ${arg}\n${usage}` }));
+    }
+    positionals.push(arg);
   }
   if (trace && checkRun !== undefined) {
     return Effect.fail(new CliArgumentError({ message: `--trace and --check cannot be combined\n${usage}` }));
   }
+  if (jobOrdinal !== undefined && !jobsFlag) {
+    return Effect.fail(new CliArgumentError({ message: `--job requires --jobs\n${usage}` }));
+  }
+  if (jobsFlag && trace) {
+    return Effect.fail(new CliArgumentError({ message: `--jobs and --trace cannot be combined\n${usage}` }));
+  }
+  if (jobsFlag && checkRun !== undefined) {
+    return Effect.fail(new CliArgumentError({ message: `--jobs and --check cannot be combined\n${usage}` }));
+  }
+  if (!jobsFlag && positionals.length > 0) {
+    // Keep the historical surface: plain `piano logs` takes no positional.
+    return Effect.fail(new CliArgumentError({ message: `unknown option: ${positionals[0] ?? ""}\n${usage}` }));
+  }
+  if (positionals.length > 1) {
+    return Effect.fail(new CliArgumentError({ message: `--jobs accepts at most one run id\n${usage}` }));
+  }
   return Effect.succeed({
     runsRoot: deps.runsRoot ?? defaultRunsRoot(),
     trace,
+    jobs: jobsFlag,
     ...(checkRun === undefined ? {} : { checkRun }),
+    ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
+    ...(positionals[0] === undefined ? {} : { jobsRun: positionals[0] }),
   });
 }
 
@@ -423,6 +470,107 @@ function printStaticObservability(
   );
 }
 
+function jobStateLabel(state: JobView["state"], outcome: JobView["outcome"]): string {
+  return outcome === undefined ? state : `${state}(${outcome})`;
+}
+
+function jobStateStyle(view: JobView): string {
+  if (view.state === "alive") return COLORS.cyan;
+  if (view.state === "paused") return COLORS.warn;
+  return view.outcome === "failed" ? COLORS.error : COLORS.success;
+}
+
+/** `--jobs [<run-id>]` / `--jobs --job <ordinal> [<run-id>]`: fold the run's
+ * progress ledger into its jobs. The ledger is the evidence; the fold is the
+ * same one `/continue` consumes, so this prints exactly what a continue would
+ * skip. */
+function printJobs(
+  runsRoot: string,
+  run: string,
+  jobOrdinal: number | undefined,
+): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
+  const resolvedRunsRoot = resolve(runsRoot);
+  const runDir = resolve(resolvedRunsRoot, run);
+  if (dirname(runDir) !== resolvedRunsRoot) {
+    return Effect.fail(new LogsStorageError({
+      operation: "jobs",
+      path: runDir,
+      message: "run id must name a direct child of the runs root",
+    }));
+  }
+  const ledgerPath = join(runDir, "progress.jsonl");
+  return Effect.gen(function* () {
+    const lines = yield* Effect.try({
+      try: () => readFileSync(ledgerPath, "utf8").split("\n"),
+      catch: (cause) => new LogsStorageError({ operation: "read", path: ledgerPath, message: String(cause) }),
+    });
+    const records = lines
+      .map((line) => parseProgressStreamRecord(line))
+      .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+    if (records.length === 0) {
+      return yield* Effect.fail(new LogsStorageError({
+        operation: "jobs",
+        path: ledgerPath,
+        message: "the run has no progress ledger to fold jobs from",
+      }));
+    }
+    const views = jobs(foldJobSpans(records));
+    if (jobOrdinal === undefined) {
+      yield* Effect.sync(() => {
+        console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
+        for (const view of views) {
+          const last = view.spans[view.spans.length - 1];
+          const lastAt = last === undefined ? undefined : last.finishedAt ?? last.startedAt;
+          console.log([
+            paint(COLORS.bold, `#${view.jobOrdinal}`),
+            paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
+            paint(COLORS.dim, `spans=${view.spans.length}`),
+            paint(COLORS.dim, `accepted=${view.accepted.size}`),
+            ...(lastAt === undefined ? [] : [paint(COLORS.dim, `last=${lastAt}`)]),
+            ...(view.input === undefined ? [] : [oneLine(view.input, 60)]),
+          ].join("  "));
+        }
+      });
+      return;
+    }
+    const view = views.find((candidate) => candidate.jobOrdinal === jobOrdinal);
+    if (view === undefined) {
+      return yield* Effect.fail(new LogsStorageError({
+        operation: "jobs",
+        path: ledgerPath,
+        message: views.length === 0
+          ? `job ${jobOrdinal} not found: the run has no jobs`
+          : `job ${jobOrdinal} not found; the run's jobs are ${views.map((candidate) => `#${candidate.jobOrdinal}`).join(", ")}`,
+      }));
+    }
+    yield* Effect.sync(() => {
+      console.log([
+        paint(`${COLORS.bold}${COLORS.accent}`, `Job #${view.jobOrdinal}`),
+        paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
+        paint(COLORS.dim, `spans=${view.spans.length}`),
+        paint(COLORS.dim, `accepted=${view.accepted.size}`),
+      ].join("  "));
+      view.spans.forEach((span, index) => {
+        const spanStyle = span.status === "running" ? COLORS.cyan : span.status === "failed" ? COLORS.error : COLORS.dim;
+        const closed = span.closed === undefined ? "" : paint(COLORS.dim, ` (${span.closed})`);
+        console.log(`  ${paint(COLORS.dim, `span ${index + 1}`)}  ${span.startedAt} → ${span.finishedAt ?? "…"}  ${paint(spanStyle, span.status)}${closed}`);
+      });
+      const accepted = [...view.accepted].sort();
+      if (accepted.length > 0) {
+        console.log(paint(COLORS.dim, "  accepted:"));
+        for (const invocationId of accepted) {
+          const attempt = view.attempts.get(invocationId);
+          console.log(`    ${invocationId}${attempt === undefined ? "" : paint(COLORS.dim, `  attempt=${attempt}`)}`);
+        }
+      }
+      if (view.input !== undefined) {
+        console.log(paint(COLORS.dim, "  input:"));
+        console.log(`    ${oneLine(view.input, 120)}`);
+      }
+    });
+  });
+}
+
 export function logsCommand(
   args: readonly string[] = process.argv.slice(2),
   deps: LogsDeps = {},
@@ -431,6 +579,13 @@ export function logsCommand(
     const options = yield* parseLogsArgs(args, deps);
     if (options.checkRun !== undefined) {
       yield* printStaticObservability(options.runsRoot, options.checkRun);
+      return;
+    }
+    if (options.jobs) {
+      const picker = deps.pickRun ?? pickRun;
+      const run = options.jobsRun ?? (yield* picker(options.runsRoot, false));
+      if (run === undefined) return;
+      yield* printJobs(options.runsRoot, run, options.jobOrdinal);
       return;
     }
     const picker = deps.pickRun ?? pickRun;

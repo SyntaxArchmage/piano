@@ -202,3 +202,133 @@ describe("piano logs picker rows", () => {
     expect(runPickerLabel("legacy-dir", {})).toBe("legacy-dir");
   });
 });
+
+describe("piano logs --jobs", () => {
+  let root: string;
+  const runId = "20260821T120000-abc123";
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "piano-logs-jobs-"));
+    const runDir = join(root, runId);
+    await mkdir(runDir, { recursive: true });
+    // Two jobs: the first paused after accepting two invocations (one on its
+    // second attempt), the second alive mid-span. The fold under test is the
+    // same one `/continue` consumes.
+    const records = [
+      {
+        version: 1, kind: "execution-started", timestamp: "2026-08-21T10:00:00.000Z",
+        executionId: runId, jobOrdinal: 1, prompt: "fix the matmul kernel", resumed: false,
+      },
+      {
+        version: 1, kind: "stage-started", timestamp: "2026-08-21T10:00:01.000Z",
+        executionId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
+        stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
+      },
+      {
+        version: 1, kind: "stage-accepted", timestamp: "2026-08-21T10:00:02.000Z",
+        executionId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
+        stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 2,
+      },
+      {
+        version: 1, kind: "stage-accepted", timestamp: "2026-08-21T10:00:03.000Z",
+        executionId: runId, jobOrdinal: 1, invocationId: "tune.race@tune/iter-0/tune.race/slot-1",
+        stageId: "tune.race", stage: "Race", worker: "cuda-idea", attempt: 1,
+      },
+      {
+        version: 1, kind: "execution-finished", timestamp: "2026-08-21T10:00:04.000Z",
+        executionId: runId, status: "paused",
+      },
+      {
+        version: 1, kind: "execution-started", timestamp: "2026-08-21T10:05:00.000Z",
+        executionId: runId, jobOrdinal: 2, prompt: "second pass", resumed: true,
+      },
+      {
+        version: 1, kind: "stage-started", timestamp: "2026-08-21T10:05:01.000Z",
+        executionId: runId, jobOrdinal: 2, invocationId: "tune.profile@root",
+        stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
+      },
+    ];
+    await writeFile(join(runDir, "progress.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("lists each job with its state, span and accepted counts", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("#1"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("paused"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("accepted=2"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("fix the matmul kernel"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("#2"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("alive"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("second pass"));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("prints one job's spans and accepted invocations with attempts", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--jobs", "--job", "1", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("Job #1"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("span 1"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("2026-08-21T10:00:00.000Z"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("2026-08-21T10:00:04.000Z"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("tune.profile@root"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("attempt=2"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("tune.race@tune/iter-0/tune.race/slot-1"));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("uses the picker when no run id is given", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const pickable = vi.fn(() => Effect.succeed(runId));
+    try {
+      await Effect.runPromise(logsCommand(["--jobs"], { runsRoot: root, pickRun: pickable }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(pickable).toHaveBeenCalledWith(root, false);
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("fails for a missing job with the available ordinals", async () => {
+    const exit = await Effect.runPromiseExit(
+      logsCommand(["--jobs", "--job", "9", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("LogsStorageError");
+      expect(exit.cause.error.message).toContain("#1");
+      expect(exit.cause.error.message).toContain("#2");
+    }
+  });
+
+  it("rejects --job without --jobs and combining --jobs with --trace", async () => {
+    for (const args of [[ "--job", "1", runId ], [ "--jobs", "--trace", runId ]]) {
+      const exit = await Effect.runPromiseExit(logsCommand(args, { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+        expect(exit.cause.error._tag).toBe("CliArgumentError");
+      }
+    }
+  });
+
+  it("refuses a run id outside the runs root", async () => {
+    const exit = await Effect.runPromiseExit(
+      logsCommand(["--jobs", "../outside"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("LogsStorageError");
+    }
+  });
+});
