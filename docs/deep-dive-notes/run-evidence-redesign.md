@@ -217,7 +217,9 @@ root 级（无 loop）tournament 同样报 `race/slot-0 was already cleaned` →
 
 **未定（c 类）**：codex fixture（活体探针超时，仅确认 `thread.started`/`turn.started` 与一个 fixture 未建模的顶层 `error` 记录）；claude stream-json（repo 内无真实 stdout 捕获）。→ **H2e 排队（低优先）**：各捕获一份真实 golden 进 `tests/fixtures/golden/`，把 c 类变成可 diff 的事实。repo 目前**零** golden 捕获，这是整个盲区类的存活条件。
 
-**dsh-resume-runner.test.ts 的 HOST/STUBS**：经与装机 dsh 0.1.5-rc.2 typings/源码逐面核对为忠实镜像（b 类），gated e2e（`real-subprocess.e2e.test.ts:115-204`，同一 BLUE-HARBOR-77 种子）是漂移捕手。survey 提出的 4 条删除/放宽（P1-P4）正在对抗验证中，未验证不落。
+**dsh-resume-runner.test.ts 的 HOST/STUBS**：经与装机 dsh 0.1.5-rc.2 typings/源码逐面核对为忠实镜像（b 类），gated e2e（`real-subprocess.e2e.test.ts:115-204`，同一 BLUE-HARBOR-77 种子）是漂移捕手。survey 提出的 4 条删除/放宽（P1-P4）**已经独立对抗验证全部成立**（无一构造出消费者可见回归），落于 `9333bb7`：P1 删 overlay-path 的精确拼写与 `agents.resume` 断言（`harness-home.test.ts:208/:216` 已钉同一字节）；P2 删 env-reference 字面量测试（运行时 resume 测试 + `harness-home.test.ts:218` 支配；coherent rename 下它本就不设防）；P3 删 no-steer-frames（与首条 resume 测试同场景，`{global:true}`/`listenersAfterExit` 无消费者：插件一进程一任务，runner 每帧查 `isLive()` 且 `whenIdle` 后无条件 `close()` 兜底）；P4 删 pre-arm buffering（reader attach 与 arm 在同一同步块，分支结构性不可达）。**显式决定**：P2 一并放弃了「源码无第二个形似名」正则（lint 性质，stale 别名无人读则无害、有人读则 resume 断言先红）。HOST 的 disposer plumbing 保留（ctx.on 返回 disposer 是真实 API 面，runner 会调用——保真而非死脚手架）；被删的是 `calls.*` 记录与 RunnerReport 字段。**遗留**：runner 的 pre-arm queue（`dsh-resume-runner.mjs:179/:204-208/:222-228`）成为无测试死代码，且文件头注释描述的 buffering 机制与实际送达路径（管道缓冲 + arm 后 live 路径）不符——生产侧改动属 piano-43 领地，待合并后统一处理。
+
+**多 session 身份混淆（2026-10-15 晚，需在合并前厘清）**：`piano-4e` session 声称拥有本分支的 H1/H2b/H2c（`ae4037e`/`eddf31b`/`930d2a6`）与 H3（`7793a7e`），并把 §D2 称为「my working notes」；`piano-be` 也把 H3 归给 piano-4e。**事实**：`fix/evidence-read-chain` 上全部 14 个 commit 均由本 session（`piano logs 日志布局重构` [b6b0f6]）做出；`9333bb7`（P1-P4 批次）在 piano-4e 来信时刚提交，其「三文件 dirty 且是我的」描述与提交后状态不符。若 piano-4e 在并行执行同一 mission，属重复劳动，由开发者裁定归并。其 H2d「held」计划与我在跑的 H2d agent（tournament fixture）重复，已发信叫停。
 
 ### D3. 主 worktree 的第三方在制品（2026-10-15 观察到）
 
