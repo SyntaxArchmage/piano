@@ -18,6 +18,8 @@ import {
   loadSdk,
   type PiHarnessOptions,
   type PiModelRuntime,
+  type PiModule,
+  type PiResourceLoader,
   type PiSession,
 } from "./pi-sdk.js";
 export const defaultPiConfigPath = defaultAgentConfigPath;
@@ -271,6 +273,193 @@ export function executeAgent(
   );
 }
 
+/** Feed the SDK's resource loader what the workflow declared — the system
+ * prompt, the context files, the skills — and verify what it actually took.
+ * Every step reports on both channels (the live `resource` event and the ops
+ * log), and a kind the SDK silently dropped fails the attempt rather than
+ * running with less context than the stage asked for. */
+function loadAgentResources(input: {
+  readonly request: AgentRequest;
+  readonly eventRequest: AgentRequest;
+  readonly sdk: PiModule;
+  readonly agentDir: string;
+  readonly endpoint: string | undefined;
+  readonly apiKey: string | undefined;
+  readonly modelId: string;
+}): Effect.Effect<
+  { readonly resourceLoader: PiResourceLoader; readonly contextFilePaths: readonly string[]; readonly skillPaths: readonly string[] },
+  AgentError,
+  Logging | FileSystem.FileSystem
+> {
+  const { request, eventRequest, sdk, agentDir, endpoint, apiKey, modelId } = input;
+  return Effect.gen(function* () {
+    const contextFilePaths = request.contextFilePaths ?? [];
+    const skillPaths = request.skillPaths ?? [];
+    const systemPromptSource = request.systemPromptPath === undefined ? "sdk-default" : "workflow";
+    /** One resource fact on both channels at once: the live `resource` event
+     * and the ops log line every such event is paired with. A failure logs its
+     * own structured cause and paths (`data`), which the event does not carry;
+     * anything else logs the event's fields minus its status. */
+    const reportResource = (
+      status: "requested" | "loaded" | "failed",
+      info: Omit<AgentResourceInfo, "status">,
+      data?: Record<string, unknown>,
+    ): Effect.Effect<void, never, Logging | FileSystem.FileSystem> => Effect.gen(function* () {
+      resourceEvent(eventRequest, { ...info, status });
+      if (status === "failed") {
+        yield* RESOURCE_LOG.error("agent.resource.failed", { outcome: "failure", data: data ?? {} });
+        return;
+      }
+      yield* RESOURCE_LOG.info(`agent.resource.${status}`, { data: info });
+    });
+    yield* reportResource("requested", {
+      kind: "system-prompt",
+      source: systemPromptSource,
+      ...(request.systemPromptPath === undefined ? {} : { path: request.systemPromptPath }),
+    });
+    for (const path of contextFilePaths) {
+      yield* reportResource("requested", { kind: "context-file", source: "workflow", path });
+    }
+    for (const path of skillPaths) {
+      yield* reportResource("requested", { kind: "skill", source: "workflow", path });
+    }
+    const contextFiles = yield* TRACE(
+      RESOURCE_LOAD_SOURCE,
+      loadTextResources(eventRequest, "context-file", contextFilePaths),
+      { contextFilePaths },
+    ).pipe(
+      Effect.tapError((error) => RESOURCE_LOG.error("agent.resource.failed", {
+        outcome: "failure",
+        data: { kind: "context-file", paths: contextFilePaths, error: failureDetails(error) },
+      })),
+    );
+    const skillFiles = yield* TRACE(
+      RESOURCE_LOAD_SOURCE,
+      loadSkillResources(eventRequest, skillPaths),
+      { skillPaths },
+    ).pipe(
+      Effect.tapError((error) => RESOURCE_LOG.error("agent.resource.failed", {
+        outcome: "failure",
+        data: { kind: "skill", paths: skillPaths, error: failureDetails(error) },
+      })),
+    );
+    const skillInstructions = skillFiles.map(({ path, content }) =>
+      `<workflow_skill path="${path}">\n${content}\n</workflow_skill>`,
+    );
+    const resourceLoader = yield* TRACE(RESOURCE_SOURCE, Effect.try({
+      try: () => new sdk.DefaultResourceLoader({
+        cwd: request.cwd,
+        agentDir,
+        settingsManager: sdk.SettingsManager.inMemory({ retry: { enabled: true, maxRetries: SDK_API_MAX_RETRIES } }),
+        noExtensions: true,
+        ...(request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) === true
+          ? { extensionFactories: [webSearchExtensionFactory({ baseUrl: endpoint, apiKey, model: modelId })] }
+          : {}),
+        noSkills: true,
+        noThemes: true,
+        noPromptTemplates: true,
+        noContextFiles: true,
+        additionalSkillPaths: skillPaths,
+        agentsFilesOverride: () => ({ agentsFiles: [...contextFiles] }),
+        ...(request.systemPromptPath === undefined ? {} : { systemPrompt: request.systemPromptPath }),
+        ...(skillInstructions.length === 0 ? {} : { appendSystemPrompt: skillInstructions }),
+      }),
+      catch: (cause) => agentError("request-rejected", cause),
+    }));
+    yield* TRACE(
+      RELOAD_SOURCE,
+      Effect.tryPromise({ try: () => resourceLoader.reload(), catch: (cause) => agentError("request-rejected", cause) }),
+      { systemPromptPath: request.systemPromptPath, contextFilePaths, skillPaths },
+    ).pipe(
+      Effect.tapError((error) => RESOURCE_LOG.error("agent.resource.failed", {
+        outcome: "failure",
+        data: {
+          kind: "sdk-resource-loader",
+          ...(request.systemPromptPath === undefined ? {} : { systemPromptPath: request.systemPromptPath }),
+          contextFilePaths,
+          skillPaths,
+          error: failureDetails(error),
+        },
+      })),
+    );
+    const loadedSystemPrompt = resourceLoader.getSystemPrompt?.();
+    const loadedSystemPromptPath = resourceLoader.getSystemPromptSource?.()?.path ?? request.systemPromptPath;
+    if (request.systemPromptPath !== undefined && resourceLoader.getSystemPrompt !== undefined && loadedSystemPrompt === undefined) {
+      const error = resourceError("system-prompt", request.systemPromptPath, "SDK returned no system prompt");
+      yield* reportResource("failed", {
+        kind: "system-prompt",
+        source: "workflow",
+        path: request.systemPromptPath,
+        error: error.message,
+      }, { kind: "system-prompt", path: request.systemPromptPath, error: failureDetails(error) });
+      return yield* Effect.fail(error);
+    }
+    yield* reportResource("loaded", {
+      kind: "system-prompt",
+      source: systemPromptSource,
+      ...(loadedSystemPromptPath === undefined ? {} : { path: loadedSystemPromptPath }),
+      ...(loadedSystemPrompt === undefined ? {} : { bytes: Buffer.byteLength(loadedSystemPrompt, "utf8") }),
+    });
+    const loadedContextFiles = resourceLoader.getAgentsFiles?.()?.agentsFiles;
+    if (loadedContextFiles !== undefined && loadedContextFiles.length !== contextFiles.length) {
+      const error = new AgentError({
+        kind: "resource-unavailable",
+        message: `SDK loaded ${loadedContextFiles.length} context files, expected ${contextFiles.length}`,
+      });
+      // One failure, many files: each requested path gets its own failed event,
+      // but the log names the whole set once — so this is not a reportResource
+      // call per path (that would log the same failure N times).
+      for (const path of contextFilePaths) {
+        resourceEvent(eventRequest, {
+          kind: "context-file",
+          status: "failed",
+          source: "workflow",
+          path,
+          error: error.message,
+        });
+      }
+      yield* RESOURCE_LOG.error("agent.resource.failed", {
+        outcome: "failure",
+        data: { kind: "context-file", paths: contextFilePaths, error: failureDetails(error) },
+      });
+      return yield* Effect.fail(error);
+    }
+    for (const file of loadedContextFiles ?? contextFiles) {
+      yield* reportResource("loaded", {
+        kind: "context-file",
+        source: "workflow",
+        path: file.path,
+        bytes: Buffer.byteLength(file.content, "utf8"),
+      });
+    }
+    const loadedSkills = resourceLoader.getSkills?.()?.skills;
+    for (const path of skillPaths) {
+      const skill = loadedSkills?.find((item) => item.filePath === path || item.filePath?.startsWith(`${path}/`));
+      if (loadedSkills !== undefined && skill === undefined) {
+        const error = resourceError("skill", path, "SDK did not report the requested skill");
+        yield* reportResource("failed", {
+          kind: "skill",
+          source: "workflow",
+          path,
+          error: error.message,
+        }, { kind: "skill", path, error: failureDetails(error) });
+        return yield* Effect.fail(error);
+      }
+      const loadedPath = skill?.filePath ?? path;
+      const skillFile = skillFiles.find((file) => file.path === path);
+      const skillBytes = skillFile === undefined ? undefined : Buffer.byteLength(skillFile.content, "utf8");
+      yield* reportResource("loaded", {
+        kind: "skill",
+        source: "workflow",
+        path: loadedPath,
+        ...(skill?.name === undefined ? {} : { name: skill.name }),
+        ...(skillBytes === undefined ? {} : { bytes: skillBytes }),
+      });
+    }
+    return { resourceLoader, contextFilePaths, skillPaths };
+  });
+}
+
 /** One pi adapter attempt inside the shared retry boundary. Per-attempt state
  * (event aggregation, failure reporting, session lifecycle) is created fresh
  * here so a retry observes a clean world while continuing the same session
@@ -386,202 +575,15 @@ function runPiAttempt(
       if (value === undefined) return yield* Effect.fail(new AgentError({ kind: "model-not-found", message: `model not found: ${provider}/${modelId}` }));
       return value;
     }), { provider, model: modelId });
-    const contextFilePaths = request.contextFilePaths ?? [];
-    const skillPaths = request.skillPaths ?? [];
-    const systemPromptSource = request.systemPromptPath === undefined ? "sdk-default" : "workflow";
-    resourceEvent(eventRequest, {
-      kind: "system-prompt",
-      status: "requested",
-      source: systemPromptSource,
-      ...(request.systemPromptPath === undefined ? {} : { path: request.systemPromptPath }),
+    const { resourceLoader, contextFilePaths, skillPaths } = yield* loadAgentResources({
+      request,
+      eventRequest,
+      sdk,
+      agentDir,
+      endpoint,
+      apiKey,
+      modelId,
     });
-    yield* RESOURCE_LOG.info("agent.resource.requested", {
-      data: {
-        kind: "system-prompt",
-        source: systemPromptSource,
-        ...(request.systemPromptPath === undefined ? {} : { path: request.systemPromptPath }),
-      },
-    });
-    for (const path of contextFilePaths) {
-      resourceEvent(eventRequest, { kind: "context-file", status: "requested", source: "workflow", path });
-      yield* RESOURCE_LOG.info("agent.resource.requested", {
-        data: { kind: "context-file", source: "workflow", path },
-      });
-    }
-    for (const path of skillPaths) {
-      resourceEvent(eventRequest, { kind: "skill", status: "requested", source: "workflow", path });
-      yield* RESOURCE_LOG.info("agent.resource.requested", {
-        data: { kind: "skill", source: "workflow", path },
-      });
-    }
-    const contextFiles = yield* TRACE(
-      RESOURCE_LOAD_SOURCE,
-      loadTextResources(eventRequest, "context-file", contextFilePaths),
-      { contextFilePaths },
-    ).pipe(
-      Effect.tapError((error) => RESOURCE_LOG.error("agent.resource.failed", {
-        outcome: "failure",
-        data: { kind: "context-file", paths: contextFilePaths, error: failureDetails(error) },
-      })),
-    );
-    const skillFiles = yield* TRACE(
-      RESOURCE_LOAD_SOURCE,
-      loadSkillResources(eventRequest, skillPaths),
-      { skillPaths },
-    ).pipe(
-      Effect.tapError((error) => RESOURCE_LOG.error("agent.resource.failed", {
-        outcome: "failure",
-        data: { kind: "skill", paths: skillPaths, error: failureDetails(error) },
-      })),
-    );
-    const skillInstructions = skillFiles.map(({ path, content }) =>
-      `<workflow_skill path="${path}">\n${content}\n</workflow_skill>`,
-    );
-    const resourceLoader = yield* TRACE(RESOURCE_SOURCE, Effect.try({
-      try: () => new sdk.DefaultResourceLoader({
-        cwd: request.cwd,
-        agentDir,
-        settingsManager: sdk.SettingsManager.inMemory({ retry: { enabled: true, maxRetries: SDK_API_MAX_RETRIES } }),
-        noExtensions: true,
-        ...(request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) === true
-          ? { extensionFactories: [webSearchExtensionFactory({ baseUrl: endpoint, apiKey, model: modelId })] }
-          : {}),
-        noSkills: true,
-        noThemes: true,
-        noPromptTemplates: true,
-        noContextFiles: true,
-        additionalSkillPaths: skillPaths,
-        agentsFilesOverride: () => ({ agentsFiles: [...contextFiles] }),
-        ...(request.systemPromptPath === undefined ? {} : { systemPrompt: request.systemPromptPath }),
-        ...(skillInstructions.length === 0 ? {} : { appendSystemPrompt: skillInstructions }),
-      }),
-      catch: (cause) => agentError("request-rejected", cause),
-    }));
-    yield* TRACE(
-      RELOAD_SOURCE,
-      Effect.tryPromise({ try: () => resourceLoader.reload(), catch: (cause) => agentError("request-rejected", cause) }),
-      { systemPromptPath: request.systemPromptPath, contextFilePaths, skillPaths },
-    ).pipe(
-      Effect.tapError((error) => RESOURCE_LOG.error("agent.resource.failed", {
-        outcome: "failure",
-        data: {
-          kind: "sdk-resource-loader",
-          ...(request.systemPromptPath === undefined ? {} : { systemPromptPath: request.systemPromptPath }),
-          contextFilePaths,
-          skillPaths,
-          error: failureDetails(error),
-        },
-      })),
-    );
-    const loadedSystemPrompt = resourceLoader.getSystemPrompt?.();
-    const loadedSystemPromptPath = resourceLoader.getSystemPromptSource?.()?.path ?? request.systemPromptPath;
-    if (request.systemPromptPath !== undefined && resourceLoader.getSystemPrompt !== undefined && loadedSystemPrompt === undefined) {
-      const error = resourceError("system-prompt", request.systemPromptPath, "SDK returned no system prompt");
-      resourceEvent(eventRequest, {
-        kind: "system-prompt",
-        status: "failed",
-        source: "workflow",
-        path: request.systemPromptPath,
-        error: error.message,
-      });
-      yield* RESOURCE_LOG.error("agent.resource.failed", {
-        outcome: "failure",
-        data: { kind: "system-prompt", path: request.systemPromptPath, error: failureDetails(error) },
-      });
-      return yield* Effect.fail(error);
-    }
-    resourceEvent(eventRequest, {
-      kind: "system-prompt",
-      status: "loaded",
-      source: systemPromptSource,
-      ...(loadedSystemPromptPath === undefined ? {} : { path: loadedSystemPromptPath }),
-      ...(loadedSystemPrompt === undefined ? {} : { bytes: Buffer.byteLength(loadedSystemPrompt, "utf8") }),
-    });
-    yield* RESOURCE_LOG.info("agent.resource.loaded", {
-      data: {
-        kind: "system-prompt",
-        source: systemPromptSource,
-        ...(loadedSystemPromptPath === undefined ? {} : { path: loadedSystemPromptPath }),
-        ...(loadedSystemPrompt === undefined ? {} : { bytes: Buffer.byteLength(loadedSystemPrompt, "utf8") }),
-      },
-    });
-    const loadedContextFiles = resourceLoader.getAgentsFiles?.()?.agentsFiles;
-    if (loadedContextFiles !== undefined && loadedContextFiles.length !== contextFiles.length) {
-      const error = new AgentError({
-        kind: "resource-unavailable",
-        message: `SDK loaded ${loadedContextFiles.length} context files, expected ${contextFiles.length}`,
-      });
-      for (const path of contextFilePaths) {
-        resourceEvent(eventRequest, {
-          kind: "context-file",
-          status: "failed",
-          source: "workflow",
-          path,
-          error: error.message,
-        });
-      }
-      yield* RESOURCE_LOG.error("agent.resource.failed", {
-        outcome: "failure",
-        data: { kind: "context-file", paths: contextFilePaths, error: failureDetails(error) },
-      });
-      return yield* Effect.fail(error);
-    }
-    for (const file of loadedContextFiles ?? contextFiles) {
-      resourceEvent(eventRequest, {
-        kind: "context-file",
-        status: "loaded",
-        source: "workflow",
-        path: file.path,
-        bytes: Buffer.byteLength(file.content, "utf8"),
-      });
-      yield* RESOURCE_LOG.info("agent.resource.loaded", {
-        data: {
-          kind: "context-file",
-          source: "workflow",
-          path: file.path,
-          bytes: Buffer.byteLength(file.content, "utf8"),
-        },
-      });
-    }
-    const loadedSkills = resourceLoader.getSkills?.()?.skills;
-    for (const path of skillPaths) {
-      const skill = loadedSkills?.find((item) => item.filePath === path || item.filePath?.startsWith(`${path}/`));
-      if (loadedSkills !== undefined && skill === undefined) {
-        const error = resourceError("skill", path, "SDK did not report the requested skill");
-        resourceEvent(eventRequest, {
-          kind: "skill",
-          status: "failed",
-          source: "workflow",
-          path,
-          error: error.message,
-        });
-        yield* RESOURCE_LOG.error("agent.resource.failed", {
-          outcome: "failure",
-          data: { kind: "skill", path, error: failureDetails(error) },
-        });
-        return yield* Effect.fail(error);
-      }
-      const loadedPath = skill?.filePath ?? path;
-      const skillFile = skillFiles.find((file) => file.path === path);
-      const skillBytes = skillFile === undefined ? undefined : Buffer.byteLength(skillFile.content, "utf8");
-      resourceEvent(eventRequest, {
-        kind: "skill",
-        status: "loaded",
-        source: "workflow",
-        path: loadedPath,
-        ...(skill?.name === undefined ? {} : { name: skill.name }),
-        ...(skillBytes === undefined ? {} : { bytes: skillBytes }),
-      });
-      yield* RESOURCE_LOG.info("agent.resource.loaded", {
-        data: {
-          kind: "skill",
-          source: "workflow",
-          path: loadedPath,
-          ...(skill?.name === undefined ? {} : { name: skill.name }),
-          ...(skillBytes === undefined ? {} : { bytes: skillBytes }),
-        },
-      });
-    }
     const sessionManager = yield* Effect.try({
       try: () => {
         if (retryRequest.continuation === undefined) {
