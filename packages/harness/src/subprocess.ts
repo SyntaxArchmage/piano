@@ -48,6 +48,7 @@ import {
 import {
   type AgentEvent,
   type AgentResourceKind,
+  type ThinkingLevel,
 } from "./events.js";
 import { persistAgentEvents } from "./event-observer.js";
 import {
@@ -288,6 +289,150 @@ export function executeSubprocessAgent(
 /** One subprocess attempt inside the shared retry boundary. The attempt's
  * session identity (provisionalId/transcriptPath) is derived from the active
  * continuation, so a retry reopens the transcript the failed attempt wrote. */
+/** Everything a launch needs, resolved and guarded while no child exists yet.
+ *
+ * The split is deliberate: a stage that cannot start must fail here, with a
+ * message naming what is missing, rather than as an opaque child exit. That is
+ * why the harness home's generated overlays and the web-search gateway
+ * configuration are probed before anything is spawned, and why the resource
+ * events and the attempt's own announcements are emitted on the way — the
+ * order a caller sees is resources, then spawn, then context.
+ *
+ * dsh's branches cluster here: which patch layers its home must carry, the
+ * session it should reopen, and how much of a continued conversation travels
+ * as prompt text. */
+interface AttemptPlan {
+  readonly accumulator: SubprocessAccumulator;
+  readonly provisionalId: string;
+  readonly transcriptPath: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly argv: readonly string[];
+  readonly dshHome: string;
+  readonly dshResumeId: string | undefined;
+}
+
+function prepareAttempt(input: {
+  readonly harness: HarnessName;
+  readonly request: AgentRequest;
+  readonly options: AgentHarnessOptions;
+  readonly config: ResolvedHarnessConfig;
+  readonly thinking: ThinkingLevel | undefined;
+  readonly observed: AgentEvent[];
+  readonly emit: (event: AgentEvent) => void;
+}): Effect.Effect<AttemptPlan, AgentError, Logging | FileSystem.FileSystem> {
+  const { harness, request, options, config, thinking, observed, emit } = input;
+  return Effect.gen(function* () {
+    const resources = yield* Effect.tryPromise({ try: () => loadResources(request, emit), catch: (cause) => cause instanceof AgentError ? cause : agentError("resource-unavailable", cause) });
+    emit({ type: "spawn", harness, ...(config.model === undefined ? {} : { model: config.model }), ...(thinking === undefined ? {} : { thinkingLevel: thinking }), skills: [...(request.skillPaths ?? [])], ...(request.continuation?.sessionId === undefined ? {} : { memory: request.continuation.sessionId }) });
+    emit({ type: "context", context: { ...(request.systemPromptPath === undefined ? {} : { systemPromptPath: request.systemPromptPath }), contextFilePaths: request.contextFilePaths ?? [], skills: request.skillPaths ?? [], userMessage: request.prompt } });
+    const accumulator: SubprocessAccumulator = { text: "" };
+    const sessionDirectory = request.sessionDir ?? join(tmpdir(), "piano-subprocess");
+    const provisionalId = request.continuation?.sessionId ?? `${harness}-${randomUUID()}`;
+    const transcriptPath = request.continuation?.transcriptPath ?? join(sessionDirectory, `${provisionalId}.jsonl`);
+    yield* Effect.tryPromise({ try: () => mkdir(dirname(transcriptPath), { recursive: true }), catch: (cause) => agentError("session-artifact", cause) });
+    const environment = childEnv(harness, config, options, (request.tools?.length ?? 0) > 0);
+    // Resolved before argv because dsh's model overlay lives inside this home.
+    const dshHome = environment.DSH_HOME ?? join(homedir(), ".dsh");
+    // Pre-spawn guards keep stale generated homes and incomplete web-search
+    // configuration from becoming opaque child failures or memory-only A/B
+    // runs.
+    const failBeforeSpawn = (error: AgentError) => Effect.gen(function* () {
+      emit({ type: "error", errorType: error.kind, message: error.message });
+      yield* persistAgentEvents(observed, provisionalId);
+      return yield* Effect.fail(error);
+    });
+    const requireOverlay = (
+      path: string,
+      kind: "model-not-found" | "session-artifact",
+      probeFailed: string,
+      missing: string,
+    ) => Effect.gen(function* () {
+      const exists = yield* Effect.tryPromise({
+        try: () => access(path).then(() => true, () => false),
+        catch: () => new AgentError({ kind, message: probeFailed }),
+      });
+      if (exists) return;
+      return yield* failBeforeSpawn(new AgentError({ kind, message: missing }));
+    });
+    if (harness === "dsh" && config.model !== undefined) {
+      const patchPath = dshModelPatchPath(dshHome, config.model);
+      yield* requireOverlay(
+        patchPath,
+        "model-not-found",
+        `cannot inspect the dsh overlay for model "${config.model}"`,
+        `dsh model "${config.model}" has no generated overlay at ${patchPath}; `
+          + `add "${config.model}" to the models list in ${agentConfigPath()} so Piano can route it`,
+      );
+    }
+    if (harness === "dsh" && request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) !== true) {
+      const ablationPath = dshWebSearchOffPatchPath(dshHome);
+      yield* requireOverlay(
+        ablationPath,
+        "session-artifact",
+        `cannot inspect the dsh web_search ablation overlay at ${ablationPath}`,
+        `dsh web_search ablation overlay is missing at ${ablationPath}; `
+          + "re-run the mission bootstrap so Piano regenerates the harness home",
+      );
+    }
+    if ((harness === "pi" || harness === "pi-cli")
+      && request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) === true
+      && (config.baseUrl === undefined || config.apiKey === undefined)) {
+      yield* failBeforeSpawn(new AgentError({
+        kind: "configuration",
+        message: `web_search needs the endpoint and API key from ${agentConfigPath()} `
+          + "(the search runs against the same gateway route as chat)",
+      }));
+    }
+    // What dsh needs to reopen the actor's conversation, resolved once: the id
+    // travels to the child as an environment reference and decides both the
+    // overlay below and whether the transcript replay is still needed.
+    const dshResumeId = harness === "dsh" ? dshResumeSessionId(request) : undefined;
+    Object.assign(environment, dshResumeSessionEnv(dshResumeId));
+    // Every dsh run drives the turn through the resuming runner (it is the far
+    // end of stdin steering, not just a resume helper), so the overlay is
+    // required unconditionally — a missing one means the harness home is stale
+    // no matter whether this epoch continues a session.
+    if (harness === "dsh") {
+      const resumeOverlay = dshResumeOverlayPath(dshHome);
+      yield* requireOverlay(
+        resumeOverlay,
+        "session-artifact",
+        `cannot inspect the dsh resume overlay at ${resumeOverlay}`,
+        `dsh resume overlay is missing at ${resumeOverlay}; `
+          + "re-run the mission bootstrap so Piano regenerates the harness home",
+      );
+    }
+    const dshContext = harness === "dsh"
+      ? yield* Effect.tryPromise({
+        try: () => dshContinuationContext(request, dshResumeId),
+        catch: (cause) => agentError("session-artifact", cause),
+      })
+      : undefined;
+    const argv = harness === "claude"
+      ? claudeArguments(request, config, thinking, resources)
+      : harness === "dsh"
+        ? dshArguments(request, config, resources, dshHome, dshContext, dshResumeId)
+        : harness === "codex"
+          ? codexArguments(request, config, thinking, resources, options.additionalWritableDirs ?? [])
+          : piArguments(request, config, thinking, resources, transcriptPath, harness === "pi");
+    // The OS refuses to spawn when one argument outgrows MAX_ARG_STRLEN, and
+    // reports it as a bare `E2BIG` from `spawn` — which reads as "harness
+    // unavailable" and says nothing about the prompt. dsh carries its task (and
+    // any replayed conversation) as a positional argument, so a large inlined
+    // system prompt can trip this on its own; name the limit and the size.
+    const oversized = argv.find((argument) => Buffer.byteLength(argument, "utf8") > ARG_MAX_STRLEN);
+    if (oversized !== undefined) {
+      return yield* failBeforeSpawn(new AgentError({
+        kind: "request-rejected",
+        message: `the ${harness} prompt is ${Buffer.byteLength(oversized, "utf8")} bytes, over the `
+          + `${ARG_MAX_STRLEN}-byte limit for a single process argument; shorten the stage's inlined `
+          + "resources, the task, or the replayed conversation",
+      }));
+    }
+    return { accumulator, provisionalId, transcriptPath, environment, argv, dshHome, dshResumeId };
+  });
+}
+
 function runSubprocessAttempt(
   harness: HarnessName,
   request: AgentRequest,
@@ -324,113 +469,8 @@ function runSubprocessAttempt(
     const retryRequest: AgentRequest = attempt.continuation === undefined
       ? request
       : { ...request, continuation: attempt.continuation };
-    const resources = yield* Effect.tryPromise({ try: () => loadResources(retryRequest, emit), catch: (cause) => cause instanceof AgentError ? cause : agentError("resource-unavailable", cause) });
-    emit({ type: "spawn", harness, ...(config.model === undefined ? {} : { model: config.model }), ...(thinking === undefined ? {} : { thinkingLevel: thinking }), skills: [...(retryRequest.skillPaths ?? [])], ...(retryRequest.continuation?.sessionId === undefined ? {} : { memory: retryRequest.continuation.sessionId }) });
-    emit({ type: "context", context: { ...(retryRequest.systemPromptPath === undefined ? {} : { systemPromptPath: retryRequest.systemPromptPath }), contextFilePaths: retryRequest.contextFilePaths ?? [], skills: retryRequest.skillPaths ?? [], userMessage: retryRequest.prompt } });
-    const accumulator: SubprocessAccumulator = { text: "" };
-    const sessionDirectory = retryRequest.sessionDir ?? join(tmpdir(), "piano-subprocess");
-    const provisionalId = retryRequest.continuation?.sessionId ?? `${harness}-${randomUUID()}`;
-    const transcriptPath = retryRequest.continuation?.transcriptPath ?? join(sessionDirectory, `${provisionalId}.jsonl`);
-    yield* Effect.tryPromise({ try: () => mkdir(dirname(transcriptPath), { recursive: true }), catch: (cause) => agentError("session-artifact", cause) });
-    const environment = childEnv(harness, config, options, (retryRequest.tools?.length ?? 0) > 0);
-    // Resolved before argv because dsh's model overlay lives inside this home.
-    const dshHome = environment.DSH_HOME ?? join(homedir(), ".dsh");
-    // Pre-spawn guards keep stale generated homes and incomplete web-search
-    // configuration from becoming opaque child failures or memory-only A/B
-    // runs.
-    const failBeforeSpawn = (error: AgentError) => Effect.gen(function* () {
-      emit({ type: "error", errorType: error.kind, message: error.message });
-      yield* persistAgentEvents(observed, provisionalId);
-      return yield* Effect.fail(error);
-    });
-    const requireOverlay = (
-      path: string,
-      kind: "model-not-found" | "session-artifact",
-      probeFailed: string,
-      missing: string,
-    ) => Effect.gen(function* () {
-      const exists = yield* Effect.tryPromise({
-        try: () => access(path).then(() => true, () => false),
-        catch: () => new AgentError({ kind, message: probeFailed }),
-      });
-      if (exists) return;
-      return yield* failBeforeSpawn(new AgentError({ kind, message: missing }));
-    });
-    if (harness === "dsh" && config.model !== undefined) {
-      const patchPath = dshModelPatchPath(dshHome, config.model);
-      yield* requireOverlay(
-        patchPath,
-        "model-not-found",
-        `cannot inspect the dsh overlay for model "${config.model}"`,
-        `dsh model "${config.model}" has no generated overlay at ${patchPath}; `
-          + `add "${config.model}" to the models list in ${agentConfigPath()} so Piano can route it`,
-      );
-    }
-    if (harness === "dsh" && retryRequest.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) !== true) {
-      const ablationPath = dshWebSearchOffPatchPath(dshHome);
-      yield* requireOverlay(
-        ablationPath,
-        "session-artifact",
-        `cannot inspect the dsh web_search ablation overlay at ${ablationPath}`,
-        `dsh web_search ablation overlay is missing at ${ablationPath}; `
-          + "re-run the mission bootstrap so Piano regenerates the harness home",
-      );
-    }
-    if ((harness === "pi" || harness === "pi-cli")
-      && retryRequest.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) === true
-      && (config.baseUrl === undefined || config.apiKey === undefined)) {
-      yield* failBeforeSpawn(new AgentError({
-        kind: "configuration",
-        message: `web_search needs the endpoint and API key from ${agentConfigPath()} `
-          + "(the search runs against the same gateway route as chat)",
-      }));
-    }
-    // What dsh needs to reopen the actor's conversation, resolved once: the id
-    // travels to the child as an environment reference and decides both the
-    // overlay below and whether the transcript replay is still needed.
-    const dshResumeId = harness === "dsh" ? dshResumeSessionId(retryRequest) : undefined;
-    Object.assign(environment, dshResumeSessionEnv(dshResumeId));
-    // Every dsh run drives the turn through the resuming runner (it is the far
-    // end of stdin steering, not just a resume helper), so the overlay is
-    // required unconditionally — a missing one means the harness home is stale
-    // no matter whether this epoch continues a session.
-    if (harness === "dsh") {
-      const resumeOverlay = dshResumeOverlayPath(dshHome);
-      yield* requireOverlay(
-        resumeOverlay,
-        "session-artifact",
-        `cannot inspect the dsh resume overlay at ${resumeOverlay}`,
-        `dsh resume overlay is missing at ${resumeOverlay}; `
-          + "re-run the mission bootstrap so Piano regenerates the harness home",
-      );
-    }
-    const dshContext = harness === "dsh"
-      ? yield* Effect.tryPromise({
-        try: () => dshContinuationContext(retryRequest, dshResumeId),
-        catch: (cause) => agentError("session-artifact", cause),
-      })
-      : undefined;
-    const argv = harness === "claude"
-      ? claudeArguments(retryRequest, config, thinking, resources)
-      : harness === "dsh"
-        ? dshArguments(retryRequest, config, resources, dshHome, dshContext, dshResumeId)
-        : harness === "codex"
-          ? codexArguments(retryRequest, config, thinking, resources, options.additionalWritableDirs ?? [])
-          : piArguments(retryRequest, config, thinking, resources, transcriptPath, harness === "pi");
-    // The OS refuses to spawn when one argument outgrows MAX_ARG_STRLEN, and
-    // reports it as a bare `E2BIG` from `spawn` — which reads as "harness
-    // unavailable" and says nothing about the prompt. dsh carries its task (and
-    // any replayed conversation) as a positional argument, so a large inlined
-    // system prompt can trip this on its own; name the limit and the size.
-    const oversized = argv.find((argument) => Buffer.byteLength(argument, "utf8") > ARG_MAX_STRLEN);
-    if (oversized !== undefined) {
-      return yield* failBeforeSpawn(new AgentError({
-        kind: "request-rejected",
-        message: `the ${harness} prompt is ${Buffer.byteLength(oversized, "utf8")} bytes, over the `
-          + `${ARG_MAX_STRLEN}-byte limit for a single process argument; shorten the stage's inlined `
-          + "resources, the task, or the replayed conversation",
-      }));
-    }
+    const plan = yield* prepareAttempt({ harness, request: retryRequest, options, config, thinking, observed, emit });
+    const { accumulator, provisionalId, transcriptPath, environment, argv, dshHome, dshResumeId } = plan;
     const startedAt = Date.now();
     const dshMapper = harness === "dsh" ? createDshEventMapper(accumulator, emit) : undefined;
     // dsh storage is keyed by cwd, and a resumed map slot's cwd embeds the
