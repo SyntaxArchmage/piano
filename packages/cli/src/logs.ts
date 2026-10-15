@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
-import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   KeybindingsManager,
@@ -17,7 +17,6 @@ import {
   defaultRunsRoot,
   formatStaticObservabilityReport,
   inspectStaticObservability,
-  trajectoryStreamPath,
 } from "@piano/logging";
 import { runStatusPath } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
@@ -123,131 +122,10 @@ function runIds(runsRoot: string): Effect.Effect<string[], LogsStorageError, Fil
   });
 }
 
-/** A run's `trajectory.json` can hold hundreds of megabytes of events, so the
- * picker reads only a bounded tail window: the document's trailing block sits
- * after the huge `events` array and carries `workflowPath`, `status`, and the
- * compact `turns` entries (`{prompt, status, eventCount}`). Missing pieces
- * degrade to an id+time row, never a failure. Runs whose handoff prompts push
- * that trailing block past the small window pay one bigger read (`prompts` of
- * tens of kilobytes per turn are common in tuning workflows). */
-const TAIL_WINDOW_BYTES = 64 * 1024;
-const TAIL_WINDOW_CAP_BYTES = 1024 * 1024;
-
 interface RunRowMetadata {
   readonly workflow?: string;
   readonly status?: string;
   readonly prompt?: string;
-}
-
-function readJsonStringLiteral(match: RegExpExecArray): string | undefined {
-  try {
-    const value: unknown = JSON.parse(`"${match[1]}"`);
-    return typeof value === "string" ? value : undefined;
-  } catch {
-    // The window cut the literal mid-escape; treat the field as missing.
-    return undefined;
-  }
-}
-
-/** Last `bytes` of the file decoded as utf8, or undefined when unreadable. */
-function readTail(trajectoryFile: string, bytes: number): string | undefined {
-  return readWindow(trajectoryFile, bytes, "tail");
-}
-
-/** First `bytes` of the file decoded as utf8, or undefined when unreadable. */
-function readHead(trajectoryFile: string, bytes: number): string | undefined {
-  return readWindow(trajectoryFile, bytes, "head");
-}
-
-function readWindow(trajectoryFile: string, bytes: number, end: "head" | "tail"): string | undefined {
-  try {
-    const fd = openSync(trajectoryFile, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.allocUnsafe(length);
-      readSync(fd, buffer, 0, length, end === "tail" ? size - length : 0);
-      return buffer.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // No trajectory (legacy run) or unreadable — an id-only row is correct.
-    return undefined;
-  }
-}
-
-function parseRunTail(tail: string): RunRowMetadata {
-  const row: { workflow?: string; status?: string; prompt?: string } = {};
-  const workflow = /"workflowPath":"((?:[^"\\]|\\.)*)"/.exec(tail);
-  if (workflow !== null) {
-    const value = readJsonStringLiteral(workflow);
-    if (value !== undefined) row.workflow = basename(value).replace(/\.ya?ml$/i, "");
-    // The document-level status is the first one after workflowPath; the
-    // per-turn statuses come later inside `turns`.
-    const status = /"status":"(completed|failed|cancelled)"/.exec(tail.slice(workflow.index));
-    if (status !== null) row.status = status[1];
-  }
-  const turns = tail.lastIndexOf('"turns":[');
-  if (turns !== -1) {
-    const prompt = /"prompt":"((?:[^"\\]|\\.)*)"/.exec(tail.slice(turns));
-    if (prompt !== null) {
-      const value = readJsonStringLiteral(prompt);
-      if (value !== undefined) row.prompt = value;
-    }
-  }
-  return row;
-}
-
-/** Row fields read from a stream's two ends, for a run whose document is gone.
- *
- * Trajectory records are append-only, so the earliest record that carried a
- * prompt holds the run's first one and the last holds its newest status and
- * workflow. The events in between are the bulk of the run and none of the row.
- * Windows are generous enough to hold a record; a record larger than one simply
- * yields fewer fields, never a failure. */
-const STREAM_WINDOW_BYTES = 16 * 1024;
-
-function parseStreamRecord(line: string | undefined): Record<string, unknown> | undefined {
-  if (line === undefined) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(line);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : undefined;
-  } catch {
-    // Torn mid-append, or cut by the window: the records before it still count.
-    return undefined;
-  }
-}
-
-/** The records a window holds, newest first. */
-function windowRecords(window: string): readonly Record<string, unknown>[] {
-  return window.split("\n")
-    .filter((line) => line.trim() !== "")
-    .map(parseStreamRecord)
-    .filter((record): record is Record<string, unknown> => record !== undefined);
-}
-
-function readStreamRowMetadata(streamFile: string): RunRowMetadata | undefined {
-  const head = readHead(streamFile, STREAM_WINDOW_BYTES);
-  if (head === undefined) return undefined;
-  const row: { workflow?: string; status?: string; prompt?: string } = {};
-  for (const record of windowRecords(head)) {
-    if (row.prompt === undefined && typeof record.prompt === "string") row.prompt = record.prompt;
-    if (row.prompt !== undefined) break;
-  }
-  const tail = readTail(streamFile, STREAM_WINDOW_BYTES);
-  // The tail's first line is usually a fragment of the window's edge; walking
-  // back from the end finds the newest whole record.
-  for (const record of [...(tail === undefined ? [] : windowRecords(tail))].reverse()) {
-    if (row.status === undefined && typeof record.status === "string") row.status = record.status;
-    if (row.workflow === undefined && typeof record.workflowPath === "string") {
-      row.workflow = basename(record.workflowPath).replace(/\.ya?ml$/i, "");
-    }
-    if (row.status !== undefined && row.workflow !== undefined) break;
-  }
-  return row;
 }
 
 /** The row the run's state document carries: the workflow it ran, how it
@@ -275,27 +153,10 @@ function readStatusRow(runDir: string): RunRowMetadata | undefined {
 
 /** Exported for testing; the picker calls it once per listed run.
  *
- * The run's state document is the row. A run written before that document
- * existed has only the trajectory it kept, which can hold hundreds of
- * megabytes of events, so that case still scans a bounded tail of it. */
-export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
-  const status = readStatusRow(dirname(trajectoryFile));
-  if (status !== undefined) return status;
-  const tail = readTail(trajectoryFile, TAIL_WINDOW_BYTES);
-  if (tail !== undefined) {
-    const row = parseRunTail(tail);
-    if (row.workflow !== undefined) return row;
-    const bigger = readTail(trajectoryFile, TAIL_WINDOW_CAP_BYTES);
-    // Shorter means the file already fit the small window; nothing more to find.
-    // Whatever the document yielded is the row — a run that failed before it
-    // loaded a workflow has a status and a prompt and no workflow, and the row
-    // must keep them.
-    if (bigger === undefined || bigger.length <= tail.length) return row;
-    return parseRunTail(bigger);
-  }
-  // No document to scan: the stream is the run's only copy, and its ends
-  // answer the row.
-  return readStreamRowMetadata(trajectoryStreamPath(trajectoryFile)) ?? {};
+ * The run's state document is the row. It is one small file, so reading it is
+ * the whole cost of listing a run. */
+export function readRunRowMetadata(runDir: string): RunRowMetadata {
+  return readStatusRow(runDir) ?? {};
 }
 
 /** One picker label: `2026-09-03 01:07 · gpu-cuda-tuning · [failed] · <prompt
@@ -336,7 +197,7 @@ function pickRun(
           // eat exactly the prompt tail this label exists to show. The full
           // payload lives in the label; the raw id still prints in the
           // `Logs: <run-id>` header after selection.
-          const row = readRunRowMetadata(join(runsRoot, id, "trajectory.json"));
+          const row = readRunRowMetadata(join(runsRoot, id));
           return { value: id, label: runPickerLabel(id, row) };
         }),
         Effect.mapError((cause) => new LogsStorageError({

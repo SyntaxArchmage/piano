@@ -33,6 +33,27 @@ import {
 } from "./progress.js";
 import { resumeStreamPath, type ResumeActorState, type ResumeState } from "./resume-state.js";
 
+/** One job, as the state document holds it.
+ *
+ * `accepted` and `attempts` are a set and a map while a run is live; a JSON
+ * document holds them as a list and a table. The coordinates stay the same. */
+export interface RunJob {
+  readonly jobOrdinal: number;
+  /** `alive` while the last span runs; `paused` after a human stop; `finished`
+   * once a span closed with an outcome. */
+  readonly state: "alive" | "paused" | "finished";
+  /** Present only when `state` is `finished`. */
+  readonly outcome?: "completed" | "failed" | "restarted";
+  /** Invocation ids accepted across every span of this job — what a continue
+   * of this job skips. */
+  readonly accepted: readonly string[];
+  /** Highest attempt number recorded per invocation across the job's spans, so
+   * a continue's re-run follows the attempts already on disk. */
+  readonly attempts: Readonly<Record<string, number>>;
+  /** The input the job runs. */
+  readonly input?: string;
+}
+
 /** The run's state.
  *
  * One of each thing a run used to say once per file: `runId` (which the
@@ -69,7 +90,7 @@ export interface RunStatus {
   readonly current?: WorkflowProgressCurrent;
   /** The jobs this run has run, latest last. A continue keeps its ordinal; a
    * new prompt or a restart starts the next one. */
-  readonly jobs: readonly JobView[];
+  readonly jobs: readonly RunJob[];
   /** The actor registry: which harness session holds each conversation. */
   readonly promptIndex: number;
   readonly actors: Readonly<Record<string, ResumeActorState>>;
@@ -130,14 +151,28 @@ export function runStatusFromParts(parts: {
     stageCounts: progress?.stageCounts ?? {},
     ...(progress?.invocationTime === undefined ? {} : { invocationTime: progress.invocationTime }),
     ...(progress?.current === undefined ? {} : { current: progress.current }),
-    jobs: jobs(foldJobSpans(records)),
+    jobs: jobs(foldJobSpans(records)).map(asRunJob),
     promptIndex: resume?.promptIndex ?? 0,
     actors: resume?.actors ?? {},
   } satisfies RunStatus;
 }
 
-/** Read a run's state by folding its ledgers. */
+/** Read a run's state: the one document, whole.
+ *
+ * No fallback to the ledgers behind it — those are the evidence and the source
+ * this document is folded from, not a second way to answer the question. */
 export function readRunStatus(
+  runDir: string,
+): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const raw = yield* fileSystem.readFileString(runStatusPath(runDir)).pipe(Effect.orElseSucceed(() => undefined));
+    return raw === undefined ? undefined : parseRunStatus(raw);
+  });
+}
+
+/** Fold the ledgers a run has recorded, producing the state document. */
+function foldRunStatus(
   runDir: string,
 ): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
@@ -167,7 +202,7 @@ export function refreshRunStatus(
   runDir: string,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const status = yield* readRunStatus(runDir);
+    const status = yield* foldRunStatus(runDir);
     if (status !== undefined) yield* writeRunStatus(runDir, status);
   });
 }
@@ -182,6 +217,30 @@ export function writeRunStatus(
     temporaryPath: () => `${path}.tmp-${process.pid}`,
     mapError: (cause, step) => workflowError("schedule", path, `status ${step}: ${errorMessage(cause)}`),
   });
+}
+
+/** The in-memory job, in the shapes a JSON document can hold. */
+function asRunJob(job: JobView): RunJob {
+  return {
+    jobOrdinal: job.jobOrdinal,
+    state: job.state,
+    ...(job.outcome === undefined ? {} : { outcome: job.outcome }),
+    accepted: [...job.accepted],
+    attempts: Object.fromEntries(job.attempts),
+    ...(job.input === undefined ? {} : { input: job.input }),
+  };
+}
+
+function parseRunStatus(raw: string): RunStatus | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as RunStatus
+      : undefined;
+  } catch {
+    // Torn mid-write: the ledgers behind it still hold the run.
+    return undefined;
+  }
 }
 
 function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {

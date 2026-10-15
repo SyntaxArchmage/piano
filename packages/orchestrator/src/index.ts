@@ -150,6 +150,7 @@ export {
   runStatusFromParts,
   runStatusPath,
   writeRunStatus,
+  type RunJob,
   type RunStatus,
 } from "./run-status.js";
 export {

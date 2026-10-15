@@ -14,7 +14,6 @@ import {
   initializeWorkflowProgress,
   markWorkflowStageStarted,
   runStatusPath,
-  workflowProgressPath,
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
@@ -85,23 +84,11 @@ describe("reading a run's progress", () => {
     expect(view?.current?.stageId).toBe("tune");
   });
 
-  it("draws the same view from the stream when the document is gone", async () => {
+  it("draws nothing when the state document is torn or absent", async () => {
     const runDir = await finishedRun();
-    const fromDocument = await readWorkflowSnapshot(runDir);
+    await writeFile(runStatusPath(runDir), '{"version":1,"runId":"ru', "utf8");
 
-    await rm(runStatusPath(runDir));
-
-    expect(await readWorkflowSnapshot(runDir)).toEqual(fromDocument);
-  });
-
-  it("skips a line torn mid-append and keeps the records before it", async () => {
-    const runDir = await finishedRun();
-    const fromDocument = await readWorkflowSnapshot(runDir);
-    await writeFile(workflowProgressPath(runDir), '{"version":1,"executionId":"execu', { flag: "a" });
-
-    await rm(runStatusPath(runDir));
-
-    expect(await readWorkflowSnapshot(runDir)).toEqual(fromDocument);
+    expect(await readWorkflowSnapshot(runDir)).toBeUndefined();
   });
 
   it("draws nothing when neither file can be read", async () => {

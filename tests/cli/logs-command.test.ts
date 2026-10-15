@@ -151,39 +151,10 @@ describe("piano logs picker rows", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("extracts workflow, status, and prompt from the trajectory tail", async () => {
+  it("takes the row from the run's state document", async () => {
     const prompt = 'Implement a `matmul.cu` that prints "TFLOPS: <value>"\nand nothing else.';
-    // Padding the events array past the 64KB tail window proves the picker
-    // reads only the document's trailing block — never the whole (huge) file.
-    const document = JSON.stringify({
-      version: 1,
-      runId,
-      updatedAt: "2026-08-21T10:32:07.123Z",
-      events: [{ type: "resource" }, { type: "noise", fill: "x".repeat(70_000) }],
-      workspaceCwd: "/tmp/ws",
-      workflowPath: "/home/albert/.piano/gpu-cuda-tuning.yml",
-      status: "failed",
-      sessionId: "s-1",
-      transcriptPath: "/tmp/t.jsonl",
-      turns: [{ prompt, status: "failed", eventCount: 3 }],
-    });
-    const file = join(root, runId, "trajectory.json");
-    await writeFile(file, document + "\n", "utf8");
-    expect(readRunRowMetadata(file)).toEqual({
-      workflow: "gpu-cuda-tuning",
-      status: "failed",
-      prompt,
-    });
-    const label = runPickerLabel(runId, readRunRowMetadata(file));
-    expect(label.startsWith("2026-08-21 12:00 · gpu-cuda-tuning · [failed] · Implement a `matmul.cu`")).toBe(true);
-    expect(label.endsWith("…")).toBe(true);
-  });
-
-  it("reads the row from the run's state document, never opening the trajectory", async () => {
-    const prompt = "first ask";
-    const runDir = join(root, runId);
-    // A run written today keeps its state in one small document; the huge
-    // trajectory beside it is evidence, not the row.
+    // One small document is the whole row. The trajectory beside it is the
+    // evidence and is never opened to list a run.
     await writeFile(join(root, runId, "trajectory.json"), "x".repeat(200_000), "utf8");
     await writeFile(join(root, runId, "status.json"), JSON.stringify({
       version: 1,
@@ -193,11 +164,14 @@ describe("piano logs picker rows", () => {
       turns: [{ prompt, status: "failed", eventCount: 3 }],
     }), "utf8");
 
-    expect(readRunRowMetadata(join(runDir, "trajectory.json"))).toEqual({
+    expect(readRunRowMetadata(join(root, runId))).toEqual({
       workflow: "gpu-cuda-tuning",
       status: "failed",
       prompt,
     });
+    const label = runPickerLabel(runId, readRunRowMetadata(join(root, runId)));
+    expect(label.startsWith("2026-08-21 12:00 · gpu-cuda-tuning · [failed] · Implement a `matmul.cu`")).toBe(true);
+    expect(label.endsWith("…")).toBe(true);
   });
 
   it("omits a completed status and a missing workflow from the label", () => {
@@ -206,79 +180,25 @@ describe("piano logs picker rows", () => {
   });
 
   it("keeps the row of a run that failed before it named a workflow", async () => {
-    // A run can fail while loading its workflow, so its document has a prompt
-    // and no workflowPath. The tail scanner reads the status only from the
-    // block after that path, which leaves the prompt — and the row must keep
-    // it rather than falling through to a stream that is not there.
+    // A run can fail while loading its workflow, so its state has a prompt and
+    // no workflowPath. The row must keep the prompt rather than dropping to an
+    // id+time label.
     const runIdNoWorkflow = "20260821T150000-nowf01";
     await mkdir(join(root, runIdNoWorkflow), { recursive: true });
-    await writeFile(
-      join(root, runIdNoWorkflow, "trajectory.json"),
-      `${JSON.stringify({
-        version: 1,
-        runId: runIdNoWorkflow,
-        updatedAt: "2026-08-21T15:00:00.000Z",
-        promptLength: 5,
-        events: [],
-        status: "failed",
-        turns: [{ prompt: "hello", status: "failed", eventCount: 0 }],
-      })}\n`,
-      "utf8",
-    );
+    await writeFile(join(root, runIdNoWorkflow, "status.json"), JSON.stringify({
+      version: 1,
+      runId: runIdNoWorkflow,
+      status: "failed",
+      turns: [{ prompt: "hello", status: "failed", eventCount: 0 }],
+    }), "utf8");
 
-    expect(readRunRowMetadata(join(root, runIdNoWorkflow, "trajectory.json")))
-      .toEqual({ prompt: "hello" });
+    expect(readRunRowMetadata(join(root, runIdNoWorkflow))).toEqual({ status: "failed", prompt: "hello" });
   });
 
-  it("degrades to an id+time row without a trajectory", () => {
-    const missing = join(root, "20260821T130000-def456", "trajectory.json");
+  it("degrades to an id+time row without a state document", () => {
+    const missing = join(root, "20260821T130000-def456");
     expect(readRunRowMetadata(missing)).toEqual({});
     expect(runPickerLabel(runId, {})).toBe("2026-08-21 12:00");
     expect(runPickerLabel("legacy-dir", {})).toBe("legacy-dir");
-  });
-
-  it("takes the row from the ends of a run's stream, without reading the middle", async () => {
-    const runIdStream = "20260821T140000-str001";
-    await mkdir(join(root, runIdStream), { recursive: true });
-    const base = {
-      version: 1,
-      runId: runIdStream,
-      workflowPath: "/repo/recipes/workflows/gpu-cuda-tuning.yaml",
-      status: "completed",
-      promptLength: 4,
-    };
-    // The bulk of a run is its events; neither end needs them.
-    const filler = Array.from({ length: 400 }, (_, index) => ({ type: "message_end", index }));
-    await writeFile(join(root, runIdStream, "trajectory.jsonl"), [
-      { ...base, timestamp: "2026-08-21T14:00:00.000Z", prompt: "Implement a matmul.cu kernel", events: [] },
-      { ...base, timestamp: "2026-08-21T14:05:00.000Z", prompt: "second", events: filler },
-      { ...base, timestamp: "2026-08-21T14:09:00.000Z", status: "failed", events: [] },
-    ].map((record) => `${JSON.stringify(record)}\n`).join(""), "utf8");
-
-    // Read through the document path: the stream beside it is what answers.
-    expect(readRunRowMetadata(join(root, runIdStream, "trajectory.json"))).toEqual({
-      workflow: "gpu-cuda-tuning",
-      status: "failed",
-      prompt: "Implement a matmul.cu kernel",
-    });
-  });
-
-  it("finds the trailing block past the small window when prompts are huge", async () => {
-    // Workflow handoff prompts can push the document's trailing block past
-    // the 64KB window; the metadata reader pays one bigger read for those.
-    const document = JSON.stringify({
-      version: 1,
-      runId,
-      events: [{ type: "resource" }],
-      workflowPath: "/home/albert/.piano/gpu-cuda-tuning.yml",
-      status: "completed",
-      turns: [{ prompt: "x".repeat(200_000), status: "completed", eventCount: 1 }],
-    });
-    const file = join(root, runId, "trajectory.json");
-    await writeFile(file, document + "\n", "utf8");
-    const row = readRunRowMetadata(file);
-    expect(row.workflow).toBe("gpu-cuda-tuning");
-    expect(row.status).toBe("completed");
-    expect(row.prompt).toBe("x".repeat(200_000));
   });
 });
