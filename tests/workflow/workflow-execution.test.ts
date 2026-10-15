@@ -16,6 +16,7 @@ import {
 } from "../../packages/logging/src/index.js";
 import {
   allocateMapWorkspace,
+  closeWorkflowJob,
   executeWorkflow,
   foldJobSpans,
   jobs,
@@ -4505,6 +4506,100 @@ workflow:
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("reclaims a closed job's preserved slots when the next job starts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-closed-sweep-"));
+    try {
+      await writeFile(join(root, "map.yml"), MAP_WORKFLOW);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      const session = await testSession(root);
+      let run = 1;
+      let started = 0;
+      let signalBothStarted!: () => void;
+      const bothStarted = new Promise<void>((resolve) => { signalBothStarted = resolve; });
+      const runner: AgentRunner = (request) => {
+        const stage = stageId(request);
+        if (run === 1 && stage === "tournament.implement") {
+          return Effect.sync(() => {
+            started += 1;
+            if (started === 2) signalBothStarted();
+          }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+            // Nothing resumes this: only the pause's interrupt ends the turn.
+          })));
+        }
+        return Effect.promise(async () => {
+          if (stage === "propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              strategies: [
+                { id: "slot-a", bottleneck: "memory", technique: "tile", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+              ],
+            }));
+          }
+          if (stage === "tournament.implement") {
+            await writeFile(join(request.cwd, "kernel.py"), `candidate:${invocationId(request)}\n`);
+          }
+          const invocation = invocationId(request);
+          const sessionId = `${stage}-${run}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+          return {
+            sessionId,
+            transcriptPath: `/tmp/${sessionId}.jsonl`,
+            text: `${stage}:${invocation}`,
+            continuation: continuation(sessionId),
+          };
+        });
+      };
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: session.id, cwd: root, prompt: "map candidates",
+        agentRunner: runner,
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await bothStarted;
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const recordsDir = join(session.runDir, "workspace-records");
+      const readRecords = async () => Promise.all((await readdir(recordsDir)).map(async (entry) =>
+        JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
+          key: string;
+          cwd: string;
+          status: string;
+        }));
+      const preserved = await readRecords();
+      expect(preserved.map((record) => record.key).sort())
+        .toEqual(["job-1/tournament/slot-0", "job-1/tournament/slot-1"]);
+      expect(preserved.every((record) => record.status === "preserved")).toBe(true);
+
+      // The human abandons the paused job: the ledger records the close, and
+      // the next job's start is what reclaims the directories it left behind.
+      await runWorkflow(session, closeWorkflowJob(session.runDir, session.id, 1, "restarted"));
+      run = 2;
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: session.id, cwd: root, prompt: "map candidates again",
+        agentRunner: runner,
+      }));
+
+      const after = await readRecords();
+      for (const record of preserved) {
+        const settled = after.find((candidate) => candidate.key === record.key);
+        expect(settled?.status).toBe("cleaned");
+        await expect(stat(record.cwd)).rejects.toThrow();
+      }
+      // The new job's slots are its own, under its own key.
+      expect(after.map((candidate) => candidate.key).sort()).toEqual(expect.arrayContaining([
+        "job-1/tournament/slot-0",
+        "job-1/tournament/slot-1",
+        "job-2/tournament/slot-0",
+        "job-2/tournament/slot-1",
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("skips a finalized region on continue without running a single worker", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-map-skip-"));

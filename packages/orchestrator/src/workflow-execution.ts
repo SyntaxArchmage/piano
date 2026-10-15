@@ -345,14 +345,19 @@ function createExecutionDirectory(
   );
 }
 
-/** The next job ordinal, read from what the run has already recorded: the
- * ledger's spans and the `prompts/<n>` trees, with the resume state's index as
- * a floor only. Evidence beats a hint — a hint that lags behind cannot reopen
- * an ordinal another job's evidence already holds. */
-function nextJobOrdinalForRun(
+/** What the run's own ledger says about its jobs before a new one starts: the
+ * ordinal it must not reuse, and the jobs a close already abandoned. Both come
+ * from one fold of the evidence — the ledger's spans and the `prompts/<n>`
+ * trees, with the resume state's index as a floor only. A hint that lags
+ * behind cannot reopen an ordinal another job's evidence already holds. */
+function readRunJobLedger(
   runDir: string,
   hint: number | undefined,
-): Effect.Effect<number, never, FileSystem.FileSystem> {
+): Effect.Effect<
+  { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[] },
+  never,
+  FileSystem.FileSystem
+> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
@@ -361,15 +366,40 @@ function nextJobOrdinalForRun(
     const records = ledger.split("\n")
       .map((line) => parseProgressStreamRecord(line))
       .filter((record): record is WorkflowProgressStreamRecord => record !== undefined);
+    const spans = foldJobSpans(records);
     const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
       Effect.orElseSucceed(() => [] as readonly string[]),
     );
     const recordedOrdinals = entries
       .map((entry) => Number(entry))
       .filter((value) => Number.isSafeInteger(value) && value > 0);
-    return nextJobOrdinal(foldJobSpans(records), recordedOrdinals, hint);
+    return {
+      nextOrdinal: nextJobOrdinal(spans, recordedOrdinals, hint),
+      abandonedOrdinals: spans.filter((span) => span.closed !== undefined).map((span) => span.jobOrdinal),
+    };
   });
 }
+
+/** A closed job is abandoned for good — nothing may continue it — so the next
+ * run reclaims the slot directories its pause preserved. The ledger is the
+ * authority here, not the moment of closing: a crash right after the close
+ * must not strand them. Best-effort like the run-end backstop — a cleanup
+ * failure is logged, never fatal, and the record stays in its latest phase so
+ * recovery can finish what it started. */
+const reclaimAbandonedSlots = (
+  runDir: string,
+  executionId: string,
+  ordinals: readonly number[],
+): Effect.Effect<void, never, FileSystem.FileSystem | Logging> =>
+  Effect.forEach(ordinals, (ordinal) => cleanupMapWorkspaces(runDir, executionId, {
+    keyPrefix: `job-${ordinal}/`,
+  }).pipe(Effect.asVoid), { discard: true }).pipe(
+    Effect.tapError((error) => WORKFLOW_LOG.error("workspace.reclaim.failed", {
+      outcome: "failure",
+      data: { executionId, error: failureDetails(error) },
+    })),
+    Effect.catchAll(() => Effect.void),
+  );
 
 
 
@@ -704,8 +734,9 @@ export function executeWorkflow(
     // so its evidence lands in the same prompts/<i>/ tree and the stream
     // groups the spans together. A fresh job takes the next ordinal the run's
     // own evidence leaves — the resume state's index is only a floor there.
-    const promptIndex = request.continueJob?.jobOrdinal ??
-      (yield* nextJobOrdinalForRun(request.runDir, request.execution?.promptIndex));
+    const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.promptIndex);
+    yield* reclaimAbandonedSlots(request.runDir, executionId, jobLedger.abandonedOrdinals);
+    const promptIndex = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
     const knownLoopIterations = new Map<string, number>();
     yield* initializeWorkflowProgress(request.runDir, executionId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, executionId);
