@@ -13,6 +13,8 @@ import type { Logging } from "@piano/logging";
 import type { WorkflowTrajectory } from "@piano/trajectory";
 import {
   allocateMapWorkspace,
+  applyWinnerWorkspace,
+  carryLanded,
   cleanupMapWorkspaces,
   ensureWorkspaceSnapshot,
   workspaceContentChanges,
@@ -21,7 +23,7 @@ import {
   type WorkflowCarrying,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
-import { executeStage, type StageRunnerContext } from "./stage-runner.js";
+import { executeStage, rebuildAcceptedStage, type StageRunnerContext } from "./stage-runner.js";
 import { resultProjectionValue } from "./stage-runner-support.js";
 import { WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
@@ -36,11 +38,15 @@ import {
 import type { HandoffMapItem } from "./handoff.js";
 import {
   mapOverParts,
+  runtimeFramesFromInstanceId,
   runtimeInstanceId,
   runtimeInvocationId,
+  runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeNode,
+  type WorkflowRuntimeRegionNode,
 } from "./workflow-runtime.js";
+import type { WorkflowProgressRegionFinalizedRecord, WorkflowRegionFinalizedPayload } from "./progress.js";
 import type { CompiledWorkflow, WorkflowRegionPlan } from "./workflow.js";
 import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
@@ -74,6 +80,10 @@ export interface ScopeWalkerContext {
   readonly actorContexts: Map<string, ActorExecutionContext>;
   readonly knownLoopIterations: Map<string, number>;
   readonly progressSemaphore: Effect.Semaphore;
+  /** Append one `region-finalized` line under the progress semaphore. The
+   * composer owns identity (execution id, job ordinal); the walker owns the
+   * moment a region exits. */
+  readonly persistRegionFinalized: (payload: WorkflowRegionFinalizedPayload) => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
   readonly persistActors: () => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
   readonly workflowTrajectory: WorkflowTrajectory;
   readonly autoCommit: boolean;
@@ -240,6 +250,7 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     actorContexts,
     knownLoopIterations,
     progressSemaphore,
+    persistRegionFinalized,
     persistActors,
     workflowTrajectory,
     autoCommit,
@@ -365,6 +376,12 @@ interface TournamentFinalization {
   readonly winner?: RuntimeTournamentCandidate;
   readonly terminalBlocked?: readonly InternalStageResult[];
   readonly stopped?: boolean;
+  /** Why the region exited, when it exited decisively: `undefined` for the
+   * empty-candidate case, which writes no `region-finalized` record. */
+  readonly outcome?: "carried" | "admitted-not-carried" | "no-winner" | "terminal-blocked";
+  readonly notCarriedReason?: "admission" | "stopped";
+  /** The incumbent as the region left it, recorded for a skip to restore. */
+  readonly incumbent?: SelectionIncumbent;
 }
 
 // A tournament is one region: however many stages it contains, it decides
@@ -401,11 +418,18 @@ const finalizeTournament = (
       keys: candidates.map((candidate) => candidate.key),
       preserve: options?.preserve === true,
     });
-    return { terminalBlocked: blockedResults, stopped: true };
+    return { terminalBlocked: blockedResults, stopped: true, outcome: "terminal-blocked" };
   }
   let winnerKey: string | undefined;
   let selectionReferee: SelectionReferee | undefined;
   let selectionBranches: readonly SelectionBranch[] = [];
+  /** The incumbent map as a record field, evaluated at each return so a
+   * carried winner is recorded in its post-admission state. */
+  const incumbentForRecord = (): SelectionIncumbent | undefined => {
+    if (selectionReferee === undefined) return undefined;
+    const key = tournamentIncumbentKey(region, frames);
+    return key === undefined ? undefined : tournamentIncumbents.get(key);
+  };
   if (options?.winner !== undefined) {
     // An explicit host-plugin selector overrides the metric referee.
     try {
@@ -488,7 +512,12 @@ const finalizeTournament = (
         keys: cleanupKeys,
         preserve: options?.preserve === true,
       });
-      return { ...(winnerCandidate === undefined ? {} : { winner: winnerCandidate }) };
+      return {
+        outcome: "admitted-not-carried",
+        notCarriedReason: "admission",
+        ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
+        ...(winnerCandidate === undefined ? {} : { winner: winnerCandidate }),
+      };
     }
     const winnerBlocked = winnerCandidate?.boundaryResults.some(isBlockedStageResult) === true;
     if (winnerCandidate?.stopped === true || winnerBlocked) {
@@ -510,12 +539,36 @@ const finalizeTournament = (
         keys: cleanupKeys,
         preserve: options?.preserve === true,
       });
-      return {};
+      return {
+        outcome: "admitted-not-carried",
+        notCarriedReason: "stopped",
+        ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
+      };
     }
     const excludeUnder = [request.runDir];
     let consolidating: WorkflowCarrying;
     if (winnerContentDir === undefined || winnerCandidate === undefined) {
       consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no materialised slot content` };
+    } else if (winnerCandidate.workspace.strategy === "git-worktree") {
+      // A git-worktree winner is merged, not consolidated: its worktree holds
+      // the winning edits, git fast-forwards the parent onto the commit it
+      // makes of them, and the retained ref is the record. Git carries the
+      // delta and git is the verification — no frozen file delta and no
+      // worker turn. A source that cannot fast-forward is a carry failure:
+      // the winner's work did not reach the parent, and saying otherwise
+      // would be the silent loss the delta gate exists to catch.
+      const applied = yield* applyWinnerWorkspace(request.runDir, runId, winnerKey, sourceCwd).pipe(
+        Effect.map((result): WorkflowCarrying => result.skipped === undefined
+          ? { kind: "git-merged", ...(result.commit === undefined ? {} : { commit: result.commit }) }
+          : {
+            kind: "carry-failed",
+            reason: result.skipped.reason,
+            ...(result.commit === undefined ? {} : { commit: result.commit }),
+          }),
+        Effect.catchAll((error): Effect.Effect<WorkflowCarrying> =>
+          Effect.succeed({ kind: "carry-failed", reason: errorMessage(error) })),
+      );
+      consolidating = applied;
     } else {
       const frozen = yield* Effect.tryPromise({
         try: async () => {
@@ -599,14 +652,14 @@ const finalizeTournament = (
       }
     }
     yield* WORKFLOW_LOG.info("workspace.winner.consolidated", {
-      outcome: consolidating.kind === "worker-consolidated" ? "success" : "no-winner",
+      outcome: carryLanded(consolidating.kind) ? "success" : "no-winner",
       data: { runId, winnerKey, sourceCwd, carrying: consolidating },
     }).pipe(Effect.catchAll(() => Effect.void));
     yield* workflowTrajectory.observe({
       type: "selection",
       runId,
       timestamp: new Date().toISOString(),
-      outcome: consolidating.kind === "worker-consolidated" ? "carried" : "no-winner",
+      outcome: carryLanded(consolidating.kind) ? "carried" : "no-winner",
       ...(selectionReferee === undefined ? {} : { referee: selectionReferee }),
       winnerKey,
       ...(consolidating.commit === undefined ? {} : { commit: consolidating.commit }),
@@ -632,7 +685,11 @@ const finalizeTournament = (
   const winner = winnerKey === undefined
     ? undefined
     : candidates.find((candidate) => candidate.key === winnerKey);
-  return { ...(winner === undefined ? {} : { winner }) };
+  return {
+    outcome: winnerKey === undefined ? "no-winner" : "carried",
+    ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
+    ...(winner === undefined ? {} : { winner }),
+  };
 });
 
 const executeScope = (
@@ -648,7 +705,97 @@ const executeScope = (
   const pending = new Map(nodes.map((node) => [node.name, node]));
   const allStages: InternalStageResult[] = [];
 
-  const runNode = (node: WorkflowRuntimeNode): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
+  /** Rebuild a finalized region's exit from evidence alone: every accepted
+   * invocation inside it, read back through the same rebuild a continue's
+   * cursor uses, then the boundary the region's own exit decided (the winner
+   * slot's exit result, all slots for a no-winner tournament, the blocked
+   * results, or the last iteration's exit for a loop). `undefined` abandons
+   * the skip: normal re-entry is slower but always answers in the same
+   * shape, so missing evidence degrades instead of guessing. */
+  const rebuildFinalizedRegion = (
+    node: WorkflowRuntimeRegionNode,
+    frames: readonly WorkflowRuntimeFrame[],
+    finalized: WorkflowProgressRegionFinalizedRecord,
+  ): Effect.Effect<NodeExecution | undefined, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
+    const cursor = request.continueJob;
+    if (cursor === undefined) return undefined;
+    const region = node.region;
+    const instance = runtimeRegionInstanceId(frames, node.id);
+    // A loop that never entered (its prerequisite was already blocked when
+    // the region was reached) owns no invocation: re-entry decides that from
+    // live inputs and runs no worker either way.
+    if (node.kind === "loop" && (finalized.iterations ?? 0) === 0) return undefined;
+    const inside = [...cursor.accepted]
+      .map((invocationId) => {
+        const at = invocationId.indexOf("@");
+        if (at <= 0) return undefined;
+        const stageId = invocationId.slice(0, at);
+        const target = invocationId.slice(at + 1);
+        if (target !== instance && !target.startsWith(`${instance}/`)) return undefined;
+        const rebuiltFrames = runtimeFramesFromInstanceId(target);
+        return rebuiltFrames === undefined ? undefined : { stageId, target, frames: rebuiltFrames };
+      })
+      .filter((entry): entry is { stageId: string; target: string; frames: readonly WorkflowRuntimeFrame[] } => entry !== undefined)
+      .sort((left, right) => left.target.localeCompare(right.target) || left.stageId.localeCompare(right.stageId));
+    if (inside.length === 0) return undefined;
+    const rebuilt: InternalStageResult[] = [];
+    for (const entry of inside) {
+      const result = yield* rebuildAcceptedStage(request.runDir, {
+        runId,
+        promptIndex: cursor.jobOrdinal,
+        stageId: entry.stageId,
+        stageName: entry.stageId,
+        frames: entry.frames,
+      }, cursor);
+      if (result === undefined) return undefined;
+      rebuilt.push(result);
+    }
+    const exitResults = rebuilt.filter((result) => result.stageId === region.exitStageId);
+    let boundary: readonly InternalStageResult[];
+    if (node.kind === "map") {
+      if (finalized.outcome === "terminal-blocked") {
+        boundary = rebuilt.filter(isBlockedStageResult);
+      } else if (finalized.winnerInstanceId !== undefined) {
+        boundary = exitResults.filter((result) => result.instanceId === finalized.winnerInstanceId);
+      } else {
+        boundary = exitResults;
+      }
+    } else {
+      const lastIteration = `${instance}/iter-${(finalized.iterations ?? 1) - 1}`;
+      boundary = exitResults.filter((result) => result.instanceId === lastIteration);
+    }
+    if (boundary.length === 0) return undefined;
+    if (finalized.incumbent !== undefined) {
+      const incumbentKey = tournamentIncumbentKey(region, frames);
+      if (incumbentKey !== undefined) tournamentIncumbents.set(incumbentKey, finalized.incumbent);
+    }
+    // "Ended early" is derived, not stored: a blocked region, or a tournament
+    // whose winner was stopped and could not be carried.
+    const stopped = finalized.outcome === "terminal-blocked" || finalized.notCarriedReason === "stopped";
+    return {
+      boundary: { results: boundary },
+      stages: rebuilt,
+      ...(stopped ? { stopped: true } : {}),
+    } satisfies NodeExecution;
+  });
+
+  /** A region the job already finalized is skipped whole: its workers do not
+   * run again, and its boundary comes from the evidence they left. */
+  const runNode = (
+    node: WorkflowRuntimeNode,
+  ): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
+    if (node.kind !== "stage") {
+      const finalized = request.continueJob?.regions?.get(runtimeRegionInstanceId(frames, node.id));
+      if (finalized !== undefined) {
+        return rebuildFinalizedRegion(node, frames, finalized).pipe(
+          Effect.flatMap((skipped) => skipped === undefined ? runNodeDirect(node) : Effect.succeed(skipped)),
+        );
+      }
+    }
+    return runNodeDirect(node);
+  };
+
+  const runNodeDirect = (node: WorkflowRuntimeNode): Effect.Effect<NodeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => {
     const directInputs = node.dependencies.flatMap((dependency) => completed.get(dependency)?.results ?? []);
     const inputs = mergeScopeInputs(inheritedInputs, directInputs);
     if (node.kind === "stage") {
@@ -677,6 +824,13 @@ const executeScope = (
         // do not enter the loop and issue repeated agent turns.
         const inheritedBlocked = inputs.find(isBlockedStageResult);
         if (inheritedBlocked !== undefined) {
+          yield* persistRegionFinalized({
+            instance: runtimeRegionInstanceId(frames, region.id),
+            regionId: region.id,
+            regionKind: "loop",
+            outcome: "terminal-blocked",
+            iterations: 0,
+          });
           return {
             boundary: { results: [inheritedBlocked] },
             stages: [],
@@ -694,6 +848,9 @@ const executeScope = (
           ? undefined
           : Date.now() + durationSeconds * 1000;
         let iteration = 0;
+        /** Which bound ended the loop, captured at the break so the exit can
+         * record it — a monitor reading `region-finalized` sees why. */
+        let bound: "bound-iterations" | "bound-duration" | "feedback-stop" = "bound-iterations";
         while (true) {
           // The bound is consulted *between* iterations, and never before
           // the first: a duration that has already elapsed when the region
@@ -702,7 +859,10 @@ const executeScope = (
           // therefore overshoot the bound; a stage is not interruptible
           // mid-turn by a region clock, only by `stage.timeout` or a human.
           if (iteration > 0) {
-            if (iterations !== undefined && iteration >= iterations) break;
+            if (iterations !== undefined && iteration >= iterations) {
+              bound = "bound-iterations";
+              break;
+            }
             if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
               yield* WORKFLOW_LOG.info("workflow.loop.duration.reached", {
                 data: {
@@ -711,6 +871,7 @@ const executeScope = (
                   completedIterations: iteration,
                 },
               }).pipe(Effect.catchAll(() => Effect.void));
+              bound = "bound-duration";
               break;
             }
           }
@@ -728,6 +889,13 @@ const executeScope = (
           if (child.stopped === true && loopBlockIsTerminal(child, node.entryStageId)) {
             // Global-scoped block (prerequisite gone) or entry-stage block:
             // no future round can do useful work, so terminate the loop.
+            yield* persistRegionFinalized({
+              instance: runtimeRegionInstanceId(frames, region.id),
+              regionId: region.id,
+              regionKind: "loop",
+              outcome: "terminal-blocked",
+              iterations: iteration + 1,
+            });
             return {
               boundary: child.boundary,
               stages,
@@ -771,12 +939,20 @@ const executeScope = (
                 feedback: region.feedback,
               },
             }).pipe(Effect.catchAll(() => Effect.void));
+            bound = "feedback-stop";
             break;
           }
         }
         if (final === undefined) {
           return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `loop "${region.name}" produced no iteration`));
         }
+        yield* persistRegionFinalized({
+          instance: runtimeRegionInstanceId(frames, region.id),
+          regionId: region.id,
+          regionKind: "loop",
+          outcome: bound,
+          iterations,
+        });
         return { boundary: final.boundary, stages } satisfies NodeExecution;
       });
     }
@@ -924,6 +1100,22 @@ const executeScope = (
         baselineContentDir: slot.baselineContentDir,
         ...(slots[index]?.stopped === true ? { stopped: true } : {}),
       })));
+      if (finalization.outcome !== undefined) {
+        const winnerItem = finalization.winner?.mapItem;
+        yield* persistRegionFinalized({
+          instance: runtimeRegionInstanceId(frames, region.id),
+          regionId: region.id,
+          regionKind: "map",
+          outcome: finalization.outcome,
+          ...(finalization.notCarriedReason === undefined ? {} : { notCarriedReason: finalization.notCarriedReason }),
+          ...(finalization.incumbent === undefined ? {} : { incumbent: finalization.incumbent }),
+          ...(finalization.winner === undefined ? {} : {
+            ...(winnerItem === undefined ? {} : {
+              winnerInstanceId: `${runtimeRegionInstanceId(frames, region.id)}/slot-${winnerItem.index}`,
+            }),
+          }),
+        });
+      }
       const stopped = finalization.winner === undefined
         ? finalization.stopped === true || slots.some((slot) => slot.stopped === true)
         : finalization.winner.stopped === true;

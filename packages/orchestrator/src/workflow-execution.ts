@@ -1,5 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
+import { join } from "node:path";
 import {
   failureDetails,
   isCancellation,
@@ -31,7 +32,6 @@ import {
 } from "@piano/trajectory";
 import {
   compileWorkflow,
-  scheduleWorkflow,
   type CompiledWorkflow,
   type WorkflowHarness,
 } from "./workflow.js";
@@ -55,7 +55,6 @@ import {
   COMPILE_SOURCE,
   EXPLICIT_LOAD_SOURCE,
   LOAD_SOURCE,
-  SCHEDULE_SOURCE,
   WORKFLOW_LOG,
   WORKFLOW_SOURCE,
 } from "./execution-logs.js";
@@ -104,10 +103,16 @@ import {
 import {
 } from "./selection.js";
 import {
+  appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
+  parseProgressStreamRecord,
   workflowProgressPath,
+  type WorkflowProgressRegionFinalizedRecord,
+  type WorkflowProgressStreamRecord,
+  type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
+import { foldJobSpans, nextJobOrdinal } from "./job-spans.js";
 import { runStatusPath } from "./run-status.js";
 import {
 } from "./contract-snapshot.js";
@@ -143,6 +148,10 @@ export interface WorkflowExecutionRequest {
     /** Highest attempt number recorded per invocation in the job so far, so a
      * re-run's new attempt does not overwrite the evidence it follows. */
     readonly attempts: ReadonlyMap<string, number>;
+    /** Regions that already exited in this job, keyed by runtime instance.
+     * A region found here is skipped whole: its boundary is rebuilt from the
+     * accepted invocations' evidence instead of re-entering its workers. */
+    readonly regions?: ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord>;
   };
   readonly cwd: string;
   readonly prompt: string;
@@ -335,6 +344,62 @@ function createExecutionDirectory(
     Effect.mapError((cause) => workflowError("schedule", runDir, String(cause))),
   );
 }
+
+/** What the run's own ledger says about its jobs before a new one starts: the
+ * ordinal it must not reuse, and the jobs a close already abandoned. Both come
+ * from one fold of the evidence — the ledger's spans and the `prompts/<n>`
+ * trees, with the resume state's index as a floor only. A hint that lags
+ * behind cannot reopen an ordinal another job's evidence already holds. */
+function readRunJobLedger(
+  runDir: string,
+  hint: number | undefined,
+): Effect.Effect<
+  { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[] },
+  never,
+  FileSystem.FileSystem
+> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
+      Effect.orElseSucceed(() => ""),
+    );
+    const records = ledger.split("\n")
+      .map((line) => parseProgressStreamRecord(line))
+      .filter((record): record is WorkflowProgressStreamRecord => record !== undefined);
+    const spans = foldJobSpans(records);
+    const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
+      Effect.orElseSucceed(() => [] as readonly string[]),
+    );
+    const recordedOrdinals = entries
+      .map((entry) => Number(entry))
+      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    return {
+      nextOrdinal: nextJobOrdinal(spans, recordedOrdinals, hint),
+      abandonedOrdinals: spans.filter((span) => span.closed !== undefined).map((span) => span.jobOrdinal),
+    };
+  });
+}
+
+/** A closed job is abandoned for good — nothing may continue it — so the next
+ * run reclaims the slot directories its pause preserved. The ledger is the
+ * authority here, not the moment of closing: a crash right after the close
+ * must not strand them. Best-effort like the run-end backstop — a cleanup
+ * failure is logged, never fatal, and the record stays in its latest phase so
+ * recovery can finish what it started. */
+const reclaimAbandonedSlots = (
+  runDir: string,
+  runId: string,
+  ordinals: readonly number[],
+): Effect.Effect<void, never, FileSystem.FileSystem | Logging> =>
+  Effect.forEach(ordinals, (ordinal) => cleanupMapWorkspaces(runDir, runId, {
+    keyPrefix: `job-${ordinal}/`,
+  }).pipe(Effect.asVoid), { discard: true }).pipe(
+    Effect.tapError((error) => WORKFLOW_LOG.error("workspace.reclaim.failed", {
+      outcome: "failure",
+      data: { runId, error: failureDetails(error) },
+    })),
+    Effect.catchAll(() => Effect.void),
+  );
 
 
 
@@ -652,16 +717,11 @@ export function executeWorkflow(
     const preExistingDirty = autoCommit
       ? yield* snapshotDirtyFiles(sharedWorkspace.cwd)
       : new Set<string>();
-    const scheduled = yield* TRACE(
-      SCHEDULE_SOURCE,
-      scheduleWorkflow(compiled),
-      { workflow: compiled.name },
-    );
-    if (scheduled.length === 0) {
+    if (compiled.stages.length === 0) {
       return yield* Effect.fail(workflowError(
         "schedule",
         compiled.sourcePath,
-        "scheduler produced no stage",
+        "workflow compiled to no stage",
       ));
     }
     const runtimePlan = buildWorkflowRuntimePlan(compiled);
@@ -672,8 +732,11 @@ export function executeWorkflow(
     const progressPlan = workflowProgressPlan(compiled);
     // A continue repeats its job's ordinal: the span belongs to the same job,
     // so its evidence lands in the same prompts/<i>/ tree and the stream
-    // groups the spans together. A fresh job takes the next ordinal.
-    const promptIndex = request.continueJob?.jobOrdinal ?? (request.execution?.promptIndex ?? 0) + 1;
+    // groups the spans together. A fresh job takes the next ordinal the run's
+    // own evidence leaves — the resume state's index is only a floor there.
+    const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.promptIndex);
+    yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
+    const promptIndex = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
     const knownLoopIterations = new Map<string, number>();
     yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
@@ -691,7 +754,7 @@ export function executeWorkflow(
       });
     yield* WORKFLOW_LOG.info("workflow.compiled", {
       data: {
-        stages: scheduled.map((invocation) => invocation.id),
+        stages: compiled.stages.map((stage) => stage.id),
         runId,
         plannedStages: progressPlan.plannedStages,
       },
@@ -736,6 +799,10 @@ export function executeWorkflow(
     /** Shared with the scope walker: it records a workspace that must survive a
      * failed run for recovery, and the finalizer here honors it. */
     const workspaceState: WalkerWorkspaceState = { preserve: false };
+    /** Set by the exit classifier below before the finalizer runs: a human
+     * pause (`/exit`, Escape on a stuck prompt) must keep this job's slots so
+     * a continue can rebind them instead of finding swept tombstones. */
+    let pausedExit = false;
     // A continue's snapshot starts where the job left off: the invocations
     // accepted in earlier spans are not re-run, so nothing would count them
     // again and the run's counts would restart from the continue instead.
@@ -823,13 +890,16 @@ export function executeWorkflow(
      * re-running the invocation, which is slower but answers in the same
      * shape. */
 
-    const finalizeWorkspaces = (): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
+    const finalizeWorkspaces = (preserveSlots: boolean): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
       Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, runId, {
         // A nested map slot legitimately records its immediate parent slot as
         // sourceCwd. The execution id and run-owned record path already bound
         // this backstop to the current run; applying the root source identity
         // here would reject valid nested (including already-cleaned) records.
-        preserve: request.workspace?.preserve === true || workspaceState.preserve,
+        preserve: preserveSlots || request.workspace?.preserve === true || workspaceState.preserve,
+        // Only this job's slots: a completed prompt must never sweep the
+        // preserved slots a paused job left for its continue to rebind.
+        keyPrefix: `job-${promptIndex}/`,
       }).pipe(Effect.asVoid)));
 
 
@@ -982,8 +1052,22 @@ export function executeWorkflow(
     }
 
     const runExecution = Effect.gen(function* () {
+      /** One `region-finalized` line, appended under the same semaphore as
+       * every other ledger write: the walker owns the moment, this owns the
+       * identity the record carries. */
+      const persistRegionFinalized = (
+        payload: WorkflowRegionFinalizedPayload,
+      ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> =>
+        progressSemaphore.withPermits(1)(appendWorkflowProgress(request.runDir, {
+          kind: "region-finalized",
+          runId,
+          jobOrdinal: promptIndex,
+          ...payload,
+        }).pipe(Effect.asVoid));
       const walker = createScopeWalker({
         stageRunnerContext,
+        progressSemaphore,
+        persistRegionFinalized,
         request,
         loaded,
         compiled,
@@ -993,7 +1077,6 @@ export function executeWorkflow(
         announcedContinuations,
         actorContexts,
         knownLoopIterations,
-        progressSemaphore,
         persistActors,
         workflowTrajectory,
         autoCommit,
@@ -1064,7 +1147,7 @@ export function executeWorkflow(
         statusPath: runStatusPath(request.runDir),
       };
     });
-    const cleanupAfterFailure = finalizeWorkspaces().pipe(
+    const cleanupAfterExit = (preserveSlots: boolean) => finalizeWorkspaces(preserveSlots).pipe(
       Effect.tapError((error) => WORKFLOW_LOG.error("workspace.cleanup.failed", {
         outcome: "failure",
         data: { runId, error: failureDetails(error) },
@@ -1084,6 +1167,7 @@ export function executeWorkflow(
       // fails, and a cleanup that wedges must not be able to swallow it.
       Effect.onExit((exit) => Exit.isFailure(exit) ? Effect.gen(function* () {
         const cancelled = isCancellation(exit.cause);
+        pausedExit = cancelled;
         const details = failureDetails(exit.cause);
         // An execution that failed before it had an identity never opened a
         // stream or a snapshot, so it has no outcome of its own to record.
@@ -1111,7 +1195,7 @@ export function executeWorkflow(
       Effect.onExit((exit) => closeWorkflowTrajectory(
         Exit.isSuccess(exit) ? "completed" : isCancellation(exit.cause) ? "cancelled" : "failed",
       )),
-      Effect.ensuring(cleanupAfterFailure),
+      Effect.ensuring(Effect.suspend(() => cleanupAfterExit(pausedExit))),
     );
   }));
 }

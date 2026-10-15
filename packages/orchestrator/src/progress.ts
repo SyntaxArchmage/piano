@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { dirname, join } from "node:path";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
+import type { SelectionIncumbent } from "./selection.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
 import type { ContractProjection } from "@piano/contract";
@@ -218,12 +219,64 @@ export interface WorkflowProgressJobClosedRecord {
 }
 
 /** One line of the append-only progress stream. */
+/** One region's exit, recorded exactly once when the region leaves the
+ * schedule: which instance ended, why, and — for a tournament — who won.
+ * A continue reads it to skip a completed region instead of re-running its
+ * workers, and a monitor reads it to see why a loop stopped. */
+export interface WorkflowProgressRegionFinalizedRecord {
+  readonly version: 1;
+  readonly kind: "region-finalized";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly jobOrdinal: number;
+  /** `<frame chain>/<regionId>` — `runtimeRegionInstanceId`'s output, whose
+   * inverse is `runtimeFramesFromInstanceId`: the chain is `root` (no frames)
+   * or `regionId/iter-N` / `regionId/slot-K` pairs joined by `/`. Written and
+   * read through those two functions so the two can never disagree. */
+  readonly instance: string;
+  readonly regionId: string;
+  readonly regionKind: "map" | "loop";
+  /** How the region's schedule ended. "the region ended early" is derived,
+   * not stored: `outcome === "terminal-blocked"` for a blocked region, or
+   * `notCarriedReason === "stopped"` for a tournament whose winner was
+   * stopped/blocked and could not be carried. */
+  readonly outcome:
+    | "carried"
+    | "admitted-not-carried"
+    | "no-winner"
+    | "terminal-blocked"
+    | "bound-iterations"
+    | "bound-duration"
+    | "feedback-stop";
+  /** Orthogonal to `outcome`: why the winning slot was not carried —
+   * the admission gate rejected it, or the winner itself was stopped. */
+  readonly notCarriedReason?: "admission" | "stopped";
+  /** The winning slot's runtime instance — the identity a skip filters the
+   * boundary by. The workspace key is deliberately not stored: it is a path
+   * spelling, derivable from the instance where a consumer needs it. */
+  readonly winnerInstanceId?: string;
+  /** The tournament incumbent the admission gate compares against, as the
+   * region left it. A skipped region restores it so a later iteration's
+   * admission check compares against the same basis. */
+  readonly incumbent?: SelectionIncumbent;
+  /** Completed iterations for a loop region at the moment it exited. */
+  readonly iterations?: number;
+}
+
+/** Everything a writer must supply for a `region-finalized` line; the append
+ * seam stamps version/timestamp, the execution stamps identity. */
+export type WorkflowRegionFinalizedPayload = Omit<
+  WorkflowProgressRegionFinalizedRecord,
+  "version" | "kind" | "timestamp" | "runId" | "jobOrdinal"
+>;
+
 export type WorkflowProgressStreamRecord =
   | WorkflowProgressRecord
   | WorkflowProgressStartRecord
   | WorkflowProgressExecutionStartRecord
   | WorkflowProgressExecutionFinishRecord
-  | WorkflowProgressJobClosedRecord;
+  | WorkflowProgressJobClosedRecord
+  | WorkflowProgressRegionFinalizedRecord;
 
 /** Kind of one progress-stream line.
  *
@@ -244,6 +297,7 @@ export function progressRecordKind(record: object | null | undefined):
   | WorkflowProgressExecutionStartRecord["kind"]
   | WorkflowProgressExecutionFinishRecord["kind"]
   | WorkflowProgressJobClosedRecord["kind"]
+  | WorkflowProgressRegionFinalizedRecord["kind"]
   | "stage-accepted"
   | undefined {
   const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
@@ -252,6 +306,7 @@ export function progressRecordKind(record: object | null | undefined):
   if (kind === "execution-started") return "execution-started";
   if (kind === "execution-finished") return "execution-finished";
   if (kind === "job-closed") return "job-closed";
+  if (kind === "region-finalized") return "region-finalized";
   return undefined;
 }
 
@@ -406,6 +461,13 @@ export function applyProgressRecord(
     // snapshot carries only what it understands. An empty fold still gets its
     // identity established, so a known record after this one has a base.
     return previous ?? emptyProgressSnapshot(record.runId, record.timestamp);
+  }
+  if (kind === "region-finalized") {
+    // Region evidence a continue reads; the live snapshot has no field for
+    // it, so the fold only advances its timestamp.
+    return previous === undefined
+      ? emptyProgressSnapshot(record.runId, record.timestamp)
+      : { ...previous, updatedAt: record.timestamp };
   }
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
@@ -625,7 +687,8 @@ export function markWorkflowStageStarted(
  * workflow loop is still running, so monitors can observe completed iterations. */
 export function appendWorkflowProgress(
   runDir: string,
-  record: Omit<WorkflowProgressRecord, "version" | "timestamp">,
+  record: Omit<WorkflowProgressRecord, "version" | "timestamp">
+    | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {

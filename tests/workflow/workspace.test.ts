@@ -359,6 +359,41 @@ describe(" workspace lifecycle", () => {
     }
   });
 
+  it("scopes the run-end cleanup to one job's slot keys", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-job-scoped-cleanup-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-job-scoped-cleanup-run-"));
+    try {
+      await writeFile(join(root, "source.txt"), "source\n");
+      const session = await sessionFor(root, runRoot);
+      const first = await runEffect(session, allocateMapWorkspace(
+        session.runDir,
+        "job-scoped-cleanup",
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
+        root,
+      ));
+      const second = await runEffect(session, allocateMapWorkspace(
+        session.runDir,
+        "job-scoped-cleanup",
+        2, [{ kind: "map", regionId: "tournament", slot: 0 }],
+        root,
+      ));
+
+      const cleaned = await runEffect(session, cleanupMapWorkspaces(session.runDir, "job-scoped-cleanup", {
+        sourceCwd: root,
+        keyPrefix: "job-1/",
+      }));
+      expect(cleaned.map((record) => record.key)).toEqual([first.key]);
+      await expect(stat(first.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      // The other job's slot stays active: a paused job keeps it so its
+      // continue can rebind instead of finding a swept tombstone.
+      expect(JSON.parse(await readFile(second.recordPath!, "utf8"))).toMatchObject({ key: second.key, status: "active" });
+      expect((await stat(second.cwd)).isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(runRoot, { recursive: true, force: true });
+    }
+  });
+
   it("fast-forwards a winning git-worktree slot commit onto the source HEAD instead of content-copying", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-git-winner-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-git-winner-run-"));

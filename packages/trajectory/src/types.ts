@@ -93,11 +93,12 @@ export type WorkflowObservation =
     readonly commit?: string;
     /** Human-readable reason when the winner could not be merged. */
     readonly skipped?: string;
-    /** Provenance of how the winner reached the parent scope (PRD §10): the
-     * engine never merges; the winning slot's worker consolidates. `carried`
-     * outcome corresponds to `kind: "worker-consolidated"`. */
+    /** Provenance of how the winner reached the parent scope: a git-worktree
+     * winner is merged (`git-merged`, the engine fast-forwards git), a
+     * directory-snapshot winner is consolidated by its own worker
+     * (`worker-consolidated`). Either kind makes the `carried` outcome. */
     readonly carrying?: {
-      readonly kind: "worker-consolidated" | "admitted-not-carried" | "carry-failed";
+      readonly kind: "git-merged" | "worker-consolidated" | "admitted-not-carried" | "carry-failed";
       readonly commit?: string;
       readonly reason?: string;
       /** Consolidation source certainty after rollback verification. Optional

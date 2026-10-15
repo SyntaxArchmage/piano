@@ -18,13 +18,15 @@ import {
 } from "@piano/harness";
 import { executeWorker, WorkerError } from "@piano/workers";
 import {
+  handoffContextPath,
+  mapItemContextPath,
   readHandoffRecord,
   writeHandoffContext,
   writeHandoffRecord,
   writeMapItemContext,
   type HandoffMapItem,
 } from "./handoff.js";
-import { snapshotWorkerContract } from "./contract-snapshot.js";
+import { snapshotWorkerContract, workerContractSnapshotPath } from "./contract-snapshot.js";
 import { legacyContractProjectionDeclarations } from "./legacy-contract-projections.js";
 import { WorkflowError, workflowError } from "./errors.js";
 import { WORKER_LOG, WORKER_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
@@ -42,6 +44,7 @@ import {
   resolveWorkerResources,
   workerResourcesKey,
   type LoadedWorkflow,
+  type WorkerResources,
 } from "./workflow-file.js";
 import { stageModelForSlot, type CompiledWorkflow } from "./workflow.js";
 import { inspectGpuRound, materializeGpuPromotion } from "./gpu-round-materialization.js";
@@ -115,7 +118,12 @@ export interface StageRunnerContext {
   readonly dependsOnByStage: ReadonlyMap<string, readonly string[]>;
 }
 
-function rebuildAcceptedStage(
+/** Rebuild an accepted invocation's result from the evidence it left, so a
+ * continue can skip its worker turn. `undefined` means the producer record is
+ * gone or unreadable — the caller falls through to re-running the invocation.
+ * Exported for the scope walker's region skip: a finalized region rebuilds
+ * every invocation it accepted through the same rule. */
+export function rebuildAcceptedStage(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
   cursor: NonNullable<WorkflowExecutionRequest["continueJob"]>,
@@ -235,6 +243,72 @@ export function executeStage(
       }),
     };
   };
+  /** The stage's worker resources: the loaded workflow's cache first, the
+   * recipe repository second — the one spelling both a live turn and a
+   * rebuilt one resolve through. */
+  const stageResources = (): Effect.Effect<WorkerResources, WorkflowError, FileSystem.FileSystem> => {
+    const cached = loaded.workerResources?.get(workerResourcesKey(node.stage.worker, node.stage.harness));
+    return cached === undefined
+      ? resolveWorkerResources(
+        node.stage.worker,
+        loaded.recipeRepositoryRoot,
+        loaded.workflowPath,
+        node.stage.harness,
+        { loadContract: node.stage.validate === true },
+      )
+      : Effect.succeed(cached);
+  };
+  /** The actor identity a stage runs under — the one spelling both a live turn
+   * and a rebuilt one register through. */
+  const actorContextFor = (
+    identity: string,
+    resources: WorkerResources,
+    contextFilePaths: readonly string[],
+  ): ActorExecutionContext => ({
+    actorKey: identity,
+    invocation,
+    worker: node.stage.worker,
+    harness: node.stage.harness,
+    workspaceKey: workspace.key,
+    memory: memoryEnabled,
+    resources,
+    contextFilePaths,
+    ...(node.stage.tools === undefined ? {} : { tools: node.stage.tools }),
+    ...((request.model ?? stageModel) === undefined ? {} : { model: request.model ?? stageModel }),
+    ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined
+      ? {}
+      : { thinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
+    ...(node.stage.timeout === undefined ? {} : { timeout: node.stage.timeout }),
+  });
+  /** A rebuilt invocation's actor identity is part of its acceptance, not a
+   * by-product of running it: the tournament winner carry resumes exactly
+   * this conversation. The record's own actor key wins over the current
+   * spelling, so a workflow edit between spans cannot redirect the resume.
+   * Context files are re-derived by the writers' own path rules and listed
+   * only when they are still there — a rebuild rewrites nothing. */
+  const registerRebuiltActor = (
+    rebuilt: InternalStageResult,
+  ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> => Effect.gen(function* () {
+    const resources = yield* stageResources();
+    const candidates = [
+      ...resources.contextFilePaths,
+      ...(node.stage.validate === true && resources.contract !== undefined
+        ? [workerContractSnapshotPath(request.runDir, resources.contract)]
+        : []),
+      ...(node.stage.handoff === undefined
+        ? []
+        : [yield* handoffContextPath(request.runDir, invocation, node.stage.handoff, loaded.workflowPath)]),
+      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, invocation)]),
+    ];
+    const fileSystem = yield* FileSystem.FileSystem;
+    const contextFilePaths: string[] = [];
+    for (const candidate of candidates) {
+      const present = yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false));
+      if (present) contextFilePaths.push(candidate);
+    }
+    const identity = rebuilt.handoff.actorKey ?? actorKey;
+    actorContexts.set(identity, actorContextFor(identity, resources, contextFilePaths));
+  });
   const core = Effect.gen(function* () {
     const invocationId = runtimeInvocationId(invocation);
     // A continue rebuilds an already-accepted invocation from the evidence
@@ -243,7 +317,10 @@ export function executeStage(
     // an earlier span of this job.
     if (request.continueJob !== undefined && request.continueJob.accepted.has(invocationId)) {
       const rebuilt = yield* rebuildAcceptedStage(request.runDir, invocation, request.continueJob);
-      if (rebuilt !== undefined) return rebuilt;
+      if (rebuilt !== undefined) {
+        yield* registerRebuiltActor(rebuilt);
+        return rebuilt;
+      }
     }
     const previous = actors.get(actorKey);
     if (memoryEnabled && previous !== undefined && previous.turns > 0 && previous.continuation === undefined) {
@@ -253,14 +330,7 @@ export function executeStage(
         `actor "${actorKey}" has no continuation after an earlier turn and cannot resume safely`,
       ));
     }
-    const resources = loaded.workerResources?.get(workerResourcesKey(node.stage.worker, node.stage.harness)) ??
-      (yield* resolveWorkerResources(
-        node.stage.worker,
-        loaded.recipeRepositoryRoot,
-        loaded.workflowPath,
-        node.stage.harness,
-        { loadContract: node.stage.validate === true },
-      ));
+    const resources = yield* stageResources();
     const validation: ResolvedStageValidation | undefined = node.stage.validate === undefined
       ? undefined
       : node.stage.validate === true
@@ -312,22 +382,7 @@ export function executeStage(
       ...(handoffPath === undefined ? [] : [handoffPath]),
       ...(mapItemPath === undefined ? [] : [mapItemPath]),
     ];
-    actorContexts.set(actorKey, {
-      actorKey,
-      invocation,
-      worker: node.stage.worker,
-      harness: node.stage.harness,
-      workspaceKey: workspace.key,
-      memory: memoryEnabled,
-      resources,
-      contextFilePaths,
-      ...(node.stage.tools === undefined ? {} : { tools: node.stage.tools }),
-      ...((request.model ?? stageModel) === undefined ? {} : { model: request.model ?? stageModel }),
-      ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined
-        ? {}
-        : { thinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
-      ...(node.stage.timeout === undefined ? {} : { timeout: node.stage.timeout }),
-    });
+    actorContexts.set(actorKey, actorContextFor(actorKey, resources, contextFilePaths));
     yield* WORKFLOW_LOG.info("workflow.scheduled", {
       stage: node.id,
       agent: node.stage.worker,
@@ -933,6 +988,7 @@ export function executeStage(
       sessionId: acceptedWorker.sessionId,
       transcriptPath: acceptedWorker.transcriptPath,
       attempt,
+      actorKey,
       ...(requestedModel === undefined ? {} : { requestedModel }),
       ...(requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel }),
       ...(acceptedWorker.model === undefined ? {} : { model: acceptedWorker.model }),

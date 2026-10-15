@@ -19,12 +19,18 @@ function snapshotError(path: string, operation: string, cause: unknown): Workflo
 
 const snapshotSemaphore = Effect.unsafeMakeSemaphore(1);
 
+/** The digest-addressed path a contract's snapshot lives at — the writer's own
+ * rule, exposed so a rebuilt invocation can list it without rewriting it. */
+export function workerContractSnapshotPath(runDir: string, contract: CompiledWorkerContract): string {
+  return join(runDir, "contracts", `${contract.digest}.json`);
+}
+
 /** Persist the exact declarative contract before a validating worker starts. */
 export function snapshotWorkerContract(
   runDir: string,
   contract: CompiledWorkerContract,
 ): Effect.Effect<WorkerContractReference, WorkflowError, FileSystem.FileSystem> {
-  const snapshotPath = join(runDir, "contracts", `${contract.digest}.json`);
+  const snapshotPath = workerContractSnapshotPath(runDir, contract);
   return snapshotSemaphore.withPermits(1)(Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const exists = yield* fileSystem.exists(snapshotPath).pipe(

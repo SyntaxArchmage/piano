@@ -811,6 +811,11 @@ export interface WorkflowWorkspaceCleanupOptions {
   /** Limit finalization to these exact run-owned workspace keys. Omitted
    * retains the legacy execution-wide cleanup behaviour. */
   readonly keys?: readonly string[];
+  /** Limit finalization to run-owned keys with this prefix (e.g. `job-2/`).
+   * The run-end backstop passes the current job's prefix so one job's
+   * completion never sweeps a paused job's preserved slots — those exist
+   * precisely so a continue can rebind them. */
+  readonly keyPrefix?: string;
   /** Preserve slot directories and mark them reusable for recovery. */
   readonly preserve?: boolean;
 }
@@ -982,7 +987,11 @@ export function cleanupMapWorkspaces(
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const records = await readWorkspaceRecords(runRoot, runId, options.sourceCwd, options.keys);
+      const all = await readWorkspaceRecords(runRoot, runId, options.sourceCwd, options.keys);
+      const prefix = options.keyPrefix;
+      const records = prefix === undefined
+        ? all
+        : all.filter(({ record }) => record.key.startsWith(prefix));
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") {
@@ -1137,13 +1146,23 @@ async function applyWorkspaceContents(
   }
 }
 
-/** Provenance of how a tournament winner was carried into the parent scope
- * (PRD §10). The engine never merges; the winning slot's own coding-agent worker
- * consolidates, and the engine records only what it verified. */
+/** Provenance of how a tournament winner was carried into the parent scope.
+ * A git-worktree slot is merged: its worktree is committed, the commit is
+ * retained under a ref, and git fast-forwards the parent — git is the delta,
+ * the record, and the verification. A directory-snapshot slot (dirty or
+ * non-Git sources) keeps the frozen-delta route, where the winning slot's own
+ * coding-agent worker consolidates and the engine records only what it
+ * verified (PRD §10). */
 export type WorkflowCarryKind =
+  | "git-merged"
   | "worker-consolidated"
   | "admitted-not-carried"
   | "carry-failed";
+
+/** Whether a carry kind means the winner's work reached the parent scope. */
+export function carryLanded(kind: WorkflowCarryKind): boolean {
+  return kind === "git-merged" || kind === "worker-consolidated";
+}
 
 export interface WorkflowCarrying {
   readonly kind: WorkflowCarryKind;

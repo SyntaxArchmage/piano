@@ -17,6 +17,7 @@ import {
   type WorkflowProgressExecutionStartRecord,
   type WorkflowProgressJobClosedRecord,
   type WorkflowProgressRecord,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowProgressStartRecord,
   type WorkflowProgressStreamRecord,
 } from "./progress.js";
@@ -41,6 +42,10 @@ export interface JobSpan {
    * action (`/restart`). The span's own status still says how it stopped
    * running; this is the job-level outcome on top of it. */
   readonly closed?: "restarted";
+  /** Every region that exited during this span, keyed by its runtime instance
+   * (`<frames>/<regionId>`). A continue reads these to skip a region instead
+   * of re-running its workers. */
+  readonly regions?: ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord>;
 }
 
 /** One job across all of its spans. */
@@ -61,6 +66,8 @@ export interface JobView {
   /** The input the job runs, read from its spans; `undefined` for streams
    * written before the input was kept with the job. */
   readonly input?: string;
+  /** Region exits across the job's spans, later rows winning per instance. */
+  readonly regions: ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord>;
   readonly spans: readonly JobSpan[];
 }
 
@@ -75,6 +82,7 @@ interface MutableSpan {
   inFlight?: string;
   closed?: "restarted";
   input?: string;
+  regions: Map<string, WorkflowProgressRegionFinalizedRecord>;
 }
 
 /** Fold a run's stream records into their job spans, in stream order.
@@ -101,6 +109,7 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
         status: "running",
         accepted: new Set(),
         attempts: new Map(),
+        regions: new Map(),
         ...(started.prompt === undefined ? {} : { input: started.prompt }),
       });
       continue;
@@ -122,6 +131,12 @@ export function foldJobSpans(records: readonly WorkflowProgressStreamRecord[]): 
       const finished = record as WorkflowProgressExecutionFinishRecord;
       span.status = finished.status;
       span.finishedAt = finished.timestamp;
+    } else if (kind === "region-finalized") {
+      const finalized = record as WorkflowProgressRegionFinalizedRecord;
+      // The record names its job; later rows win per instance, so a region
+      // re-entered and finalized again after a continue updates its entry.
+      const owner = spans.find((candidate) => candidate.jobOrdinal === finalized.jobOrdinal) ?? span;
+      owner.regions.set(finalized.instance, finalized);
     } else {
       // A close names its job explicitly, and the job it closes is not
       // necessarily the latest one: a restart closes the paused job it
@@ -168,14 +183,28 @@ export function latestJob(spans: readonly JobSpan[]): JobView | undefined {
   return jobs(spans).at(-1);
 }
 
+/** One past the highest job ordinal the run's own evidence already records:
+ * the ledger's spans and the `prompts/<n>` trees, with a caller's hint (the
+ * resume state) as a floor only. A stale or missing hint therefore cannot
+ * reopen an ordinal that has already been written. */
+export function nextJobOrdinal(
+  spans: readonly JobSpan[],
+  promptOrdinals: readonly number[],
+  hint?: number,
+): number {
+  return Math.max(0, hint ?? 0, ...spans.map((span) => span.jobOrdinal), ...promptOrdinals) + 1;
+}
+
 function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
   const accepted = new Set<string>();
   const attempts = new Map<string, number>();
+  const regions = new Map<string, WorkflowProgressRegionFinalizedRecord>();
   for (const span of jobSpans) {
     for (const invocationId of span.accepted) accepted.add(invocationId);
     for (const [invocationId, attempt] of span.attempts) {
       attempts.set(invocationId, Math.max(attempts.get(invocationId) ?? 0, attempt));
     }
+    for (const [instance, finalized] of span.regions ?? []) regions.set(instance, finalized);
   }
   const last = jobSpans.at(-1);
   // A closed job reads as finished whatever its last span was doing: the
@@ -196,6 +225,7 @@ function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
     accepted,
     attempts,
     ...(last?.input === undefined ? {} : { input: last.input }),
+    regions,
     spans: jobSpans,
   };
 }

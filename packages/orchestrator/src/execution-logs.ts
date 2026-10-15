@@ -21,11 +21,6 @@ export const COMPILE_SOURCE: Source = {
   file: "workflow.ts",
   function: "compileWorkflow",
 };
-export const SCHEDULE_SOURCE: Source = {
-  module: "orchestrator",
-  file: "workflow.ts",
-  function: "scheduleWorkflow",
-};
 export const WORKER_SOURCE: Source = {
   module: "workers",
   file: "worker.ts",

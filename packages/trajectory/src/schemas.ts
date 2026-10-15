@@ -85,7 +85,7 @@ const selectionRefereeSchema = z.object({
 }).strict();
 
 export const selectionCarryingSchema = z.object({
-  kind: z.enum(["worker-consolidated", "admitted-not-carried", "carry-failed"]),
+  kind: z.enum(["git-merged", "worker-consolidated", "admitted-not-carried", "carry-failed"]),
   commit: z.string().min(1).optional(),
   reason: z.string().min(1).optional(),
   sourceState: z.enum(["known", "unknown"]).optional(),
