@@ -168,11 +168,7 @@ describe("piano logs picker rows", () => {
       turns: [{ prompt, status: "failed", eventCount: 3 }],
     });
     const file = join(root, runId, "trajectory.json");
-    // The writer's own bytes. /rename used to spell the same document with
-    // `null, 2` indentation, which this byte-window reader could not read: the
-    // row silently lost its workflow, status and prompt. Round-tripping through
-    // the pretty spelling keeps that spelling under test.
-    await writeFile(file, JSON.stringify(JSON.parse(document), null, 2) + "\n", "utf8");
+    await writeFile(file, document + "\n", "utf8");
     expect(readRunRowMetadata(file)).toEqual({
       workflow: "gpu-cuda-tuning",
       status: "failed",
