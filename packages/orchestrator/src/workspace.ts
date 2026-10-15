@@ -1146,13 +1146,23 @@ async function applyWorkspaceContents(
   }
 }
 
-/** Provenance of how a tournament winner was carried into the parent scope
- * (PRD §10). The engine never merges; the winning slot's own coding-agent worker
- * consolidates, and the engine records only what it verified. */
+/** Provenance of how a tournament winner was carried into the parent scope.
+ * A git-worktree slot is merged: its worktree is committed, the commit is
+ * retained under a ref, and git fast-forwards the parent — git is the delta,
+ * the record, and the verification. A directory-snapshot slot (dirty or
+ * non-Git sources) keeps the frozen-delta route, where the winning slot's own
+ * coding-agent worker consolidates and the engine records only what it
+ * verified (PRD §10). */
 export type WorkflowCarryKind =
+  | "git-merged"
   | "worker-consolidated"
   | "admitted-not-carried"
   | "carry-failed";
+
+/** Whether a carry kind means the winner's work reached the parent scope. */
+export function carryLanded(kind: WorkflowCarryKind): boolean {
+  return kind === "git-merged" || kind === "worker-consolidated";
+}
 
 export interface WorkflowCarrying {
   readonly kind: WorkflowCarryKind;

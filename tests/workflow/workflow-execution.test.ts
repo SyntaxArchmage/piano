@@ -5350,6 +5350,104 @@ workflow:
     }
   }, 30_000);
 
+  it("merges a git-worktree winner into the parent branch instead of consolidating", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-git-carry-"));
+    try {
+      // A clean git repo: the lane workspaces are real worktrees of it, so the
+      // winner is carried by merging, not by a frozen file delta.
+      const repo = join(root, "repo");
+      await mkdir(repo, { recursive: true });
+      await runFile("git", ["-C", repo, "init", "-b", "main"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "config", "user.name", "Test Agent"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "config", "user.email", "agent@test.local"], { encoding: "utf8" });
+      await writeFile(join(repo, "kernel.py"), "baseline\n");
+      await writeFile(join(repo, "race.yml"), METRIC_TOURNAMENT);
+      await mkdir(join(repo, "state"), { recursive: true });
+      await writeFile(join(repo, "state", "current-best.py"), "baseline\n");
+      await writeFile(join(repo, "state", "tuning-state.json"), JSON.stringify({
+        current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
+        history: [],
+      }));
+      await runFile("git", ["-C", repo, "add", "-A"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "commit", "-m", "baseline"], { encoding: "utf8" });
+
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const outcome = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+        root: repo, workflowPath: join(repo, "race.yml"), runDir: session.runDir, executionId: "git-race", cwd: repo, prompt: "race two kernels",
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          const stage = stageId(request);
+          if (stage === "propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              strategies: [
+                { id: "slot-0", bottleneck: "memory", technique: "warp", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                { id: "slot-1", bottleneck: "compute", technique: "tile", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+              ],
+            }));
+          } else if (stage === "race.implement") {
+            const slot = await strategySlot(request);
+            await writeFile(join(request.cwd, `kernel-${slot}.py`), `kernel-${slot}\n`);
+          } else if (stage === "race.bench") {
+            const slot = await strategySlot(request);
+            const best = slot === 0 ? 4 : 9;
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              iteration: 0,
+              decision: "KEEP",
+              candidate: { path: "kernel.py" },
+              current_best: { path: "state/current-best.py" },
+              verification: { compile_passed: true, verify_passed: true },
+              benchmark: { name: "tflops", unit: "TFLOP/s", direction: "higher", samples: [best], best, median: best, runs: 1, warmup: 0 },
+              promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
+              records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
+            }));
+          }
+          const invocation = invocationId(request);
+          const sessionId = `${stage}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+          return {
+            sessionId,
+            transcriptPath: `/tmp/${sessionId}.jsonl`,
+            text: `${stage}:${invocation}`,
+            continuation: continuation(sessionId),
+          };
+        }),
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      if (Exit.isFailure(outcome)) {
+        // Surface the genuine lane failure rather than hiding it in a nested cause.
+        throw new Error(Cause.pretty(outcome.cause));
+      }
+      const result = outcome.value;
+
+      // No consolidation turn: git carried the winner, and git is the record.
+      expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
+      const winnerRef = `refs/piano/git-race/${"job-1/race/slot-1".replace(/[^A-Za-z0-9._/-]/g, "_")}`;
+      const refCommit = (await runFile("git", ["-C", repo, "rev-parse", winnerRef], { encoding: "utf8" })).stdout.trim();
+      // The winner's commit is an ancestor of the parent's HEAD — the merge is
+      // verifiable with git alone.
+      await runFile("git", ["-C", repo, "merge-base", "--is-ancestor", refCommit, "HEAD"], { encoding: "utf8" });
+      expect((await readFile(join(repo, "kernel-1.py"), "utf8")).trim()).toBe("kernel-1");
+
+      const selection = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as {
+          outcome: string; winnerKey?: string; commit?: string; carrying?: { kind: string };
+        });
+      expect(selection).toHaveLength(1);
+      expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
+      expect(selection[0]?.carrying?.kind).toBe("git-merged");
+      expect(selection[0]?.commit).toBe(refCommit);
+      expect(result.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("does not promote a blocked slot with a better metric, and continues with the healthy winner", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-blocked-metric-tournament-"));
     try {
@@ -5810,13 +5908,19 @@ workflow:
         }),
       }));
 
-      expect(consolidationPrompts).toHaveLength(1);
-      expect(consolidationPrompts[0]).toContain("- modified: kernel.py");
-      expect(consolidationPrompts[0]).toContain("- deleted: obsolete.txt");
-      expect(consolidationPrompts[0]).not.toContain("build/cache.bin");
+      // The merge carried the winner's edit and the winner's deletion...
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("kernel-1\n");
       await expect(stat(join(root, "obsolete.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      // ...without touching what the parent had and the winner never saw. An
+      // ignored artifact is untracked from git's point of view, so the merge
+      // leaves it alone by construction — no delta needs to exclude it.
       await expect(readFile(join(root, "build", "cache.bin"), "utf8")).resolves.toBe("parent-only ignored artifact\n");
+      // Git is the record and the verification: the winner's commit is an
+      // ancestor of the parent's HEAD.
+      const winnerCommit = (await runFile("git", ["-C", root, "rev-parse", "refs/piano/git-delta-race/job-1/race/slot-1"], { encoding: "utf8" })).stdout.trim();
+      await runFile("git", ["-C", root, "merge-base", "--is-ancestor", winnerCommit, "HEAD"], { encoding: "utf8" });
+      // A git lane is merged, not consolidated: no worker turn applies files.
+      expect(consolidationPrompts).toHaveLength(0);
       const records = new Map(result.stages
         .filter((stage) => stage.workspace.recordPath !== undefined)
         .map((stage) => [stage.workspace.recordPath!, stage.workspace]));

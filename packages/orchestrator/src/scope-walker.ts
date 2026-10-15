@@ -13,6 +13,8 @@ import type { Logging } from "@piano/logging";
 import type { WorkflowTrajectory } from "@piano/trajectory";
 import {
   allocateMapWorkspace,
+  applyWinnerWorkspace,
+  carryLanded,
   cleanupMapWorkspaces,
   ensureWorkspaceSnapshot,
   workspaceContentChanges,
@@ -547,6 +549,26 @@ const finalizeTournament = (
     let consolidating: WorkflowCarrying;
     if (winnerContentDir === undefined || winnerCandidate === undefined) {
       consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no materialised slot content` };
+    } else if (winnerCandidate.workspace.strategy === "git-worktree") {
+      // A git-worktree winner is merged, not consolidated: its worktree holds
+      // the winning edits, git fast-forwards the parent onto the commit it
+      // makes of them, and the retained ref is the record. Git carries the
+      // delta and git is the verification — no frozen file delta and no
+      // worker turn. A source that cannot fast-forward is a carry failure:
+      // the winner's work did not reach the parent, and saying otherwise
+      // would be the silent loss the delta gate exists to catch.
+      const applied = yield* applyWinnerWorkspace(request.runDir, executionId, winnerKey, sourceCwd).pipe(
+        Effect.map((result): WorkflowCarrying => result.skipped === undefined
+          ? { kind: "git-merged", ...(result.commit === undefined ? {} : { commit: result.commit }) }
+          : {
+            kind: "carry-failed",
+            reason: result.skipped.reason,
+            ...(result.commit === undefined ? {} : { commit: result.commit }),
+          }),
+        Effect.catchAll((error): Effect.Effect<WorkflowCarrying> =>
+          Effect.succeed({ kind: "carry-failed", reason: errorMessage(error) })),
+      );
+      consolidating = applied;
     } else {
       const frozen = yield* Effect.tryPromise({
         try: async () => {
@@ -630,14 +652,14 @@ const finalizeTournament = (
       }
     }
     yield* WORKFLOW_LOG.info("workspace.winner.consolidated", {
-      outcome: consolidating.kind === "worker-consolidated" ? "success" : "no-winner",
+      outcome: carryLanded(consolidating.kind) ? "success" : "no-winner",
       data: { executionId, winnerKey, sourceCwd, carrying: consolidating },
     }).pipe(Effect.catchAll(() => Effect.void));
     yield* workflowTrajectory.observe({
       type: "selection",
       executionId,
       timestamp: new Date().toISOString(),
-      outcome: consolidating.kind === "worker-consolidated" ? "carried" : "no-winner",
+      outcome: carryLanded(consolidating.kind) ? "carried" : "no-winner",
       ...(selectionReferee === undefined ? {} : { referee: selectionReferee }),
       winnerKey,
       ...(consolidating.commit === undefined ? {} : { commit: consolidating.commit }),
