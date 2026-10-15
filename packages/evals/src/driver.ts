@@ -1375,9 +1375,9 @@ function defaultRunSetId(): string {
 function resolveTrajectory(
   runDir: string | undefined,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
-  // Either form of a run's trajectory, so a run recorded in the stream alone is
-  // evaluated the same way as one that also has the document.
-  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.jsonl"), join(runDir, "trajectory.json")];
+  // Both forms, the document first: a run recorded only in its stream has no
+  // document to name, and either path resolves both files.
+  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.json"), join(runDir, "trajectory.jsonl")];
   const empty: TrajectoryMetrics = {
     messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
     toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,

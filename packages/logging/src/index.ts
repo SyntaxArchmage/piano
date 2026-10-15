@@ -28,6 +28,7 @@ export {
   AsyncTrajectoryWriter,
   foldTrajectoryStream,
   parseTrajectory,
+  trajectoryDocumentPath,
   trajectoryStreamPath,
   type ITrajectoryWriter,
   TrajectoryWriter,

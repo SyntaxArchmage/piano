@@ -83,9 +83,17 @@ export interface TrajectoryStreamRecord {
   readonly workspaceCwd?: string;
 }
 
+/** The document a run's stream is written beside, given either path.
+ *
+ * The two names differ by one character, so either one resolves both — which
+ * is what lets a caller that only knows one of them read the run. */
+export function trajectoryDocumentPath(path: string): string {
+  return path.endsWith(".jsonl") ? path.slice(0, -1) : path;
+}
+
 /** The stream beside a trajectory document path. */
 export function trajectoryStreamPath(documentPath: string): string {
-  return `${documentPath}l`;
+  return `${trajectoryDocumentPath(documentPath)}l`;
 }
 
 /** Append one record to the trajectory stream beside a document path.
@@ -551,7 +559,15 @@ function parseTrajectoryDocument(raw: string | undefined): TrajectoryDocument | 
   if (raw === undefined) return undefined;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return typeof parsed === "object" && parsed !== null ? parsed as TrajectoryDocument : undefined;
+    // Any object is the document, however few fields it carries: readers ask
+    // for the one they need — `findTranscriptPath` for `transcriptPath`,
+    // `readResumeContext` for `turns` — and refusing a document short of any
+    // of them would turn a missing field into a missing run. Only a bare event
+    // array is not one, and that is the old raw-events form a caller asks for
+    // by name.
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as TrajectoryDocument
+      : undefined;
   } catch {
     return undefined;
   }
@@ -646,7 +662,6 @@ export function foldTrajectoryStream(
     version: 1,
     runId: last.runId,
     updatedAt: last.timestamp,
-    status,
     promptLength,
     events: mergeTrajectoryLedgers([seedEvents, ...records.map((record) => record.events)]),
     // What this fold covers: the seed's records are the prefix these continue.
@@ -658,6 +673,11 @@ export function foldTrajectoryStream(
     ...(newest("name") === undefined ? {} : { name: newest("name") }),
     ...(newest("workflowPath") === undefined ? {} : { workflowPath: newest("workflowPath") }),
     ...(newest("workspaceCwd") === undefined ? {} : { workspaceCwd: newest("workspaceCwd") }),
+    // Last, and after `workflowPath`, because the log picker reads a bounded
+    // tail of this file rather than the whole of it — a run's events are the
+    // bulk of the document and they sit between. A document that put the
+    // status anywhere else would show a failed run without saying so.
+    status,
   };
 }
 
