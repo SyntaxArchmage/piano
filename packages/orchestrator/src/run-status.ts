@@ -118,7 +118,6 @@ export function runStatusFromParts(parts: {
   readonly progressStream?: string;
   readonly resume?: string;
   readonly trajectoryStream?: string;
-  readonly trajectoryDocument?: string;
 }): RunStatus | undefined {
   const records = parseProgressLines(parts.progressStream);
   const progress = records.reduce<WorkflowProgressSnapshot | undefined>(
@@ -126,10 +125,7 @@ export function runStatusFromParts(parts: {
     undefined,
   );
   const resume = parts.resume === undefined ? undefined : parseResumeTable(parts.resume);
-  const trajectory = parseTrajectory({
-    ...(parts.trajectoryStream === undefined ? {} : { stream: parts.trajectoryStream }),
-    ...(parts.trajectoryDocument === undefined ? {} : { document: parts.trajectoryDocument }),
-  });
+  const trajectory = parseTrajectory(parts.trajectoryStream);
   if (progress === undefined && resume === undefined && trajectory === undefined) return undefined;
 
   const runId = progress?.executionId ?? resume?.executionId ?? trajectory?.runId;
@@ -189,17 +185,15 @@ function foldRunStatus(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const read = (path: string) => fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const [progressStream, resume, trajectoryStream, trajectoryDocument] = yield* Effect.all([
+    const [progressStream, resume, trajectoryStream] = yield* Effect.all([
       read(workflowProgressPath(runDir)),
       read(resumeStreamPath(runDir)),
-      read(trajectoryStreamPath(join(runDir, "trajectory.json"))),
-      read(join(runDir, "trajectory.json")),
+      read(trajectoryStreamPath(runDir)),
     ], { concurrency: "unbounded" });
     return runStatusFromParts({
       ...(progressStream === undefined ? {} : { progressStream }),
       ...(resume === undefined ? {} : { resume }),
       ...(trajectoryStream === undefined ? {} : { trajectoryStream }),
-      ...(trajectoryDocument === undefined ? {} : { trajectoryDocument }),
     });
   });
 }

@@ -89,17 +89,19 @@ describe("run status", () => {
     expect(status).toMatchObject({ runId: "run-2", status: "failed", error: "boom" });
   });
 
-  it("reads a run recorded before the ledgers existed", () => {
+  it("reads a run recorded only in its trajectory stream", () => {
     const status = runStatusFromParts({
-      trajectoryDocument: JSON.stringify({
-        version: 1,
-        runId: "run-3",
-        updatedAt: timestamp,
-        status: "completed",
-        promptLength: 2,
-        events: [],
-        workflowPath: "/w.yaml",
-      }),
+      trajectoryStream: progressStream([
+        {
+          version: 1,
+          runId: "run-3",
+          timestamp,
+          status: "completed",
+          promptLength: 2,
+          events: [],
+          workflowPath: "/w.yaml",
+        },
+      ]),
     });
     expect(status).toMatchObject({ runId: "run-3", status: "completed", workflowPath: "/w.yaml", jobs: [] });
   });

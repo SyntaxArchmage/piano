@@ -86,10 +86,10 @@ describe("piano logs commands ", () => {
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 1, depth: 0, span_id: "sp-1", parent_id: null, event: "enter", fn: "run" },
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 2, depth: 0, span_id: "sp-1", parent_id: null, event: "exit", fn: "run", ok: true, duration_ms: 1 },
       ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8"),
-      writeFile(join(runDir, "trajectory.json"), JSON.stringify({
+      writeFile(join(runDir, "trajectory.jsonl"), JSON.stringify({
         version: 1,
         runId,
-        updatedAt: timestamp,
+        timestamp,
         status: "completed",
         promptLength: 1,
         events: [],

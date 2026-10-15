@@ -165,8 +165,10 @@ describe("/exit arcs through the real session loop", () => {
       await done;
       const runDirs = await readdir(join(root, "runs"));
       expect(runDirs).toHaveLength(1);
-      const trajectory = JSON.parse(await readFile(join(root, "runs", runDirs[0]!, "trajectory.json"), "utf8")) as { status?: string };
-      expect(trajectory.status).toBe("cancelled");
+      const state = JSON.parse(await readFile(join(root, "runs", runDirs[0]!, "status.json"), "utf8")) as {
+        turns?: Array<{ status?: string }>;
+      };
+      expect(state.turns?.at(-1)?.status).toBe("cancelled");
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }

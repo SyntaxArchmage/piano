@@ -13,11 +13,18 @@ import {
   Logging,
   logger,
   loggingService,
+  parseTrajectory,
   TRACE,
 } from "../../packages/logging/src/index.js";
 
 const provideNode = <A, E>(program: Effect.Effect<A, E, import("@effect/platform").FileSystem.FileSystem>) =>
   program.pipe(Effect.provide(NodeFileSystem.layer));
+
+/** The run as its readers see it: the stream folded back into one document. */
+async function readTrajectory(runDir: string): Promise<Record<string, unknown>> {
+  const raw = await readFile(join(runDir, "trajectory.jsonl"), "utf8");
+  return parseTrajectory(raw) as unknown as Record<string, unknown>;
+}
 
 describe("logging Effect boundary", () => {
   let root: string;
@@ -61,7 +68,7 @@ describe("logging Effect boundary", () => {
       transcriptPath: "/tmp/session.jsonl",
     })));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory).toMatchObject({
       version: 1,
       runId: session.id,
@@ -91,7 +98,7 @@ describe("logging Effect boundary", () => {
       transcriptPath: "/tmp/session-2.jsonl",
     })));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory).toMatchObject({
       status: "completed",
       promptLength: 6,
@@ -116,12 +123,7 @@ describe("logging Effect boundary", () => {
     })));
     await Effect.runPromise(provideNode(session.trajectory.rename("fix matmul kernel")));
 
-    const raw = await readFile(join(session.runDir, "trajectory.json"), "utf8");
-    // rename must write the same compact single-line bytes as write(): the
-    // picker's byte-window regex silently returns an id-only row for a
-    // pretty-printed document, which is exactly what /rename used to produce.
-    expect(raw.trimEnd().includes("\n")).toBe(false);
-    const trajectory = JSON.parse(raw) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory).toMatchObject({
       name: "fix matmul kernel",
       status: "completed",
@@ -149,7 +151,7 @@ describe("logging Effect boundary", () => {
       events: [{ type: "message_end", prompt: "second" }],
     })));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory.turns).toEqual([
       { prompt: "first", status: "completed", eventCount: 2 },
       // Cumulative, so replay slices [2, 3) for this turn.
@@ -173,7 +175,7 @@ describe("logging Effect boundary", () => {
     })));
     await Effect.runPromise(provideNode(session.trajectory.rename("fix matmul kernel")));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory.turns).toEqual([{ prompt: "first", status: "completed", eventCount: 1 }]);
   });
 

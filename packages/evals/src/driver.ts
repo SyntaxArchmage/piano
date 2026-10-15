@@ -831,7 +831,7 @@ function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
     stream = undefined;
   }
   // The stream is the record; every consumer answers "what happened" from it.
-  const trajectory = stream === undefined ? undefined : parseTrajectory({ stream });
+  const trajectory = stream === undefined ? undefined : parseTrajectory(stream);
   const events: readonly unknown[] = trajectory?.events ?? [];
   return events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null);
 }

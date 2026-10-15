@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTrajectoryRun } from "../common/trajectory-fixture.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 
@@ -206,14 +207,13 @@ describe("/btw side agent through the live session", () => {
   });
 
   it("starts a fresh side conversation in the run the TUI takes over", async () => {
-    await mkdir(join(runsRoot, OTHER_RUN), { recursive: true });
-    await writeFile(join(runsRoot, OTHER_RUN, "trajectory.json"), `${JSON.stringify({
+    await writeTrajectoryRun(join(runsRoot, OTHER_RUN), {
       version: 1,
       status: "completed",
       workspaceCwd: "/repo/other-work",
       events: [],
       turns: [{ prompt: "earlier work", status: "completed", eventCount: 0 }],
-    })}\n`, "utf8");
+    });
 
     await withTui(async (options) => {
       await side(options, "before takeover");

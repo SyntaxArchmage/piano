@@ -50,7 +50,7 @@ async function runTui(workspace: string, home: string, tracePath: string, before
         try {
           const ids = (await readdir(runs).catch(() => [] as string[])).filter((id) => !before.has(id));
           if (ids.length === 1 && ids[0] !== undefined) {
-            const trajectory = JSON.parse(await readFile(join(runs, ids[0], "trajectory.json"), "utf8")) as { status?: string };
+            const trajectory = JSON.parse(await readFile(join(runs, ids[0], "status.json"), "utf8")) as { status?: string };
             if (trajectory.status === "completed") {
               finished = true;
               completedRunDir = join(runs, ids[0]);

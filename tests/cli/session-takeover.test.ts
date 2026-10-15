@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type TrajectoryFixture, writeTrajectoryRun } from "../common/trajectory-fixture.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 
@@ -91,9 +92,8 @@ function fakeSession(id: string, runsRoot: string, cwd: string): Session {
   } as unknown as Session;
 }
 
-async function writeTrajectory(runsRoot: string, runId: string, document: unknown): Promise<void> {
-  await mkdir(join(runsRoot, runId), { recursive: true });
-  await writeFile(join(runsRoot, runId, "trajectory.json"), `${JSON.stringify(document)}\n`, "utf8");
+async function writeTrajectory(runsRoot: string, runId: string, document: TrajectoryFixture): Promise<void> {
+  await writeTrajectoryRun(join(runsRoot, runId), document);
 }
 
 const twoTurns = {

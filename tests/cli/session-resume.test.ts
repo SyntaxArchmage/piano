@@ -10,10 +10,32 @@ import {
   summarizeRun,
 } from "../../packages/cli/src/session-resume.js";
 
-async function writeRun(root: string, runId: string, document: unknown): Promise<void> {
-  const runDir = join(root, runId);
-  await mkdir(runDir, { recursive: true });
-  await writeFile(join(runDir, "trajectory.json"), `${JSON.stringify(document)}\n`, "utf8");
+/** Write a run as the stream its readers fold: one record per turn, carrying
+ * the events that turn owns. The document form is gone; a fixture shaped like
+ * one still expresses the run exactly, down to the cumulative counts. */
+async function writeRun(root: string, runId: string, document: Record<string, unknown>): Promise<void> {
+  const events = (document.events as unknown[] | undefined) ?? [];
+  const turns = (document.turns as Array<{ prompt: string; status: string; eventCount: number }> | undefined) ?? [];
+  const scalars = Object.fromEntries(Object.entries(document).filter(([key]) => !["events", "turns", "runId", "updatedAt"].includes(key)));
+  const records: Array<Record<string, unknown>> = [];
+  let start = 0;
+  let second = 0;
+  for (const turn of turns) {
+    records.push({
+      ...scalars,
+      runId: document.runId,
+      timestamp: `${String(second).padStart(2, "0")}s` === "" ? "" : `2026-09-01T00:00:${String(second).padStart(2, "0")}.000Z`,
+      prompt: turn.prompt,
+      status: turn.status,
+      events: events.slice(start, turn.eventCount),
+    });
+    start = turn.eventCount;
+    second += 1;
+  }
+  if (turns.length === 0) {
+    records.push({ ...scalars, runId: document.runId, timestamp: "2026-09-01T00:00:00.000Z", events });
+  }
+  await writeStreamRun(root, runId, records);
 }
 
 /** A run recorded only in its append-only stream, as every new run is. */
@@ -196,7 +218,7 @@ describe("readResumeContext", () => {
   it("fails with a typed storage error when the trajectory is missing or malformed", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await mkdir(join(root, "run-f"), { recursive: true });
-    await writeFile(join(root, "run-f", "trajectory.json"), "{not json\n", "utf8");
+    await writeFile(join(root, "run-f", "trajectory.jsonl"), "{not json\n", "utf8");
 
     for (const runId of ["run-f", "absent"]) {
       const exit = await Effect.runPromiseExit(
@@ -207,7 +229,7 @@ describe("readResumeContext", () => {
         expect(exit.cause.error).toMatchObject({
           _tag: "LogsStorageError",
           operation: "read-trajectory",
-          path: join(root, runId, "trajectory.json"),
+          path: join(root, runId, "trajectory.jsonl"),
         });
       }
     }
@@ -215,7 +237,7 @@ describe("readResumeContext", () => {
 
   it("returns no turns for a run that recorded no events", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
-    await writeRun(root, "run-g", { version: 1, runId: "run-g", status: "failed", events: [] });
+    await writeRun(root, "run-g", { version: 1, runId: "run-g", status: "failed", promptLength: 0, events: [] });
 
     const context = await Effect.runPromise(
       readResumeContext(root, "run-g").pipe(Effect.provide(NodeFileSystem.layer)),

@@ -160,7 +160,7 @@ describe("SessionPicker", () => {
     // Present but unparseable: still listed, without metadata, so a run the
     // user is looking for is never hidden.
     await mkdir(join(root, "20260830T101500-bad"), { recursive: true });
-    await writeFile(join(root, "20260830T101500-bad", "trajectory.json"), "{not json\n", "utf8");
+    await writeFile(join(root, "20260830T101500-bad", "trajectory.jsonl"), "{not json\n", "utf8");
 
     const output = await openPicker(root).settle();
 

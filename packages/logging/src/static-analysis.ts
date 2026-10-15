@@ -517,18 +517,13 @@ export function analyzeStaticObservability(
   const issues: StaticObservabilityIssue[] = [];
   const logPath = join(runDir, "log.jsonl");
   const tracePath = join(runDir, "trace.jsonl");
-  const trajectoryPath = join(runDir, "trajectory.json");
+  const trajectoryPath = join(runDir, "trajectory.jsonl");
   const progressPath = join(runDir, "progress.jsonl");
   const statusPath = join(runDir, "status.json");
   // A run's trajectory is recorded in two forms. The stream is the record and
   // the document beside it is folded from it, so whichever is there describes
   // the run — and the checks below read one document either way.
-  const foldedTrajectory = input.trajectoryStream === undefined
-    ? undefined
-    : parseTrajectory({
-      stream: input.trajectoryStream,
-      ...(input.trajectory === undefined ? {} : { document: input.trajectory }),
-    });
+  const foldedTrajectory = parseTrajectory(input.trajectoryStream);
   const trajectoryText = foldedTrajectory === undefined ? input.trajectory : JSON.stringify(foldedTrajectory);
 
   addRequiredFileIssue(issues, logPath, "log", input.log);
@@ -605,10 +600,9 @@ export function inspectStaticObservability(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const resolvedRunDir = resolve(runDir);
-    const [log, trace, trajectory, trajectoryStream, progress, status] = yield* Effect.all([
+    const [log, trace, trajectoryStream, progress, status] = yield* Effect.all([
       readOptional(fileSystem, join(resolvedRunDir, "log.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "trace.jsonl")),
-      readOptional(fileSystem, join(resolvedRunDir, "trajectory.json")),
       readOptional(fileSystem, join(resolvedRunDir, "trajectory.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "progress.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "status.json")),
@@ -617,7 +611,6 @@ export function inspectStaticObservability(
       runDir: resolvedRunDir,
       log,
       trace,
-      trajectory,
       trajectoryStream,
       progress,
       status,
@@ -631,7 +624,6 @@ export function inspectStaticObservability(
       runDir: resolvedRunDir,
       log,
       trace,
-      trajectory,
       trajectoryStream,
       progress,
       status,
