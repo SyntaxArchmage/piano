@@ -591,6 +591,9 @@ class DshSessionTailerImpl implements DshSessionTailer {
     }
   }
 
+  /** Consume complete JSONL records from a physical file prefix. Plain JSONL
+   * writes and zstd frames can both be observed halfway through a write, so the
+   * byte buffer retains the final unterminated record until the next poll. */
   private consumeDecoded(bytes: Buffer): void {
     this.pending = this.pending.length === 0 ? Buffer.from(bytes) : Buffer.concat([this.pending, bytes]);
     let newline = this.pending.indexOf(0x0a);

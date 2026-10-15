@@ -28,6 +28,13 @@ export interface ChildOutcome {
   readonly gracefulShutdown?: boolean;
 }
 
+/** One NDJSON stdin frame for Piano's dsh runner: the runner forwards `text` to
+ * the host agent's `Agent.steer`, which joins it into the running turn as a
+ * user interjection.
+ *
+ * The `id` is what makes `delivered` an honest answer. A write to the pipe only
+ * proves the runner received the frame; whether it could hand the text to a live
+ * turn is the runner's to decide, and it answers on the ack channel below. */
 function dshSteerFrame(text: string, id: string): string {
   return JSON.stringify({ type: "steer", id, text });
 }
@@ -222,7 +229,11 @@ export class PiRpcClient {
     };
   }
 
-  /** A refusal of the attempt's task frame, once observed. */
+  /** A refusal of the attempt's task frame, once observed. Deliberately not
+   * shared with a refused `steer`: that refusal belongs to the steering call
+   * that asked for it (which rejects, and the caller keeps its queue
+   * semantics), not to the turn. Folding both into one flag is what made an
+   * accepted conversation die over a mid-turn injection. */
   get promptRefusal(): AgentError | undefined {
     return this.promptRejection;
   }

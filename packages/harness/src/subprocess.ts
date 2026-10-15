@@ -286,9 +286,6 @@ export function executeSubprocessAgent(
   );
 }
 
-/** One subprocess attempt inside the shared retry boundary. The attempt's
- * session identity (provisionalId/transcriptPath) is derived from the active
- * continuation, so a retry reopens the transcript the failed attempt wrote. */
 /** Everything a launch needs, resolved and guarded while no child exists yet.
  *
  * The split is deliberate: a stage that cannot start must fail here, with a
@@ -433,6 +430,9 @@ function prepareAttempt(input: {
   });
 }
 
+/** One subprocess attempt inside the shared retry boundary. The attempt's
+ * session identity (provisionalId/transcriptPath) is derived from the active
+ * continuation, so a retry reopens the transcript the failed attempt wrote. */
 function runSubprocessAttempt(
   harness: HarnessName,
   request: AgentRequest,

@@ -48,16 +48,6 @@ export interface SubprocessAccumulator {
    * CLI keeps waiting on stdin after it, so this flag is what tells the
    * attempt the turn is over and the child may be wound down. */
   turnEnded?: boolean;
-  /** Set when the child refused the attempt's own task frame (pi RPC's
-   * `success:false` response to the initial `prompt`). The child can still exit
-   * 0 — pi's stdin loop outlives a declined prompt — so this flag is what makes
-   * the acknowledged refusal fail the attempt.
-   *
-   * Deliberately not set by a refused `steer`: that refusal belongs to the
-   * steering call that asked for it (which rejects, and the caller keeps its
-   * queue semantics), not to the turn. Folding both into one flag is what made
-   * an accepted conversation die over a mid-turn injection. */
-  promptRejected?: boolean;
 }
 
 function assistantMessage(value: unknown): AgentMessage {

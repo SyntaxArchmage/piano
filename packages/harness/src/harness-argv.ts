@@ -202,13 +202,6 @@ export function userFrame(text: string): string {
   });
 }
 
-/** One NDJSON stdin frame for Piano's dsh runner: the runner forwards `text` to
- * the host agent's `Agent.steer`, which joins it into the running turn as a
- * user interjection.
- *
- * The `id` is what makes `delivered` an honest answer. A write to the pipe only
- * proves the runner received the frame; whether it could hand the text to a live
- * turn is the runner's to decide, and it answers on the ack channel below. */
 export function piSessionPath(request: AgentRequest, transcriptPath: string): string {
   const continuation = request.continuation;
   if (continuation !== undefined) return continuation.transcriptPath;
