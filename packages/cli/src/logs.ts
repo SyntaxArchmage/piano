@@ -257,12 +257,14 @@ export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
     if (row.workflow !== undefined) return row;
     const bigger = readTail(trajectoryFile, TAIL_WINDOW_CAP_BYTES);
     // Shorter means the file already fit the small window; nothing more to find.
-    if (bigger !== undefined && bigger.length > tail.length) {
-      const wider = parseRunTail(bigger);
-      if (wider.workflow !== undefined) return wider;
-    }
+    // Whatever the document yielded is the row — a run that failed before it
+    // loaded a workflow has a status and a prompt and no workflow, and the row
+    // must keep them.
+    if (bigger === undefined || bigger.length <= tail.length) return row;
+    return parseRunTail(bigger);
   }
-  // No document: the stream is the run's only copy, and its ends answer the row.
+  // No document to scan: the stream is the run's only copy, and its ends
+  // answer the row.
   return readStreamRowMetadata(trajectoryStreamPath(trajectoryFile)) ?? {};
 }
 

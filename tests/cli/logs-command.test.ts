@@ -184,6 +184,31 @@ describe("piano logs picker rows", () => {
       .toBe("2026-08-21 12:00 · w · hi");
   });
 
+  it("keeps the row of a run that failed before it named a workflow", async () => {
+    // A run can fail while loading its workflow, so its document has a prompt
+    // and no workflowPath. The tail scanner reads the status only from the
+    // block after that path, which leaves the prompt — and the row must keep
+    // it rather than falling through to a stream that is not there.
+    const runIdNoWorkflow = "20260821T150000-nowf01";
+    await mkdir(join(root, runIdNoWorkflow), { recursive: true });
+    await writeFile(
+      join(root, runIdNoWorkflow, "trajectory.json"),
+      `${JSON.stringify({
+        version: 1,
+        runId: runIdNoWorkflow,
+        updatedAt: "2026-08-21T15:00:00.000Z",
+        promptLength: 5,
+        events: [],
+        status: "failed",
+        turns: [{ prompt: "hello", status: "failed", eventCount: 0 }],
+      })}\n`,
+      "utf8",
+    );
+
+    expect(readRunRowMetadata(join(root, runIdNoWorkflow, "trajectory.json")))
+      .toEqual({ prompt: "hello" });
+  });
+
   it("degrades to an id+time row without a trajectory", () => {
     const missing = join(root, "20260821T130000-def456", "trajectory.json");
     expect(readRunRowMetadata(missing)).toEqual({});
