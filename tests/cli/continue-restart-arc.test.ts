@@ -50,6 +50,14 @@ function stageOf(request: AgentRequest): string {
   return matched[1];
 }
 
+/** One continuous session arc on a real TTY. Each step settles in ~300 ms when
+ * the suite runs this file alone, but under parallel load the process is starved
+ * enough to blow the default 15 s wait — which also happens to be the suite's
+ * default testTimeout, so the failure lands exactly at the budget boundary. The
+ * waits therefore carry their own budget: a slow machine must not fail a run
+ * whose steps are all still making progress. */
+const wait = (label: string, check: () => boolean) => waitFor(label, check, 60_000);
+
 function progressStatus(runsRoot: string, runId: string): string | undefined {
   try {
     const raw = readFileSync(join(runsRoot, runId, "progress.json"), "utf8");
@@ -115,18 +123,18 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       // ——— Job 1: the prompt runs first, second hangs, Escape pauses the job.
       terminal.onInput?.("build the counter");
       terminal.onInput?.("\r");
-      await waitFor("first settled", () => requests.filter((request) => stageOf(request) === "first").length === 1);
-      await waitFor("second hanging", () => requests.filter((request) => stageOf(request) === "second").length === 1);
+      await wait("first settled", () => requests.filter((request) => stageOf(request) === "first").length === 1);
+      await wait("second hanging", () => requests.filter((request) => stageOf(request) === "second").length === 1);
       terminal.onInput?.("\x1b"); // Escape: interrupt, exactly like the real key
-      await waitFor("the run ended as interrupted", () => plain(terminal).includes("interrupted"));
-      await waitFor("job 1 paused", () => progressStatus(runsRoot, runId) === "paused");
-      await waitFor("turn 1 persisted", () => recordedTurns(runsRoot, runId)?.length === 1);
+      await wait("the run ended as interrupted", () => plain(terminal).includes("interrupted"));
+      await wait("job 1 paused", () => progressStatus(runsRoot, runId) === "paused");
+      await wait("turn 1 persisted", () => recordedTurns(runsRoot, runId)?.length === 1);
 
       // ——— /continue: resumes job 1; the accepted first stage must NOT re-run.
       terminal.onInput?.("/continue");
       terminal.onInput?.("\r");
-      await waitFor("second re-ran", () => requests.filter((request) => stageOf(request) === "second").length === 2);
-      await waitFor("job 1 completed", () => progressStatus(runsRoot, runId) === "completed");
+      await wait("second re-ran", () => requests.filter((request) => stageOf(request) === "second").length === 2);
+      await wait("job 1 completed", () => progressStatus(runsRoot, runId) === "completed");
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(1);
       // The continue's span repeats the job's ordinal; the skipped stage is
       // never started again, so the stream still holds exactly one start.
@@ -136,23 +144,23 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       expect(afterContinue.filter((record) => record.kind === "stage-started" && record.stageId === "first"))
         .toHaveLength(1);
       // The turn records the input that actually ran, not the command.
-      await waitFor("turn 2 persisted", () => recordedTurns(runsRoot, runId)?.length === 2);
+      await wait("turn 2 persisted", () => recordedTurns(runsRoot, runId)?.length === 2);
       expect(recordedTurns(runsRoot, runId)?.map((turn) => turn.prompt))
         .toEqual(["build the counter", "build the counter"]);
 
       // ——— Job 2: another prompt pauses the same way.
       terminal.onInput?.("change the counter");
       terminal.onInput?.("\r");
-      await waitFor("second hanging again", () => requests.filter((request) => stageOf(request) === "second").length === 3);
+      await wait("second hanging again", () => requests.filter((request) => stageOf(request) === "second").length === 3);
       terminal.onInput?.("\x1b");
-      await waitFor("job 2 paused", () => progressStatus(runsRoot, runId) === "paused");
-      await waitFor("turn 3 persisted", () => recordedTurns(runsRoot, runId)?.length === 3);
+      await wait("job 2 paused", () => progressStatus(runsRoot, runId) === "paused");
+      await wait("turn 3 persisted", () => recordedTurns(runsRoot, runId)?.length === 3);
 
       // ——— /restart: closes the paused job on the stream, re-runs from scratch.
       terminal.onInput?.("/restart");
       terminal.onInput?.("\r");
-      await waitFor("second re-ran from scratch", () => requests.filter((request) => stageOf(request) === "second").length === 4);
-      await waitFor("job 3 completed", () => progressStatus(runsRoot, runId) === "completed");
+      await wait("second re-ran from scratch", () => requests.filter((request) => stageOf(request) === "second").length === 4);
+      await wait("job 3 completed", () => progressStatus(runsRoot, runId) === "completed");
       // The restart re-ran the first stage too: a fresh job, no cursor.
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(3);
       const afterRestart = streamRecords(runsRoot, runId);
@@ -162,7 +170,7 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
         expect.objectContaining({ jobOrdinal: 2, outcome: "restarted" }),
       ]);
       // The restart's turn carries the input it re-ran.
-      await waitFor("turn 4 persisted", () => recordedTurns(runsRoot, runId)?.length === 4);
+      await wait("turn 4 persisted", () => recordedTurns(runsRoot, runId)?.length === 4);
       expect(recordedTurns(runsRoot, runId)?.map((turn) => turn.prompt))
         .toEqual(["build the counter", "build the counter", "change the counter", "change the counter"]);
 
@@ -174,5 +182,5 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 120_000);
 });
