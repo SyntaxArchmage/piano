@@ -19,7 +19,8 @@ import type {
   AgentRequest,
   AgentResult,
 } from "./agent-contract.js";
-import { numberOrZero, stringList, stringOr } from "./json-narrowing.js";
+import { stringOr } from "./json-narrowing.js";
+import { normalizePortableEvent } from "./portableEvents.js";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";
@@ -495,11 +496,19 @@ function bindEvents(
   attribution?: string,
 ): (event: unknown) => void {
   return (raw) => {
-    const event = typeof raw === "object" && raw !== null
-      ? raw as PiSessionEvent
-      : { type: undefined };
+    const record = typeof raw === "object" && raw !== null
+      ? raw as Record<string, unknown>
+      : undefined;
+    const event = (record ?? { type: undefined }) as PiSessionEvent;
     const type = typeof event.type === "string" ? event.type : undefined;
     const emit = (value: AgentEvent): void => request.onEvent?.(value);
+    // The dozen events every dialect spells identically are normalized once,
+    // for all of them (see portableEvents.ts).
+    const portable = record === undefined ? undefined : normalizePortableEvent(record);
+    if (portable !== undefined) {
+      emit(portable);
+      return;
+    }
     switch (type) {
       case "agent_start":
         emit({ type: "agent_start" });
@@ -591,70 +600,6 @@ function bindEvents(
           result: event.result,
           isError: event.isError === true,
         });
-        return;
-      case "queue_update":
-        emit({ type: "queue_update", steering: stringList(event.steering), followUp: stringList(event.followUp) });
-        return;
-      case "compaction_start":
-        emit({ type: "compaction_start", reason: stringOr(event.reason, "unknown") });
-        return;
-      case "entry_appended":
-        emit({ type: "entry_appended", entry: event.entry });
-        return;
-      case "session_info_changed":
-        emit({ type: "session_info_changed", name: typeof event.name === "string" ? event.name : undefined });
-        return;
-      case "thinking_level_changed":
-        emit({ type: "thinking_level_changed", level: stringOr(event.level, "unknown") });
-        return;
-      case "compaction_end":
-        emit({
-          type: "compaction_end",
-          reason: stringOr(event.reason, "unknown"),
-          result: event.result,
-          aborted: event.aborted === true,
-          willRetry: event.willRetry === true,
-          ...(typeof event.errorMessage === "string" ? { errorMessage: event.errorMessage } : {}),
-        });
-        return;
-      case "auto_retry_start":
-        emit({
-          type: "auto_retry_start",
-          attempt: numberOrZero(event.attempt),
-          maxAttempts: numberOrZero(event.maxAttempts),
-          delayMs: numberOrZero(event.delayMs),
-          errorMessage: stringOr(event.errorMessage, "retry requested"),
-        });
-        return;
-      case "auto_retry_end":
-        emit({
-          type: "auto_retry_end",
-          success: event.success === true,
-          attempt: numberOrZero(event.attempt),
-          ...(typeof event.finalError === "string" ? { finalError: event.finalError } : {}),
-        });
-        return;
-      case "summarization_retry_scheduled":
-        emit({
-          type: "summarization_retry_scheduled",
-          attempt: numberOrZero(event.attempt),
-          maxAttempts: numberOrZero(event.maxAttempts),
-          delayMs: numberOrZero(event.delayMs),
-          errorMessage: stringOr(event.errorMessage, "retry requested"),
-        });
-        return;
-      case "summarization_retry_attempt_start":
-        emit({
-          type: "summarization_retry_attempt_start",
-          source: stringOr(event.source, "unknown"),
-          ...(typeof event.reason === "string" ? { reason: event.reason } : {}),
-        });
-        return;
-      case "summarization_retry_finished":
-        emit({ type: "summarization_retry_finished" });
-        return;
-      case "bash_execution_update":
-        emit({ type: "bash_execution_update", id: typeof event.id === "string" ? event.id : undefined, delta: typeof event.delta === "string" ? event.delta : "" });
         return;
       default:
         emit({ type: "unknown", sourceType: type ?? "unknown", data: raw });

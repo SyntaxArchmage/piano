@@ -7,11 +7,11 @@ import {
   type AgentUsage,
 } from "./events.js";
 import type { HarnessName } from "./harness-config.js";
+import { normalizePortableEvent } from "./portableEvents.js";
 import {
   asRecord,
   nonEmptyString,
   numberValue,
-  stringList,
   type JsonRecord,
 } from "./json-narrowing.js";
 
@@ -365,6 +365,13 @@ function normalizeSubprocessRecord(
   accumulator.sessionId ??= sessionIdFromValue(value);
   const type = nonEmptyString(value.type);
   if (harness === "codex" && normalizeCodexRecord(value, emit, accumulator)) return;
+  // A dozen events are facts about the conversation that every dialect names
+  // identically; portableEvents.ts normalizes those for all of them.
+  const portable = normalizePortableEvent(value);
+  if (portable !== undefined) {
+    emit(portable);
+    return;
+  }
   switch (type) {
     // Claude's `--include-partial-messages` wraps every raw Anthropic stream
     // frame in a `stream_event` envelope. Unwrapping it here is what puts
@@ -561,66 +568,6 @@ function normalizeSubprocessRecord(
       accumulator.turnEnded = true;
       return;
     }
-    case "queue_update":
-      emit({ type: "queue_update", steering: stringList(value.steering), followUp: stringList(value.followUp) });
-      return;
-    case "compaction_start":
-      emit({ type: "compaction_start", reason: nonEmptyString(value.reason) ?? "unknown" });
-      return;
-    case "entry_appended":
-      emit({ type: "entry_appended", entry: value.entry });
-      return;
-    case "session_info_changed":
-      emit({ type: "session_info_changed", name: typeof value.name === "string" ? value.name : undefined });
-      return;
-    case "thinking_level_changed":
-      emit({ type: "thinking_level_changed", level: nonEmptyString(value.level) ?? "unknown" });
-      return;
-    case "compaction_end":
-      emit({
-        type: "compaction_end",
-        reason: nonEmptyString(value.reason) ?? "unknown",
-        result: value.result,
-        aborted: value.aborted === true,
-        willRetry: value.willRetry === true,
-        ...(typeof value.errorMessage === "string" ? { errorMessage: value.errorMessage } : {}),
-      });
-      return;
-    case "auto_retry_start":
-      emit({
-        type: "auto_retry_start",
-        attempt: numberValue(value.attempt) ?? 0,
-        maxAttempts: numberValue(value.maxAttempts) ?? 0,
-        delayMs: numberValue(value.delayMs) ?? 0,
-        errorMessage: nonEmptyString(value.errorMessage) ?? "retry requested",
-      });
-      return;
-    case "auto_retry_end":
-      emit({
-        type: "auto_retry_end",
-        success: value.success === true,
-        attempt: numberValue(value.attempt) ?? 0,
-        ...(typeof value.finalError === "string" ? { finalError: value.finalError } : {}),
-      });
-      return;
-    case "summarization_retry_scheduled":
-      emit({
-        type: "summarization_retry_scheduled",
-        attempt: numberValue(value.attempt) ?? 0,
-        maxAttempts: numberValue(value.maxAttempts) ?? 0,
-        delayMs: numberValue(value.delayMs) ?? 0,
-        errorMessage: nonEmptyString(value.errorMessage) ?? "retry requested",
-      });
-      return;
-    case "summarization_retry_attempt_start":
-      emit({ type: "summarization_retry_attempt_start", source: nonEmptyString(value.source) ?? "unknown", ...(typeof value.reason === "string" ? { reason: value.reason } : {}) });
-      return;
-    case "summarization_retry_finished":
-      emit({ type: "summarization_retry_finished" });
-      return;
-    case "bash_execution_update":
-      emit({ type: "bash_execution_update", ...(typeof value.id === "string" ? { id: value.id } : {}), delta: typeof value.delta === "string" ? value.delta : "" });
-      return;
     case "response":
       // pi RPC's command acknowledgment, and the only place a frame Piano wrote
       // is confirmed. It is delivered to the pi request broker (which matches it
