@@ -88,7 +88,7 @@
 - `tests/cli/headless-signoff.test.ts`（31 行）：自动 approve、round 3 也 approve。
 - `tests/tui/signoff-panel.test.ts`（269 行）：面板挂为 chat 最后一个 block、approve 关闭、reject→第二步自由文本、Esc 取消；`SignoffBlock` 的边框/配色/键盘行为。
 - `tests/tui/signoff.pty.test.ts`（136 行）：真 pty。
-- `tests/workflow/esc-pauses-run.test.ts:283` —"a rejected sign-off keeps the turn's session durable the moment it lands"：验证 reject→rework 期间 `resume.jsonl` 已经落了 actor session。
+- `tests/workflow/esc-pauses-run.test.ts:283` —"a rejected sign-off keeps the turn's session durable the moment it lands"：验证 reject→rework 期间 `progress.jsonl` 的 `actor-turn` 行已经落了 actor session。
 - `tests/workflow/workflow-execution.test.ts`、`tests/cli/session-reject-resume.test.ts`、`tests/tui/prompt-queue.test.ts`。
 
 **缺口**：见 §6.1（reject 无上限）、§6.2（取消语义与全局 Esc 冲突）、§6.4（**没有任何 shipped recipe 开这个开关**——`grep -rn signoff recipes/` 结果 0 行，只在 `docs/proposals/` 与 `docs/uml-ascii-diagrams.txt` 里出现）。
@@ -247,7 +247,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 
 | 观测点 | 载体 | 刷新 | 证据 |
 |---|---|---|---|
-| 整个 DAG + 每 stage 状态 | footer WORKFLOW 列（pulse 闪烁） | 500 ms 轮询 `progress.json` | `tui.ts:1077-1085`；`workflow-graph.ts:128, 348-350` |
+| 整个 DAG + 每 stage 状态 | footer WORKFLOW 列（pulse 闪烁） | 500 ms 轮询 `status.json` | `tui.ts:1077-1085`；`workflow-graph.ts:128, 348-350` |
 | 每 stage 累计耗时 | DAG 节点 | 同上 | `workflow-graph.ts:626-640`（`nodeTimeMs`） |
 | 当前 stage / worker / model | chat 的 `↳ <stage> <worker>` spawn 行 + 稳定配色 | 事件驱动 | `chat-render.ts:32-47, 391-414` |
 | 工具调用 / 结果 / 消息 / 错误 / 重试 | chat + trajectory ledger（9 种 kind） | 事件驱动 | `trajectory.ts:12-23, 127-245` |
@@ -267,7 +267,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 | **V7** | 没有 `/status` 汇总视图 | 当前 stage / attempt / round / 剩余 stage / 已耗时 / 已花 token 只能从 footer DAG + 上滚 chat 里拼 |
 | ~~V8~~ | ~~steering 的投递结果信息量不足~~ | **出范围（§1.3）**。`⚑ steered — <text>` / `queued — …`（`tui.ts:1030, 1039`）不区分"该后端无 steering 实现"与"此刻无活跃 turn" |
 | **V9** | 因取消而失败时，chat 不说原因 | `signoffCancelled` / `"discussion was cancelled"` 都变成一次 stage 失败；面板已关，用户只看到 run 失败 |
-| **V10** | 没有 run 级摘要产物 | 除 `progress.json` 外没有可对比两次调优的 summary；横向对比只能靠 evals |
+| **V10** | 没有 run 级摘要产物 | 除 `status.json` 外没有可对比两次调优的 summary；横向对比只能靠 evals |
 
 ---
 
@@ -316,7 +316,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 
 ### 6.2 面板内 Esc 与全局 Esc 语义冲突
 
-- 证据：`signoff.ts:59-66`（Esc → `WorkflowError` → stage/run 失败）vs 全局 Esc（中断 prompt，`progress.json` 最终记 `paused`，**可续**，见 `tests/workflow/esc-pauses-run.test.ts:146, 202`）。
+- 证据：`signoff.ts:59-66`（Esc → `WorkflowError` → stage/run 失败）vs 全局 Esc（中断 prompt，`status.json` 最终记 `paused`，**可续**，见 `tests/workflow/esc-pauses-run.test.ts:146, 202`）。
 - 影响：同一个键，在面板聚焦时是"把 run 弄失败"，在别处是"暂停并能继续"。前者不可续（stage 失败会终止本次 executeWorkflow）。
 - 建议：区分三个动作 —— `Defer`（暂停 run，保留闸门）/ `Reject`（带反馈重开 actor）/ `Abort`（显式放弃并说明）。
 
@@ -359,7 +359,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 
 - 证据：`run-stats.ts:1-8` 声称"ONE running total per run … report the whole run's consumption"，但 `tui.ts:1072`（每次 prompt）与 `:828`（每次接管 run）都 `stats = emptyRunStats()`。
 - 影响：多 prompt 调优会话里，footer 的 tokens/tools/stages 只反映**当前这一条 prompt**；"这一轮调优一共花了多少"没有答案。
-- 建议：明确"本轮 / 本 run"两级，footer 同时给出或可切换；至少把 run 级累计落进 `progress.json`。
+- 建议：明确"本轮 / 本 run"两级，footer 同时给出或可切换；至少把 run 级累计落进 `status.json`。
 
 ### 6.8 `AskUserQuestion` 被声明为合法工具名，但在 print 模式下永远不会出现
 
@@ -393,12 +393,12 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 ### P1 — 可见性（中等改动，调优收益最大）
 
 4. **两级用量**（V1）：footer USAGE 增加 run 级累计行；`stats` 在 prompt 之间不再清零（本轮重置，run 累加）。
-5. **per-stage token/成本归属**（V2、V3）：把 `usage` 快照按当前 stage 归集进 `progress.json`，DAG 节点第二行显示 stage token（模型名已有位置可借用）。
-6. **`/status`**（V7）：当前 stage / invocation / attempt / round、已耗时、token、剩余 stage 数、最近一次 signoff/discuss 记录 —— 数据已全在 `progress.json` + trajectory 里。
+5. **per-stage token/成本归属**（V2、V3）：把 `usage` 快照按当前 stage 归集进 `status.json`，DAG 节点第二行显示 stage token（模型名已有位置可借用）。
+6. **`/status`**（V7）：当前 stage / invocation / attempt / round、已耗时、token、剩余 stage 数、最近一次 signoff/discuss 记录 —— 数据已全在 `status.json` + trajectory 里。
 7. **discuss 问答回显**（V6）：与 signoff 对齐，把"问 + 答"作为用户消息留在 chat 里。
-8. **可直接查看 stage prompt**（V4）：`/prompt <stage>` 或 spawn 行的可展开视图（数据在 `trajectory.json` 的 `context` 事件与 harness transcript 里）。
+8. **可直接查看 stage prompt**（V4）：`/prompt <stage>` 或 spawn 行的可展开视图（数据在 `trajectory.jsonl` 的 `context` 事件与 harness transcript 里）。
 9. **`/resume` 的 ledger 视图**（V5）：至少提供把全部 turn 折叠进 trajectory 面板的选项。
-10. **run 级摘要产物**（V10）：除 `progress.json` 外增加可对比两次调优的 summary。
+10. **run 级摘要产物**（V10）：除 `status.json` 外增加可对比两次调优的 summary。
 
 ### P2 — discuss 的 harness 覆盖（需单独立项）
 
