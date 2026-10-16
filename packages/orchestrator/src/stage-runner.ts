@@ -103,7 +103,7 @@ export interface StageRunnerContext {
   readonly loaded: LoadedWorkflow;
   readonly compiled: CompiledWorkflow;
   readonly runId: string;
-  readonly promptIndex: number;
+  readonly jobOrdinal: number;
   readonly actors: Map<string, ActorState>;
   readonly announcedContinuations: Map<string, AgentContinuation>;
   readonly actorContexts: Map<string, ActorExecutionContext>;
@@ -180,7 +180,7 @@ export function executeStage(
     loaded,
     compiled,
     runId,
-    promptIndex,
+    jobOrdinal,
     actors,
     announcedContinuations,
     actorContexts,
@@ -199,7 +199,7 @@ export function executeStage(
   const progressPlan = workflowProgressPlan(compiled);
   const invocation: WorkflowRuntimeInvocation = {
     runId,
-    promptIndex,
+    jobOrdinal,
     stageId: node.id,
     stageName: node.stage.name,
     frames,
@@ -323,7 +323,7 @@ export function executeStage(
     actors.set(actorKey, state);
     const row = actorTurnRow({
       runId,
-      jobOrdinal: promptIndex,
+      jobOrdinal,
       invocationId: runtimeInvocationId(invocation),
       attempt: turnAttempt,
       actorKey,

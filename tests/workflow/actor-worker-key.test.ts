@@ -19,7 +19,7 @@ const invocation = (
   frames: readonly WorkflowRuntimeFrame[] = [],
 ): WorkflowRuntimeInvocation => ({
   runId: "run-1",
-  promptIndex: 1,
+  jobOrdinal: 1,
   stageId,
   stageName: stageId,
   frames,

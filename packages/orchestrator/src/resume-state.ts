@@ -78,14 +78,14 @@ export function foldActorTurns(
  * continue path cannot disagree about which actors a run has. */
 export function actorTableFrom(
   ledger: readonly unknown[],
-): { readonly promptIndex: number; readonly actors: Readonly<Record<string, ResumeActorState>> } {
+): { readonly jobOrdinal: number; readonly actors: Readonly<Record<string, ResumeActorState>> } {
   const turns = ledger.filter(
     (record): record is WorkflowProgressActorTurnRecord =>
       typeof record === "object" && record !== null && (record as { kind?: unknown }).kind === "actor-turn",
   );
   const last = turns.at(-1);
   return {
-    promptIndex: last?.jobOrdinal ?? 0,
+    jobOrdinal: last?.jobOrdinal ?? 0,
     actors: turns.length === 0 ? {} : foldActorTurns(turns),
   };
 }

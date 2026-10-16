@@ -182,7 +182,7 @@ describe("Escape pauses a run instead of failing it", () => {
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(after?.id).toBe(continued.runId);
-      expect(after?.promptIndex).toBe(2);
+      expect(after?.jobOrdinal).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

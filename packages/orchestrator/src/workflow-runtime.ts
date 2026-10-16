@@ -15,7 +15,7 @@ export type WorkflowRuntimeFrame =
 /** One concrete execution of a statically compiled stage. */
 export interface WorkflowRuntimeInvocation {
   readonly runId: string;
-  readonly promptIndex: number;
+  readonly jobOrdinal: number;
   readonly stageId: string;
   readonly stageName: string;
   readonly frames: readonly WorkflowRuntimeFrame[];
@@ -145,7 +145,7 @@ export function invocationDirectory(runDir: string, invocation: WorkflowRuntimeI
   return join(
     runDir,
     "prompts",
-    String(invocation.promptIndex),
+    String(invocation.jobOrdinal),
     "invocations",
     ...runtimeInvocationPathSegments(invocation),
   );

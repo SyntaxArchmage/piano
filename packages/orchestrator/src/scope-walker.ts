@@ -76,7 +76,7 @@ export interface ScopeWalkerContext {
   readonly loaded: LoadedWorkflow;
   readonly compiled: CompiledWorkflow;
   readonly runId: string;
-  readonly promptIndex: number;
+  readonly jobOrdinal: number;
   readonly actors: Map<string, ActorState>;
   readonly announcedContinuations: Map<string, AgentContinuation>;
   readonly actorContexts: Map<string, ActorExecutionContext>;
@@ -246,7 +246,7 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     loaded,
     compiled,
     runId,
-    promptIndex,
+    jobOrdinal,
     actors,
     actorContexts,
     knownLoopIterations,
@@ -648,7 +648,7 @@ const finalizeTournament = (
                 if (winnerState === undefined) return Effect.void;
                 const row = actorTurnRow({
                   runId,
-                  jobOrdinal: promptIndex,
+                  jobOrdinal,
                   invocationId: runtimeInvocationId(actorContext.invocation),
                   attempt: winnerExitResult?.attempts ?? 1,
                   actorKey: actorContext.actorKey,
@@ -756,7 +756,7 @@ const executeScope = (
     for (const entry of inside) {
       const result = yield* rebuildAcceptedStage(request.runDir, {
         runId,
-        promptIndex: cursor.jobOrdinal,
+        jobOrdinal: cursor.jobOrdinal,
         stageId: entry.stageId,
         stageName: entry.stageId,
         frames: entry.frames,
@@ -988,7 +988,7 @@ const executeScope = (
       const tournamentSnapshotRoot = join(
         request.runDir,
         "prompts",
-        String(promptIndex),
+        String(jobOrdinal),
         "tournaments",
         encodeURIComponent(`${runtimeInstanceId(frames) ?? "root"}/${region.id}`),
       );
@@ -1017,7 +1017,7 @@ const executeScope = (
           const slotWorkspace = yield* allocateMapWorkspace(
             request.runDir,
             runId,
-            promptIndex,
+            jobOrdinal,
             slotFrames,
             workspace.cwd,
             // Only an explicit continue may re-create a slot whose record was

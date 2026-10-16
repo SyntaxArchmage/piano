@@ -4996,7 +4996,7 @@ workflow:
       // own evidence, not the caller's hint, decides what is next.
       await run();
       // A stale hint (the state says 0) is a floor, never the answer.
-      await run({ id: session.id, promptIndex: 0, actors: new Map() });
+      await run({ id: session.id, jobOrdinal: 0, actors: new Map() });
 
       const ordinals = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
         .trim().split("\n")
@@ -5064,7 +5064,7 @@ workflow:
         prompt: "answer",
         execution: {
           id: session.id,
-          promptIndex: 1,
+          jobOrdinal: 1,
           // `<runId>/<harness>/<stageId>/<lane>`, per `workflowActorKey`.
           // The cast is the point: `WorkflowActorContinuation` requires
           // `continuation`, and the reader always sets it, so this shape can only

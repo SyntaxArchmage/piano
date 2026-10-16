@@ -100,7 +100,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      expect(after?.promptIndex).toBe(2);
+      expect(after?.jobOrdinal).toBe(2);
       const firstActor = continued?.actors.values().next().value;
       const secondActor = after?.actors.values().next().value;
       // Resumed the very same harness session: one actor, two turns.

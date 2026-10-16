@@ -28,7 +28,7 @@ export interface WorkflowActorContinuation {
 /** Identity and actor table of an execution that is being continued. */
 export interface WorkflowExecutionContinuation {
   readonly id: string;
-  readonly promptIndex: number;
+  readonly jobOrdinal: number;
   /** Keyed by `workflowActorKey`, hence only valid for `id`. */
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
@@ -51,13 +51,13 @@ export function readWorkflowExecutionContinuation(
     const table = actorTableFrom(ledgerRecords);
     const runId = ledgerRecords.find((record) => record.runId !== undefined)?.runId;
     if (runId === undefined) return undefined;
-    return finish(runId, table.promptIndex, table.actors);
+    return finish(runId, table.jobOrdinal, table.actors);
   });
 }
 
 function finish(
   runId: string,
-  promptIndex: number,
+  jobOrdinal: number,
   table: Record<string, ResumeActorState>,
 ): WorkflowExecutionContinuation | undefined {
   const actors = new Map<string, WorkflowActorContinuation>();
@@ -73,5 +73,5 @@ function finish(
       continuation: actor.continuation,
     });
   }
-  return actors.size === 0 ? undefined : { id: runId, promptIndex, actors };
+  return actors.size === 0 ? undefined : { id: runId, jobOrdinal, actors };
 }

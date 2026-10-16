@@ -56,12 +56,12 @@ describe("actor table from the ledger", () => {
       turn("run-1/pi/racing/race/slot-0", 1, "sess-pi", 2),
     ]);
 
-    expect(table.promptIndex).toBe(2);
+    expect(table.jobOrdinal).toBe(2);
     expect(Object.keys(table.actors)).toHaveLength(2);
   });
 
   it("has no actors and no prompt index when the ledger holds none", () => {
-    expect(actorTableFrom([])).toEqual({ promptIndex: 0, actors: {} });
+    expect(actorTableFrom([])).toEqual({ jobOrdinal: 0, actors: {} });
   });
 
   it("builds a row only for an actor that is durable", () => {

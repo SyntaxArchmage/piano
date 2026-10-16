@@ -202,7 +202,7 @@ describe("one run across finish → exit → resume → Escape → exit → resu
       const execution = await Effect.runPromise(
         readWorkflowExecutionContinuation(join(runsRoot, runId), runId).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      expect(execution?.promptIndex).toBe(3);
+      expect(execution?.jobOrdinal).toBe(3);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }

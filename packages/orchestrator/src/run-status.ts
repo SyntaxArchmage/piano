@@ -99,8 +99,9 @@ export interface RunStatus {
   /** The jobs this run has run, latest last. A continue keeps its ordinal; a
    * new prompt or a restart starts the next one. */
   readonly jobs: readonly RunJob[];
-  /** The actor registry: which harness session holds each conversation. */
-  readonly promptIndex: number;
+  /** The job ordinal the actor table belongs to, and the registry itself:
+   * which harness session holds each conversation. */
+  readonly jobOrdinal: number;
   readonly actors: Readonly<Record<string, ResumeActorState>>;
 }
 
@@ -158,7 +159,7 @@ export function runStatusFromParts(parts: {
     ...(progress?.invocationTime === undefined ? {} : { invocationTime: progress.invocationTime }),
     ...(progress?.current === undefined ? {} : { current: progress.current }),
     jobs: jobs(foldJobSpans(records)).map(asRunJob),
-    promptIndex: actors.promptIndex,
+    jobOrdinal: actors.jobOrdinal,
     actors: actors.actors,
   } satisfies RunStatus;
 }

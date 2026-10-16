@@ -10,7 +10,7 @@ import type { WorkflowRuntimeInvocation } from "../../packages/orchestrator/src/
 
 const invocation: WorkflowRuntimeInvocation = {
   runId: "exec-1",
-  promptIndex: 1,
+  jobOrdinal: 1,
   stageId: "first",
   stageName: "first",
   frames: [],

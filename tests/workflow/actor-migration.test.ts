@@ -69,7 +69,7 @@ describe("a legacy stage-keyed actor continues under the worker key", () => {
           continuation: LEGACY_CONTINUATION,
         },
       ]]) as WorkflowExecutionContinuation["actors"];
-      const execution: WorkflowExecutionContinuation = { id: session.id, promptIndex: 1, actors: legacyActors };
+      const execution: WorkflowExecutionContinuation = { id: session.id, jobOrdinal: 1, actors: legacyActors };
       await Effect.runPromise(
         loadWorkflow(join(root, "workflow.yml"), root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {

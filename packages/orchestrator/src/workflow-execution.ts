@@ -733,11 +733,11 @@ export function executeWorkflow(
     // so its evidence lands in the same prompts/<i>/ tree and the stream
     // groups the spans together. A fresh job takes the next ordinal the run's
     // own evidence leaves — the resume state's index is only a floor there.
-    const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.promptIndex);
+    const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.jobOrdinal);
     yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
-    const promptIndex = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
+    const jobOrdinal = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
     const knownLoopIterations = new Map<string, number>();
-    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, promptIndex, request.prompt, request.execution !== undefined);
+    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, jobOrdinal, request.prompt, request.execution !== undefined);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {
@@ -852,7 +852,7 @@ export function executeWorkflow(
       loaded,
       compiled,
       runId,
-      promptIndex,
+      jobOrdinal,
       actors,
       announcedContinuations,
       actorContexts,
@@ -882,7 +882,7 @@ export function executeWorkflow(
         preserve: preserveSlots || request.workspace?.preserve === true || workspaceState.preserve,
         // Only this job's slots: a completed prompt must never sweep the
         // preserved slots a paused job left for its continue to rebind.
-        keyPrefix: `job-${promptIndex}/`,
+        keyPrefix: `job-${jobOrdinal}/`,
       }).pipe(Effect.asVoid)));
 
 
@@ -1044,7 +1044,7 @@ export function executeWorkflow(
         progressSemaphore.withPermits(1)(appendWorkflowProgress(request.runDir, {
           kind: "region-finalized",
           runId,
-          jobOrdinal: promptIndex,
+          jobOrdinal,
           ...payload,
         }).pipe(Effect.asVoid));
       const walker = createScopeWalker({
@@ -1055,7 +1055,7 @@ export function executeWorkflow(
         loaded,
         compiled,
         runId,
-        promptIndex,
+        jobOrdinal,
         actors,
         announcedContinuations,
         actorContexts,
