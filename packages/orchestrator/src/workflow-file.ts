@@ -14,9 +14,9 @@ import { logger, TRACE, type Logging, type Source } from "@piano/logging";
 import { WorkflowError, errorMessage, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import {
+  compileWorkflow,
   parseWorkflow,
   type WorkflowDocument,
-  type WorkflowNode,
   type WorkflowStage,
 } from "./workflow.js";
 
@@ -113,12 +113,6 @@ const PARSE_SOURCE: Source = {
   file: "workflow.ts",
   function: "parseWorkflow",
 };
-
-function workflowStages(nodes: readonly WorkflowNode[]): readonly WorkflowStage[] {
-  return nodes.flatMap((node) => "stage" in node
-    ? [node.stage]
-    : workflowStages("loop" in node ? node.loop.nodes : node.tournament.nodes));
-}
 
 function warnLegacyValidation(
   workflowPath: string,
@@ -367,11 +361,15 @@ export function loadWorkflow(
     const document = yield* TRACE(PARSE_SOURCE, parseWorkflow(source, absoluteWorkflowPath), {
       workflowPath: absoluteWorkflowPath,
     });
+    // Compile once at load: the leaf table replaces a hand-rolled walk of the
+    // node tree, and graph-shape errors surface here rather than at the first
+    // run step. Every production caller compiled right after loading anyway.
+    const compiled = yield* compileWorkflow(document, absoluteWorkflowPath);
     // Validate every plugin eagerly so a malformed workflow cannot defer a
     // missing worker failure until an unrelated predecessor finishes. The
     // harness appendix is discovered per stage, so an unknown agents.<xxx>.md
     // suffix also fails here.
-    const stages = workflowStages(document.workflow.nodes);
+    const stages = compiled.stages.map((entry) => entry.stage);
     yield* Effect.sync(() => warnLegacyValidation(absoluteWorkflowPath, stages));
     const contractKeys = new Set(stages
       .filter((stage) => stage.validate === true)
