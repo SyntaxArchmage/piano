@@ -59,7 +59,7 @@ type AgentRunner = (request, options) => Effect<...>
   - `stages.map(s => s.id)` 的 DAG 顺序（`["first","second"]`、`["left","right","joined"]`）
   - fan-out 两个独立 stage 确实并发（用 `gate`/`bothStarted` 强制对表）
   - join stage 的 handoff 上下文按声明顺序包含 `left` 与 `right` 的输出，而 prompt 不拼接上游文本
-  - `loadWorkflow → compileWorkflow → scheduleWorkflow → executeWorker → executeAgent` 的完整 trace 生命周期
+  - `loadWorkflow → compileWorkflow → executeWorker → executeAgent` 的完整 trace 生命周期
 - **为什么用临时目录 + 真文件**：`executeWorkflow` 依赖 `FileSystem`，写临时 workflow.（实际是 `writeFile` 到 `mkdtemp`）让 `loadWorkflow` 走真实的文件读取路径，而不是 mock `readFile`。这保留了「文件加载失败」这类问题的可见性。
 
 ## L4 — 真实对等 e2e（basic-workflow-parity.e2e.test.ts）
