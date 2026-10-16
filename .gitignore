@@ -1,4 +1,5 @@
 node_modules/
+.npm/
 dist/
 coverage/
 *.log
@@ -16,9 +17,40 @@ evals/workloads/*/workspace/__pycache__/
 evals/workloads/*/workspace/bench/
 evals/workloads/*/workspace/reports/
 evals/workloads/*/workspace/state/
+evals/**/
 
 # Only AGENTS/CLAUDE/README are tracked markdown files at repo root.
 /*.md
 !/AGENTS.md
 !/CLAUDE.md
 !/README.md
+**settings.local.json
+
+# Agent-harness dynamic state — never tracked.
+# Migrated from .git/info/exclude so every clone is protected, not just this one.
+**/.claude/scheduled_tasks.lock
+**/.claude/scheduled_tasks.json
+**/.claude/routines/.state/
+**/.claude/worktrees/
+**/.claude/checkpoints/
+**/.claude/mailbox/
+**/.claude/agent-registry.json
+**/.claude/agent-memory-local
+**/.claude/first-run
+**/.claude/assistant-daemon-state.json
+
+# Kilo Code / KiloCode agent-manager state and worktree setup scripts.
+.kilo/worktrees/
+.kilo/agent-manager.json
+.kilo/setup-script
+.kilo/setup-script.sh
+.kilo/setup-script.ps1
+.kilo/setup-script.cmd
+.kilo/setup-script.bat
+.kilocode/worktrees/
+.kilocode/agent-manager.json
+.kilocode/setup-script
+.kilocode/setup-script.sh
+.kilocode/setup-script.ps1
+.kilocode/setup-script.cmd
+.kilocode/setup-script.bat
