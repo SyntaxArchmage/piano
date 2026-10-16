@@ -18,7 +18,7 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
-import { foldJobSpans, jobs, parseProgressStreamRecord, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
+import { foldJobSpans, jobs, parseProgressStreamRecord, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { formatRunId, oneLine } from "./session-resume.js";
@@ -486,7 +486,7 @@ function printStaticObservability(
       message: "run id must name a direct child of the runs root",
     }));
   }
-  return inspectStaticObservability(runDir).pipe(
+  return inspectStaticObservability(runDir, progressRecordDeclaredFields).pipe(
     Effect.mapError((cause) => new LogsStorageError({
       operation: "check",
       path: runDir,

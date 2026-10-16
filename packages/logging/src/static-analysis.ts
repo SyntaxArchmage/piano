@@ -28,7 +28,9 @@ export type StaticObservabilityIssueCode =
   | "transcript-missing"
   | "transcript-invalid"
   | "ref-missing"
-  | "ref-mismatch";
+  | "ref-mismatch"
+  | "undeclared-field"
+  | "view-stale";
 
 export interface StaticObservabilityIssue {
   readonly code: StaticObservabilityIssueCode;
@@ -69,6 +71,12 @@ export interface StaticObservabilityInput {
    * is enough to describe a run, and the analysis reads whichever is there. */
   readonly trajectoryStream?: string;
   readonly progress?: string;
+  /** Declared top-level fields per progress record kind, keyed the way the
+   * stream spells kinds (`"stage-accepted"` for the kind-less line). The
+   * writer owns this table — it lives beside the record types in the
+   * orchestrator and is handed in, because this package must not import it.
+   * Absent table, absent check: the analyzer stays usable without it. */
+  readonly declaredProgressFields?: Readonly<Record<string, readonly string[]>>;
   /** The run's state document (`status.json`): the one view of how a run is
    * doing, folded from the ledgers beside it. */
   readonly status?: string;
@@ -536,8 +544,55 @@ function validateProgressRecords(
   }
 }
 
-/** The run's state document is the one view of how a run is doing, so what it
- * must carry is small: who the run is, when it was last updated, how it ended,
+/** Writer-side half of the record contract: undeclared fields are forbidden on
+ * write (experiments belong in an `extra` envelope). A field the writer's own
+ * declared table does not know for the record's kind — a typo, or a newer
+ * writer's field this build has no meaning for — is reported, one issue per
+ * record. A record whose kind the table does not know is skipped, the same
+ * tolerance the folds apply. */
+function validateDeclaredProgressFields(
+  records: readonly ParsedJsonlRecord[],
+  declared: Readonly<Record<string, readonly string[]>>,
+  path: string,
+  issues: StaticObservabilityIssue[],
+): void {
+  for (const { value: record, line } of records) {
+    const kind = typeof record.kind === "string" ? record.kind : "stage-accepted";
+    const fields = declared[kind];
+    if (fields === undefined) continue;
+    const undeclared = Object.keys(record).filter((field) => !fields.includes(field));
+    if (undeclared.length > 0) {
+      issue(issues, "undeclared-field", path, `${kind} record carries undeclared field(s): ${undeclared.join(", ")}`, line);
+    }
+  }
+}
+
+/** status.json is the ledger's view, rewritten on every append — so a view
+ * older than the ledger, or missing while the ledger exists, is a refresh that
+ * did not complete. That is reportable, not fatal, and `--rebuild` is the fix.
+ * The comparison is the timestamps, not a re-fold: the view's own `updatedAt`
+ * is the last progress record's timestamp, so a fresh view equals it. */
+function validateStatusFreshness(
+  status: JsonRecord | undefined,
+  statusPath: string,
+  progressRecords: readonly ParsedJsonlRecord[],
+  issues: StaticObservabilityIssue[],
+): void {
+  if (progressRecords.length === 0) return;
+  const last = progressRecords[progressRecords.length - 1]?.value;
+  if (last === undefined || !isTimestamp(last.timestamp)) return;
+  if (status === undefined) {
+    issue(issues, "view-stale", statusPath, "status.json is missing while the ledger holds records; rebuild it with `piano logs --rebuild`");
+    return;
+  }
+  // A malformed updatedAt is validateStatus's finding, not this one's.
+  if (!isTimestamp(status.updatedAt)) return;
+  if (Date.parse(status.updatedAt) < Date.parse(last.timestamp)) {
+    issue(issues, "view-stale", statusPath, `status.json is older than the ledger's last record (${String(status.updatedAt)} < ${String(last.timestamp)}); rebuild it with \`piano logs --rebuild\``);
+  }
+}
+
+/** The run's state document is the one view of how a run is doing, so what it * must carry is small: who the run is, when it was last updated, how it ended,
  * and how much of its plan is done. Its identity field is `runId` — the name
  * the document settled on when the three diverged status files became one. */
 function validateStatus(
@@ -664,11 +719,15 @@ export function analyzeStaticObservability(
     collectHandoffRecordPaths(trajectory, runDir, handoffRecordPaths);
   }
   validateProgressRecords(progressRecords, progressPath, issues);
+  if (input.declaredProgressFields !== undefined) {
+    validateDeclaredProgressFields(progressRecords, input.declaredProgressFields, progressPath, issues);
+  }
   for (const { value: record } of progressRecords) {
     collectTranscriptPaths(record, runDir, transcriptPaths);
     collectHandoffRecordPaths(record, runDir, handoffRecordPaths);
   }
   validateStatus(status, statusPath, issues);
+  validateStatusFreshness(status, statusPath, progressRecords, issues);
   const transcriptContents = input.transcripts ?? {};
   for (const path of transcriptPaths) validateTranscript(path, transcriptContents[path], issues);
   validateHandoffReferences(handoffRecordPaths, input.handoffRecords ?? {}, input.results ?? {}, runDir, issues);
@@ -708,6 +767,7 @@ function readOptional(
 /** Read a run directory and perform the same static analysis used by tests and callers. */
 export function inspectStaticObservability(
   runDir: string,
+  declaredProgressFields?: Readonly<Record<string, readonly string[]>>,
 ): Effect.Effect<StaticObservabilityReport, StaticObservabilityReadError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -726,6 +786,7 @@ export function inspectStaticObservability(
       trajectoryStream,
       progress,
       status,
+      ...(declaredProgressFields === undefined ? {} : { declaredProgressFields }),
     });
     const transcriptEntries = yield* Effect.forEach(
       initial.transcriptPaths,
@@ -750,6 +811,7 @@ export function inspectStaticObservability(
       trajectoryStream,
       progress,
       status,
+      ...(declaredProgressFields === undefined ? {} : { declaredProgressFields }),
       transcripts: Object.fromEntries(transcriptEntries),
       handoffRecords,
       results: Object.fromEntries(resultEntries),

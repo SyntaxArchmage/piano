@@ -12,6 +12,7 @@ import {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
+  progressRecordDeclaredFields,
   progressRecordKind,
   workflowProgressPath,
   runStatusPath,
@@ -22,6 +23,14 @@ import {
   type WorkflowProgressSnapshot,
   type WorkflowProgressStreamRecord,
 } from "../../packages/orchestrator/src/index.js";
+import type {
+  WorkflowProgressActorTurnRecord,
+  WorkflowProgressExecutionFinishRecord,
+  WorkflowProgressExecutionStartRecord,
+  WorkflowProgressJobClosedRecord,
+  WorkflowProgressRegionFinalizedRecord,
+  WorkflowProgressStartRecord,
+} from "../../packages/orchestrator/src/progress.js";
 
 const roots: string[] = [];
 
@@ -501,5 +510,62 @@ describe("workflow progress stream", () => {
 
     expect(rebuilt).toBeDefined();
     expect(rebuilt).toEqual(written);
+  });
+  it("keeps the declared-field table exactly as wide as the record types", () => {
+    // The drift guard for the runtime table `--check`'s undeclared-field report
+    // reads. Each record below is maximal — every declared field, optionals
+    // included — and typed, so the compiler proves each key IS a declared
+    // field; the two set assertions then prove the table neither omits one
+    // (which would false-positive on real records) nor carries a stale extra.
+    const workspace = { key: "shared", cwd: "/tmp/w", kind: "shared" } as const;
+    const envelope = { version: 1, timestamp: "2026-08-25T00:00:00.000Z", runId: "run-1" } as const;
+    const maximal: Readonly<Record<string, object>> = {
+      "stage-accepted": {
+        ...envelope,
+        invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic",
+        instanceId: "root", iteration: 0, attempt: 1, workspace,
+        actorKey: "v2/run-1/pi/basic/root", harness: "pi",
+        sessionId: "s", transcriptPath: "/t.jsonl", resultPath: "/r.json",
+        handoffRecordPath: "/h/record.json",
+        requestedModel: "m", requestedThinkingLevel: "low", model: "m2", thinkingLevel: "high",
+        progress: { status: "accepted", acceptedStages: 1, completedStages: 1, plannedStages: 1, remainingStages: 0, stageCounts: {}, hint: "respond 1/1" },
+        resultPayload: {}, projections: [],
+        contract: { id: "c", version: 1, digest: "d", snapshotPath: "/c.json" },
+      } satisfies WorkflowProgressRecord,
+      "stage-started": {
+        ...envelope, kind: "stage-started",
+        invocationId: "respond@root", stageId: "respond", stage: "respond", worker: "basic",
+        attempt: 1, instanceId: "root", iteration: 0, mapSlot: 0, mapSlots: 2, scope: "tune", error: "e",
+      } satisfies WorkflowProgressStartRecord,
+      "execution-started": {
+        ...envelope, kind: "execution-started", jobOrdinal: 1, prompt: "p", resumed: false,
+        plan: { plannedStages: 1, stageCounts: {} },
+      } satisfies WorkflowProgressExecutionStartRecord,
+      "execution-finished": {
+        ...envelope, kind: "execution-finished", status: "completed", error: "e",
+      } satisfies WorkflowProgressExecutionFinishRecord,
+      "job-closed": {
+        ...envelope, kind: "job-closed", jobOrdinal: 1, outcome: "restarted",
+      } satisfies WorkflowProgressJobClosedRecord,
+      "region-finalized": {
+        ...envelope, kind: "region-finalized", jobOrdinal: 1, instance: "race", regionId: "race",
+        regionKind: "map", outcome: "carried", notCarriedReason: "admission", winnerInstanceId: "race/slot-0",
+        incumbent: { key: "k", metric: { name: "tflops", unit: "TFLOP/s", direction: "higher", best: 1 } },
+        iterations: 2,
+      } satisfies WorkflowProgressRegionFinalizedRecord,
+      "actor-turn": {
+        ...envelope, kind: "actor-turn", jobOrdinal: 1, invocationId: "respond@root", attempt: 1,
+        actorKey: "v2/run-1/pi/basic/root", harness: "pi", worker: "basic", lane: "root",
+        sessionId: "s", transcriptPath: "/t.jsonl", turn: 1,
+        continuation: { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl" },
+      } satisfies WorkflowProgressActorTurnRecord,
+    };
+    expect(Object.keys(maximal).sort()).toEqual(Object.keys(progressRecordDeclaredFields).sort());
+    for (const [kind, record] of Object.entries(maximal)) {
+      const declared = progressRecordDeclaredFields[kind]!;
+      const keys = Object.keys(record);
+      expect(keys.filter((key) => !declared.includes(key))).toEqual([]);
+      expect(declared.filter((field) => !keys.includes(field))).toEqual([]);
+    }
   });
 });

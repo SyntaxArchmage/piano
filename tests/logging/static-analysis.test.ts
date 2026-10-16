@@ -10,6 +10,7 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "../../packages/logging/src/index.js";
+import { progressRecordDeclaredFields } from "../../packages/orchestrator/src/progress.js";
 
 const runId = "run-static-1";
 const traceId = "trace-static-1";
@@ -334,6 +335,61 @@ describe(" static observability analysis", () => {
     });
     const refCodes = report.issues.map((issue) => issue.code).filter((code) => code.startsWith("ref-"));
     expect(refCodes).toEqual(["ref-mismatch"]);
+  });
+
+  it("reports a field the writer's own table does not declare, and skips without the table", () => {
+    const handoffPath = "/tmp/static-handoff/record.json";
+    const base = JSON.parse(acceptedProgress(handoffPath).trim()) as Record<string, unknown>;
+    const progress = `${JSON.stringify({ ...base, experimental: true })}\n`;
+    const report = analyzeStaticObservability({
+      runDir: `/tmp/${runId}`,
+      progress,
+      declaredProgressFields: progressRecordDeclaredFields,
+    });
+    const undeclared = report.issues.filter((issue) => issue.code === "undeclared-field");
+    expect(undeclared).toHaveLength(1);
+    expect(undeclared[0]?.message).toContain("experimental");
+    expect(undeclared[0]?.line).toBe(1);
+
+    // No table, nothing to check against: the report stays silent rather than
+    // guessing a contract.
+    const without = analyzeStaticObservability({ runDir: `/tmp/${runId}`, progress });
+    expect(without.issues.some((issue) => issue.code === "undeclared-field")).toBe(false);
+
+    // A kind newer than the table is tolerated exactly as the folds skip it.
+    const future = `${JSON.stringify({
+      version: 1, kind: "from-a-newer-build", timestamp: base.timestamp, runId: base.runId, whatever: 1,
+    })}\n`;
+    const futureReport = analyzeStaticObservability({
+      runDir: `/tmp/${runId}`,
+      progress: future,
+      declaredProgressFields: progressRecordDeclaredFields,
+    });
+    expect(futureReport.issues.some((issue) => issue.code === "undeclared-field")).toBe(false);
+  });
+
+  it("reports view-stale when the state document lags the ledger or is absent", () => {
+    const handoffPath = "/tmp/static-handoff/record.json";
+    const progress = acceptedProgress(handoffPath); // 2026-08-25T00:00:00.000Z
+    const stale = JSON.stringify({
+      version: 1, runId, updatedAt: "2026-08-24T23:59:59.000Z", status: "running",
+      plannedStages: 1, completedStages: 0, acceptedStages: 0, remainingStages: 1,
+    });
+    expect(analyzeStaticObservability({ runDir: `/tmp/${runId}`, progress, status: stale }).issues
+      .some((issue) => issue.code === "view-stale")).toBe(true);
+
+    // A ledger with no view at all is the same finding: the refresh never ran.
+    expect(analyzeStaticObservability({ runDir: `/tmp/${runId}`, progress }).issues
+      .some((issue) => issue.code === "view-stale")).toBe(true);
+
+    // A view whose updatedAt equals the ledger's last record is fresh — that
+    // equality is the invariant the writer maintains on every append.
+    const fresh = JSON.stringify({
+      version: 1, runId, updatedAt: "2026-08-25T00:00:00.000Z", status: "running",
+      plannedStages: 1, completedStages: 0, acceptedStages: 0, remainingStages: 1,
+    });
+    expect(analyzeStaticObservability({ runDir: `/tmp/${runId}`, progress, status: fresh }).issues
+      .some((issue) => issue.code === "view-stale")).toBe(false);
   });
 
   it("checks the result file the progress stream's handoff record pins", async () => {

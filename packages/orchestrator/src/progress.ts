@@ -342,6 +342,47 @@ export function progressRecordKind(record: object | null | undefined):
   return undefined;
 }
 
+/** The declared top-level fields of every record kind, keyed the way
+ * `progressRecordKind` spells kinds (`"stage-accepted"` for the kind-less
+ * historical line). The writer-side half of the reader contract — undeclared
+ * fields are ignored on read and forbidden on write — lives here as a runtime
+ * table because the interfaces above are compile-time only. Kept in the same
+ * file, beside the types it mirrors; the drift test in tests/workflow builds a
+ * maximal record of every kind and pins the two directions against each other.
+ * Consumers: `--check`'s `undeclared-field` report. The `extra` envelope the
+ * contract allows for experiments is itself a declared field of no kind yet —
+ * experimental fields go inside it, not beside the declared ones. */
+export const progressRecordDeclaredFields: Readonly<Record<string, readonly string[]>> = {
+  "stage-accepted": [
+    "version", "timestamp", "runId", "invocationId", "stageId", "stage", "worker",
+    "instanceId", "iteration", "attempt", "workspace", "actorKey", "harness",
+    "sessionId", "transcriptPath", "resultPath", "handoffRecordPath",
+    "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel",
+    "progress", "resultPayload", "projections", "contract",
+  ],
+  "stage-started": [
+    "version", "kind", "timestamp", "runId", "invocationId", "stageId", "stage",
+    "worker", "attempt", "instanceId", "iteration", "mapSlot", "mapSlots", "scope", "error",
+  ],
+  "execution-started": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "prompt", "resumed", "plan",
+  ],
+  "execution-finished": [
+    "version", "kind", "timestamp", "runId", "status", "error",
+  ],
+  "job-closed": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "outcome",
+  ],
+  "region-finalized": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "instance", "regionId",
+    "regionKind", "outcome", "notCarriedReason", "winnerInstanceId", "incumbent", "iterations",
+  ],
+  "actor-turn": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "invocationId", "attempt",
+    "actorKey", "harness", "worker", "lane", "sessionId", "transcriptPath", "turn", "continuation",
+  ],
+};
+
 /** Parse one stream line into a record, or `undefined` for a blank, torn, or
  * shapeless line. The single definition of the line format's acceptance rule,
  * shared by every stream reader (the snapshot fallback and the job fold) so
