@@ -313,9 +313,14 @@ describe("duration-bound loop execution", () => {
       }
       // With more than one round the denominator must have grown past its
       // initial single-iteration value, which is the behaviour under test.
+      // The settled document carries the growth; a mid-run sample cannot,
+      // because the sample is taken at the start of a round — before that
+      // round is accepted — so it is always one round behind and only shows
+      // the growth from the third sample on. A window that fits two rounds
+      // would skip the assertion entirely.
       if (snapshots.length > 1) {
-        const last = snapshots.at(-1)!;
-        expect(last.stageCounts["tune.work"]?.planned).toBeGreaterThan(1);
+        const settled = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8"));
+        expect(settled.stageCounts["tune.work"]?.planned).toBeGreaterThan(1);
       }
     } finally {
       await rm(root, { recursive: true, force: true });
