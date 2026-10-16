@@ -160,8 +160,8 @@ export interface WorkflowRegionPlan {
   readonly id: string;
   readonly name: string;
   readonly kind: "loop" | "map";
-  readonly entry: string;
-  readonly exit: string;
+  /** Dotted ids of the boundary leaves. The DSL's `entry`/`exit` names are
+   * lowering-only; anything running or reporting a region reads these. */
   readonly entryStageId: string;
   readonly exitStageId: string;
   readonly parentId?: string;
@@ -903,8 +903,6 @@ function lowerNodes(
         id,
         name: region.name,
         kind,
-        entry: region.entry,
-        exit: region.exit,
         entryStageId: entryBoundary.entryStageId,
         exitStageId: exitBoundary.exitStageId,
         ...(parentId === undefined ? {} : { parentId }),

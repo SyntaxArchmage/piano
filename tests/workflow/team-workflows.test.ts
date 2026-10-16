@@ -85,8 +85,8 @@ describe("team workflow family", () => {
         kind: "map",
         over: "architect.implementation_plan",
         count: 2,
-        entry: "implement",
-        exit: "implement",
+        entryStageId: "candidates.implement",
+        exitStageId: "candidates.implement",
       });
     });
   }

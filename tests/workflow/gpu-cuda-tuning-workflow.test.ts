@@ -28,8 +28,8 @@ describe("gpu-cuda-tuning workflow template", () => {
     expect(compiled.value.regions[0]).toMatchObject({
       kind: "loop",
       name: "tune",
-      entry: "profile",
-      exit: "measure",
+      entryStageId: "tune.profile",
+      exitStageId: "tune.measure",
       iterations: 10,
       feedback: "measure",
     });

@@ -75,8 +75,8 @@ function timedShape(compiled: CompiledWorkflow) {
     regions: compiled.regions.map((region) => ({
       id: region.id,
       kind: region.kind,
-      entry: region.entry,
-      exit: region.exit,
+      entryStageId: region.entryStageId,
+      exitStageId: region.exitStageId,
       feedback: region.feedback,
       parentId: region.parentId,
       from: region.from,
@@ -97,8 +97,8 @@ describe("paper-writing workflow template", () => {
     expect(polish).toMatchObject({
       kind: "loop",
       name: "polish",
-      entry: "storyline",
-      exit: "revise",
+      entryStageId: "polish.storyline",
+      exitStageId: "polish.revise",
       // The reviewer's issues are the loop's memory between rounds.
       feedback: "review",
       duration: FULL_DURATION_SECONDS,
