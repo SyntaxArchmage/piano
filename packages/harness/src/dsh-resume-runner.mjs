@@ -22,8 +22,9 @@
  *
  * Steering: for the duration of the task turn the runner reads stdin as NDJSON
  * steer frames (`{"type":"steer","text":"..."}`), the far end of Piano's
- * subprocess steering channel. Frames that arrive before the turn starts are
- * buffered and delivered the moment it goes live; frames after it ends are
+ * subprocess steering channel. Frames that arrive before the turn starts
+ * survive in the stdin pipe buffer and are delivered once the reader is armed;
+ * frames after it ends are
  * noted and dropped — there is no next turn to hand them to, and queueing them
  * would only lie about when the model sees them. Delivery is `Agent.steer`, the
  * core loop's next-step inbox entry, so the text joins the running turn like a
@@ -331,6 +332,12 @@ async function run(ctx, task, io) {
   // as delivered, and let the *next* frame continue an answer nobody asked for.
   // The window closes when this runner's own turn is over, whatever the agent
   // is doing afterwards.
+  // Load-bearing window: between this attach and steering.arm() below there is
+  // deliberately NO await — readline delivers nothing until the stack unwinds,
+  // so every frame reaches the armed live path and openSteeringInput's pre-arm
+  // queue stays unreachable. Inserting an await here reopens that queue path,
+  // which no test pins (its former test was pruned as structurally
+  // unreachable); re-pin the buffering behaviour before adding one.
   let armed = false;
   const steering = openSteeringInput(() => armed && agent.status === "running");
   const onStatus = ({ agent: changed, status }) => {

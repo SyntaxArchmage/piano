@@ -10,19 +10,20 @@ export {
   type AgentRetryNotice,
   type AgentRetryOutcome,
 } from "./retry.js";
+export { defaultPiConfigPath, executeAgent } from "./pi.js";
 export {
-  defaultPiConfigPath,
-  executeAgent,
   piAvailable,
   piLoadable,
+  type PiHarnessOptions,
+  type PiModule,
+} from "./pi-sdk.js";
+export {
   type AgentHarnessOptions,
   type AgentContinuation,
   type AgentRequest,
   type AgentResult,
   type AgentRunner,
-  type PiHarnessOptions,
-  type PiModule,
-} from "./pi.js";
+} from "./agent-contract.js";
 export {
   agentConfigPath,
   defaultAgentConfigPath,
@@ -49,12 +50,12 @@ export {
   toolGrantsCapability,
   unknownToolNames,
 } from "./tool-names.js";
+export { executeSubprocessAgent } from "./subprocess.js";
+export { dshProjectKey } from "./dsh-session-storage.js";
 export {
-  dshProjectKey,
-  executeSubprocessAgent,
   normalizeSubprocessLine,
   type SubprocessAccumulator,
-} from "./subprocess.js";
+} from "./subprocess-events.js";
 export {
   PI_WEB_SEARCH_TOOL_NAME,
   piWebSearchExtensionPath,
@@ -84,10 +85,10 @@ export {
   type HarnessHomes,
   type HarnessHomeOptions,
 } from "./harness-home.js";
+export { eventMetadata } from "./event-metadata.js";
 export {
   asAgentMessageEvent,
   asAgentMessage,
-  eventMetadata,
   shouldPersistAgentEvent,
   messageText,
   textDelta,

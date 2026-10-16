@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   KeybindingsManager,
@@ -18,11 +18,12 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
+import { foldJobSpans, jobs, parseProgressStreamRecord, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { formatRunId, oneLine } from "./session-resume.js";
 
-const usage = `usage: ${programName()} logs [--trace] [--check <run-id>]`;
+const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`;
 const RST = "\x1b[0m";
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
@@ -41,6 +42,11 @@ interface LogsOptions {
   runsRoot: string;
   trace: boolean;
   checkRun?: string;
+  jobs: boolean;
+  jobOrdinal?: number;
+  jobsRun?: string;
+  rebuildRun?: string;
+  force: boolean;
 }
 
 export interface LogsDeps {
@@ -57,8 +63,13 @@ function parseLogsArgs(
 ): Effect.Effect<LogsOptions, CliArgumentError> {
   let trace = false;
   let checkRun: string | undefined;
+  let jobsFlag = false;
+  let jobOrdinal: number | undefined;
+  let rebuildRun: string | undefined;
+  let force = false;
+  const positionals: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+    const arg = args[index] ?? "";
     if (arg === "--trace") {
       trace = true;
       continue;
@@ -75,15 +86,86 @@ function parseLogsArgs(
       index += 1;
       continue;
     }
-    return Effect.fail(new CliArgumentError({ message: `unknown option: ${arg}\n${usage}` }));
+    if (arg === "--jobs") {
+      if (jobsFlag) {
+        return Effect.fail(new CliArgumentError({ message: `--jobs may be specified only once\n${usage}` }));
+      }
+      jobsFlag = true;
+      continue;
+    }
+    if (arg === "--rebuild") {
+      const value = args[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-")) {
+        return Effect.fail(new CliArgumentError({ message: `--rebuild requires a run id\n${usage}` }));
+      }
+      if (rebuildRun !== undefined) {
+        return Effect.fail(new CliArgumentError({ message: `--rebuild may be specified only once\n${usage}` }));
+      }
+      rebuildRun = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--force") {
+      if (force) {
+        return Effect.fail(new CliArgumentError({ message: `--force may be specified only once\n${usage}` }));
+      }
+      force = true;
+      continue;
+    }
+    if (arg === "--job") {
+      const value = args[index + 1];
+      if (value === undefined || !/^[1-9][0-9]*$/.test(value)) {
+        return Effect.fail(new CliArgumentError({ message: `--job requires a positive job ordinal\n${usage}` }));
+      }
+      if (jobOrdinal !== undefined) {
+        return Effect.fail(new CliArgumentError({ message: `--job may be specified only once\n${usage}` }));
+      }
+      jobOrdinal = Number(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      return Effect.fail(new CliArgumentError({ message: `unknown option: ${arg}\n${usage}` }));
+    }
+    positionals.push(arg);
   }
   if (trace && checkRun !== undefined) {
     return Effect.fail(new CliArgumentError({ message: `--trace and --check cannot be combined\n${usage}` }));
   }
+  if (jobOrdinal !== undefined && !jobsFlag) {
+    return Effect.fail(new CliArgumentError({ message: `--job requires --jobs\n${usage}` }));
+  }
+  if (jobsFlag && trace) {
+    return Effect.fail(new CliArgumentError({ message: `--jobs and --trace cannot be combined\n${usage}` }));
+  }
+  if (jobsFlag && checkRun !== undefined) {
+    return Effect.fail(new CliArgumentError({ message: `--jobs and --check cannot be combined\n${usage}` }));
+  }
+  if (force && rebuildRun === undefined) {
+    return Effect.fail(new CliArgumentError({ message: `--force requires --rebuild\n${usage}` }));
+  }
+  if (rebuildRun !== undefined && (trace || checkRun !== undefined || jobsFlag || jobOrdinal !== undefined)) {
+    return Effect.fail(new CliArgumentError({ message: `--rebuild cannot be combined with --trace, --check or --jobs\n${usage}` }));
+  }
+  if (rebuildRun !== undefined && positionals.length > 0) {
+    return Effect.fail(new CliArgumentError({ message: `--rebuild takes its run id, not a positional\n${usage}` }));
+  }
+  if (!jobsFlag && positionals.length > 0) {
+    // Keep the historical surface: plain `piano logs` takes no positional.
+    return Effect.fail(new CliArgumentError({ message: `unknown option: ${positionals[0] ?? ""}\n${usage}` }));
+  }
+  if (positionals.length > 1) {
+    return Effect.fail(new CliArgumentError({ message: `--jobs accepts at most one run id\n${usage}` }));
+  }
   return Effect.succeed({
     runsRoot: deps.runsRoot ?? defaultRunsRoot(),
     trace,
+    jobs: jobsFlag,
     ...(checkRun === undefined ? {} : { checkRun }),
+    ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
+    ...(positionals[0] === undefined ? {} : { jobsRun: positionals[0] }),
+    ...(rebuildRun === undefined ? {} : { rebuildRun }),
+    force,
   });
 }
 
@@ -121,83 +203,41 @@ function runIds(runsRoot: string): Effect.Effect<string[], LogsStorageError, Fil
   });
 }
 
-/** A run's `trajectory.json` can hold hundreds of megabytes of events, so the
- * picker reads only a bounded tail window: the document's trailing block sits
- * after the huge `events` array and carries `workflowPath`, `status`, and the
- * compact `turns` entries (`{prompt, status, eventCount}`). Missing pieces
- * degrade to an id+time row, never a failure. Runs whose handoff prompts push
- * that trailing block past the small window pay one bigger read (`prompts` of
- * tens of kilobytes per turn are common in tuning workflows). */
-const TAIL_WINDOW_BYTES = 64 * 1024;
-const TAIL_WINDOW_CAP_BYTES = 1024 * 1024;
-
 interface RunRowMetadata {
   readonly workflow?: string;
   readonly status?: string;
   readonly prompt?: string;
 }
 
-function readJsonStringLiteral(match: RegExpExecArray): string | undefined {
+/** The row the run's state document carries: the workflow it ran, how it
+ * ended, and the first prompt it was given. */
+function readStatusRow(runDir: string): RunRowMetadata | undefined {
+  let parsed: unknown;
   try {
-    const value: unknown = JSON.parse(`"${match[1]}"`);
-    return typeof value === "string" ? value : undefined;
+    parsed = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
   } catch {
-    // The window cut the literal mid-escape; treat the field as missing.
     return undefined;
   }
-}
-
-/** Last `bytes` of the file decoded as utf8, or undefined when unreadable. */
-function readTail(trajectoryFile: string, bytes: number): string | undefined {
-  try {
-    const fd = openSync(trajectoryFile, "r");
-    try {
-      const size = fstatSync(fd).size;
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.allocUnsafe(length);
-      readSync(fd, buffer, 0, length, size - length);
-      return buffer.toString("utf8");
-    } finally {
-      closeSync(fd);
-    }
-  } catch {
-    // No trajectory (legacy run) or unreadable — an id-only row is correct.
-    return undefined;
-  }
-}
-
-function parseRunTail(tail: string): RunRowMetadata {
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const status = parsed as { workflowPath?: unknown; status?: unknown; turns?: unknown };
   const row: { workflow?: string; status?: string; prompt?: string } = {};
-  const workflow = /"workflowPath":"((?:[^"\\]|\\.)*)"/.exec(tail);
-  if (workflow !== null) {
-    const value = readJsonStringLiteral(workflow);
-    if (value !== undefined) row.workflow = basename(value).replace(/\.ya?ml$/i, "");
-    // The document-level status is the first one after workflowPath; the
-    // per-turn statuses come later inside `turns`.
-    const status = /"status":"(completed|failed|cancelled)"/.exec(tail.slice(workflow.index));
-    if (status !== null) row.status = status[1];
+  if (typeof status.workflowPath === "string") {
+    row.workflow = basename(status.workflowPath).replace(/\.ya?ml$/i, "");
   }
-  const turns = tail.lastIndexOf('"turns":[');
-  if (turns !== -1) {
-    const prompt = /"prompt":"((?:[^"\\]|\\.)*)"/.exec(tail.slice(turns));
-    if (prompt !== null) {
-      const value = readJsonStringLiteral(prompt);
-      if (value !== undefined) row.prompt = value;
-    }
+  if (typeof status.status === "string") row.status = status.status;
+  if (Array.isArray(status.turns)) {
+    const first = status.turns[0] as { prompt?: unknown } | undefined;
+    if (typeof first?.prompt === "string") row.prompt = first.prompt;
   }
   return row;
 }
 
-/** Exported for testing; the picker calls it once per listed run. */
-export function readRunRowMetadata(trajectoryFile: string): RunRowMetadata {
-  const tail = readTail(trajectoryFile, TAIL_WINDOW_BYTES);
-  if (tail === undefined) return {};
-  const row = parseRunTail(tail);
-  if (row.workflow !== undefined) return row;
-  const bigger = readTail(trajectoryFile, TAIL_WINDOW_CAP_BYTES);
-  // Shorter means the file already fit the small window; nothing more to find.
-  if (bigger === undefined || bigger.length <= tail.length) return row;
-  return parseRunTail(bigger);
+/** Exported for testing; the picker calls it once per listed run.
+ *
+ * The run's state document is the row. It is one small file, so reading it is
+ * the whole cost of listing a run. */
+export function readRunRowMetadata(runDir: string): RunRowMetadata {
+  return readStatusRow(runDir) ?? {};
 }
 
 /** One picker label: `2026-09-03 01:07 · gpu-cuda-tuning · [failed] · <prompt
@@ -238,7 +278,7 @@ function pickRun(
           // eat exactly the prompt tail this label exists to show. The full
           // payload lives in the label; the raw id still prints in the
           // `Logs: <run-id>` header after selection.
-          const row = readRunRowMetadata(join(runsRoot, id, "trajectory.json"));
+          const row = readRunRowMetadata(join(runsRoot, id));
           return { value: id, label: runPickerLabel(id, row) };
         }),
         Effect.mapError((cause) => new LogsStorageError({
@@ -446,7 +486,7 @@ function printStaticObservability(
       message: "run id must name a direct child of the runs root",
     }));
   }
-  return inspectStaticObservability(runDir).pipe(
+  return inspectStaticObservability(runDir, progressRecordDeclaredFields).pipe(
     Effect.mapError((cause) => new LogsStorageError({
       operation: "check",
       path: runDir,
@@ -464,14 +504,190 @@ function printStaticObservability(
   );
 }
 
+function jobStateLabel(state: JobView["state"], outcome: JobView["outcome"]): string {
+  return outcome === undefined ? state : `${state}(${outcome})`;
+}
+
+function jobStateStyle(view: JobView): string {
+  if (view.state === "alive") return COLORS.cyan;
+  if (view.state === "paused") return COLORS.warn;
+  return view.outcome === "failed" ? COLORS.error : COLORS.success;
+}
+
+/** `--jobs [<run-id>]` / `--jobs --job <ordinal> [<run-id>]`: fold the run's
+ * progress ledger into its jobs. The ledger is the evidence; the fold is the
+ * same one `/continue` consumes, so this prints exactly what a continue would
+ * skip. */
+/** Fold a run's ledgers back into its state document — the recovery path when
+ * the view is missing or torn. Refuses while the latest job is still open
+ * unless forced: a live run's own writer owns the view. */
+function printRebuild(
+  runsRoot: string,
+  run: string,
+  force: boolean,
+): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
+  const resolvedRunsRoot = resolve(runsRoot);
+  const runDir = resolve(resolvedRunsRoot, run);
+  if (dirname(runDir) !== resolvedRunsRoot) {
+    return Effect.fail(new LogsStorageError({
+      operation: "rebuild",
+      path: runDir,
+      message: "run id must name a direct child of the runs root",
+    }));
+  }
+  return Effect.gen(function* () {
+    const status = yield* rebuildRunStatus(runDir, { force }).pipe(
+      Effect.mapError((error) => new LogsStorageError({
+        operation: "rebuild",
+        path: runDir,
+        message: error.message,
+      })),
+    );
+    yield* Effect.sync(() => {
+      if (status === undefined) {
+        console.log(paint(COLORS.dim, `no ledgers to fold for ${run}`));
+        return;
+      }
+      const latest = status.jobs.at(-1);
+      console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Rebuilt ${run}/status.json`));
+      console.log([
+        paint(COLORS.dim, `jobs=${status.jobs.length}`),
+        paint(COLORS.dim, `turns=${status.turns?.length ?? 0}`),
+        ...(latest === undefined ? [] : [paint(COLORS.dim, `latest=#${latest.jobOrdinal} ${latest.state}`)]),
+      ].join("  "));
+    });
+  });
+}
+
+function printJobs(
+  runsRoot: string,
+  run: string,
+  jobOrdinal: number | undefined,
+): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
+  const resolvedRunsRoot = resolve(runsRoot);
+  const runDir = resolve(resolvedRunsRoot, run);
+  if (dirname(runDir) !== resolvedRunsRoot) {
+    return Effect.fail(new LogsStorageError({
+      operation: "jobs",
+      path: runDir,
+      message: "run id must name a direct child of the runs root",
+    }));
+  }
+  const ledgerPath = join(runDir, "progress.jsonl");
+  return Effect.gen(function* () {
+    const lines = yield* Effect.try({
+      try: () => readFileSync(ledgerPath, "utf8").split("\n"),
+      catch: (cause) => new LogsStorageError({ operation: "read", path: ledgerPath, message: String(cause) }),
+    });
+    const records = lines
+      .map((line) => parseProgressStreamRecord(line))
+      .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+    if (records.length === 0) {
+      if (lines.every((line) => line.trim() === "")) {
+        return yield* Effect.fail(new LogsStorageError({
+          operation: "jobs",
+          path: ledgerPath,
+          message: "the run has no progress ledger to fold jobs from",
+        }));
+      }
+      // A ledger with lines this build cannot read is not a missing ledger: it
+      // is one written before the record contract, and saying so beats an
+      // error that reads like the file is gone.
+      if (jobOrdinal === undefined) {
+        yield* Effect.sync(() => {
+          console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
+          console.log(paint(COLORS.dim, "no records this build reads — the ledger predates the record contract"));
+        });
+        return;
+      }
+      return yield* Effect.fail(new LogsStorageError({
+        operation: "jobs",
+        path: ledgerPath,
+        message: `job #${jobOrdinal} is not in a ledger this build can read`,
+      }));
+    }
+    const views = jobs(foldJobSpans(records));
+    if (jobOrdinal === undefined) {
+      yield* Effect.sync(() => {
+        console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
+        if (views.length === 0) {
+          // Records but no jobs: the ledger predates the job ledger, so its
+          // accepted lines carry no execution anchor to group them by. Saying
+          // so beats an empty list that reads like a bug.
+          console.log(paint(COLORS.dim, "no jobs recorded — this run's ledger predates the job ledger; /restart starts one"));
+        }
+        for (const view of views) {
+          const last = view.spans[view.spans.length - 1];
+          const lastAt = last === undefined ? undefined : last.finishedAt ?? last.startedAt;
+          console.log([
+            paint(COLORS.bold, `#${view.jobOrdinal}`),
+            paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
+            paint(COLORS.dim, `spans=${view.spans.length}`),
+            paint(COLORS.dim, `accepted=${view.accepted.size}`),
+            ...(lastAt === undefined ? [] : [paint(COLORS.dim, `last=${lastAt}`)]),
+            ...(view.input === undefined ? [] : [oneLine(view.input, 60)]),
+          ].join("  "));
+        }
+      });
+      return;
+    }
+    const view = views.find((candidate) => candidate.jobOrdinal === jobOrdinal);
+    if (view === undefined) {
+      return yield* Effect.fail(new LogsStorageError({
+        operation: "jobs",
+        path: ledgerPath,
+        message: views.length === 0
+          ? `job ${jobOrdinal} not found: the run has no jobs`
+          : `job ${jobOrdinal} not found; the run's jobs are ${views.map((candidate) => `#${candidate.jobOrdinal}`).join(", ")}`,
+      }));
+    }
+    yield* Effect.sync(() => {
+      console.log([
+        paint(`${COLORS.bold}${COLORS.accent}`, `Job #${view.jobOrdinal}`),
+        paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
+        paint(COLORS.dim, `spans=${view.spans.length}`),
+        paint(COLORS.dim, `accepted=${view.accepted.size}`),
+      ].join("  "));
+      view.spans.forEach((span, index) => {
+        const spanStyle = span.status === "running" ? COLORS.cyan : span.status === "failed" ? COLORS.error : COLORS.dim;
+        const closed = span.closed === undefined ? "" : paint(COLORS.dim, ` (${span.closed})`);
+        console.log(`  ${paint(COLORS.dim, `span ${index + 1}`)}  ${span.startedAt} → ${span.finishedAt ?? "…"}  ${paint(spanStyle, span.status)}${closed}`);
+      });
+      const accepted = [...view.accepted].sort();
+      if (accepted.length > 0) {
+        console.log(paint(COLORS.dim, "  accepted:"));
+        for (const invocationId of accepted) {
+          const attempt = view.attempts.get(invocationId);
+          console.log(`    ${invocationId}${attempt === undefined ? "" : paint(COLORS.dim, `  attempt=${attempt}`)}`);
+        }
+      }
+      if (view.input !== undefined) {
+        console.log(paint(COLORS.dim, "  input:"));
+        console.log(`    ${oneLine(view.input, 120)}`);
+      }
+    });
+  });
+}
+
 export function logsCommand(
   args: readonly string[] = process.argv.slice(2),
   deps: LogsDeps = {},
 ): Effect.Effect<void, CliError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const options = yield* parseLogsArgs(args, deps);
+    if (options.rebuildRun !== undefined) {
+      yield* printRebuild(options.runsRoot, options.rebuildRun, options.force);
+      return;
+    }
     if (options.checkRun !== undefined) {
       yield* printStaticObservability(options.runsRoot, options.checkRun);
+      return;
+    }
+    if (options.jobs) {
+      const picker = deps.pickRun ?? pickRun;
+      const run = options.jobsRun ?? (yield* picker(options.runsRoot, false));
+      if (run === undefined) return;
+      yield* printJobs(options.runsRoot, run, options.jobOrdinal);
       return;
     }
     const picker = deps.pickRun ?? pickRun;

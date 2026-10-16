@@ -11,6 +11,7 @@ import { readFile } from "node:fs/promises";
 import { Effect } from "effect";
 import { Data } from "effect";
 import type { AgentEvent, AgentUsage } from "@piano/harness";
+import { parseTrajectory } from "@piano/logging";
 import type { TrajectoryMetrics } from "./types.js";
 
 export class TrajectoryEvalError extends Data.TaggedError("TrajectoryEvalError")<{
@@ -56,7 +57,8 @@ function usageTokens(usage: AgentUsage | undefined): {
 /**
  * Fold a raw event stream into trajectory metrics.
  *
- * @param events The raw `AgentEvent[]` persisted by the CLI to `trajectory.json`.
+ * @param events The raw `AgentEvent[]` persisted by the CLI to the trajectory
+ * stream (`trajectory.jsonl`).
  */
 export function evaluateTrajectory(events: readonly AgentEvent[]): TrajectoryMetrics {
   const metrics: TrajectoryMetrics = { ...ZERO_METRICS };
@@ -110,16 +112,22 @@ export function evaluateTrajectory(events: readonly AgentEvent[]): TrajectoryMet
 /**
  * Load a persisted event stream and evaluate trajectory metrics.
  *
- * Accepts either a `trajectory.json` (a raw event array) or a JSONL transcript
- * (one event object per line). The CLI persists the raw `events` array to
- * `trajectory.json`, so that is the primary path.
+ * Prefers the run's append-only trajectory stream, then its document, then a
+ * plain JSONL transcript (one event object per line). `parseTrajectory` refuses
+ * anything that is not a trajectory record, so a transcript of bare events
+ * falls through to the last form rather than folding into a run.
  */
 export function evaluateTrajectoryFile(
   path: string,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
   return Effect.tryPromise({
     try: async () => {
-      const raw = await readFile(path, "utf8");
+      const stream = await readFile(path, "utf8").catch(() => undefined);
+      const trajectory = parseTrajectory(stream);
+      if (trajectory !== undefined) return evaluateTrajectory(trajectory.events as AgentEvent[]);
+      // Not a run's trajectory at all. The plain forms below are the old
+      // contract on the file the caller named.
+      const raw = stream ?? "";
       const trimmed = raw.trim();
       if (trimmed === "") return ZERO_METRICS;
       let parsed: unknown;
@@ -142,7 +150,7 @@ export function evaluateTrajectoryFile(
         if (typeof document.type === "string") {
           return evaluateTrajectory([parsed as AgentEvent]);
         }
-        throw new Error("trajectory.json must contain an events array");
+        throw new Error("trajectory input must contain an events array");
       }
       // JSONL transcript: one event per line.
       const events = trimmed

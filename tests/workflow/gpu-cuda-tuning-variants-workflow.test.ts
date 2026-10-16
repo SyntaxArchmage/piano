@@ -30,8 +30,8 @@ function experimentShape(compiled: CompiledWorkflow) {
     regions: compiled.regions.map((region) => ({
       id: region.id,
       kind: region.kind,
-      entry: region.entry,
-      exit: region.exit,
+      entryStageId: region.entryStageId,
+      exitStageId: region.exitStageId,
       from: region.from,
       over: region.over,
       count: region.count,
@@ -64,8 +64,10 @@ describe("gpu-cuda-tuning-tournament workflow template", () => {
     expect(tune).toMatchObject({
       kind: "loop",
       name: "tune",
-      entry: "profile",
-      exit: "race",
+      entryStageId: "tune.profile",
+      // The loop's exit is the nested region, so its boundary is that region's
+      // own exit leaf.
+      exitStageId: "tune.race.measure",
       feedback: "race",
       iterations: 10,
     });
@@ -75,8 +77,8 @@ describe("gpu-cuda-tuning-tournament workflow template", () => {
       kind: "map",
       name: "race",
       parentId: tune?.id,
-      entry: "implement",
-      exit: "measure",
+      entryStageId: "tune.race.implement",
+      exitStageId: "tune.race.measure",
       over: "idea.strategies",
       count: 3,
       from: ["idea"],
@@ -176,8 +178,8 @@ describe("gpu-cuda-tuning-tournament-mixed per-lane models", () => {
       regions: compiled.regions.map((region) => ({
         id: region.id,
         kind: region.kind,
-        entry: region.entry,
-        exit: region.exit,
+        entryStageId: region.entryStageId,
+        exitStageId: region.exitStageId,
         from: region.from,
         over: region.over,
         count: region.count,

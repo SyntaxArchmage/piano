@@ -17,6 +17,8 @@ vi.mock("@piano/orchestrator", () => ({
   loadAndExecuteWorkflow: vi.fn(),
   // A fresh fixture run has no progress stream, so there is nothing to continue.
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/tmp/piano",
     workflowPath: "/tmp/piano/workflow.yml",
@@ -105,8 +107,8 @@ describe("reborn CLI --json event stream", () => {
     vi.mocked(executeWorkflow).mockImplementation((_loaded, request) => Effect.sync(() => {
       events.forEach((event) => request.onEvent?.(event));
       return {
-        workflow: "smoke", executionId: "execution-test", stage: "s", worker: "w", text: "final",
-        sessionId: "sess-1", transcriptPath: "/tmp/sess-1.jsonl", stages: [], terminalStages: [], progressPath: "/tmp/progress.jsonl", progressSnapshotPath: "/tmp/progress.json",
+        workflow: "smoke", runId: "execution-test", stage: "s", worker: "w", text: "final",
+        sessionId: "sess-1", transcriptPath: "/tmp/sess-1.jsonl", stages: [], terminalStages: [], progressPath: "/tmp/progress.jsonl",
       };
     }));
 
@@ -128,7 +130,7 @@ describe("reborn CLI --json event stream", () => {
       status: "completed",
       session_id: "sess-1",
       progress_path: "/tmp/progress.jsonl",
-      progress_snapshot_path: "/tmp/progress.json",
+      status_path: "/tmp/piano/.piano.runs/json-stream-run/status.json",
     });
   });
 

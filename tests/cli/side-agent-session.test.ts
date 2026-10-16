@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTrajectoryRun } from "../common/trajectory-fixture.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 
@@ -20,16 +21,18 @@ vi.mock("@piano/orchestrator", () => ({
     sourcePath: "/repo/recipes/workflows/coding-pi.yml",
     stages: [{ id: "coding", dependsOn: [], stage: { model: undefined } }],
     regions: [],
+    nodes: [{ id: "coding", dependsOn: [], stage: { model: undefined } }],
   })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "workflow answer",
     sessionId: "worker-session",
     transcriptPath: "/tmp/worker.jsonl",
     progressPath: "/tmp/progress.jsonl",
-    progressSnapshotPath: "/tmp/progress.json",
   })),
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
     workflowPath: "/repo/recipes/workflows/coding-pi.yml",
@@ -75,7 +78,7 @@ function fakeSession(runsRoot: string, id: string = RUN_ID, cwd = "/repo/work"):
       flush: vi.fn(() => Effect.void),
     },
     trajectory: {
-      path: join(runsRoot, id, "trajectory.json"),
+      path: join(runsRoot, id, "trajectory.jsonl"),
       write: trajectoryWrite,
       rename: vi.fn(() => Effect.void),
       flush: vi.fn(() => Effect.void),
@@ -205,14 +208,13 @@ describe("/btw side agent through the live session", () => {
   });
 
   it("starts a fresh side conversation in the run the TUI takes over", async () => {
-    await mkdir(join(runsRoot, OTHER_RUN), { recursive: true });
-    await writeFile(join(runsRoot, OTHER_RUN, "trajectory.json"), `${JSON.stringify({
+    await writeTrajectoryRun(join(runsRoot, OTHER_RUN), {
       version: 1,
       status: "completed",
       workspaceCwd: "/repo/other-work",
       events: [],
       turns: [{ prompt: "earlier work", status: "completed", eventCount: 0 }],
-    })}\n`, "utf8");
+    });
 
     await withTui(async (options) => {
       await side(options, "before takeover");
@@ -250,7 +252,7 @@ describe("/btw side agent through the live session", () => {
     // The side visit does not disturb the run: the next prompt still continues
     // the same execution, in the same run directory.
     expect(executeWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      executionId: RUN_ID,
+      runId: RUN_ID,
       runDir: join(runsRoot, RUN_ID),
       prompt: "carry on",
     }));

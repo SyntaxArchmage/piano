@@ -6,7 +6,7 @@ import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
-import { Cause, Effect, Exit, Option } from "effect";
+import { Cause, Effect, Exit, Fiber, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import { projectContractProjections } from "@piano/contract";
 import {
@@ -16,14 +16,21 @@ import {
 } from "../../packages/logging/src/index.js";
 import {
   allocateMapWorkspace,
+  closeWorkflowJob,
   executeWorkflow,
+  foldJobSpans,
+  jobs,
+  latestJob,
   loadAndExecuteWorkflow,
   loadWorkflow,
+  progressRecordKind,
   readWorkflowExecutionContinuation,
   WorkflowError,
+  type WorkflowProgressStreamRecord,
   type WorkflowSignoffRequest,
   type WorkflowExecutionContinuation,
 } from "../../packages/orchestrator/src/index.js";
+import { foldActorTurns } from "../../packages/orchestrator/src/resume-state.js";
 import {
   AgentError,
   createSteeringChannel,
@@ -38,6 +45,19 @@ import {
 } from "../../packages/orchestrator/src/legacy-contract-projections.js";
 
 const runFile = promisify(execFile);
+
+/** The accepted-stage records of a run's append-only progress stream, in order.
+ *
+ * The stream also carries `stage-started` records, so a reader that wants "what
+ * the orchestrator accepted" asks by kind instead of by line position. These
+ * tests are about orchestration semantics — which stages ran, in what order,
+ * with what payload — so they read the accepted records. */
+function acceptedProgress<T>(text: string): T[] {
+  return text.trim().split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((record) => progressRecordKind(record) === "stage-accepted") as T[];
+}
 
 const BASIC_WORKFLOW = `version: 3
 workflow:
@@ -722,7 +742,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "promotion",
+        runId: "promotion",
         cwd: root,
         prompt: "close a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -762,7 +782,7 @@ describe(" workflow execution", () => {
       expect(state.current_best.source).toBe("kernel.py");
       expect(state.current_best.promoted_at).toEqual(expect.any(String));
       expect(state.history).toHaveLength(1);
-      const progress = (await readFile(result.progressPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { resultPayload?: { current_best?: { digest?: string } } });
+      const progress = acceptedProgress<{ resultPayload?: { current_best?: { digest?: string } } }>(await readFile(result.progressPath, "utf8"));
       expect(progress[0]?.resultPayload?.current_best?.digest).toBe(candidateDigest);
       const accepted = JSON.parse(await readFile(result.stages[0]!.resultPath!, "utf8")) as {
         current_best?: { path?: string; digest?: string };
@@ -771,6 +791,12 @@ describe(" workflow execution", () => {
       expect(accepted.current_best?.path).toBe("state/current-best.py");
       expect(accepted.current_best?.digest).toBe(candidateDigest);
       expect(accepted.promotion?.resulting_best).toMatchObject({ path: "state/current-best.py", digest: candidateDigest });
+      // The orchestrator rewrote the accepted payload after validating the
+      // worker's bytes, and the record says who wrote what it carries.
+      const promotedRecord = JSON.parse(await readFile(result.stages[0]!.handoffRecordPath, "utf8")) as {
+        producer: { result?: { trust?: string } };
+      };
+      expect(promotedRecord.producer.result?.trust).toBe("orchestrator-materialized");
       expect(result.stages[0]?.projections).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "round.materialization-v1", pointer: "" }),
         expect.objectContaining({ id: "round.decision", value: "KEEP" }),
@@ -797,7 +823,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "promotion-exhaust",
+        runId: "promotion-exhaust",
         cwd: root,
         prompt: "close a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -851,7 +877,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "missing-candidate",
+        runId: "missing-candidate",
         cwd: root,
         prompt: "close a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -904,7 +930,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "discard",
+        runId: "discard",
         cwd: root,
         prompt: "discard a round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -969,7 +995,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: `binary-${decision.toLowerCase()}`,
+        runId: `binary-${decision.toLowerCase()}`,
         cwd: root,
         prompt: "materialize a binary artifact exactly",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1022,7 +1048,7 @@ describe(" workflow execution", () => {
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "keep-regression",
+        runId: "keep-regression",
         cwd: root,
         prompt: "close a regressed round",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1082,13 +1108,10 @@ describe(" workflow execution", () => {
       ]));
       expect(result.stages[0]?.projections?.find(({ id }) => id === "round.materialization-v1")?.value)
         .toEqual(result.stages[0]?.resultPayload);
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as {
-          resultPayload?: { decision?: string };
-          projections?: Array<{ id: string; value: unknown }>;
-        });
+      const progress = acceptedProgress<{
+        resultPayload?: { decision?: string };
+        projections?: Array<{ id: string; value: unknown }>;
+      }>(await readFile(result.progressPath, "utf8"));
       expect(progress[0]?.resultPayload?.decision).toBe("DISCARD");
       expect(progress[0]?.projections).toContainEqual(expect.objectContaining({
         id: "round.decision",
@@ -1138,7 +1161,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "nested-gpu-protocol",
+          runId: "nested-gpu-protocol",
           cwd: root,
           prompt: "materialize the nested round",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1221,7 +1244,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "gpu-materialized-normalization",
+          runId: "gpu-materialized-normalization",
           cwd: root,
           prompt: "accept only the contract-normalized materialization",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1311,7 +1334,7 @@ workflow:
       await expect(runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "gpu-materialized-revalidation",
+          runId: "gpu-materialized-revalidation",
           cwd: root,
           prompt: "reject a materialized contract violation",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1369,7 +1392,7 @@ workflow:
       await expect(runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "incomplete-gpu-protocol",
+          runId: "incomplete-gpu-protocol",
           cwd: root,
           prompt: "do not partially materialize",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1412,7 +1435,7 @@ workflow:
           root,
           workflowPath: join(root, "round.yml"),
           runDir: session.runDir,
-          executionId: `gpu-${scenario}`,
+          runId: `gpu-${scenario}`,
           cwd: root,
           prompt: `reject ${scenario}`,
           agentRunner: (request) => Effect.promise(async () => {
@@ -1465,7 +1488,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: `gpu-unsafe-${_name.replaceAll(" ", "-")}`,
+        runId: `gpu-unsafe-${_name.replaceAll(" ", "-")}`,
         cwd: root,
         prompt: "reject unsafe artifact path",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1506,7 +1529,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-special-node",
+        runId: "gpu-special-node",
         cwd: root,
         prompt: "reject a non-file artifact",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1550,7 +1573,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-ancestor-alias",
+        runId: "gpu-ancestor-alias",
         cwd: root,
         prompt: "reject ancestor alias",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1588,7 +1611,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-malformed-state",
+        runId: "gpu-malformed-state",
         cwd: root,
         prompt: "reject malformed durable state",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1654,7 +1677,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-malformed-fields",
+        runId: "gpu-malformed-fields",
         cwd: root,
         prompt: "reject malformed durable state fields",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1705,7 +1728,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-ambiguous-alias-identity",
+        runId: "gpu-ambiguous-alias-identity",
         cwd: root,
         prompt: "reject ambiguous durable aliases",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1757,7 +1780,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "round.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "gpu-legacy-metric",
+          runId: "gpu-legacy-metric",
           cwd: root,
           prompt: "migrate the legacy metric",
           agentRunner: (request) => Effect.promise(async () => {
@@ -1822,7 +1845,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-transaction",
+        runId: "gpu-transaction",
         cwd: root,
         prompt: "rollback materialization",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1888,7 +1911,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-temp-cleanup",
+        runId: "gpu-temp-cleanup",
         cwd: root,
         prompt: "clean a failed materialization write",
         agentRunner: (request) => Effect.promise(async () => {
@@ -1951,7 +1974,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-windows-replace",
+        runId: "gpu-windows-replace",
         cwd: root,
         prompt: "replace current best safely",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2020,7 +2043,7 @@ workflow:
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
-        executionId: "gpu-windows-replace-rollback",
+        runId: "gpu-windows-replace-rollback",
         cwd: root,
         prompt: "restore a failed Windows replacement",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2081,7 +2104,7 @@ workflow:
         await expect(runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
             runDir: session.runDir,
-            executionId: `gpu-benchmark-${mismatch}`,
+            runId: `gpu-benchmark-${mismatch}`,
             cwd: root,
             prompt: `reject benchmark ${mismatch} mismatch`,
             agentRunner: (request) => Effect.promise(async () => {
@@ -2111,7 +2134,7 @@ workflow:
         root,
         workflowPath: join(root, "blocked.yml"),
         runDir: session.runDir,
-        executionId: "blocked-loop",
+        runId: "blocked-loop",
         cwd: root,
         prompt: "tune the blocked case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2147,10 +2170,7 @@ workflow:
       }));
       expect(calls.map(stageId)).toEqual(["setup", "summary"]);
       expect(result.stages.map((stage) => stage.stageId)).toEqual(["setup", "summary"]);
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { stageId: string; resultPayload?: { status?: string } });
+      const progress = acceptedProgress<{ stageId: string; resultPayload?: { status?: string } }>(await readFile(result.progressPath, "utf8"));
       expect(progress.map((record) => record.stageId)).toEqual(["setup", "summary"]);
       expect(progress[0]?.resultPayload?.status).toBe("blocked");
       expect(result.stages[0]?.projections).toContainEqual(expect.objectContaining({
@@ -2215,7 +2235,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(workflowPath, root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "undeclared-block-control",
+          runId: "undeclared-block-control",
           cwd: root,
           prompt: "run despite undeclared control-looking fields",
           agentRunner: (request) => Effect.promise(async () => {
@@ -2266,7 +2286,7 @@ workflow:
         root,
         workflowPath: join(root, "timeout.yml"),
         runDir: session.runDir,
-        executionId: "stage-timeout",
+        runId: "stage-timeout",
         cwd: root,
         prompt: "explore forever",
         agentRunner: () => Effect.promise(() => new Promise(() => undefined)),
@@ -2293,7 +2313,7 @@ workflow:
         root,
         workflowPath: join(root, "absorb.yml"),
         runDir: session.runDir,
-        executionId: "absorb-loop",
+        runId: "absorb-loop",
         cwd: root,
         prompt: "tune the blocked case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2394,7 +2414,7 @@ workflow:
         root,
         workflowPath: join(root, "global.yml"),
         runDir: session.runDir,
-        executionId: "global-loop",
+        runId: "global-loop",
         cwd: root,
         prompt: "tune the blocked case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2509,7 +2529,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "mixed.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "mixed-block-scope-loop",
+          runId: "mixed-block-scope-loop",
           cwd: root,
           prompt: "stop when any blocked lane is globally scoped",
           agentRunner: (request) => Effect.promise(async () => {
@@ -2566,7 +2586,7 @@ workflow:
         root,
         workflowPath: join(root, "tune-loop.yml"),
         runDir: session.runDir,
-        executionId: "cuda-tune-loop",
+        runId: "cuda-tune-loop",
         cwd: root,
         prompt: "tune the cuda case",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2676,7 +2696,7 @@ workflow:
         root,
         workflowPath: join(root, "two.yml"),
         runDir: session.runDir,
-        executionId: "two-stage",
+        runId: "two-stage",
         cwd: root,
         prompt: "solve the task",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2726,7 +2746,7 @@ workflow:
     }
   });
 
-  it("keeps distinct logical stages separate when they use the same worker plugin", async () => {
+  it("shares one conversation when two stages use the same worker plugin", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-same-worker-run-"));
     try {
       await writeFile(join(root, "same-worker.yml"), SAME_WORKER_WORKFLOW);
@@ -2736,7 +2756,7 @@ workflow:
         root,
         workflowPath: join(root, "same-worker.yml"),
         runDir: session.runDir,
-        executionId: "same-worker",
+        runId: "same-worker",
         cwd: root,
         prompt: "continue the task",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2752,12 +2772,13 @@ workflow:
       }));
       expect(result.stages.map((stage) => stage.id)).toEqual(["first@root", "second@root"]);
       expect(calls).toHaveLength(2);
+      // One worker, one conversation: the second stage continues the first
+      // stage's chat instead of starting a fresh one.
       expect(calls[0]?.continuation).toBeUndefined();
-      expect(calls[1]?.continuation).toBeUndefined();
+      expect(calls[1]?.continuation?.sessionId).toBe("session-first");
       expect(calls[1]?.contextFilePaths?.every((p) => p.endsWith("agents.pi.md"))).toBe(true);
-      expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(2);
-      expect(calls[0]?.sessionDir).toContain("actors/pi/first/root/session");
-      expect(calls[1]?.sessionDir).toContain("actors/pi/second/root/session");
+      expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(1);
+      expect(calls[0]?.sessionDir).toContain("actors/pi/basic/root/session");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2772,7 +2793,7 @@ workflow:
       let active = 0;
       let maxActive = 0;
       const execution = runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "fan-out.yml"), runDir: session.runDir, executionId: "fan-out", cwd: root, prompt: "fan out",
+        root, workflowPath: join(root, "fan-out.yml"), runDir: session.runDir, runId: "fan-out", cwd: root, prompt: "fan out",
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           calls.push(request);
@@ -2796,7 +2817,9 @@ workflow:
       expect(calls.map(stageId)).toEqual(["left", "right", "joined"]);
       expect(result.stages.map((stage) => stage.id)).toEqual(["left@root", "right@root", "joined@root"]);
       const joinCall = calls.find((call) => stageId(call) === "joined");
-      expect(joinCall?.continuation).toBeUndefined();
+      // All three stages share the `basic` worker, so the join continues the
+      // last accepted turn — right's.
+      expect(joinCall?.continuation?.sessionId).toBe("session-right");
       const handoffPath = joinCall?.contextFilePaths?.find((path) => path.endsWith("/joined.json"));
       const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ stage: string; text: string }> };
       expect(handoff.inputs).toMatchObject([
@@ -2815,7 +2838,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -2835,9 +2858,11 @@ workflow:
       }));
       const proposes = calls.filter((call) => stageId(call) === "tune.propose");
       expect(proposes).toHaveLength(3);
-      expect(proposes.map((call) => call.continuation?.sessionId)).toEqual([undefined, "tune.propose-1", "tune.propose-2"]);
+      // The seed stage shares the `basic` worker, so the loop entry continues
+      // the seed's conversation; each iteration then continues the last one.
+      expect(proposes.map((call) => call.continuation?.sessionId)).toEqual(["seed-1", "tune.propose-1", "tune.propose-2"]);
       expect(new Set(proposes.map((call) => call.sessionDir))).toHaveLength(1);
-      expect(proposes[0]?.sessionDir).toContain("actors/pi/tune.propose/root/session");
+      expect(proposes[0]?.sessionDir).toContain("actors/pi/basic/root/session");
       expect(new Set(proposes.map(validationPath)).size).toBe(3);
       const proposalStages = result.stages.filter((stage) => stage.stageId === "tune.propose");
       expect(proposalStages.map((stage) => stage.handoffRecordPath)).toEqual(expect.arrayContaining([
@@ -2862,7 +2887,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, executionId: "loop-no-memory", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-no-memory", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -2893,7 +2918,7 @@ workflow:
     }
   });
 
-  it("feeds an accepted prior-iteration child result back to the loop entry without resuming an upstream actor", async () => {
+  it("feeds an accepted prior-iteration child result back to the loop entry, sharing one worker conversation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-loop-feedback-run-"));
     try {
       await writeFile(join(root, "loop-feedback.yml"), LOOP_FEEDBACK_WORKFLOW);
@@ -2904,7 +2929,7 @@ workflow:
         root,
         workflowPath: join(root, "loop-feedback.yml"),
         runDir: session.runDir,
-        executionId: "loop-feedback",
+        runId: "loop-feedback",
         cwd: root,
         prompt: "iterate with feedback",
         agentRunner: (request) => Effect.promise(async () => {
@@ -2912,7 +2937,7 @@ workflow:
           const stage = stageId(request);
           const invocation = invocationId(request);
           if (calls.length === 1) {
-            const running = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+            const running = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
               status: string;
               plannedStages: number;
               completedStages: number;
@@ -2948,15 +2973,18 @@ workflow:
       const measures = calls.filter((call) => stageId(call) === "tune.measure");
       expect(profiles).toHaveLength(3);
       expect(measures).toHaveLength(3);
+      // seed, profile, and measure all use `basic`, so one conversation runs
+      // through the whole loop: each turn continues whatever was accepted
+      // last in the root lane. The feedback handoff below is unaffected.
       expect(profiles.map((call) => call.continuation?.sessionId)).toEqual([
-        undefined,
-        "tune.profile-session-1",
-        "tune.profile-session-2",
-      ]);
-      expect(measures.map((call) => call.continuation?.sessionId)).toEqual([
-        undefined,
+        "seed-session-1",
         "tune.measure-session-1",
         "tune.measure-session-2",
+      ]);
+      expect(measures.map((call) => call.continuation?.sessionId)).toEqual([
+        "tune.profile-session-1",
+        "tune.profile-session-2",
+        "tune.profile-session-3",
       ]);
 
       const contexts = await Promise.all(profiles.map(async (call) => {
@@ -2979,15 +3007,12 @@ workflow:
         id: "tune.measure@tune/iter-1",
         resultPayload: { text: "tune.measure@tune/iter-1" },
       });
-      const progress = (await readFile(result.progressPath, "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as {
-          stageId: string;
-          iteration?: number;
-          sessionId: string;
-          resultPayload?: { text?: string };
-        });
+      const progress = acceptedProgress<{
+        stageId: string;
+        iteration?: number;
+        sessionId: string;
+        resultPayload?: { text?: string };
+      }>(await readFile(result.progressPath, "utf8"));
       expect(progress).toHaveLength(7);
       expect(progress.filter((record) => record.stageId === "tune.profile").map((record) => record.iteration)).toEqual([0, 1, 2]);
       expect(progress.filter((record) => record.stageId === "tune.measure").map((record) => record.resultPayload?.text)).toEqual([
@@ -3000,7 +3025,7 @@ workflow:
         "tune.profile-session-2",
         "tune.profile-session-3",
       ]);
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
         completedStages: number;
@@ -3054,7 +3079,7 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .every((time) => time.completedMs === undefined || Number.isSafeInteger(time.completedMs))).toBe(true);
       expect(snapshot.current?.progress?.hint).toContain("iter-3/3");
-      expect(snapshot.latest?.progress?.hint).toContain("7/7 stages completed");
+            expect(snapshot.current?.progress?.hint).toContain("7/7 stages completed");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3067,7 +3092,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-lane-models", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-lane-models", cwd: root, prompt: "map candidates",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3128,7 +3153,7 @@ workflow:
       let releaseImplementations!: () => void;
       const implementationGate = new Promise<void>((resolve) => { releaseImplementations = resolve; });
       const execution = runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map", cwd: root, prompt: "map candidates",
         workspace: { preserve: true },
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
@@ -3181,12 +3206,17 @@ workflow:
         await expect(stat(join(call.cwd, ".piano-run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
       }
       expect(implementCalls.map((call) => call.sessionDir)).toEqual(expect.arrayContaining([
-        expect.stringContaining("actors/pi/tournament.implement/tournament/slot-0/session"),
-        expect.stringContaining("actors/pi/tournament.implement/tournament/slot-1/session"),
+        expect.stringContaining("actors/pi/basic/tournament/slot-0/session"),
+        expect.stringContaining("actors/pi/basic/tournament/slot-1/session"),
       ]));
       const verifyCalls = calls.filter((call) => stageId(call) === "tournament.verify");
       expect(verifyCalls).toHaveLength(2);
-      expect(verifyCalls.map((call) => call.continuation)).toEqual([undefined, undefined]);
+      // Within a lane one worker (and so one actor) runs verify, which
+      // continues the implement turn that produced its candidate.
+      expect(verifyCalls.map((call) => call.continuation?.sessionId).sort()).toEqual([
+        "tournament.implement-tournament.implement-tournament-slot-0",
+        "tournament.implement-tournament.implement-tournament-slot-1",
+      ]);
       for (const call of verifyCalls) {
         expect(verifiedContents.get(call.cwd)).toBe(`candidate:${invocationId(implementCalls.find((implement) => implement.cwd === call.cwd)!)}\n`);
       }
@@ -3199,14 +3229,15 @@ workflow:
         { index: 1, value: { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" } },
       ]);
       const summary = calls.find((call) => stageId(call) === "summary");
-      expect(summary?.continuation).toBeUndefined();
+      // summary shares `basic` with the root-lane propose, so it continues it.
+      expect(summary?.continuation?.sessionId).toBe("propose-propose-root");
       const summaryPath = summary?.contextFilePaths?.find((path) => path.endsWith("/candidates.json"));
       const summaryInputs = JSON.parse(await readFile(summaryPath!, "utf8")) as {
         inputs: Array<{ instanceId: string; stageId: string; workspace: { key: string; cwd: string; kind: string; recordPath: string } }>;
       };
       expect(summaryInputs.inputs).toMatchObject([
-        { instanceId: "tournament/slot-0", stageId: "tournament.verify", workspace: { key: "tournament/slot-0", kind: "map-slot" } },
-        { instanceId: "tournament/slot-1", stageId: "tournament.verify", workspace: { key: "tournament/slot-1", kind: "map-slot" } },
+        { instanceId: "tournament/slot-0", stageId: "tournament.verify", workspace: { key: "job-1/tournament/slot-0", kind: "map-slot" } },
+        { instanceId: "tournament/slot-1", stageId: "tournament.verify", workspace: { key: "job-1/tournament/slot-1", kind: "map-slot" } },
       ]);
       expect(result.stages.map((stage) => stage.id)).toEqual([
         "propose@root",
@@ -3223,7 +3254,7 @@ workflow:
       }
       const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       expect(log.match(/"event":"workspace.prepared"/g)).toHaveLength(3);
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
         completedStages: number;
@@ -3248,10 +3279,7 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .filter((time) => time.stageId === "tournament.implement")
         .map((time) => time.instanceId).sort()).toEqual(["tournament/slot-0", "tournament/slot-1"]);
-      const progressRecords = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim()
-        .split("\n")
-        .map((line) => JSON.parse(line) as { progress?: { completedStages?: number } });
+      const progressRecords = acceptedProgress<{ progress?: { completedStages?: number } }>(await readFile(join(session.runDir, "progress.jsonl"), "utf8"));
       expect(progressRecords.map((record) => record.progress?.completedStages)).toEqual([1, 2, 3, 4, 5, 6]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -3273,7 +3301,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "projected-map",
+          runId: "projected-map",
           cwd: root,
           prompt: "map the contract-declared candidates",
           agentRunner: (request) => Effect.promise(async () => {
@@ -3321,7 +3349,7 @@ workflow:
       await expect(runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "legacy-map-adapter",
+          runId: "legacy-map-adapter",
           cwd: root,
           prompt: "map a contract written before semantic projections",
           agentRunner: (request) => Effect.promise(async () => {
@@ -3383,7 +3411,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "legacy-named-map-adapter",
+          runId: "legacy-named-map-adapter",
           cwd: root,
           prompt: "map a legacy named-validator result",
           agentRunner: (request) => Effect.promise(async () => {
@@ -3430,7 +3458,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, executionId: "map-fail", cwd: root, prompt: "map candidates",
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-fail", cwd: root, prompt: "map candidates",
         agentRunner: (request) => {
           calls.push(request);
           const stage = stageId(request);
@@ -3499,7 +3527,7 @@ workflow:
         root,
         workflowPath: join(root, "map.yml"),
         runDir: session.runDir,
-        executionId: "map-winner",
+        runId: "map-winner",
         cwd: root,
         prompt: "select a candidate",
         workspace: {
@@ -3614,7 +3642,7 @@ workflow:
       const result = await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "explicit-blocked-winner",
+          runId: "explicit-blocked-winner",
           cwd: root,
           prompt: "select a candidate but never carry a blocked result",
           workspace: { winner: "first" },
@@ -3672,7 +3700,7 @@ workflow:
         root,
         workflowPath: join(root, "nested.yml"),
         runDir: session.runDir,
-        executionId: "nested",
+        runId: "nested",
         cwd: root,
         prompt: "nested map",
         agentRunner: (request) => Effect.promise(async () => {
@@ -3714,7 +3742,7 @@ workflow:
         expect(relative(outerSeed!.workspace.cwd, stage.workspace.cwd).startsWith("..")).toBe(true);
       }
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
-      const snapshot = JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")) as {
+      const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         plannedStages: number;
         completedStages: number;
         stageCounts: Record<string, { planned: number; completed: number }>;
@@ -3745,7 +3773,7 @@ workflow:
         root,
         workflowPath: join(root, "map.yml"),
         runDir: session.runDir,
-        executionId: "symlink-map",
+        runId: "symlink-map",
         cwd: linkedRoot,
         prompt: "symlink map",
         workspace: { preserve: true },
@@ -3796,7 +3824,7 @@ workflow:
         root,
         workflowPath: join(root, "map.yml"),
         runDir: session.runDir,
-        executionId: "external-link",
+        runId: "external-link",
         cwd: root,
         prompt: "external link",
         agentRunner: (request) => Effect.promise(async () => {
@@ -3858,7 +3886,7 @@ workflow:
           await expect(runWorkflow(session, allocateMapWorkspace(
             session.runDir,
             `excluded-link-${name}`,
-            [{ kind: "map", regionId: "map", slot: 0 }],
+            1, [{ kind: "map", regionId: "map", slot: 0 }],
             root,
           ))).rejects.toThrow("symlink targets excluded or external content");
         } finally {
@@ -3877,7 +3905,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, executionId: "retry", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, runId: "retry", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3913,6 +3941,18 @@ workflow:
       expect(handoff.inputs).toMatchObject([{ text: "produce attempt 2", resultPayload: { text: "accepted" } }]);
       expect(handoff.inputs[0]?.resultPath).toBe(validationPath(produces[1]!));
       expect(result.stages.find((stage) => stage.stageId === "produce")?.attempts).toBe(2);
+      // The record pins the accepted result file by content, so a reader can
+      // verify the evidence still holds what was accepted — and who wrote it.
+      const produceStage = result.stages.find((stage) => stage.stageId === "produce")!;
+      const acceptedBytes = await readFile(produceStage.resultPath!);
+      const onDisk = JSON.parse(await readFile(produceStage.handoffRecordPath, "utf8")) as {
+        producer: { result?: { path: string; sha256: string; trust: string } };
+      };
+      expect(onDisk.producer.result).toEqual({
+        path: produceStage.resultPath,
+        sha256: `sha256:${createHash("sha256").update(acceptedBytes).digest("hex")}`,
+        trust: "worker",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3928,7 +3968,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, executionId: "retry-no-memory", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, runId: "retry-no-memory", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3973,7 +4013,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: join(root, "run$&path"), executionId: "repair-path", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), runDir: join(root, "run$&path"), runId: "repair-path", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -4040,7 +4080,7 @@ workflow:
         root,
         workflowPath: join(root, "contract.yml"),
         runDir: session.runDir,
-        executionId: "worker-contract",
+        runId: "worker-contract",
         cwd: root,
         prompt: "measure",
         agentRunner: (request) => Effect.promise(async () => {
@@ -4160,7 +4200,7 @@ workflow:
         root,
         workflowPath: join(root, "contract-loop.yml"),
         runDir: session.runDir,
-        executionId: "worker-contract-loop",
+        runId: "worker-contract-loop",
         cwd: root,
         prompt: "measure twice",
         agentRunner: (request) => Effect.promise(async () => {
@@ -4223,7 +4263,7 @@ workflow:
         root,
         workflowPath: join(root, "validate.yml"),
         runDir: session.runDir,
-        executionId: "no-continuation",
+        runId: "no-continuation",
         cwd: root,
         prompt: "write validation",
         agentRunner: (request) => Effect.promise(async () => {
@@ -4279,7 +4319,7 @@ workflow:
       const session = await testSession(root);
       const calls: string[] = [];
       const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "broken.yml"), runDir: session.runDir, executionId: "broken", cwd: root, prompt: "fail",
+        root, workflowPath: join(root, "broken.yml"), runDir: session.runDir, runId: "broken", cwd: root, prompt: "fail",
         agentRunner: (request) => {
           calls.push(stageId(request));
           return Effect.fail(new AgentError({ kind: "unknown", message: "intentional" }));
@@ -4305,7 +4345,7 @@ workflow:
         root,
         workflowPath: join(root, "special.yml"),
         runDir: session.runDir,
-        executionId: "lifecycle",
+        runId: "lifecycle",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "test-model" },
@@ -4318,7 +4358,7 @@ workflow:
       if (!Exit.isSuccess(result)) return;
       expect(result.value.text).toBe("ans = 4");
       expect(result.value.model).toBe("test-model");
-      await expect(stat(join(session.runDir, "actors", "pi", "respond", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+      await expect(stat(join(session.runDir, "actors", "pi", "basic", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
       const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
       const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
       expect(log).toContain('"event":"workflow.loaded"');
@@ -4333,7 +4373,6 @@ workflow:
       expect(log).toContain('"key":"shared-root"');
       expect(trace).toContain('"fn":"loadWorkflow"');
       expect(trace).toContain('"fn":"compileWorkflow"');
-      expect(trace).toContain('"fn":"scheduleWorkflow"');
       expect(trace).toContain('"fn":"executeWorker"');
       expect(trace).toContain('"fn":"executeAgent"');
       expect(trace).toContain('"fn":"loadSdk"');
@@ -4359,7 +4398,7 @@ workflow:
         root,
         workflowPath: join(root, "configured.yml"),
         runDir: session.runDir,
-        executionId: "configured",
+        runId: "configured",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "fallback-model" },
@@ -4372,7 +4411,7 @@ workflow:
         model: "stage-model",
         thinkingLevel: "high",
       });
-      const progress = JSON.parse((await readFile(result.progressPath, "utf8")).trim()) as Record<string, unknown>;
+      const [progress] = acceptedProgress<Record<string, unknown>>(await readFile(result.progressPath, "utf8"));
       expect(progress).toMatchObject({ requestedModel: "stage-model", requestedThinkingLevel: "high", model: "stage-model", thinkingLevel: "high" });
       const handoffPath = result.stages[0]?.handoffRecordPath;
       expect(handoffPath).toBeDefined();
@@ -4392,7 +4431,7 @@ workflow:
         root,
         workflowPath: join(root, "workflow.yml"),
         runDir: session.runDir,
-        executionId: "missing-validate",
+        runId: "missing-validate",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "test-model" },
@@ -4412,6 +4451,422 @@ workflow:
     }
   });
 
+  it("keeps a paused run's map slots preserved for a later continue", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-map-pause-"));
+    try {
+      await writeFile(join(root, "map.yml"), MAP_WORKFLOW);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      let startedImplementations = 0;
+      let signalBothStarted!: () => void;
+      const bothStarted = new Promise<void>((resolve) => { signalBothStarted = resolve; });
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-pause", cwd: root, prompt: "map candidates",
+        agentRunner: (request) => {
+          const stage = stageId(request);
+          if (stage === "tournament.implement") {
+            // Both lanes hold until the human pause interrupts this run: the
+            // slots exist and are mid-flight, exactly what a continue rebinds.
+            return Effect.sync(() => {
+              calls.push(request);
+              startedImplementations += 1;
+              if (startedImplementations === 2) signalBothStarted();
+            }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+              // Nothing resumes this: only interruption ends the turn.
+            })));
+          }
+          return Effect.promise(async () => {
+            calls.push(request);
+            if (stage === "propose") {
+              const path = validationPath(request);
+              await mkdir(dirname(path), { recursive: true });
+              await writeFile(path, JSON.stringify({
+                strategies: [
+                  { id: "slot-a", bottleneck: "memory", technique: "tile", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                  { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+                ],
+              }));
+            }
+            const invocation = invocationId(request);
+            const sessionId = `${stage}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+            return {
+              sessionId,
+              transcriptPath: `/tmp/${sessionId}.jsonl`,
+              text: `${stage}:${invocation}`,
+              continuation: continuation(sessionId),
+            };
+          });
+        },
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await bothStarted;
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      // The run-end backstop ran (uninterruptible) before the interrupt
+      // settled: a human pause must leave the slots rebindable, never swept.
+      const recordsDir = join(session.runDir, "workspace-records");
+      const entries = await readdir(recordsDir);
+      expect(entries).toHaveLength(2);
+      for (const entry of entries) {
+        const record = JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
+          key: string;
+          cwd: string;
+          status: string;
+        };
+        expect(record.key).toMatch(/^job-1\/tournament\/slot-[01]$/u);
+        expect(record.status).toBe("preserved");
+        expect((await stat(record.cwd)).isDirectory()).toBe(true);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reclaims a closed job's preserved slots when the next job starts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-closed-sweep-"));
+    try {
+      await writeFile(join(root, "map.yml"), MAP_WORKFLOW);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      const session = await testSession(root);
+      let run = 1;
+      let started = 0;
+      let signalBothStarted!: () => void;
+      const bothStarted = new Promise<void>((resolve) => { signalBothStarted = resolve; });
+      const runner: AgentRunner = (request) => {
+        const stage = stageId(request);
+        if (run === 1 && stage === "tournament.implement") {
+          return Effect.sync(() => {
+            started += 1;
+            if (started === 2) signalBothStarted();
+          }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+            // Nothing resumes this: only the pause's interrupt ends the turn.
+          })));
+        }
+        return Effect.promise(async () => {
+          if (stage === "propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              strategies: [
+                { id: "slot-a", bottleneck: "memory", technique: "tile", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+              ],
+            }));
+          }
+          if (stage === "tournament.implement") {
+            await writeFile(join(request.cwd, "kernel.py"), `candidate:${invocationId(request)}\n`);
+          }
+          const invocation = invocationId(request);
+          const sessionId = `${stage}-${run}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+          return {
+            sessionId,
+            transcriptPath: `/tmp/${sessionId}.jsonl`,
+            text: `${stage}:${invocation}`,
+            continuation: continuation(sessionId),
+          };
+        });
+      };
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "map candidates",
+        agentRunner: runner,
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await bothStarted;
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const recordsDir = join(session.runDir, "workspace-records");
+      const readRecords = async () => Promise.all((await readdir(recordsDir)).map(async (entry) =>
+        JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
+          key: string;
+          cwd: string;
+          status: string;
+        }));
+      const preserved = await readRecords();
+      expect(preserved.map((record) => record.key).sort())
+        .toEqual(["job-1/tournament/slot-0", "job-1/tournament/slot-1"]);
+      expect(preserved.every((record) => record.status === "preserved")).toBe(true);
+
+      // The human abandons the paused job: the ledger records the close, and
+      // the next job's start is what reclaims the directories it left behind.
+      await runWorkflow(session, closeWorkflowJob(session.runDir, session.id, 1, "restarted"));
+      run = 2;
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "map candidates again",
+        agentRunner: runner,
+      }));
+
+      const after = await readRecords();
+      for (const record of preserved) {
+        const settled = after.find((candidate) => candidate.key === record.key);
+        expect(settled?.status).toBe("cleaned");
+        await expect(stat(record.cwd)).rejects.toThrow();
+      }
+      // The new job's slots are its own, under its own key.
+      expect(after.map((candidate) => candidate.key).sort()).toEqual(expect.arrayContaining([
+        "job-1/tournament/slot-0",
+        "job-1/tournament/slot-1",
+        "job-2/tournament/slot-0",
+        "job-2/tournament/slot-1",
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("skips a finalized region on continue without running a single worker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-map-skip-"));
+    try {
+      await writeFile(join(root, "map.yml"), MAP_WORKFLOW);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      const session = await testSession(root);
+      const firstCalls: AgentRequest[] = [];
+      const verifiedContents = new Map<string, string>();
+      const runner = (calls: AgentRequest[]) => (request: AgentRequest) => Effect.promise(async () => {
+        calls.push(request);
+        const stage = stageId(request);
+        if (stage === "propose") {
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, JSON.stringify({
+            strategies: [
+              { id: "slot-a", bottleneck: "memory", technique: "tile", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+              { id: "slot-b", bottleneck: "compute", technique: "warp", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+            ],
+          }));
+        }
+        const invocation = invocationId(request);
+        if (stage === "tournament.implement") {
+          await writeFile(join(request.cwd, "kernel.py"), `candidate:${invocation}\n`);
+        }
+        if (stage === "tournament.verify") {
+          verifiedContents.set(request.cwd, await readFile(join(request.cwd, "kernel.py"), "utf8"));
+        }
+        const sessionId = `${stage}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+        return {
+          sessionId,
+          transcriptPath: `/tmp/${sessionId}.jsonl`,
+          text: `${stage}:${invocation}`,
+          continuation: continuation(sessionId),
+        };
+      });
+      const firstRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-skip", cwd: root, prompt: "map candidates",
+        agentRunner: runner(firstCalls),
+      }));
+      expect(firstCalls.length).toBeGreaterThan(0);
+
+      // The continue's cursor, folded from the run's own stream — exactly what
+      // the CLI's /continue hands over: accepted invocations and the regions
+      // that already exited.
+      const streamRecords = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as unknown);
+      const folded = jobs(foldJobSpans(streamRecords as readonly WorkflowProgressStreamRecord[]));
+      const cursor = folded.at(-1);
+      expect(cursor?.regions.size).toBe(1);
+
+      const secondCalls: AgentRequest[] = [];
+      const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-skip", cwd: root, prompt: "map candidates",
+        agentRunner: runner(secondCalls),
+        continueJob: {
+          jobOrdinal: cursor!.jobOrdinal,
+          accepted: cursor!.accepted,
+          attempts: cursor!.attempts,
+          regions: cursor!.regions,
+        },
+      }));
+      // The region was skipped whole: not one worker turn re-ran.
+      expect(secondCalls).toEqual([]);
+      // And its boundary came back from evidence alone.
+      expect(secondRun.stages.map((stage) => stage.id).sort()).toEqual(firstRun.stages.map((stage) => stage.id).sort());
+      const firstTerminal = firstRun.terminalStages[0];
+      const secondTerminal = secondRun.terminalStages[0];
+      expect(secondTerminal?.id).toBe(firstTerminal?.id);
+      expect(secondTerminal?.text).toBe(firstTerminal?.text);
+      // The skip is what keeps the evidence singular: a re-entered region
+      // would finalize again — a second region-finalized line and a second
+      // selection observation for one decision.
+      const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as { kind?: string; instance?: string });
+      expect(afterStream.filter((line) => line.kind === "region-finalized" && line.instance === "tournament")).toHaveLength(1);
+      const selectionLines = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8")).trim().split("\n");
+      expect(selectionLines).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a finalized loop region on continue and takes its last-iteration exit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-skip-"));
+    try {
+      await writeFile(join(root, "loop.yml"), `version: 3
+workflow:
+  name: loop-then-close
+  nodes:
+    - stage:
+        name: seed
+        worker: basic
+        from: []
+    - loop:
+        name: tune
+        from: [seed]
+        entry: propose
+        exit: report
+        iterations: 2
+        nodes:
+          - stage:
+              name: propose
+              worker: basic
+              handoff: seed.json
+              validate: text-response
+              from: []
+          - stage:
+              name: report
+              worker: smoke-test-agent
+              handoff: proposal.json
+              from: [propose]
+    - stage:
+        name: close
+        worker: basic
+        from: [tune]
+`);
+      const session = await testSession(root);
+
+      // Run 1 pauses after the loop finished: `close` hangs, the loop's own
+      // exit is already on the stream.
+      const runs: AgentRequest[][] = [[], []];
+      let run = 0;
+      let hung = false;
+      let signalHanging!: () => void;
+      const hanging = new Promise<void>((resolve) => { signalHanging = resolve; });
+      const agentRunner: AgentRunner = (request) => {
+        runs[run]!.push(request);
+        const stage = stageId(request);
+        if (stage === "close" && !hung) {
+          hung = true;
+          return Effect.sync(() => { signalHanging(); }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+            // Nothing resumes this: only the pause's interrupt ends the turn.
+          })));
+        }
+        return Effect.promise(async () => {
+          const invocation = invocationId(request);
+          if (stage === "tune.propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({ text: invocation }));
+          }
+          const turn = runs[run]!.filter((call) => stageId(call) === stage).length;
+          return {
+            sessionId: `${stage}-${turn}`,
+            transcriptPath: `/tmp/${invocation.replaceAll("/", "-")}.jsonl`,
+            text: `${invocation} output`,
+            continuation: continuation(`${stage}-${turn}`),
+          };
+        });
+      };
+
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
+        agentRunner,
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await hanging;
+
+      const streamLines = async () => (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      const foldStream = async () => {
+        const records = (await streamLines()) as unknown as readonly WorkflowProgressStreamRecord[];
+        return latestJob(foldJobSpans(records));
+      };
+      const deadline = Date.now() + 20_000;
+      while ((await streamLines()).filter((line) => line.kind === "region-finalized").length !== 1 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect((await streamLines()).filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      const cursor = (await foldStream())!;
+      // The loop exited before the pause: its evidence is on the stream and its
+      // exit result is the one a continue rebuilds from.
+      expect(cursor.regions.size).toBe(1);
+      expect(cursor.accepted.has("tune.report@tune/iter-1")).toBe(true);
+
+      run = 1;
+      const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
+        agentRunner,
+        continueJob: {
+          jobOrdinal: cursor.jobOrdinal,
+          accepted: cursor.accepted,
+          attempts: cursor.attempts,
+          regions: cursor.regions,
+        },
+      }));
+
+      // The loop was skipped whole: only the trailing stage ran again.
+      expect(runs[1]!.map((call) => stageId(call))).toEqual(["close"]);
+      // Its boundary is the last iteration's own exit, rebuilt from evidence.
+      expect(secondRun.stages.map((stage) => stage.id)).toEqual(expect.arrayContaining([
+        "seed@root",
+        "tune.propose@tune/iter-0",
+        "tune.report@tune/iter-0",
+        "tune.propose@tune/iter-1",
+        "tune.report@tune/iter-1",
+        "close@root",
+      ]));
+      expect(secondRun.terminalStages[0]?.stageId).toBe("close");
+      // One exit decision, one record: a re-entered loop would finalize again.
+      const afterStream = await streamLines();
+      expect(afterStream.filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("records every actor turn in the ledger, so the table folds from it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-actor-turns-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "answer",
+        agentRunner: () => Effect.promise(async () => ({
+          sessionId: "respond-session",
+          transcriptPath: "/tmp/respond-session.jsonl",
+          text: "ans = 4",
+          continuation: continuation("respond-session"),
+        })),
+      }));
+
+      const records = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .split("\n").filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { kind?: unknown; lane?: unknown });
+      const execution = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      // The ledger's rows are the actor table now: the continue path folds the
+      // same rows, and nothing else carries the table.
+      expect(new Map(Object.entries(foldActorTurns(records)))).toEqual(execution?.actors);
+      // And each row carries the lane and the turn count, not just the key.
+      const turns = records.filter((record) => record.kind === "actor-turn");
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatchObject({ lane: "root", turn: 1, worker: "basic" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not retry a worker failure outside validate repair", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-cancelled-no-retry-"));
     try {
@@ -4419,7 +4874,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, executionId: "cancelled", cwd: root, prompt: "answer",
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: "cancelled", cwd: root, prompt: "answer",
         agentRunner: (request) => {
           calls.push(request);
           return Effect.fail(new AgentError({ kind: "cancelled", message: "user aborted" }));
@@ -4447,7 +4902,7 @@ workflow:
       const channel = createSteeringChannel();
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, executionId: "steer-thread", cwd: root, prompt: "answer",
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: "steer-thread", cwd: root, prompt: "answer",
         steering: channel,
         agentRunner: (request) => {
           calls.push(request);
@@ -4478,7 +4933,7 @@ workflow:
         workflowPath: join(root, "basic.yml"),
         runDir: session.runDir,
         // One run is one execution, so both turns carry the same id.
-        executionId: session.id,
+        runId: session.id,
         cwd: root,
         prompt: `turn ${index}`,
         ...(execution === undefined ? {} : { execution }),
@@ -4516,6 +4971,85 @@ workflow:
     }
   });
 
+  it("allocates the next job ordinal from the run's own evidence, not a stale hint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-next-ordinal-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const run = (execution?: WorkflowExecutionContinuation) => runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "answer",
+        ...(execution === undefined ? {} : { execution }),
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          return {
+            sessionId: "respond-session",
+            transcriptPath: "/tmp/respond-session.jsonl",
+            text: "ans = 4",
+            continuation: continuation("respond-session"),
+          };
+        }),
+      }));
+
+      await run();
+      // A prompt with no resume state at all still follows job 1: the run's
+      // own evidence, not the caller's hint, decides what is next.
+      await run();
+      // A stale hint (the state says 0) is a floor, never the answer.
+      await run({ id: session.id, jobOrdinal: 0, actors: new Map() });
+
+      const ordinals = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n")
+        .map((line) => JSON.parse(line) as { kind?: string; jobOrdinal?: number })
+        .filter((record) => record.kind === "execution-started")
+        .map((record) => record.jobOrdinal);
+      expect(ordinals).toEqual([1, 2, 3]);
+      // The trees follow the ordinals: three jobs, no job writing over another.
+      expect((await readdir(join(session.runDir, "prompts"))).sort()).toEqual(["1", "2", "3"]);
+      expect(calls).toHaveLength(3);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("continues actors from the ledger alone when the resume stream is gone", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-ledger-actors-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const turn = (prompt: string, execution?: WorkflowExecutionContinuation) => runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt,
+        ...(execution === undefined ? {} : { execution }),
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          return {
+            sessionId: "respond-session",
+            transcriptPath: "/tmp/respond-session.jsonl",
+            text: "ans = 4",
+            continuation: continuation("respond-session"),
+          };
+        }),
+      }));
+
+      await turn("first");
+      // The ledger's `actor-turn` row is the only record of the table — the
+      // resume stream is retired — and it must carry the whole of it.
+      const carried = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      expect(carried?.actors.size).toBe(1);
+      await turn("second", carried);
+
+      // The second turn reopens the same conversation, proven by the harness
+      // session it was handed.
+      expect(calls).toHaveLength(2);
+      expect(calls[1]?.continuation).toEqual(continuation("respond-session"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to resume an actor that recorded a turn but no continuation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-unresumable-actor-"));
     try {
@@ -4525,13 +5059,13 @@ workflow:
         root,
         workflowPath: join(root, "basic.yml"),
         runDir: session.runDir,
-        executionId: session.id,
+        runId: session.id,
         cwd: root,
         prompt: "answer",
         execution: {
           id: session.id,
-          promptIndex: 1,
-          // `<executionId>/<harness>/<stageId>/<lane>`, per `workflowActorKey`.
+          jobOrdinal: 1,
+          // `<runId>/<harness>/<stageId>/<lane>`, per `workflowActorKey`.
           // The cast is the point: `WorkflowActorContinuation` requires
           // `continuation`, and the reader always sets it, so this shape can only
           // arrive from a caller that built the table some other way — a JSON
@@ -4613,7 +5147,7 @@ workflow:
           root,
           workflowPath: join(root, "race.yml"),
           runDir: session.runDir,
-          executionId: "metric-race",
+          runId: "metric-race",
           cwd: root,
           prompt: "race two kernels",
           agentRunner: (request) => Effect.promise(async () => {
@@ -4709,7 +5243,21 @@ workflow:
       // The metric referee that decided the winner is recorded with the selection.
       expect(records[0]?.referee).toEqual({ name: "tflops", unit: "TFLOP/s", direction: "higher" });
       const winner = records[0]?.winnerKey;
-      expect(winner).toBe("race/slot-1");
+      expect(winner).toBe("job-1/race/slot-1");
+      // The region's exit is evidence of its own: one line, naming the
+      // instance, the outcome and the winner a continue skips by.
+      const progressLines = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      const finalized = progressLines.filter((line) => line.kind === "region-finalized");
+      expect(finalized).toHaveLength(1);
+      expect(finalized[0]).toMatchObject({
+        jobOrdinal: 1,
+        instance: "race",
+        regionId: "race",
+        regionKind: "map",
+        outcome: "carried",
+        winnerInstanceId: "race/slot-1",
+      });
       // Worker-consolidation carries no git commit but the stored provenance is
       // how the winning higher-tflops kernel reached the shared source.
       expect(records[0]?.commit).toBeUndefined();
@@ -4726,6 +5274,269 @@ workflow:
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("carries a tournament winner whose exit a continue rebuilt from evidence", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-rebuilt-carry-"));
+    try {
+      await writeFile(join(root, "race.yml"), METRIC_TOURNAMENT);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      await writeFile(join(root, "user-notes.md"), "keep my dirty note\n");
+      await mkdir(join(root, "state"), { recursive: true });
+      await writeFile(join(root, "state", "current-best.py"), "baseline\n");
+      await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
+        current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
+        history: [],
+      }));
+      const session = await testSession(root);
+
+      // Run 1 pauses mid-region: slot 1's exit is accepted and on disk, slot
+      // 0's exit never settles. That is what makes run 2 rebuild a lane.
+      const runs: AgentRequest[][] = [[], []];
+      let run = 0;
+      let hung = false;
+      let signalHanging!: () => void;
+      const hanging = new Promise<void>((resolve) => { signalHanging = resolve; });
+      const agentRunner: AgentRunner = (request) => {
+        runs[run]!.push(request);
+        const stage = stageId(request);
+        if (stage === "race.bench" && invocationId(request).includes("slot-0") && !hung) {
+          hung = true;
+          return Effect.sync(() => { signalHanging(); }).pipe(Effect.andThen(Effect.async<never, never>(() => {
+            // Nothing resumes this: only the pause's interrupt ends the turn.
+          })));
+        }
+        return Effect.promise(async () => {
+          if (stage.startsWith("$consolidate/")) {
+            await consolidateInto(request);
+          } else if (stage === "propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              strategies: [
+                { id: "slot-0", bottleneck: "memory", technique: "warp", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                { id: "slot-1", bottleneck: "compute", technique: "tile", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+              ],
+            }));
+          } else if (stage === "race.implement") {
+            const slot = await strategySlot(request);
+            await writeFile(join(request.cwd, "kernel.py"), `kernel-${slot}\n`);
+          } else if (stage === "race.bench") {
+            // The rebuilt lane 1 holds the winning metric; lane 0's re-run does not.
+            const slot = await strategySlot(request);
+            const best = slot === 0 ? 4 : 9;
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              iteration: 0,
+              decision: "KEEP",
+              candidate: { path: "kernel.py" },
+              current_best: { path: "state/current-best.py" },
+              verification: { compile_passed: true, verify_passed: true },
+              benchmark: {
+                name: "tflops",
+                unit: "TFLOP/s",
+                direction: "higher",
+                samples: [best],
+                best,
+                median: best,
+                runs: 1,
+                warmup: 0,
+              },
+              promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
+              records: { round_path: `rounds/iter-000.json`, state_path: "state/tuning-state.json" },
+            }));
+          }
+          const sessionId = `${stage}-${invocationId(request).replaceAll("/", "-").replaceAll("@", "-")}`;
+          return {
+            sessionId,
+            transcriptPath: `/tmp/race-${stage}.jsonl`,
+            text: `${stage}:${invocationId(request)}`,
+            continuation: continuation(sessionId),
+          };
+        });
+      };
+
+      const fiber = Effect.runFork(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, runId: "metric-continue", cwd: root, prompt: "race two kernels",
+        agentRunner,
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      await hanging;
+
+      const foldStream = async () => {
+        const raw = await readFile(join(session.runDir, "progress.jsonl"), "utf8").catch(() => "");
+        const records = raw.split("\n").filter((line) => line.trim() !== "")
+          .map((line) => JSON.parse(line) as WorkflowProgressStreamRecord);
+        return latestJob(foldJobSpans(records));
+      };
+      const deadline = Date.now() + 20_000;
+      while ((await foldStream())?.accepted.has("race.bench@race/slot-1") !== true && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect((await foldStream())?.accepted.has("race.bench@race/slot-1")).toBe(true);
+
+      const exit = await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      // The pause landed mid-region: nothing finalized it, so the continue
+      // re-enters and the winner's lane must come back from its evidence.
+      const cursor = (await foldStream())!;
+      expect(cursor.regions.size).toBe(0);
+      // The carried conversations come from the run's own resume evidence.
+      const execution = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      expect(execution?.actors.size).toBeGreaterThan(0);
+
+      run = 1;
+      const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "race.yml"), runDir: session.runDir, runId: "metric-continue", cwd: root, prompt: "race two kernels",
+        ...(execution === undefined ? {} : { execution }),
+        agentRunner,
+        continueJob: {
+          jobOrdinal: cursor.jobOrdinal,
+          accepted: cursor.accepted,
+          attempts: cursor.attempts,
+          regions: cursor.regions,
+        },
+      }));
+
+      const secondCalls = runs[1]!;
+      // The winner's exit came back from evidence: it never ran again.
+      expect(secondCalls.filter((call) =>
+        stageId(call) === "race.bench" && invocationId(call).includes("slot-1"))).toHaveLength(0);
+      const winnerExit = runs[0]!.find((call) =>
+        stageId(call) === "race.bench" && invocationId(call).includes("slot-1"));
+      expect(winnerExit).toBeDefined();
+      const consolidationCall = secondCalls.find((call) => stageId(call).startsWith("$consolidate/"));
+      expect(consolidationCall).toBeDefined();
+      // The rebuilt exit's actor identity is what makes the carry runnable —
+      // same chat, same context files, same system prompt as its live turn.
+      // The continuation is the winner's own, carried across the pause by the
+      // run's resume evidence.
+      expect(consolidationCall).toMatchObject({
+        continuation: continuation(`race.bench-${invocationId(winnerExit!).replaceAll("/", "-").replaceAll("@", "-")}`),
+        sessionDir: winnerExit?.sessionDir,
+        skillPaths: winnerExit?.skillPaths,
+        contextFilePaths: winnerExit?.contextFilePaths,
+      });
+      expect(consolidationCall?.systemPromptPath).toBe(winnerExit?.systemPromptPath);
+
+      // One decision, one selection: the re-entered region finalized once.
+      const selection = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(selection).toHaveLength(1);
+      expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
+      const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(afterStream.filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+      // The carried winner reached the shared source.
+      expect((await readFile(join(root, "kernel.py"), "utf8")).trim()).toBe("kernel-1");
+      expect(secondRun.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("merges a git-worktree winner into the parent branch instead of consolidating", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-git-carry-"));
+    try {
+      // A clean git repo: the lane workspaces are real worktrees of it, so the
+      // winner is carried by merging, not by a frozen file delta.
+      const repo = join(root, "repo");
+      await mkdir(repo, { recursive: true });
+      await runFile("git", ["-C", repo, "init", "-b", "main"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "config", "user.name", "Test Agent"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "config", "user.email", "agent@test.local"], { encoding: "utf8" });
+      await writeFile(join(repo, "kernel.py"), "baseline\n");
+      await writeFile(join(repo, "race.yml"), METRIC_TOURNAMENT);
+      await mkdir(join(repo, "state"), { recursive: true });
+      await writeFile(join(repo, "state", "current-best.py"), "baseline\n");
+      await writeFile(join(repo, "state", "tuning-state.json"), JSON.stringify({
+        current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
+        history: [],
+      }));
+      await runFile("git", ["-C", repo, "add", "-A"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "commit", "-m", "baseline"], { encoding: "utf8" });
+
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const outcome = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+        root: repo, workflowPath: join(repo, "race.yml"), runDir: session.runDir, runId: "git-race", cwd: repo, prompt: "race two kernels",
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          const stage = stageId(request);
+          if (stage === "propose") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              strategies: [
+                { id: "slot-0", bottleneck: "memory", technique: "warp", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
+                { id: "slot-1", bottleneck: "compute", technique: "tile", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
+              ],
+            }));
+          } else if (stage === "race.implement") {
+            const slot = await strategySlot(request);
+            await writeFile(join(request.cwd, `kernel-${slot}.py`), `kernel-${slot}\n`);
+          } else if (stage === "race.bench") {
+            const slot = await strategySlot(request);
+            const best = slot === 0 ? 4 : 9;
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              iteration: 0,
+              decision: "KEEP",
+              candidate: { path: "kernel.py" },
+              current_best: { path: "state/current-best.py" },
+              verification: { compile_passed: true, verify_passed: true },
+              benchmark: { name: "tflops", unit: "TFLOP/s", direction: "higher", samples: [best], best, median: best, runs: 1, warmup: 0 },
+              promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
+              records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
+            }));
+          }
+          const invocation = invocationId(request);
+          const sessionId = `${stage}-${invocation.replaceAll("/", "-").replaceAll("@", "-")}`;
+          return {
+            sessionId,
+            transcriptPath: `/tmp/${sessionId}.jsonl`,
+            text: `${stage}:${invocation}`,
+            continuation: continuation(sessionId),
+          };
+        }),
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      if (Exit.isFailure(outcome)) {
+        // Surface the genuine lane failure rather than hiding it in a nested cause.
+        throw new Error(Cause.pretty(outcome.cause));
+      }
+      const result = outcome.value;
+
+      // No consolidation turn: git carried the winner, and git is the record.
+      expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
+      const winnerRef = `refs/piano/git-race/${"job-1/race/slot-1".replace(/[^A-Za-z0-9._/-]/g, "_")}`;
+      const refCommit = (await runFile("git", ["-C", repo, "rev-parse", winnerRef], { encoding: "utf8" })).stdout.trim();
+      // The winner's commit is an ancestor of the parent's HEAD — the merge is
+      // verifiable with git alone.
+      await runFile("git", ["-C", repo, "merge-base", "--is-ancestor", refCommit, "HEAD"], { encoding: "utf8" });
+      expect((await readFile(join(repo, "kernel-1.py"), "utf8")).trim()).toBe("kernel-1");
+
+      const selection = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+        .trim().split("\n").map((line) => JSON.parse(line) as {
+          outcome: string; winnerKey?: string; commit?: string; carrying?: { kind: string };
+        });
+      expect(selection).toHaveLength(1);
+      expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
+      expect(selection[0]?.carrying?.kind).toBe("git-merged");
+      expect(selection[0]?.commit).toBe(refCommit);
+      expect(result.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   it("does not promote a blocked slot with a better metric, and continues with the healthy winner", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-blocked-metric-tournament-"));
@@ -4839,7 +5650,7 @@ workflow:
         loadWorkflow(join(root, "race.yml"), root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
             runDir: session.runDir,
-            executionId: "blocked-metric-tournament",
+            runId: "blocked-metric-tournament",
             cwd: root,
             prompt: "choose the healthy kernel and continue to summary",
             agentRunner: (request) => Effect.promise(async () => {
@@ -4903,7 +5714,7 @@ workflow:
       expect(records).toHaveLength(1);
       expect(records[0]).toMatchObject({
         outcome: "carried",
-        winnerKey: "race/slot-0",
+        winnerKey: "job-1/race/slot-0",
         carrying: { kind: "worker-consolidated" },
       });
       expect(exit.value.terminalStages).toHaveLength(1);
@@ -4930,7 +5741,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "explicit-blocked-winner",
+        runId: "explicit-blocked-winner",
         cwd: root,
         prompt: "do not carry a blocked candidate",
         workspace: { winner: "first" },
@@ -5070,7 +5881,7 @@ workflow:
       await runWorkflow(session, loadWorkflow(join(root, "mixed.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "mixed-block-scope-tournament",
+          runId: "mixed-block-scope-tournament",
           cwd: root,
           prompt: "stop when any tournament lane is globally blocked",
           agentRunner: (request) => Effect.promise(async () => {
@@ -5145,7 +5956,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "git-delta-race",
+        runId: "git-delta-race",
         cwd: root,
         prompt: "carry only the winning source change",
         agentRunner: (request) => Effect.promise(async () => {
@@ -5187,13 +5998,19 @@ workflow:
         }),
       }));
 
-      expect(consolidationPrompts).toHaveLength(1);
-      expect(consolidationPrompts[0]).toContain("- modified: kernel.py");
-      expect(consolidationPrompts[0]).toContain("- deleted: obsolete.txt");
-      expect(consolidationPrompts[0]).not.toContain("build/cache.bin");
+      // The merge carried the winner's edit and the winner's deletion...
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("kernel-1\n");
       await expect(stat(join(root, "obsolete.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      // ...without touching what the parent had and the winner never saw. An
+      // ignored artifact is untracked from git's point of view, so the merge
+      // leaves it alone by construction — no delta needs to exclude it.
       await expect(readFile(join(root, "build", "cache.bin"), "utf8")).resolves.toBe("parent-only ignored artifact\n");
+      // Git is the record and the verification: the winner's commit is an
+      // ancestor of the parent's HEAD.
+      const winnerCommit = (await runFile("git", ["-C", root, "rev-parse", "refs/piano/git-delta-race/job-1/race/slot-1"], { encoding: "utf8" })).stdout.trim();
+      await runFile("git", ["-C", root, "merge-base", "--is-ancestor", winnerCommit, "HEAD"], { encoding: "utf8" });
+      // A git lane is merged, not consolidated: no worker turn applies files.
+      expect(consolidationPrompts).toHaveLength(0);
       const records = new Map(result.stages
         .filter((stage) => stage.workspace.recordPath !== undefined)
         .map((stage) => [stage.workspace.recordPath!, stage.workspace]));
@@ -5230,7 +6047,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "slot-baseline-failure",
+        runId: "slot-baseline-failure",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
@@ -5296,7 +6113,7 @@ workflow:
           root,
           workflowPath: join(root, "race.yml"),
           runDir: session.runDir,
-          executionId: "metric-consolidation-repair",
+          runId: "metric-consolidation-repair",
           cwd: root,
           prompt: "race two kernels",
           agentRunner: (request) => Effect.promise(async () => {
@@ -5430,7 +6247,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "metric-consolidation-rollback",
+        runId: "metric-consolidation-rollback",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
@@ -5528,7 +6345,7 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        executionId: "metric-consolidation-persist-rollback",
+        runId: "metric-consolidation-persist-rollback",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
@@ -5536,10 +6353,11 @@ workflow:
           const stage = stageId(request);
           if (stage.startsWith("$consolidate/")) {
             await consolidateInto(request);
-            // Replace the real resume-state target after the worker mutates the
-            // parent, making the actual persistence Effect fail deterministically.
-            await rm(join(session.runDir, "resume.json"), { force: true });
-            await mkdir(join(session.runDir, "resume.json"));
+            // Replace the ledger after the worker mutates the parent, making
+            // the actor-state persistence (an `actor-turn` append) fail
+            // deterministically.
+            await rm(join(session.runDir, "progress.jsonl"), { force: true });
+            await mkdir(join(session.runDir, "progress.jsonl"));
           } else if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
@@ -5697,7 +6515,7 @@ workflow:
         loadWorkflow(join(root, "loop-race.yml"), root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          executionId: "loop-race",
+          runId: "loop-race",
           cwd: root,
           prompt: "race kernels each iteration",
           agentRunner: (request) => Effect.promise(async () => {
@@ -5888,7 +6706,7 @@ workflow:
         root,
         workflowPath: join(root, "nested.yml"),
         runDir: session.runDir,
-        executionId: "nested-metric-races",
+        runId: "nested-metric-races",
         cwd: root,
         prompt: "pick by the final nested race",
         agentRunner: (request) => Effect.promise(async () => {
@@ -5953,7 +6771,7 @@ workflow:
         stage.includes("/outer.race-a/") || stage.includes("/outer.race-b/"));
       expect(innerCarries).toHaveLength(4);
       for (const carry of innerCarries) expect(outerCwds.has(carry.cwd)).toBe(true);
-      expect(consolidationTargets).toContainEqual({ stage: "$consolidate/outer/slot-1", cwd: root });
+      expect(consolidationTargets).toContainEqual({ stage: "$consolidate/job-1/outer/slot-1", cwd: root });
 
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("outer-1-race-b-1\n");
       expect(result.terminalStages).toHaveLength(1);
@@ -5964,7 +6782,7 @@ workflow:
 
       const selections = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { winnerKey?: string });
-      expect(selections).toContainEqual(expect.objectContaining({ winnerKey: "outer/slot-1" }));
+      expect(selections).toContainEqual(expect.objectContaining({ winnerKey: "job-1/outer/slot-1" }));
       const records = new Map(result.stages
         .filter((stage) => stage.workspace.recordPath !== undefined)
         .map((stage) => [stage.workspace.recordPath!, stage.workspace.cwd]));
@@ -6032,7 +6850,7 @@ workflow:
         loadWorkflow(workflowPath, root, root).pipe(
           Effect.flatMap((loaded) => executeWorkflow(loaded, {
             runDir: session.runDir,
-            executionId: "multi-metric-race",
+            runId: "multi-metric-race",
             cwd: root,
             prompt: "race two kernels",
             agentRunner: (request) => Effect.promise(async () => {
@@ -6082,7 +6900,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-approve",
+        runId: "signoff-approve",
         cwd: root,
         prompt: "answer once",
         agentRunner: () => Effect.promise(async () => ({
@@ -6121,7 +6939,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-reject",
+        runId: "signoff-reject",
         cwd: root,
         prompt: "draft it",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6169,7 +6987,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-no-channel",
+        runId: "signoff-no-channel",
         cwd: root,
         prompt: "answer once",
         agentRunner: () => Effect.promise(async () => {
@@ -6204,7 +7022,7 @@ describe(" stage sign-off", () => {
         root,
         workflowPath: join(root, "signoff.yml"),
         runDir: session.runDir,
-        executionId: "signoff-cancel",
+        runId: "signoff-cancel",
         cwd: root,
         prompt: "answer once",
         agentRunner: () => Effect.promise(async () => {
@@ -6494,7 +7312,7 @@ workflow:
         root,
         workflowPath,
         runDir: session.runDir,
-        executionId: "demoted-keep",
+        runId: "demoted-keep",
         cwd: repo,
         prompt: "keep only a real improvement",
         agentRunner: (request) => Effect.promise(async () => {
@@ -6566,7 +7384,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "auto-commit",
+        runId: "auto-commit",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -6609,7 +7427,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "ambiguous-changed-files",
+        runId: "ambiguous-changed-files",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -6640,7 +7458,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "ambiguous-decision",
+        runId: "ambiguous-decision",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -6671,7 +7489,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "ambiguous-progress-record",
+        runId: "ambiguous-progress-record",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -6707,7 +7525,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "auto-commit-projections",
+        runId: "auto-commit-projections",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),
@@ -6790,7 +7608,7 @@ workflow:
         root,
         workflowPath: join(root, "auto.yml"),
         runDir: session.runDir,
-        executionId: "auto-commit-reject",
+        runId: "auto-commit-reject",
         cwd: repo,
         prompt: "tune gemm, no ticket in mission",
         agentRunner: tuneRunner(repo),
@@ -6826,7 +7644,7 @@ workflow:
         root,
         workflowPath: join(root, "no.yml"),
         runDir: session.runDir,
-        executionId: "no-auto-commit",
+        runId: "no-auto-commit",
         cwd: repo,
         prompt: "tune gemm TR-1234",
         agentRunner: tuneRunner(repo),

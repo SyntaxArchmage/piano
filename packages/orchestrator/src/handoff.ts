@@ -12,7 +12,7 @@ import {
 } from "./workflow-runtime.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
-import type { ContractProjection } from "@piano/contract";
+import type { ContractMetric, ContractProjection } from "@piano/contract";
 
 /** Immutable evidence emitted by the orchestrator after a producer has
  * completed (and, when requested, passed validation). */
@@ -25,6 +25,15 @@ export interface HandoffProducer {
   readonly text: string;
   readonly sessionId: string;
   readonly transcriptPath: string;
+  /** The attempt number this acceptance closed, so a continue can rebuild the
+   * result without re-deriving it from the stream. Absent in records written
+   * before it was kept; the cursor supplies the number there instead. */
+  readonly attempt?: number;
+  /** The conversation this acceptance belongs to, so a rebuilt result re-enters
+   * the actor that produced it even when the workflow's worker or harness
+   * spelling changed since. Absent in records written before it was kept; the
+   * rebuild recomputes the current spelling there. */
+  readonly actorKey?: string;
   /** Configuration requested by the workflow before provider capability
    * resolution. Keep it separate from the effective harness values below. */
   readonly requestedModel?: string;
@@ -33,7 +42,23 @@ export interface HandoffProducer {
   readonly thinkingLevel?: string;
   readonly workspace: WorkflowWorkspaceBinding;
   readonly resultPath?: string;
+  /** The published result file this acceptance vouches for, pinned by content.
+   * `path` is the worker's `attempts/<k>/result.json` — a published contract
+   * whose path never moves — and `trust` says who last wrote what the record
+   * carries: the worker itself, or the orchestrator's GPU-round
+   * materialization, which rewrites the accepted payload after the worker's
+   * bytes were validated. A reader can therefore tell evidence that still
+   * holds exactly the worker's file from evidence the orchestrator
+   * re-materialised. */
+  readonly result?: {
+    readonly path: string;
+    readonly sha256: string;
+    readonly trust: "worker" | "orchestrator-materialized";
+  };
   readonly resultPayload?: unknown;
+  /** Contract-declared metrics of the accepted result, so a rebuilt result
+   * carries what tournament selection reads. */
+  readonly metrics?: readonly ContractMetric[];
   /** Named values declared by the producer contract for downstream use. */
   readonly projections?: readonly ContractProjection[];
   readonly contract?: WorkerContractReference;
@@ -101,9 +126,47 @@ export function writeHandoffRecord(
   );
 }
 
+/** Read a producer's persisted record back, or `undefined` when it is missing
+ * or unreadable. A continue rebuilds a skipped invocation's result from this
+ * record; absence makes the caller re-run the stage instead. */
+export function readHandoffRecord(
+  runDir: string,
+  invocation: WorkflowRuntimeInvocation,
+): Effect.Effect<HandoffProducer | undefined, WorkflowError, FileSystem.FileSystem> {
+  const path = handoffRecordPath(runDir, invocation);
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const raw = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
+    if (raw === undefined) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const document = parsed as { version?: unknown; producer?: unknown };
+    if (document.version !== 1 || typeof document.producer !== "object" || document.producer === null) {
+      return undefined;
+    }
+    return document.producer as HandoffProducer;
+  });
+}
+
 /** Materialize a consumer's ordered workflow context. A configured handoff
  * file is always scoped below this exact invocation, so loop/map expansion
  * cannot overwrite a sibling's input even when they use the same DSL path. */
+/** Where a consumer's handoff context file lives — the writer's own rule,
+ * exposed so a rebuilt invocation can list the file without rewriting it. */
+export function handoffContextPath(
+  runDir: string,
+  consumer: WorkflowRuntimeInvocation,
+  configuredPath: string,
+  sourcePath: string,
+): Effect.Effect<string, WorkflowError> {
+  return safeRelativePath(join(invocationDirectory(runDir, consumer), "handoff-context"), configuredPath, sourcePath);
+}
+
 export function writeHandoffContext(
   runDir: string,
   consumer: WorkflowRuntimeInvocation,
@@ -112,8 +175,7 @@ export function writeHandoffContext(
   workspace: WorkflowWorkspaceBinding,
   sourcePath: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const base = join(invocationDirectory(runDir, consumer), "handoff-context");
-  return safeRelativePath(base, configuredPath, sourcePath).pipe(
+  return handoffContextPath(runDir, consumer, configuredPath, sourcePath).pipe(
     Effect.flatMap((contextPath) => writeJsonAtomic(contextPath, {
       version: 1,
       consumer: {
@@ -130,6 +192,12 @@ export function writeHandoffContext(
   );
 }
 
+/** Where a consumer's map item context lives — the writer's own rule, exposed
+ * so a rebuilt invocation can list the file without rewriting it. */
+export function mapItemContextPath(runDir: string, consumer: WorkflowRuntimeInvocation): string {
+  return join(invocationDirectory(runDir, consumer), "map-item.json");
+}
+
 /** Map item values are also orchestrator-owned context. They are injected only
  * into the map region's entry stage; descendants receive data through normal
  * explicit handoff files. */
@@ -139,7 +207,7 @@ export function writeMapItemContext(
   item: HandoffMapItem,
   workspace: WorkflowWorkspaceBinding,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = join(invocationDirectory(runDir, consumer), "map-item.json");
+  const path = mapItemContextPath(runDir, consumer);
   return writeJsonAtomic(path, {
     version: 1,
     consumer: {

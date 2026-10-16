@@ -9,8 +9,8 @@ import { sharedWorkspaceBinding } from "../../packages/orchestrator/src/workspac
 import type { WorkflowRuntimeInvocation } from "../../packages/orchestrator/src/workflow-runtime.js";
 
 const invocation: WorkflowRuntimeInvocation = {
-  executionId: "exec-1",
-  promptIndex: 1,
+  runId: "exec-1",
+  jobOrdinal: 1,
   stageId: "first",
   stageName: "first",
   frames: [],

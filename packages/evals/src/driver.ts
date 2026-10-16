@@ -19,6 +19,7 @@
 import { Effect, Fiber } from "effect";
 import { Data } from "effect";
 import { FileSystem } from "@effect/platform";
+import { iterationOfInvocationId, runStatusPath } from "@piano/orchestrator";
 import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -27,7 +28,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url";
 import { hasPerformanceReadout, parseCaseConfig } from "./case-config.js";
 import { evaluateArtifact, evaluateBaseline } from "./artifact-evaluator.js";
-import { evaluateTrajectoryFile, evaluateTrajectory, TrajectoryEvalError } from "./trajectory-evaluator.js";
+import { evaluateTrajectory, TrajectoryEvalError } from "./trajectory-evaluator.js";
 import {
   analyzeTranscriptText,
   assessCaseEvidence,
@@ -46,6 +47,7 @@ import type {
   TrajectoryMetrics,
 } from "./types.js";
 import type { AgentEvent } from "@piano/harness";
+import { parseTrajectory } from "@piano/logging";
 import {
   workflowEvaluator,
   type WorkflowTrajectoryEvaluation,
@@ -336,10 +338,16 @@ function pathExists(path: string | undefined): boolean {
   return path !== undefined && existsSync(path);
 }
 
+/** A run's trajectory is recorded in two forms and either one is the run: the
+ * document, and the append-only stream beside it. */
+function trajectoryAvailable(path: string | undefined): boolean {
+  return pathExists(path) || pathExists(path === undefined ? undefined : `${path}l`);
+}
+
 function evidenceAvailability(result: CaseResult) {
   return {
     run: pathExists(result.runDir),
-    trajectory: pathExists(result.trajectoryPath),
+    trajectory: trajectoryAvailable(result.trajectoryPath),
     workflowTrajectory: result.workflowTrajectory !== undefined,
     log: pathExists(result.logPath),
     trace: pathExists(result.tracePath),
@@ -498,11 +506,11 @@ export function runCase(
     const stageTrajectories = runDir === undefined ? [] : collectStageTrajectories(runDir);
     const progress = runDir === undefined ? [] : progressRecords(runDir);
     const progressPath = runDir === undefined ? undefined : join(runDir, "progress.jsonl");
-    const progressSnapshotPath = runDir === undefined ? undefined : join(runDir, "progress.json");
+    const statusFilePath = runDir === undefined ? undefined : runStatusPath(runDir);
     const progressEvidence = {
       ...(progressPath !== undefined && existsSync(progressPath) ? { progressPath, progress } : {}),
-      ...(progressSnapshotPath !== undefined && existsSync(progressSnapshotPath)
-        ? { progressSnapshotPath, progressSnapshot: progressSnapshot(runDir!) }
+      ...(statusFilePath !== undefined && existsSync(statusFilePath)
+        ? { runStatusPath: statusFilePath, runStatus: readStatus(runDir!) }
         : {}),
     };
     const workflowTrajectoryOutcome = runDir === undefined
@@ -712,7 +720,9 @@ export function shellQuote(value: string): string {
 }
 
 function evidencePaths(runDir: string): Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript"> {
-  const trajectoryPath = join(runDir, "trajectory.json");
+  // The stream is the run's trajectory record; the document it used to be
+  // folded into is gone, so the path names the stream.
+  const trajectoryPath = join(runDir, "trajectory.jsonl");
   const transcriptPath = findTranscriptPath(runDir);
   return {
     runDir,
@@ -814,14 +824,16 @@ export function readHandoffRecords(runDir: string): HandoffRecord[] {
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
+  let stream: string | undefined;
   try {
-    const value = JSON.parse(readFileSync(join(runDir, "trajectory.json"), "utf8")) as { events?: unknown };
-    return Array.isArray(value.events)
-      ? value.events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null)
-      : [];
+    stream = readFileSync(join(runDir, "trajectory.jsonl"), "utf8");
   } catch {
-    return [];
+    stream = undefined;
   }
+  // The stream is the record; every consumer answers "what happened" from it.
+  const trajectory = stream === undefined ? undefined : parseTrajectory(stream);
+  const events: readonly unknown[] = trajectory?.events ?? [];
+  return events.filter((event): event is Record<string, unknown> => typeof event === "object" && event !== null);
 }
 
 interface StageLogEvidence {
@@ -985,7 +997,7 @@ function collectStageTrajectories(runDir: string): StageTrajectoryMetrics[] {
       : transcriptAnalysis === undefined
         ? evaluateTrajectory([])
         : trajectoryMetricsFromTranscriptAnalysis(transcriptAnalysis);
-    const iterationMatch = /(?:^|\/)iter-(\d+)$/.exec(invocationId.split("@")[1] ?? "");
+    const iteration = iterationOfInvocationId(invocationId);
     return {
       ...metrics,
       stageId: typeof workflow?.stageId === "string" ? workflow.stageId : typeof record?.stageId === "string" ? record.stageId : log?.stageId ?? "unknown",
@@ -1014,7 +1026,7 @@ function collectStageTrajectories(runDir: string): StageTrajectoryMetrics[] {
       ...(typeof workflow?.workspaceCwd === "string"
         ? { workspaceCwd: workflow.workspaceCwd }
         : typeof record?.workspace?.cwd === "string" ? { workspaceCwd: record.workspace.cwd } : log?.workspaceCwd === undefined ? {} : { workspaceCwd: log.workspaceCwd }),
-      ...(iterationMatch?.[1] === undefined ? {} : { iteration: Number(iterationMatch[1]) }),
+      ...(iteration === undefined ? {} : { iteration }),
       ...(() => {
         if (log?.startedAt === undefined || log.completedAt === undefined) return {};
         const durationMs = Date.parse(log.completedAt) - Date.parse(log.startedAt);
@@ -1058,9 +1070,9 @@ function progressRecords(runDir: string): Record<string, unknown>[] {
   }
 }
 
-function progressSnapshot(runDir: string): Record<string, unknown> | undefined {
+function readStatus(runDir: string): Record<string, unknown> | undefined {
   try {
-    const value = JSON.parse(readFileSync(join(runDir, "progress.json"), "utf8")) as unknown;
+    const value = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
     return typeof value === "object" && value !== null && !Array.isArray(value)
       ? value as Record<string, unknown>
       : undefined;
@@ -1076,7 +1088,7 @@ function progressSnapshot(runDir: string): Record<string, unknown> | undefined {
  * slightly stale (or skipped, returning undefined) tick. Exported for
  * testing; the CLI progress path is runCase's poller. */
 export function progressTickLine(label: string, runDir: string, startedAt: number): string | undefined {
-  const snapshot = progressSnapshot(runDir);
+  const snapshot = readStatus(runDir);
   const completed = typeof snapshot?.completedStages === "number" ? snapshot.completedStages : undefined;
   const planned = typeof snapshot?.plannedStages === "number" ? snapshot.plannedStages : undefined;
   const current = typeof snapshot?.current === "object" && snapshot.current !== null
@@ -1169,12 +1181,15 @@ function mergeWorkflowTrajectory(
 
 export function findTranscriptPath(runDir: string): string | undefined {
   try {
-    const trajectory = JSON.parse(readFileSync(join(runDir, "trajectory.json"), "utf8")) as { transcriptPath?: unknown };
-    if (typeof trajectory.transcriptPath === "string" && existsSync(trajectory.transcriptPath)) {
-      return trajectory.transcriptPath;
+    // The run's state document says where its transcript lives. The scan below
+    // is for a run that failed before it recorded one.
+    const raw = readFileSync(join(runDir, "status.json"), "utf8");
+    const status = JSON.parse(raw) as { transcriptPath?: unknown };
+    if (typeof status.transcriptPath === "string" && existsSync(status.transcriptPath)) {
+      return status.transcriptPath;
     }
   } catch {
-    // A run can fail before trajectory persistence; fall through to evidence discovery.
+    // A run can fail before its state is recorded; fall through to evidence discovery.
   }
   const find = (directory: string): string | undefined => {
     try {
@@ -1347,23 +1362,20 @@ function defaultRunSetId(): string {
 function resolveTrajectory(
   runDir: string | undefined,
 ): Effect.Effect<TrajectoryMetrics, TrajectoryEvalError> {
-  const candidates = runDir === undefined ? [] : [join(runDir, "trajectory.json")];
   const empty: TrajectoryMetrics = {
     messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
     toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
   };
-  return Effect.gen(function* () {
-    for (const candidate of candidates) {
-      const found = Effect.sync(() => {
-        try {
-          return statSync(candidate).isFile();
-        } catch {
-          return false;
-        }
-      });
-      if (yield* found) return yield* evaluateTrajectoryFile(candidate);
-    }
-    return empty;
+  if (runDir === undefined) return Effect.succeed(empty);
+  // The stream is the record. The folded document is gone (status.json answers
+  // "how is the run doing", the stream answers "what happened"), so evaluation
+  // reads the stream alone; a run without one evaluates as empty.
+  return Effect.try({
+    try: () => evaluateTrajectory(trajectoryEvents(runDir) as unknown as Parameters<typeof evaluateTrajectory>[0]),
+    catch: (cause) => new TrajectoryEvalError({
+      path: join(runDir, "trajectory.jsonl"),
+      message: cause instanceof Error ? cause.message : String(cause),
+    }),
   });
 }
 

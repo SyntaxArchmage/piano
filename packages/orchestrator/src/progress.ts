@@ -1,10 +1,12 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
+import { refreshRunStatus } from "./run-status.js";
+import type { SelectionIncumbent } from "./selection.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
+import type { AgentContinuation } from "@piano/harness";
 import type { ContractProjection } from "@piano/contract";
 
 /** Orchestrator-owned, worker-neutral progress projection. Iteration is
@@ -89,7 +91,7 @@ export interface WorkflowProgressCurrent {
 export interface WorkflowProgressRecord {
   readonly version: 1;
   readonly timestamp: string;
-  readonly executionId: string;
+  readonly runId: string;
   readonly invocationId: string;
   readonly stageId: string;
   readonly stage: string;
@@ -128,10 +130,284 @@ export interface WorkflowProgressRecord {
   readonly contract?: WorkerContractReference;
 }
 
+/** Append-only record of one invocation *starting*.
+ *
+ * The stream records starts as well as acceptances because "which invocation is
+ * in flight, and since when" is not derivable from acceptance records alone.
+ * Without a start record that fact lived only in the snapshot, which made the
+ * snapshot the sole authority for information no log held — and forced its
+ * accumulated stage time to be carried forward from the snapshot's own
+ * previous value instead of from evidence. */
+export interface WorkflowProgressStartRecord {
+  readonly version: 1;
+  readonly kind: "stage-started";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly invocationId: string;
+  readonly stageId: string;
+  readonly stage: string;
+  readonly worker: string;
+  readonly attempt: number;
+  readonly instanceId?: string;
+  readonly iteration?: number;
+  /** Fan-out coordinates, carried so a start record names its own lane rather
+   * than leaving a reader to derive it from the invocation id. */
+  readonly mapSlot?: number;
+  readonly mapSlots?: number;
+  readonly scope?: string;
+  /** Why this attempt is running: set when a failed validation reopened the
+   * actor for a repair turn. */
+  readonly error?: string;
+}
+
+/** Append-only record of one workflow execution beginning.
+ *
+ * Marks where this execution's progress starts — and, once one session hosts
+ * more than one execution, where one execution ends and the next begins.
+ *
+ * It carries the plan because planned stage counts come from the compiled
+ * workflow, not from anything a stage could report: without this record a
+ * reader rebuilding the snapshot from the stream would still have to be handed
+ * the plan from outside. */
+export interface WorkflowProgressExecutionStartRecord {
+  readonly version: 1;
+  readonly kind: "execution-started";
+  readonly timestamp: string;
+  readonly runId: string;
+  /** The job this span belongs to: one prompt's workflow execution. A fresh
+   * job takes the next ordinal; a span that resumes a paused job repeats its
+   * predecessor's, which is what ties a continue back to the job it continues.
+   * Absent in streams written before jobs existed, where every span is its own
+   * job. */
+  readonly jobOrdinal?: number;
+  /** The input this job runs — the prompt the human submitted. Kept with the
+   * job so `/continue` and `/restart` can re-run it without chasing turn
+   * positions, which continues make ambiguous. Absent in pre-existing
+   * streams. */
+  readonly prompt?: string;
+  /** True when this execution continues actors a previous one left behind. */
+  readonly resumed: boolean;
+  readonly plan: WorkflowProgressPlan;
+}
+
+/** Append-only record of one workflow execution ending.
+ *
+ * The stream carries the outcome itself rather than only a view of it. The
+ * snapshot write is best-effort and a hard exit can skip it entirely, so "how
+ * did this end" has to be answerable from evidence rather than from a file a
+ * wedged finalizer may never have reached. */
+export interface WorkflowProgressExecutionFinishRecord {
+  readonly version: 1;
+  readonly kind: "execution-finished";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly status: "completed" | "failed" | "paused";
+  readonly error?: string;
+}
+
+/** Append-only record that a job is closed by the human's own action rather
+ * than by the work ending — today only `/restart`, which abandons a paused job
+ * in favour of a fresh one. The job's spans keep their own truth (the last one
+ * still says `paused`); this record is what makes the job read as finished
+ * with that outcome, and what keeps its cursor from being offered again. */
+export interface WorkflowProgressJobClosedRecord {
+  readonly version: 1;
+  readonly kind: "job-closed";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly jobOrdinal: number;
+  readonly outcome: "restarted";
+}
+
+/** One line of the append-only progress stream. */
+/** One region's exit, recorded exactly once when the region leaves the
+ * schedule: which instance ended, why, and — for a tournament — who won.
+ * A continue reads it to skip a completed region instead of re-running its
+ * workers, and a monitor reads it to see why a loop stopped. */
+export interface WorkflowProgressRegionFinalizedRecord {
+  readonly version: 1;
+  readonly kind: "region-finalized";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly jobOrdinal: number;
+  /** `<frame chain>/<regionId>` — `runtimeRegionInstanceId`'s output, whose
+   * inverse is `runtimeFramesFromInstanceId`: the chain is `root` (no frames)
+   * or `regionId/iter-N` / `regionId/slot-K` pairs joined by `/`. Written and
+   * read through those two functions so the two can never disagree. */
+  readonly instance: string;
+  readonly regionId: string;
+  readonly regionKind: "map" | "loop";
+  /** How the region's schedule ended. "the region ended early" is derived,
+   * not stored: `outcome === "terminal-blocked"` for a blocked region, or
+   * `notCarriedReason === "stopped"` for a tournament whose winner was
+   * stopped/blocked and could not be carried. */
+  readonly outcome:
+    | "carried"
+    | "admitted-not-carried"
+    | "no-winner"
+    | "terminal-blocked"
+    | "bound-iterations"
+    | "bound-duration"
+    | "feedback-stop";
+  /** Orthogonal to `outcome`: why the winning slot was not carried —
+   * the admission gate rejected it, or the winner itself was stopped. */
+  readonly notCarriedReason?: "admission" | "stopped";
+  /** The winning slot's runtime instance — the identity a skip filters the
+   * boundary by. The workspace key is deliberately not stored: it is a path
+   * spelling, derivable from the instance where a consumer needs it. */
+  readonly winnerInstanceId?: string;
+  /** The tournament incumbent the admission gate compares against, as the
+   * region left it. A skipped region restores it so a later iteration's
+   * admission check compares against the same basis. */
+  readonly incumbent?: SelectionIncumbent;
+  /** Completed iterations for a loop region at the moment it exited. */
+  readonly iterations?: number;
+}
+
+/** Everything a writer must supply for a `region-finalized` line; the append
+ * seam stamps version/timestamp, the execution stamps identity. */
+export type WorkflowRegionFinalizedPayload = Omit<
+  WorkflowProgressRegionFinalizedRecord,
+  "version" | "kind" | "timestamp" | "runId" | "jobOrdinal"
+>;
+
+/** One actor's conversation state after a turn that changed it. The record
+ * exists so the actor table a resume reads can be folded from this one ledger
+ * instead of a second, parallel file: newest record per `actorKey` wins.
+ * `continuation` is the harness's own pointer into the conversation and is
+ * copied verbatim — never synthesized — because a fabricated one would resume
+ * the wrong session silently. Unlike the newness record, which is a complete
+ * table, this is a delta: the fields are exactly what the writer set. */
+export interface WorkflowProgressActorTurnRecord {
+  readonly version: 1;
+  readonly kind: "actor-turn";
+  readonly timestamp: string;
+  readonly runId: string;
+  readonly jobOrdinal: number;
+  readonly invocationId: string;
+  readonly attempt: number;
+  readonly actorKey: string;
+  readonly harness: string;
+  readonly worker: string;
+  /** The map-frame lane the actor belongs to (`root` when it has none): the
+   * lane part of `actorKey`, spelled once by `actorLaneSegments`. */
+  readonly lane: string;
+  readonly sessionId: string;
+  readonly transcriptPath: string;
+  /** The actor's completed turn count at this record. */
+  readonly turn: number;
+  readonly continuation?: AgentContinuation;
+}
+
+export type WorkflowProgressStreamRecord =
+  | WorkflowProgressRecord
+  | WorkflowProgressStartRecord
+  | WorkflowProgressExecutionStartRecord
+  | WorkflowProgressExecutionFinishRecord
+  | WorkflowProgressJobClosedRecord
+  | WorkflowProgressRegionFinalizedRecord
+  | WorkflowProgressActorTurnRecord;
+
+/** Kind of one progress-stream line.
+ *
+ * `"stage-accepted"` is the historical shape and carries no discriminator: the
+ * stream predates it, and every record written before it is an accepted stage.
+ *
+ * A record that DOES carry a `kind` this function does not recognize was
+ * written by a newer writer, and answers `undefined`: the only safe reading of
+ * a record whose meaning a reader does not know is to skip it, because folding
+ * it into the historical shape would count a marker as accepted work.
+ *
+ * Accepts any parsed line rather than the writer's own types, because the two
+ * callers hold different things — a writer holds a typed record, a reader holds
+ * whatever `JSON.parse` returned. Readers ask this function rather than testing
+ * `kind` themselves, so the compatibility rule lives in exactly one place. */
+export function progressRecordKind(record: object | null | undefined):
+  | WorkflowProgressStartRecord["kind"]
+  | WorkflowProgressExecutionStartRecord["kind"]
+  | WorkflowProgressExecutionFinishRecord["kind"]
+  | WorkflowProgressJobClosedRecord["kind"]
+  | WorkflowProgressRegionFinalizedRecord["kind"]
+  | WorkflowProgressActorTurnRecord["kind"]
+  | "stage-accepted"
+  | undefined {
+  const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
+  if (kind === undefined) return "stage-accepted";
+  if (kind === "stage-started") return "stage-started";
+  if (kind === "execution-started") return "execution-started";
+  if (kind === "execution-finished") return "execution-finished";
+  if (kind === "job-closed") return "job-closed";
+  if (kind === "region-finalized") return "region-finalized";
+  if (kind === "actor-turn") return "actor-turn";
+  return undefined;
+}
+
+/** The declared top-level fields of every record kind, keyed the way
+ * `progressRecordKind` spells kinds (`"stage-accepted"` for the kind-less
+ * historical line). The writer-side half of the reader contract — undeclared
+ * fields are ignored on read and forbidden on write — lives here as a runtime
+ * table because the interfaces above are compile-time only. Kept in the same
+ * file, beside the types it mirrors; the drift test in tests/workflow builds a
+ * maximal record of every kind and pins the two directions against each other.
+ * Consumers: `--check`'s `undeclared-field` report. The `extra` envelope the
+ * contract allows for experiments is itself a declared field of no kind yet —
+ * experimental fields go inside it, not beside the declared ones. */
+export const progressRecordDeclaredFields: Readonly<Record<string, readonly string[]>> = {
+  "stage-accepted": [
+    "version", "timestamp", "runId", "invocationId", "stageId", "stage", "worker",
+    "instanceId", "iteration", "attempt", "workspace", "actorKey", "harness",
+    "sessionId", "transcriptPath", "resultPath", "handoffRecordPath",
+    "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel",
+    "progress", "resultPayload", "projections", "contract",
+  ],
+  "stage-started": [
+    "version", "kind", "timestamp", "runId", "invocationId", "stageId", "stage",
+    "worker", "attempt", "instanceId", "iteration", "mapSlot", "mapSlots", "scope", "error",
+  ],
+  "execution-started": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "prompt", "resumed", "plan",
+  ],
+  "execution-finished": [
+    "version", "kind", "timestamp", "runId", "status", "error",
+  ],
+  "job-closed": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "outcome",
+  ],
+  "region-finalized": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "instance", "regionId",
+    "regionKind", "outcome", "notCarriedReason", "winnerInstanceId", "incumbent", "iterations",
+  ],
+  "actor-turn": [
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "invocationId", "attempt",
+    "actorKey", "harness", "worker", "lane", "sessionId", "transcriptPath", "turn", "continuation",
+  ],
+};
+
+/** Parse one stream line into a record, or `undefined` for a blank, torn, or
+ * shapeless line. The single definition of the line format's acceptance rule,
+ * shared by every stream reader (the snapshot fallback and the job fold) so
+ * they cannot disagree about what a line means. */
+export function parseProgressStreamRecord(line: string): WorkflowProgressStreamRecord | undefined {
+  if (line.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    // Torn mid-append: it describes a write that never finished, and the
+    // records before it are still good.
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  // Every kind carries these two, whichever shape it is.
+  const record = parsed as { runId?: unknown; timestamp?: unknown };
+  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
+  return parsed as WorkflowProgressStreamRecord;
+}
+
 export interface WorkflowProgressSnapshot {
   readonly version: 1;
   readonly updatedAt: string;
-  readonly executionId: string;
+  readonly runId: string;
   /** "paused": the run stopped at a human interrupt (Escape / `/exit`) with
    * resumable state on disk; the next prompt continues the same execution. */
   readonly status: "running" | "completed" | "failed" | "paused";
@@ -144,18 +420,6 @@ export interface WorkflowProgressSnapshot {
    * accumulated duration without replaying the append-only stream. */
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   readonly current?: WorkflowProgressCurrent;
-  readonly latest?: {
-    readonly invocationId: string;
-    readonly stageId: string;
-    readonly stage: string;
-    readonly worker: string;
-    readonly attempt: number;
-    readonly iteration?: number;
-    readonly progress?: WorkflowProgressProjection;
-    readonly projections?: readonly ContractProjection[];
-    readonly decision?: string;
-    readonly benchmark?: unknown;
-  };
   readonly error?: string;
 }
 
@@ -163,76 +427,8 @@ export function workflowProgressPath(runDir: string): string {
   return join(runDir, "progress.jsonl");
 }
 
-/** Current, human-readable projection for `watch`/TUI consumers. The JSONL
- * stream remains the immutable evidence source; this file is only the latest
- * state and is safe to replace after every accepted stage. */
-export function workflowProgressSnapshotPath(runDir: string): string {
-  return join(runDir, "progress.json");
-}
-
 function progressError(path: string, operation: string, cause: unknown): WorkflowError {
   return workflowError("schedule", path, `${operation}: ${errorMessage(cause)}`);
-}
-
-/** Adapt the pre-projection progress API at its persistence boundary. New
- * canonical records carry explicit projections; only historical/named callers
- * without a contract snapshot may recover the two legacy convenience hints
- * from resultPayload. */
-function legacyProgressProjections(
-  payload: unknown,
-): readonly ContractProjection[] {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return [];
-  const value = payload as Record<string, unknown>;
-  return [
-    ...(typeof value.decision === "string"
-      ? [{ id: "round.decision", pointer: "/decision", format: "string" as const, value: value.decision }]
-      : []),
-    ...(value.benchmark === undefined
-      ? []
-      : [{ id: "benchmark.evidence", pointer: "/benchmark", format: "json" as const, value: value.benchmark }]),
-  ];
-}
-
-function progressProjectionHint(
-  projections: readonly ContractProjection[],
-  persistProjections: boolean,
-): Pick<NonNullable<WorkflowProgressSnapshot["latest"]>, "decision" | "benchmark" | "projections"> {
-  const value = new Map(projections.map((projection) => [projection.id, projection.value]));
-  return {
-    ...(typeof value.get("round.decision") === "string" ? { decision: value.get("round.decision") as string } : {}),
-    ...(value.has("benchmark.evidence") ? { benchmark: value.get("benchmark.evidence") } : {}),
-    ...(persistProjections ? { projections } : {}),
-  };
-}
-
-function writeSnapshotAtomic(
-  path: string,
-  snapshot: WorkflowProgressSnapshot,
-): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return writeFileAtomic(path, `${JSON.stringify(snapshot, null, 2)}\n`, {
-    temporaryPath: () => `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    mapError: (cause, step) => progressError(path, `snapshot ${step}`, cause),
-  });
-}
-
-function readSnapshot(
-  fileSystem: FileSystem.FileSystem,
-  path: string,
-): Effect.Effect<WorkflowProgressSnapshot | undefined, WorkflowError, never> {
-  return Effect.gen(function* () {
-    const exists = yield* fileSystem.exists(path).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot exists", cause)),
-    );
-    if (!exists) return undefined;
-    const raw = yield* fileSystem.readFileString(path).pipe(
-      Effect.mapError((cause) => progressError(path, "snapshot read", cause)),
-    );
-    try {
-      return JSON.parse(raw) as WorkflowProgressSnapshot;
-    } catch (cause) {
-      return yield* Effect.fail(progressError(path, "snapshot parse", cause));
-    }
-  });
 }
 
 function emptyStageCounts(plan: WorkflowProgressPlan): Readonly<Record<string, WorkflowProgressStageCount>> {
@@ -279,68 +475,298 @@ function closeOpenSpans(
   return closed;
 }
 
+/** Record one invocation's time in the map the fold owns, updating it in place.
+ *
+ * The whole point of `applyProgressRecord`'s ownership contract: a per-record
+ * copy of this map is what turned the fold quadratic, and every caller of the
+ * reducer already owns the accumulator it is updating. */
+function accrueInto(
+  times: Readonly<Record<string, WorkflowProgressInvocationTime>> | undefined,
+  invocationId: string,
+  time: WorkflowProgressInvocationTime,
+): Readonly<Record<string, WorkflowProgressInvocationTime>> {
+  const owned = (times ?? {}) as Record<string, WorkflowProgressInvocationTime>;
+  owned[invocationId] = time;
+  return owned;
+}
+
+/** A snapshot with nothing folded into it yet. */
+function emptyProgressSnapshot(runId: string, updatedAt: string): WorkflowProgressSnapshot {
+  return {
+    version: 1,
+    updatedAt,
+    runId,
+    status: "running",
+    plannedStages: 0,
+    completedStages: 0,
+    acceptedStages: 0,
+    remainingStages: 0,
+    stageCounts: {},
+  };
+}
+
+/** Fold one stream record into the snapshot it produces.
+ *
+ * The single definition of what a record means, shared by the two paths that
+ * need it: the writers apply it to the snapshot they last wrote — one small
+ * file read per record, so a long run stays linear — and a reader can reduce a
+ * whole stream with it to rebuild a snapshot a hard exit never reached. Both
+ * paths produce the same document, which is what makes the snapshot a view of
+ * the stream rather than a second account of it.
+ *
+ * Folding into `undefined` is the same as folding into the empty snapshot:
+ * every case establishes the identity and timestamp it needs from the record.
+ *
+ * The reducer TAKES OWNERSHIP of `previous`'s `invocationTime` map and returns
+ * a snapshot that owns it. Every caller hands it an accumulator it owns (the
+ * reduce in `run-status`, the snapshot rewrite in `progress`) and must not read
+ * `previous` afterwards. Updating that map in place is what keeps a long fold
+ * linear: copying it once per record was measured at 99% of the fold's cost —
+ * 228 ms of a 237 ms fold over a thousand records, against 1.5 ms without the
+ * copy. */
+export function applyProgressRecord(
+  previous: WorkflowProgressSnapshot | undefined,
+  record: WorkflowProgressStreamRecord,
+): WorkflowProgressSnapshot {
+  const kind = progressRecordKind(record);
+  if (kind === undefined) {
+    // A kind this reducer does not know (a record from a newer writer): the
+    // snapshot carries only what it understands. An empty fold still gets its
+    // identity established, so a known record after this one has a base.
+    return previous ?? emptyProgressSnapshot(record.runId, record.timestamp);
+  }
+  if (kind === "region-finalized") {
+    // Region evidence a continue reads; the live snapshot has no field for
+    // it, so the fold only advances its timestamp.
+    return previous === undefined
+      ? emptyProgressSnapshot(record.runId, record.timestamp)
+      : { ...previous, updatedAt: record.timestamp };
+  }
+  if (kind === "actor-turn") {
+    // The actor table's own fold (`foldActorTurns`) reads these; the progress
+    // snapshot carries no actor fields, so only its timestamp advances.
+    return previous === undefined
+      ? emptyProgressSnapshot(record.runId, record.timestamp)
+      : { ...previous, updatedAt: record.timestamp };
+  }
+  if (kind === "execution-started") {
+    const started = record as WorkflowProgressExecutionStartRecord;
+    // A record whose plan is missing is one this fold cannot use. The reader
+    // contract is that a reader skips what it cannot read rather than failing
+    // the whole view on it — a torn or hand-written line must not take the
+    // document down, and the ledger keeps the line for whoever repairs it.
+    if ((started as { plan?: unknown }).plan === undefined) {
+      return previous === undefined
+        ? emptyProgressSnapshot(started.runId, started.timestamp)
+        : previous;
+    }
+    // A resumed execution keeps the counts the previous one reached; a fresh
+    // one starts them over. The flag rides the record rather than being
+    // inferred from whether a snapshot happens to exist on disk.
+    const carried = started.resumed ? previous : undefined;
+    return {
+      version: 1,
+      updatedAt: started.timestamp,
+      runId: started.runId,
+      status: "running",
+      plannedStages: started.plan.plannedStages,
+      completedStages: carried?.completedStages ?? 0,
+      acceptedStages: carried?.acceptedStages ?? 0,
+      remainingStages: started.plan.plannedStages - (carried?.acceptedStages ?? 0),
+      stageCounts: carried?.stageCounts ?? emptyStageCounts(started.plan),
+      ...(carried?.invocationTime === undefined ? {} : { invocationTime: carried.invocationTime }),
+    };
+  }
+  if (kind === "stage-started") {
+    const started = record as WorkflowProgressStartRecord;
+    const base = previous ?? emptyProgressSnapshot(started.runId, started.timestamp);
+    const invocationTime = accrueInto(base.invocationTime, started.invocationId, {
+      ...accrueInvocationTime(base.invocationTime?.[started.invocationId], started, started.timestamp),
+      runningSince: started.timestamp,
+    });
+    return {
+      ...base,
+      updatedAt: started.timestamp,
+      runId: started.runId,
+      status: "running",
+      invocationTime,
+      current: {
+        status: "running",
+        invocationId: started.invocationId,
+        stageId: started.stageId,
+        stage: started.stage,
+        worker: started.worker,
+        attempt: started.attempt,
+        ...(started.instanceId === undefined ? {} : { instanceId: started.instanceId }),
+        ...(started.iteration === undefined ? {} : { iteration: started.iteration }),
+        ...(started.mapSlot === undefined ? {} : { mapSlot: started.mapSlot }),
+        ...(started.mapSlots === undefined ? {} : { mapSlots: started.mapSlots }),
+        ...(started.scope === undefined ? {} : { scope: started.scope }),
+        ...(started.error === undefined ? {} : { error: started.error }),
+      },
+    };
+  }
+  if (kind === "execution-finished") {
+    const finished = record as WorkflowProgressExecutionFinishRecord;
+    const base = previous ?? emptyProgressSnapshot(finished.runId, finished.timestamp);
+    return {
+      ...base,
+      updatedAt: finished.timestamp,
+      status: finished.status,
+      ...(base.invocationTime === undefined
+        ? {}
+        : { invocationTime: closeOpenSpans(base.invocationTime, finished.timestamp) }),
+      ...(base.current === undefined ? {} : {
+        current: {
+          ...base.current,
+          // The pointer folds but keeps naming the last active stage, so a
+          // paused run still shows where it stopped.
+          status: finished.status === "failed" ? "failed" as const : "accepted" as const,
+        },
+      }),
+      ...(finished.error === undefined ? {} : { error: finished.error }),
+    };
+  }
+  if (kind === "job-closed") {
+    const closed = record as WorkflowProgressJobClosedRecord;
+    // The snapshot describes the latest span; a job closed by an action the
+    // viewer may not even be showing moves only its timestamp.
+    const base = previous ?? emptyProgressSnapshot(closed.runId, closed.timestamp);
+    return { ...base, updatedAt: closed.timestamp };
+  }
+  const accepted = record as WorkflowProgressRecord;
+  const projection = accepted.progress;
+  const base = previous ?? emptyProgressSnapshot(accepted.runId, accepted.timestamp);
+  return {
+    ...base,
+    updatedAt: accepted.timestamp,
+    runId: accepted.runId,
+    status: "running",
+    plannedStages: projection?.plannedStages ?? base.plannedStages,
+    completedStages: projection?.completedStages ?? base.completedStages,
+    acceptedStages: projection?.acceptedStages ?? base.acceptedStages,
+    remainingStages: projection?.remainingStages ?? base.remainingStages,
+    stageCounts: projection?.stageCounts ?? base.stageCounts,
+    invocationTime: accrueInto(base.invocationTime, accepted.invocationId, accrueInvocationTime(
+      base.invocationTime?.[accepted.invocationId],
+      accepted,
+      accepted.timestamp,
+    )),
+    current: {
+      status: "accepted",
+      invocationId: accepted.invocationId,
+      stageId: accepted.stageId,
+      stage: accepted.stage,
+      worker: accepted.worker,
+      attempt: accepted.attempt,
+      ...(accepted.instanceId === undefined ? {} : { instanceId: accepted.instanceId }),
+      ...(accepted.iteration === undefined ? {} : { iteration: accepted.iteration }),
+      ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
+      ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
+      ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
+      ...(projection === undefined ? {} : { progress: projection }),
+      ...(accepted.projections === undefined ? {} : { projections: accepted.projections }),
+    },
+  };
+}
+
 /** Create the initial snapshot before the first worker turn. This makes a
  * long-running workflow observable even while no stage has validated yet. */
 export function initializeWorkflowProgress(
   runDir: string,
-  executionId: string,
+  runId: string,
   plan: WorkflowProgressPlan,
+  jobOrdinal: number,
+  prompt: string,
   resume: boolean,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressSnapshotPath(runDir);
+  const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const previous = resume ? yield* readSnapshot(fileSystem, path) : undefined;
-    yield* writeSnapshotAtomic(path, {
+    yield* appendAndFold(runDir, {
       version: 1,
-      updatedAt: new Date().toISOString(),
-      executionId,
-      status: "running",
-      plannedStages: plan.plannedStages,
-      completedStages: previous?.completedStages ?? 0,
-      acceptedStages: previous?.acceptedStages ?? 0,
-      remainingStages: plan.plannedStages - (previous?.acceptedStages ?? 0),
-      stageCounts: previous?.stageCounts ?? emptyStageCounts(plan),
-      ...(previous?.invocationTime === undefined ? {} : { invocationTime: previous.invocationTime }),
+      kind: "execution-started",
+      timestamp: new Date().toISOString(),
+      runId,
+      jobOrdinal,
+      prompt,
+      resumed: resume,
+      plan,
     });
     return path;
   });
 }
 
-/** Update the convenience snapshot when a stage/attempt starts. The
- * append-only progress stream intentionally remains acceptance-only. */
-export function markWorkflowStageStarted(
+/** Append one record to the run's progress stream.
+ *
+ * The stream's single writer seam: every record type goes through it, so the
+ * file has one place that knows its line format. */
+function appendProgressLine(
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+  record: WorkflowProgressStreamRecord,
+): Effect.Effect<void, WorkflowError, never> {
+  return Effect.gen(function* () {
+    const line = yield* Effect.try({
+      try: () => `${JSON.stringify(record)}\n`,
+      catch: (cause) => progressError(path, "serialize", cause),
+    });
+    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
+      Effect.mapError((cause) => progressError(path, "mkdir", cause)),
+    );
+    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
+      Effect.mapError((cause) => progressError(path, "append", cause)),
+    );
+  });
+}
+
+/** Append one record to the stream, then bring the run's state document back
+ * in step with it.
+ *
+ * The one path every writer takes. The record is written first on purpose: the
+ * state document is a view of it, so a failure between the two must leave the
+ * view stale rather than the record missing. */
+function appendAndFold(
   runDir: string,
-  current: Omit<WorkflowProgressCurrent, "status" | "progress">,
-): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressSnapshotPath(runDir);
+  record: WorkflowProgressStreamRecord,
+): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const previous = yield* readSnapshot(fileSystem, path);
-    const now = new Date().toISOString();
-    const fallback: WorkflowProgressSnapshot = previous ?? {
+    yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), record);
+    // `run-status` folds this module's records back, which is why the two
+    // import each other's functions rather than one owning the other.
+    yield* refreshRunStatus(runDir);
+  });
+}
+
+/** Record that a stage/attempt started on the stream.
+ *
+ * The stream is written first on purpose: the state document is a view of the
+ * record, so a failure between the two must leave the view stale rather than
+ * the record missing. Viewing the order the other way would let a crash lose
+ * the start. */
+export function markWorkflowStageStarted(
+  runDir: string,
+  runId: string,
+  current: Omit<WorkflowProgressCurrent, "status" | "progress">,
+): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
+  const path = workflowProgressPath(runDir);
+  return Effect.gen(function* () {
+    yield* appendAndFold(runDir, {
       version: 1,
-      updatedAt: now,
-      executionId: current.invocationId.split("@", 1)[0] ?? current.invocationId,
-      status: "running",
-      plannedStages: 0,
-      completedStages: 0,
-      acceptedStages: 0,
-      remainingStages: 0,
-      stageCounts: {},
-    };
-    yield* writeSnapshotAtomic(path, {
-      ...fallback,
-      updatedAt: now,
-      status: "running",
-      invocationTime: {
-        ...fallback.invocationTime,
-        [current.invocationId]: {
-          ...accrueInvocationTime(fallback.invocationTime?.[current.invocationId], current, now),
-          runningSince: now,
-        },
-      },
-      current: { ...current, status: "running" },
+      kind: "stage-started",
+      timestamp: new Date().toISOString(),
+      runId,
+      invocationId: current.invocationId,
+      stageId: current.stageId,
+      stage: current.stage,
+      worker: current.worker,
+      attempt: current.attempt,
+      ...(current.instanceId === undefined ? {} : { instanceId: current.instanceId }),
+      ...(current.iteration === undefined ? {} : { iteration: current.iteration }),
+      ...(current.mapSlot === undefined ? {} : { mapSlot: current.mapSlot }),
+      ...(current.mapSlots === undefined ? {} : { mapSlots: current.mapSlots }),
+      ...(current.scope === undefined ? {} : { scope: current.scope }),
+      ...(current.error === undefined ? {} : { error: current.error }),
     });
     return path;
   });
@@ -350,117 +776,65 @@ export function markWorkflowStageStarted(
  * workflow loop is still running, so monitors can observe completed iterations. */
 export function appendWorkflowProgress(
   runDir: string,
-  record: Omit<WorkflowProgressRecord, "version" | "timestamp">,
+  record: Omit<WorkflowProgressRecord, "version" | "timestamp">
+    | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">
+    | Omit<WorkflowProgressActorTurnRecord, "version" | "timestamp">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const timestamp = new Date().toISOString();
-    const fullRecord = {
-      version: 1 as const,
-      timestamp,
-      ...record,
-    };
-    const line = yield* Effect.try({
-      try: () => `${JSON.stringify(fullRecord)}\n`,
-      catch: (cause) => progressError(path, "serialize", cause),
-    });
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => progressError(path, "mkdir", cause)),
-    );
-    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError((cause) => progressError(path, "append", cause)),
-    );
-    const snapshotPath = workflowProgressSnapshotPath(runDir);
-    const explicitProjections = record.projections;
-    const hintProjections = explicitProjections ?? (record.contract === undefined
-      ? legacyProgressProjections(record.resultPayload)
-      : []);
-    const payloadHint = progressProjectionHint(hintProjections, explicitProjections !== undefined);
-    const previous = yield* readSnapshot(fileSystem, snapshotPath);
-    const projection = record.progress;
-    const snapshot: WorkflowProgressSnapshot = {
+    yield* appendAndFold(runDir, {
       version: 1,
-      updatedAt: timestamp,
-      executionId: record.executionId,
-      status: "running",
-      plannedStages: projection?.plannedStages ?? previous?.plannedStages ?? record.progress?.acceptedStages ?? 0,
-      completedStages: projection?.completedStages ?? record.progress?.acceptedStages ?? previous?.completedStages ?? 0,
-      acceptedStages: projection?.acceptedStages ?? previous?.acceptedStages ?? 0,
-      remainingStages: projection?.remainingStages ?? previous?.remainingStages ?? 0,
-      stageCounts: projection?.stageCounts ?? previous?.stageCounts ?? {},
-      invocationTime: {
-        ...previous?.invocationTime,
-        [record.invocationId]: accrueInvocationTime(
-          previous?.invocationTime?.[record.invocationId],
-          record,
-          timestamp,
-        ),
-      },
-      current: {
-        status: "accepted",
-        invocationId: record.invocationId,
-        stageId: record.stageId,
-        stage: record.stage,
-        worker: record.worker,
-        attempt: record.attempt,
-        ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
-        ...(record.iteration === undefined ? {} : { iteration: record.iteration }),
-        ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
-        ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
-        ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
-        ...(projection === undefined ? {} : { progress: projection }),
-        ...(record.projections === undefined ? {} : { projections: record.projections }),
-      },
-      latest: {
-        invocationId: record.invocationId,
-        stageId: record.stageId,
-        stage: record.stage,
-        worker: record.worker,
-        attempt: record.attempt,
-        ...(record.iteration === undefined ? {} : { iteration: record.iteration }),
-        ...(projection === undefined ? {} : { progress: projection }),
-        ...payloadHint,
-      },
-    };
-    yield* writeSnapshotAtomic(snapshotPath, snapshot);
+      timestamp: new Date().toISOString(),
+      ...record,
+    });
     return path;
   });
 }
 
-/** Mark the latest snapshot terminal without changing the append-only stream.
+/** Record that an execution ended on the stream.
+ *
  * Best-effort callers may catch this error so a convenience view never hides
- * the canonical workflow result. When snapshot.current is present its status
- * is folded: "accepted" for completed/paused (a human stop is not a failure;
- * resume.json is the sole continuation authority), "failed" for a failed run.
- * `current.stageId` is never rewritten — it still names the last active stage.
- * Readers must tolerate legacy on-disk shapes (stale current.status:"running"
- * under a terminal snapshot) written before this fold was introduced. */
+ * the canonical workflow result. The state document is folded from this record
+ * like every other; with nothing to correct there, the record above is the
+ * outcome. */
 export function finalizeWorkflowProgress(
   runDir: string,
+  runId: string,
   status: "completed" | "failed" | "paused",
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressSnapshotPath(runDir);
+  const path = workflowProgressPath(runDir);
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const snapshot = yield* readSnapshot(fileSystem, path);
-    if (snapshot === undefined) return path;
-    const now = new Date().toISOString();
-    yield* writeSnapshotAtomic(path, {
-      ...snapshot,
-      updatedAt: now,
+    yield* appendAndFold(runDir, {
+      version: 1,
+      kind: "execution-finished",
+      timestamp: new Date().toISOString(),
+      runId,
       status,
-      ...(snapshot.invocationTime === undefined
-        ? {}
-        : { invocationTime: closeOpenSpans(snapshot.invocationTime, now) }),
-      ...(snapshot.current === undefined ? {} : {
-        current: {
-          ...snapshot.current,
-          status: status === "failed" ? "failed" as const : "accepted" as const,
-        },
-      }),
       ...(error === undefined ? {} : { error }),
+    });
+    return path;
+  });
+}
+
+/** Close one job by the human's own action, so its paused spans read as
+ * finished with that outcome. Appends the marker and folds it like every
+ * other record; the job's own spans keep saying how they stopped. */
+export function closeWorkflowJob(
+  runDir: string,
+  runId: string,
+  jobOrdinal: number,
+  outcome: "restarted",
+): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
+  const path = workflowProgressPath(runDir);
+  return Effect.gen(function* () {
+    yield* appendAndFold(runDir, {
+      version: 1,
+      kind: "job-closed",
+      timestamp: new Date().toISOString(),
+      runId,
+      jobOrdinal,
+      outcome,
     });
     return path;
   });

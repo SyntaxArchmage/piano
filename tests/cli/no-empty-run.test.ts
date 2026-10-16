@@ -9,10 +9,11 @@
 // logging mocks — so they prove nothing reaches disk, rather than asserting a
 // mock was not called.
 
-import { mkdtemp, mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeTrajectoryRun } from "../common/trajectory-fixture.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { createStagingSession } from "@piano/logging";
@@ -27,13 +28,12 @@ vi.mock("@piano/harness", async (importOriginal) => ({
 }));
 
 vi.mock("@piano/orchestrator", () => ({
-  compileWorkflow: vi.fn(() => Effect.succeed({ name: "smoke", stages: [], regions: [] })),
+  compileWorkflow: vi.fn(() => Effect.succeed({ name: "smoke", stages: [], regions: [], nodes: [] })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "ok",
     sessionId: "worker-session",
     transcriptPath: "/tmp/worker.jsonl",
     progressPath: "/tmp/progress.jsonl",
-    progressSnapshotPath: "/tmp/progress.json",
   })),
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
@@ -48,6 +48,8 @@ vi.mock("@piano/orchestrator", () => ({
   setWorkflowSelection: vi.fn(() => Effect.void),
   builtinWorkflowSelection: (name: string) => `builtin:${name}`,
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
 }));
 
 import { runTui } from "../../packages/cli/src/tui.js";
@@ -56,20 +58,14 @@ import { runSession } from "../../packages/cli/src/session-run.js";
 const TARGET = "20260901T070228-target";
 
 async function seedRun(runsRoot: string, runId: string): Promise<void> {
-  await mkdir(join(runsRoot, runId), { recursive: true });
-  await writeFile(
-    join(runsRoot, runId, "trajectory.json"),
-    `${JSON.stringify({
-      version: 1,
-      runId,
-      updatedAt: "2026-09-01T07:02:28.000Z",
-      status: "completed",
-      promptLength: 5,
-      events: [],
-      turns: [{ prompt: "hello", status: "completed", eventCount: 0 }],
-    })}\n`,
-    "utf8",
-  );
+  await writeTrajectoryRun(join(runsRoot, runId), {
+    version: 1,
+    runId,
+    status: "completed",
+    promptLength: 5,
+    events: [],
+    turns: [{ prompt: "hello", status: "completed", eventCount: 0 }],
+  });
 }
 
 describe("no empty run is stranded without a prompt", () => {

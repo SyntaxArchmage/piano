@@ -12,7 +12,6 @@ import { TRACE, type Logging, type Source } from "@piano/logging";
 import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import {
-  executionDirectory,
   runtimeInstanceId,
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
@@ -44,6 +43,12 @@ export interface WorkflowWorkspaceRecord {
   readonly strategy: WorkflowWorkspaceStrategy;
   readonly status: WorkflowWorkspaceStatus;
   readonly phase: WorkflowWorkspacePhase;
+  /** How this incarnation of the slot came to exist. `fresh` is a snapshot of
+   * the source at allocation time; `recreated-after-sweep` means an explicit
+   * continue re-created a slot whose record was already swept, so its baseline
+   * must not be treated as a pristine source snapshot. Older records predate
+   * the field. */
+  readonly allocation?: "fresh" | "rebound" | "recreated-after-sweep";
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly finalizedAt?: string;
@@ -244,18 +249,18 @@ function pathFromRecord(value: unknown): value is Record<string, unknown> {
 
 function workspacePath(
   runDir: string,
-  executionId: string,
+  runId: string,
   key: string,
 ): string {
-  return join(executionDirectory(runDir, executionId), "workspaces", "slots", encodeURIComponent(key));
+  return join(runDir, "workspaces", "slots", encodeURIComponent(key));
 }
 
 function workspaceRecordPath(
   runDir: string,
-  executionId: string,
+  runId: string,
   key: string,
 ): string {
-  return join(executionDirectory(runDir, executionId), "workspace-records", encodeURIComponent(key), "record.json");
+  return join(runDir, "workspace-records", encodeURIComponent(key), "record.json");
 }
 
 function bindingFromRecord(record: WorkflowWorkspaceRecord, recordPath: string): WorkflowWorkspaceBinding {
@@ -458,7 +463,12 @@ async function makeStagingDirectory(source: string): Promise<string> {
   }
 }
 
-function mapSlotKey(frames: readonly WorkflowRuntimeFrame[]): string {
+/** The map lane's workspace key. The job ordinal is part of the slot's
+ * identity, not decoration: every job re-enters the same loop frames from
+ * iteration zero, so a key without it collides with the previous job's
+ * cleaned tombstone — or silently rebinds a leftover directory — the moment a
+ * second prompt or a continue re-allocates the same slot. */
+function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[]): string {
   if (!frames.some((frame) => frame.kind === "map")) {
     throw new WorkflowError({
       phase: "schedule",
@@ -474,23 +484,25 @@ function mapSlotKey(frames: readonly WorkflowRuntimeFrame[]): string {
       message: "map workspace allocation has no runtime instance id",
     });
   }
-  return instanceId;
+  return `job-${jobOrdinal}/${instanceId}`;
 }
 
 function mapWorkspacePath(
   runDir: string,
-  executionId: string,
+  runId: string,
+  jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
 ): string {
-  return workspacePath(runDir, executionId, mapSlotKey(frames));
+  return workspacePath(runDir, runId, mapSlotKey(jobOrdinal, frames));
 }
 
 function mapWorkspaceRecordPath(
   runDir: string,
-  executionId: string,
+  runId: string,
+  jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
 ): string {
-  return workspaceRecordPath(runDir, executionId, mapSlotKey(frames));
+  return workspaceRecordPath(runDir, runId, mapSlotKey(jobOrdinal, frames));
 }
 
 async function inspectGitSource(
@@ -633,9 +645,11 @@ export function sharedWorkspaceBinding(cwd: string): WorkflowWorkspaceBinding {
  * unsaved source changes remain available to the plugin. */
 export function allocateMapWorkspace(
   runDir: string,
-  executionId: string,
+  runId: string,
+  jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
   sourceCwd: string,
+  options: { readonly recreateWhenSwept?: boolean } = {},
 ): Effect.Effect<WorkflowWorkspaceBinding, WorkflowError, FileSystem.FileSystem | Logging> {
   return TRACE(WORKSPACE_SOURCE, Effect.tryPromise({
     try: async () => {
@@ -643,7 +657,7 @@ export function allocateMapWorkspace(
       const source = sourceIdentity.canonical;
       const runRoot = await canonicalRunRoot(runDir, true);
       const run = runRoot.canonical;
-      const workspaceRoot = join(executionDirectory(run, executionId), "workspaces");
+      const workspaceRoot = join(run, "workspaces");
       if (pathWithin(run, source) && !pathWithin(workspaceRoot, source)) {
         throw workflowError(
           "schedule",
@@ -655,19 +669,24 @@ export function allocateMapWorkspace(
       if (!sourceInfo.isDirectory()) {
         throw workflowError("schedule", source, "workspace source must be a directory");
       }
-      const key = mapSlotKey(frames);
-      const cwd = mapWorkspacePath(run, executionId, frames);
+      const key = mapSlotKey(jobOrdinal, frames);
+      const cwd = mapWorkspacePath(run, runId, jobOrdinal, frames);
       if (!pathWithin(source, run) && pathWithin(source, cwd)) {
         throw workflowError("schedule", cwd, `workspace for map slot "${key}" cannot be nested inside its source`);
       }
-      const recordPath = mapWorkspaceRecordPath(run, executionId, frames);
+      const recordPath = mapWorkspaceRecordPath(run, runId, jobOrdinal, frames);
       await assertCanonicalRunRoot(runRoot);
       await assertSafeWorkspacePathAncestors(run, dirname(recordPath));
       const existing = await readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
-      if (existing !== undefined) {
-        if (existing.status === "cleaned") {
+      const recreatedAfterSweep = existing !== undefined && existing.status === "cleaned";
+      if (recreatedAfterSweep) {
+        // A swept slot inside the SAME job: only an explicit continue intent
+        // may recreate it at the same path — re-entering the same job without
+        // that intent is a bug and must stay loud.
+        if (options.recreateWhenSwept !== true) {
           throw workflowError("schedule", recordPath, `workspace slot "${key}" was already cleaned`);
         }
+      } else if (existing !== undefined) {
         try {
           await assertSafeWorkspaceDirectory(workspaceRoot, existing.cwd);
         } catch (error) {
@@ -752,6 +771,7 @@ export function allocateMapWorkspace(
         strategy,
         status: "active",
         phase: "allocated",
+        allocation: recreatedAfterSweep ? "recreated-after-sweep" : "fresh",
         createdAt: now,
         updatedAt: now,
         ...(gitRoot === undefined ? {} : { gitRoot }),
@@ -777,7 +797,7 @@ export function allocateMapWorkspace(
       : workflowError("schedule", sourceCwd, errorMessage(cause)),
   }), {
     runDir,
-    executionId,
+    runId,
     sourceCwd: resolve(sourceCwd),
     instanceId: runtimeInstanceId(frames),
   }).pipe(Effect.mapError((cause) => cause instanceof WorkflowError
@@ -791,27 +811,31 @@ export interface WorkflowWorkspaceCleanupOptions {
   /** Limit finalization to these exact run-owned workspace keys. Omitted
    * retains the legacy execution-wide cleanup behaviour. */
   readonly keys?: readonly string[];
+  /** Limit finalization to run-owned keys with this prefix (e.g. `job-2/`).
+   * The run-end backstop passes the current job's prefix so one job's
+   * completion never sweeps a paused job's preserved slots — those exist
+   * precisely so a continue can rebind them. */
+  readonly keyPrefix?: string;
   /** Preserve slot directories and mark them reusable for recovery. */
   readonly preserve?: boolean;
 }
 
 async function readWorkspaceRecords(
   runRoot: CanonicalRunRoot,
-  executionId: string,
+  runId: string,
   sourceCwd?: string,
   keys?: readonly string[],
 ): Promise<readonly { readonly path: string; readonly record: WorkflowWorkspaceRecord }[]> {
   await assertCanonicalRunRoot(runRoot);
   const run = runRoot.canonical;
-  const execution = executionDirectory(run, executionId);
-  const recordsRoot = join(execution, "workspace-records");
+  const recordsRoot = join(run, "workspace-records");
   try {
     await lstat(recordsRoot);
   } catch (error) {
     if (isMissingPathError(error)) return [];
     throw error;
   }
-  await assertSafeWorkspaceDirectory(execution, recordsRoot);
+  await assertSafeWorkspaceDirectory(run, recordsRoot);
   let entries;
   try {
     entries = await readdir(recordsRoot, { withFileTypes: true });
@@ -835,9 +859,9 @@ async function readWorkspaceRecords(
     }
     if (selectedKeys !== undefined && !selectedKeys.has(key)) continue;
     await assertCanonicalRunRoot(runRoot);
-    await assertSafeWorkspaceDirectory(execution, join(recordsRoot, entry.name));
+    await assertSafeWorkspaceDirectory(run, join(recordsRoot, entry.name));
     const recordPath = join(recordsRoot, entry.name, "record.json");
-    const expectedCwd = workspacePath(run, executionId, key);
+    const expectedCwd = workspacePath(run, runId, key);
     const record = await readWorkspaceRecord(recordPath, {
       key,
       cwd: expectedCwd,
@@ -845,7 +869,7 @@ async function readWorkspaceRecords(
     if (record === undefined) {
       throw workflowError("schedule", recordPath, "workspace record is missing");
     }
-    if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(execution, resolve(record.cwd))) {
+    if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(run, resolve(record.cwd))) {
       throw workflowError("schedule", recordPath, "workspace record points outside its execution directory");
     }
     records.push({ path: recordPath, record });
@@ -915,14 +939,13 @@ async function removeWorkspaceDirectory(
  * directory so a recovery action cannot sweep another run. */
 export function recoverMapWorkspaces(
   runDir: string,
-  executionId: string,
+  runId: string,
   sourceCwd?: string,
 ): Effect.Effect<readonly WorkflowWorkspaceBinding[], WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const execution = executionDirectory(runRoot.canonical, executionId);
-      const records = await readWorkspaceRecords(runRoot, executionId, sourceCwd);
+      const records = await readWorkspaceRecords(runRoot, runId, sourceCwd);
       const bindings: WorkflowWorkspaceBinding[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") continue;
@@ -934,7 +957,7 @@ export function recoverMapWorkspaces(
         }
         await assertCanonicalRunRoot(runRoot);
         try {
-          await assertRunOwnedWorkspaceDirectory(execution, record.cwd, record.slotIdentity);
+          await assertRunOwnedWorkspaceDirectory(runRoot.canonical, record.cwd, record.slotIdentity);
         } catch (error) {
           if (isMissingPathError(error)) {
             throw workflowError("schedule", path, `recoverable workspace is missing at ${record.cwd}`);
@@ -958,14 +981,17 @@ export function recoverMapWorkspaces(
  * finish an interrupted cleanup. */
 export function cleanupMapWorkspaces(
   runDir: string,
-  executionId: string,
+  runId: string,
   options: WorkflowWorkspaceCleanupOptions = {},
 ): Effect.Effect<readonly WorkflowWorkspaceRecord[], WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.tryPromise({
     try: async () => {
       const runRoot = await canonicalRunRoot(runDir, false);
-      const records = await readWorkspaceRecords(runRoot, executionId, options.sourceCwd, options.keys);
-      const executionRoot = executionDirectory(runRoot.canonical, executionId);
+      const all = await readWorkspaceRecords(runRoot, runId, options.sourceCwd, options.keys);
+      const prefix = options.keyPrefix;
+      const records = prefix === undefined
+        ? all
+        : all.filter(({ record }) => record.key.startsWith(prefix));
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") {
@@ -977,7 +1003,7 @@ export function cleanupMapWorkspaces(
           // A preserved slot is advertised as recoverable. Validate the
           // concrete directory before recording that state; metadata-only
           // preservation must never bless a substituted symlink or node.
-          await assertRunOwnedWorkspaceDirectory(executionRoot, record.cwd, record.slotIdentity);
+          await assertRunOwnedWorkspaceDirectory(runRoot.canonical, record.cwd, record.slotIdentity);
           if (record.strategy === "git-worktree") {
             if (record.gitRoot === undefined) {
               throw workflowError("schedule", path, "git workspace record has no repository root");
@@ -997,7 +1023,7 @@ export function cleanupMapWorkspaces(
         }
         const cleaning: WorkflowWorkspaceRecord = { ...record, phase: "cleaning", updatedAt: now };
         await writeWorkspaceRecord(path, cleaning, runRoot);
-        await removeWorkspaceDirectory(cleaning, runRoot, executionRoot);
+        await removeWorkspaceDirectory(cleaning, runRoot, runRoot.canonical);
         const cleanedAt = new Date().toISOString();
         const cleaned: WorkflowWorkspaceRecord = {
           ...cleaning,
@@ -1120,13 +1146,23 @@ async function applyWorkspaceContents(
   }
 }
 
-/** Provenance of how a tournament winner was carried into the parent scope
- * (PRD §10). The engine never merges; the winning slot's own coding-agent worker
- * consolidates, and the engine records only what it verified. */
+/** Provenance of how a tournament winner was carried into the parent scope.
+ * A git-worktree slot is merged: its worktree is committed, the commit is
+ * retained under a ref, and git fast-forwards the parent — git is the delta,
+ * the record, and the verification. A directory-snapshot slot (dirty or
+ * non-Git sources) keeps the frozen-delta route, where the winning slot's own
+ * coding-agent worker consolidates and the engine records only what it
+ * verified (PRD §10). */
 export type WorkflowCarryKind =
+  | "git-merged"
   | "worker-consolidated"
   | "admitted-not-carried"
   | "carry-failed";
+
+/** Whether a carry kind means the winner's work reached the parent scope. */
+export function carryLanded(kind: WorkflowCarryKind): boolean {
+  return kind === "git-merged" || kind === "worker-consolidated";
+}
 
 export interface WorkflowCarrying {
   readonly kind: WorkflowCarryKind;
@@ -1662,6 +1698,36 @@ export async function snapshotWorkspaceContent(
   await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
 }
 
+/** Create the snapshot once, and mark it complete only after every byte
+ * landed, so a crash mid-copy leaves no reusable partial behind.
+ *
+ * A region re-enters under a continue with the same job ordinal, so it must
+ * reuse the snapshot it already froze rather than re-snapshot (which used to
+ * fail with "workspace rollback snapshot already exists"). The marker is a
+ * SIBLING of the snapshot directory: content comparisons walk the snapshot
+ * tree, and a marker inside it would register as a spurious added file. A
+ * directory without its marker can only be a copy interrupted before any
+ * stage of this region ran, so re-taking it from the current source is
+ * semantically the same snapshot, taken once. */
+export async function ensureWorkspaceSnapshot(
+  sourceContentDir: string,
+  snapshotDir: string,
+  excludeUnder: readonly string[] = [],
+): Promise<void> {
+  const markerPath = `${snapshotDir}.complete`;
+  const exists = async (path: string): Promise<boolean> =>
+    stat(path).then(() => true, (error: unknown) => {
+      if (isMissingPathError(error)) return false;
+      throw error;
+    });
+  const complete = await exists(markerPath);
+  const dirExists = await exists(snapshotDir);
+  if (complete && dirExists) return;
+  if (dirExists) await rm(snapshotDir, { recursive: true, force: true });
+  await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
+  await writeFile(markerPath, "", { encoding: "utf8", mode: 0o600 });
+}
+
 /** Compute the concrete file delta from a frozen tournament baseline. */
 export async function workspaceContentChanges(
   baselineContentDir: string,
@@ -1772,7 +1838,7 @@ export async function restoreWorkspaceChanges(
  * winner). */
 async function mergeGitWorktreeWinner(
   record: WorkflowWorkspaceRecord,
-  executionId: string,
+  runId: string,
   sourceIdentity: WorkspaceDirectoryIdentity,
 ): Promise<{ readonly commit: string; readonly changed: boolean; readonly merged: boolean; readonly reason?: string }> {
   const gitRoot = record.gitRoot;
@@ -1799,7 +1865,7 @@ async function mergeGitWorktreeWinner(
     "-m", `piano: apply winning tournament slot ${record.key}`,
   ], { encoding: "utf8" });
   const commit = (await execFileAsync("git", ["-C", record.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
-  const refName = `refs/piano/${executionId}/${record.key.replace(/[^A-Za-z0-9._/-]/g, "_")}`;
+  const refName = `refs/piano/${runId}/${record.key.replace(/[^A-Za-z0-9._/-]/g, "_")}`;
   await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git ref update");
   try {
     await execFileAsync("git", ["-C", gitRoot, "update-ref", refName, commit], { encoding: "utf8" });
@@ -1846,7 +1912,7 @@ export interface WorkflowWinnerResult {
  * `skipped` rather than destroying source state. */
 export function applyWinnerWorkspace(
   runDir: string,
-  executionId: string,
+  runId: string,
   winnerKey: string,
   sourceCwd: string,
 ): Effect.Effect<WorkflowWinnerResult, WorkflowError, FileSystem.FileSystem | Logging> {
@@ -1856,16 +1922,16 @@ export function applyWinnerWorkspace(
       const sourceIdentity = await captureWorkspaceDirectoryIdentity(sourceCwd, "workspace source");
       const source = sourceIdentity.canonical;
       const run = runRoot.canonical;
-      const records = await readWorkspaceRecords(runRoot, executionId, source);
+      const records = await readWorkspaceRecords(runRoot, runId, source);
       const selected = records.find(({ record }) => record.key === winnerKey);
       if (selected === undefined) {
-        throw workflowError("schedule", executionDirectory(run, executionId), `winner workspace "${winnerKey}" is not owned by this execution`);
+        throw workflowError("schedule", run, `winner workspace "${winnerKey}" is not owned by this execution`);
       }
       if (selected.record.status === "cleaned") {
         throw workflowError("schedule", selected.path, `winner workspace "${winnerKey}" was already cleaned`);
       }
       try {
-        await assertRunOwnedWorkspaceDirectory(executionDirectory(run, executionId), selected.record.cwd, selected.record.slotIdentity);
+        await assertRunOwnedWorkspaceDirectory(run, selected.record.cwd, selected.record.slotIdentity);
       } catch (error) {
         if (isMissingPathError(error)) {
           throw workflowError("schedule", selected.path, `winner workspace is missing at ${selected.record.cwd}`);
@@ -1881,7 +1947,7 @@ export function applyWinnerWorkspace(
       await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
       await assertCanonicalRunRoot(runRoot);
       if (applying.strategy === "git-worktree") {
-        const merged = await mergeGitWorktreeWinner(applying, executionId, sourceIdentity);
+        const merged = await mergeGitWorktreeWinner(applying, runId, sourceIdentity);
         const result: WorkflowWinnerResult = {
           key: applying.key,
           method: merged.changed === true ? "git-ff" : "git-no-changes",

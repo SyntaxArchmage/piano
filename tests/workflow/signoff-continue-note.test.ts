@@ -97,7 +97,7 @@ async function run(
       root,
       workflowPath: join(root, "workflow.yml"),
       runDir: session.runDir,
-      executionId: "signoff-note",
+      runId: "signoff-note",
       cwd: root,
       prompt: "draft the thing",
       agentRunner: (request) => Effect.promise(async () => {

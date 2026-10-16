@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { TrajectoryWriter } from "../src/trajectory.js";
+import { parseTrajectory, TrajectoryWriter } from "../src/trajectory.js";
 
 const roots: string[] = [];
 
@@ -16,7 +16,7 @@ describe("TrajectoryWriter", () => {
   it("persists a bounded, metrics-compatible trajectory for complex SDK events", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "runs", "run-1", "trajectory.json");
+    const path = join(root, "runs", "run-1", "trajectory.jsonl");
     const writer = new TrajectoryWriter("run-1", path);
     const circular: Record<string, unknown> = { count: 1n };
     circular.self = circular;
@@ -35,7 +35,7 @@ describe("TrajectoryWriter", () => {
       ],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events.map((event) => event.type)).toEqual([
@@ -53,7 +53,7 @@ describe("TrajectoryWriter", () => {
   it("persists message events when a provider getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const message: Record<string, unknown> = { role: "assistant" };
     Object.defineProperty(message, "content", {
       enumerable: true,
@@ -68,7 +68,7 @@ describe("TrajectoryWriter", () => {
       events: [{ type: "message_end", message }],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events[0]).toMatchObject({
@@ -80,7 +80,7 @@ describe("TrajectoryWriter", () => {
   it("persists a lifecycle event when its provider keys cannot be enumerated", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event = new Proxy<Record<string, unknown>>({ type: "spawn", extra: "ok" }, {
       ownKeys: () => { throw new Error("event keys unavailable"); },
     });
@@ -91,7 +91,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{ type: "spawn" }]);
@@ -100,7 +100,7 @@ describe("TrajectoryWriter", () => {
   it("persists a bounded placeholder when an event type getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {};
     Object.defineProperty(event, "type", {
       enumerable: true,
@@ -113,7 +113,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{ type: "[Value unavailable]" }]);
@@ -122,7 +122,7 @@ describe("TrajectoryWriter", () => {
   it("persists a bounded placeholder when an event proxy is revoked", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event = Proxy.revocable({ type: "spawn" }, {});
     event.revoke();
 
@@ -132,7 +132,7 @@ describe("TrajectoryWriter", () => {
       events: [event.proxy],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: unknown[];
     };
     expect(document.events).toEqual(["[Array unavailable]"]);
@@ -141,7 +141,7 @@ describe("TrajectoryWriter", () => {
   it("keeps readable extras when a workflow getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "spawn", extra: "ok" };
     Object.defineProperty(event, "workflow", {
       enumerable: true,
@@ -154,7 +154,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{ type: "spawn", extra: "ok" }]);
@@ -163,7 +163,7 @@ describe("TrajectoryWriter", () => {
   it("keeps context metadata when the system prompt path getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const context: Record<string, unknown> = {
       contextFilePaths: ["/context.md"],
       skills: ["skill"],
@@ -179,7 +179,7 @@ describe("TrajectoryWriter", () => {
       events: [{ type: "context", context }],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -194,7 +194,7 @@ describe("TrajectoryWriter", () => {
   it("keeps context metadata when the user message getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const context: Record<string, unknown> = {
       contextFilePaths: ["/context.md"],
       skills: ["skill"],
@@ -211,7 +211,7 @@ describe("TrajectoryWriter", () => {
       events: [{ type: "context", context }],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -227,7 +227,7 @@ describe("TrajectoryWriter", () => {
   it("keeps context metadata when the context-file paths getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const context: Record<string, unknown> = {
       skills: ["skill"],
       systemPromptPath: "/system.md",
@@ -244,7 +244,7 @@ describe("TrajectoryWriter", () => {
       events: [{ type: "context", context }],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -260,7 +260,7 @@ describe("TrajectoryWriter", () => {
   it("keeps context metadata when context-file paths cannot be compacted", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const context: Record<string, unknown> = {
       skills: ["skill"],
       systemPromptPath: "/system.md",
@@ -283,7 +283,7 @@ describe("TrajectoryWriter", () => {
       events: [{ type: "context", context }],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -300,7 +300,7 @@ describe("TrajectoryWriter", () => {
   it("keeps context metadata when the skills getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const context: Record<string, unknown> = {
       contextFilePaths: ["/context.md"],
       systemPromptPath: "/system.md",
@@ -317,7 +317,7 @@ describe("TrajectoryWriter", () => {
       events: [{ type: "context", context }],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -333,7 +333,7 @@ describe("TrajectoryWriter", () => {
   it("persists an empty context when the context getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "context" };
     Object.defineProperty(event, "context", {
       enumerable: true,
@@ -346,7 +346,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -358,7 +358,7 @@ describe("TrajectoryWriter", () => {
   it("persists empty usage when the usage getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "usage" };
     Object.defineProperty(event, "usage", {
       enumerable: true,
@@ -371,7 +371,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -383,7 +383,7 @@ describe("TrajectoryWriter", () => {
   it("persists empty agent messages when the messages getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "agent_end" };
     Object.defineProperty(event, "messages", {
       enumerable: true,
@@ -396,7 +396,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -409,7 +409,7 @@ describe("TrajectoryWriter", () => {
   it("persists empty agent messages when the message array cannot be compacted", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "agent_end", willRetry: true };
     const messages = new Proxy([{ role: "assistant" }], {
       get: (target, property, receiver) => {
@@ -428,7 +428,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -441,7 +441,7 @@ describe("TrajectoryWriter", () => {
   it("keeps agent messages when the will-retry getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "agent_end",
       messages: [{ role: "assistant" }],
@@ -457,7 +457,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -470,7 +470,7 @@ describe("TrajectoryWriter", () => {
   it("keeps message-end extras when the message getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "message_end", extra: "ok" };
     Object.defineProperty(event, "message", {
       enumerable: true,
@@ -483,7 +483,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -496,7 +496,7 @@ describe("TrajectoryWriter", () => {
   it("keeps turn-end tool results when the message getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "turn_end", toolResults: [] };
     Object.defineProperty(event, "message", {
       enumerable: true,
@@ -509,7 +509,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -522,7 +522,7 @@ describe("TrajectoryWriter", () => {
   it("keeps turn-end records when the tool-results getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = { type: "turn_end", message: {} };
     Object.defineProperty(event, "toolResults", {
       enumerable: true,
@@ -535,7 +535,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -548,7 +548,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-start metadata when the args getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_start",
       toolCallId: "call-1",
@@ -565,7 +565,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -579,7 +579,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-start metadata when the call-id getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_start",
       toolName: "bash",
@@ -596,7 +596,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -610,7 +610,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-start metadata when the tool-name getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_start",
       toolCallId: "call-1",
@@ -627,7 +627,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -641,7 +641,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-end metadata when the result getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_end",
       toolCallId: "call-1",
@@ -659,7 +659,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -674,7 +674,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-end records when the call-id getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_end",
       toolName: "bash",
@@ -692,7 +692,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -707,7 +707,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-end records when the tool-name getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_end",
       toolCallId: "call-1",
@@ -725,7 +725,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -740,7 +740,7 @@ describe("TrajectoryWriter", () => {
   it("keeps tool-end records when the error flag getter throws", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "trajectory.json");
+    const path = join(root, "trajectory.jsonl");
     const event: Record<string, unknown> = {
       type: "tool_execution_end",
       toolCallId: "call-1",
@@ -758,7 +758,7 @@ describe("TrajectoryWriter", () => {
       events: [event],
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
-    const document = JSON.parse(await readFile(path, "utf8")) as {
+    const document = parseTrajectory(await readFile(path, "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toEqual([{
@@ -773,7 +773,7 @@ describe("TrajectoryWriter", () => {
   it("appends compact events across stage completions", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const writer = new TrajectoryWriter("run-2", join(root, "trajectory.json"));
+    const writer = new TrajectoryWriter("run-2", join(root, "trajectory.jsonl"));
 
     const write = (events: readonly unknown[]) => writer.write({
       status: "completed",
@@ -783,7 +783,7 @@ describe("TrajectoryWriter", () => {
     await Effect.runPromise(write([{ type: "message_end", message: { role: "assistant", content: "one" } }]));
     await Effect.runPromise(write([{ type: "usage", usage: { totalTokens: 7 } }]));
 
-    const document = JSON.parse(await readFile(join(root, "trajectory.json"), "utf8")) as {
+    const document = parseTrajectory(await readFile(join(root, "trajectory.jsonl"), "utf8")) as unknown as {
       events: Array<Record<string, unknown>>;
     };
     expect(document.events).toHaveLength(2);
@@ -794,7 +794,7 @@ describe("TrajectoryWriter", () => {
   it("retains one latest cumulative usage snapshot per workflow invocation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const writer = new TrajectoryWriter("run-3", join(root, "trajectory.json"));
+    const writer = new TrajectoryWriter("run-3", join(root, "trajectory.jsonl"));
     const usage = (totalTokens: number) => ({
       type: "usage",
       workflow: { invocationId: "stage@root" },
@@ -809,7 +809,7 @@ describe("TrajectoryWriter", () => {
     await Effect.runPromise(write([usage(1), usage(2)]));
     await Effect.runPromise(write([usage(3)]));
 
-    const document = JSON.parse(await readFile(join(root, "trajectory.json"), "utf8")) as {
+    const document = parseTrajectory(await readFile(join(root, "trajectory.jsonl"), "utf8")) as unknown as {
       events: Array<{ type?: string; usage?: { totalTokens?: number } }>;
     };
     expect(document.events.filter((event) => event.type === "usage")).toHaveLength(1);

@@ -38,11 +38,15 @@ const abortedDshOnlyModels = new Set([
   "claude-haiku-4-5-20251001",
   "claude-sonnet-5",
   "deepseek-flash",
+  "mimo-v2.6-pro",
 ]);
-/** The hand-picked coding-team cell: it names its workflow and model directly
- * instead of joining a generated sweep, so the sweep-membership rules below do
- * not constrain it. */
-const handPickedWorkflow = "../../../recipes/workflows/team-claude.yml";
+/** The hand-picked coding-team cells: each names its workflow and model
+ * directly instead of joining a generated sweep, so the sweep-membership rules
+ * below do not constrain them. */
+const handPickedWorkflows = new Set([
+  "../../../recipes/workflows/team-claude.yml",
+  "../../../recipes/workflows/team-claude-mimo.yml",
+]);
 describe("develop eval cases", () => {
   it("keeps every generated case self-describing and uniquely addressable", async () => {
     const cases = await Effect.runPromise(
@@ -57,7 +61,7 @@ describe("develop eval cases", () => {
       expect(kase.dimensions).toBeDefined();
       expect(kase.id).toBe(`${kase.dimensions!.task}-${kase.dimensions!.harness}-${kase.dimensions!.model}-${kase.dimensions!.effort}`);
       expect(["medium", "max"]).toContain(kase.dimensions!.effort);
-      if (kase.dimensions!.harness !== "pi" && kase.workflow !== handPickedWorkflow) {
+      if (kase.dimensions!.harness !== "pi" && !handPickedWorkflows.has(kase.workflow ?? "")) {
         const onAbortTask = kase.dimensions!.task === "aborted-subprocess-settlement";
         const model = kase.dimensions!.model;
         expect(
@@ -88,6 +92,23 @@ describe("develop eval cases", () => {
         task: "coding-team-questions",
         harness: "claude",
         model: "deepseek-flash",
+        effort: "max",
+      },
+    });
+  });
+
+  it("pairs each deepseek-flash coding-team lane model with a mimo-v2.6-pro sibling", async () => {
+    const cases = await Effect.runPromise(
+      loadCases(DEFAULT_EVALS_ROOT, { group: "develop" }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    const mimoCase = cases.find((kase) => kase.id === "coding-team-questions-claude-mimo-v2.6-pro-max");
+    expect(mimoCase).toMatchObject({
+      prompt: expect.stringContaining("discuss primitive"),
+      workflow: "../../../recipes/workflows/team-claude-mimo.yml",
+      dimensions: {
+        task: "coding-team-questions",
+        harness: "claude",
+        model: "mimo-v2.6-pro",
         effort: "max",
       },
     });
@@ -142,7 +163,7 @@ describe("develop eval cases", () => {
     );
     for (const model of abortedDshOnlyModels) {
       const swept = cases.filter((kase) =>
-        kase.dimensions!.model === model && kase.workflow !== handPickedWorkflow);
+        kase.dimensions!.model === model && !handPickedWorkflows.has(kase.workflow ?? ""));
       // Exactly the abort task's two dsh arms: no pi arm, and no other swept
       // task, so adding a model here cannot widen the rest of the matrix. A
       // hand-picked cell may still select the same id for normal use.

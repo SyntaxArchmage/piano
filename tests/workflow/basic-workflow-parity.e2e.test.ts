@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { parseTrajectory } from "@piano/logging";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn as spawnProcess } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
@@ -20,11 +21,12 @@ async function headlessFailureEvidence(home: string): Promise<string> {
     const evidence = await Promise.all(ids.map(async (id) => {
       const runDir = join(runsRoot, id);
       try {
-        const trajectory = await readJson(join(runDir, "trajectory.json"));
-        const errors = Array.isArray(trajectory.events)
-          ? trajectory.events.filter((event) => typeof event === "object" && event !== null && (event as { type?: unknown }).type === "error").slice(-3)
+        const trajectory = parseTrajectory(await readFile(join(runDir, "trajectory.jsonl"), "utf8")) as Record<string, unknown> | undefined;
+        const events = trajectory?.events;
+        const errors = Array.isArray(events)
+          ? events.filter((event) => typeof event === "object" && event !== null && (event as { type?: unknown }).type === "error").slice(-3)
           : [];
-        return `${id}: ${JSON.stringify({ status: trajectory.status, error: trajectory.error, errors })}`;
+        return `${id}: ${JSON.stringify({ status: trajectory?.status, error: trajectory?.error, errors })}`;
       } catch {
         return `${id}: trajectory unavailable`;
       }
@@ -178,7 +180,7 @@ async function runTui(workspace: string, home: string, prompt: string, before: R
         try {
           const ids = (await readdir(runs)).filter((id) => !before.has(id));
           if (ids.length === 1) {
-            const trajectory = JSON.parse(await readFile(join(runs, ids[0] ?? "", "trajectory.json"), "utf8")) as { status?: string };
+            const trajectory = (parseTrajectory(await readFile(join(runs, ids[0] ?? "", "trajectory.jsonl"), "utf8")) ?? {}) as { status?: string };
             if (trajectory.status === "completed") {
               finished = true;
               child.stdin.write("/exit\r");
@@ -240,8 +242,8 @@ async function evidence(home: string, before: ReadonlySet<string>): Promise<RunE
   const ids = (await readdir(runs)).filter((id) => !before.has(id));
   expect(ids).toHaveLength(1);
   const runDir = join(runs, ids[0] ?? "");
-  const trajectoryPath = join(runDir, "trajectory.json");
-  const trajectory = JSON.parse(await readFile(trajectoryPath, "utf8")) as {
+  const trajectoryPath = join(runDir, "trajectory.jsonl");
+  const trajectory = (parseTrajectory(await readFile(trajectoryPath, "utf8")) ?? {}) as {
     status?: string;
     transcriptPath?: string;
     events?: Array<{ type?: string; toolName?: string; usage?: { totalTokens?: number } }>;

@@ -21,7 +21,7 @@ function run<A, E>(effect: Effect.Effect<A, E, import("@effect/platform").FileSy
 const context: TrajectoryRecordContext = {
   version: 1,
   timestamp: "2026-09-02T00:00:00.000Z",
-  executionId: "eval-run",
+  runId: "eval-run",
   invocationId: "measure@loop/iter-0",
   stageId: "loop.measure",
   stage: "measure",
@@ -123,7 +123,7 @@ describe("WorkflowEvaluator", () => {
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.observe({
       type: "selection",
-      executionId: "eval-run",
+      runId: "eval-run",
       timestamp: "2026-09-02T00:00:00.000Z",
       referee: { name: "throughput", unit: "items/s", direction: "higher" },
       outcome: "carried",
@@ -132,7 +132,7 @@ describe("WorkflowEvaluator", () => {
     }));
     await run(trajectory.observe({
       type: "selection",
-      executionId: "eval-run",
+      runId: "eval-run",
       timestamp: "2026-09-02T00:01:00.000Z",
       outcome: "no-winner",
     }));
@@ -146,11 +146,16 @@ describe("WorkflowEvaluator", () => {
   it("isolates historical payload knowledge in the legacy adapter", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-legacy-"));
     roots.push(runDir);
-    await writeFile(join(runDir, "trajectory.json"), JSON.stringify({ events: [
-      { type: "usage", usage: { input: 8, output: 2, totalTokens: 10 } },
-      { type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: {} },
-      { type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: "bad", isError: true },
-    ] }));
+    await writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({
+      version: 1,
+      runId: "legacy-run",
+      timestamp: "2026-09-02T00:00:00.000Z",
+      events: [
+        { type: "usage", usage: { input: 8, output: 2, totalTokens: 10 } },
+        { type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: {} },
+        { type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: "bad", isError: true },
+      ],
+    })}\n`);
     await writeFile(join(runDir, "progress.jsonl"), `${JSON.stringify({
       iteration: 2,
       invocationId: "measure@loop/iter-2",
@@ -314,12 +319,17 @@ describe("WorkflowEvaluator", () => {
   it("keeps valid legacy evidence while reporting malformed progress and trajectory entries", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-legacy-malformed-"));
     roots.push(runDir);
-    await writeFile(join(runDir, "trajectory.json"), JSON.stringify({ events: [
-      { type: "usage", usage: { input: 8, output: 2, totalTokens: 10 } },
-      null,
-      { type: 42 },
-      { type: "message_end" },
-    ] }));
+    await writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({
+      version: 1,
+      runId: "legacy-run",
+      timestamp: "2026-09-02T00:00:00.000Z",
+      events: [
+        { type: "usage", usage: { input: 8, output: 2, totalTokens: 10 } },
+        null,
+        { type: 42 },
+        { type: "message_end" },
+      ],
+    })}\n`);
     await writeFile(join(runDir, "progress.jsonl"), [
       JSON.stringify({
         iteration: 1,
@@ -342,9 +352,9 @@ describe("WorkflowEvaluator", () => {
     expect(result.tokens).toMatchObject({ input: 8, output: 2, total: 10 });
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.stringContaining("progress.jsonl line 2 is not JSON"),
-      "trajectory.json event 2 is not an object",
-      "trajectory.json event 3 must have a string type",
-      "trajectory.json event 4 message_end has no object message",
+      "trajectory.jsonl event 2 is not an object",
+      "trajectory.jsonl event 3 must have a string type",
+      "trajectory.jsonl event 4 message_end has no object message",
     ]));
   });
 

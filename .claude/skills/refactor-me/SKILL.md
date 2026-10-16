@@ -30,7 +30,7 @@ Everything you write for him reads the way you would talk to him, not the way yo
 - 成本: 重复 + 改动放大 — 「临时文件 + rename + 错误映射」各自实现多遍，改错误语义要改多处
 - 位置: `packages/orchestrator/src/handoff.ts:68` · `progress.ts:212` · `workspace.ts:351` · `resume-state.ts:33`
 - 手法: Extract Function + Move Function（新模块 `src/atomic-json.ts`）
-- 行为面: `progress.json` 与 handoff 记录字节不变（`JSON.stringify(…, null, 2)` + 尾随换行）；`resume-state.ts` 的 `${path}.${pid}.tmp` 命名保留
+- 行为面: handoff 记录字节不变（`JSON.stringify(…, null, 2)` + 尾随换行）；`status.json` 是唯一的状态文档，由 `writeRunStatus` 原子重写
 - 测试: `tests/workflow/progress.test.ts` · `workspace.test.ts` · `resume-state.test.ts` — 已覆盖
 - 步骤: 1) 新建 `atomic-json.ts`，原样搬运 handoff 的写入函数 2) 逐处替换，每处跑对应测试 3) 删除旧私有副本
 - 风险: 低 — 每一步有对应测试；不碰 `progress.jsonl` 的追加写

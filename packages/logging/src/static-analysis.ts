@@ -1,13 +1,15 @@
 import { FileSystem } from "@effect/platform";
 import { Data, Effect } from "effect";
+import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
+import { parseTrajectory } from "./trajectory.js";
 
 export type StaticObservabilityFileName =
   | "log"
   | "trace"
   | "trajectory"
   | "progress"
-  | "progress-snapshot";
+  | "status";
 
 export type StaticObservabilityIssueCode =
   | "missing-file"
@@ -24,7 +26,11 @@ export type StaticObservabilityIssueCode =
   | "trace-span-open"
   | "log-span-missing"
   | "transcript-missing"
-  | "transcript-invalid";
+  | "transcript-invalid"
+  | "ref-missing"
+  | "ref-mismatch"
+  | "undeclared-field"
+  | "view-stale";
 
 export interface StaticObservabilityIssue {
   readonly code: StaticObservabilityIssueCode;
@@ -47,6 +53,8 @@ export interface StaticObservabilityReport {
   readonly valid: boolean;
   readonly files: readonly StaticObservabilityFile[];
   readonly transcriptPaths: readonly string[];
+  /** Handoff records the stream's acceptances point at, resolved. */
+  readonly handoffRecordPaths: readonly string[];
   readonly logRecordCount: number;
   readonly traceRecordCount: number;
   readonly progressRecordCount: number;
@@ -59,10 +67,27 @@ export interface StaticObservabilityInput {
   readonly log?: string;
   readonly trace?: string;
   readonly trajectory?: string;
+  /** The append-only stream the trajectory document is folded from. Either form
+   * is enough to describe a run, and the analysis reads whichever is there. */
+  readonly trajectoryStream?: string;
   readonly progress?: string;
-  readonly progressSnapshot?: string;
+  /** Declared top-level fields per progress record kind, keyed the way the
+   * stream spells kinds (`"stage-accepted"` for the kind-less line). The
+   * writer owns this table — it lives beside the record types in the
+   * orchestrator and is handed in, because this package must not import it.
+   * Absent table, absent check: the analyzer stays usable without it. */
+  readonly declaredProgressFields?: Readonly<Record<string, readonly string[]>>;
+  /** The run's state document (`status.json`): the one view of how a run is
+   * doing, folded from the ledgers beside it. */
+  readonly status?: string;
   /** Keys are resolved transcript paths. Missing keys represent missing files. */
   readonly transcripts?: Readonly<Record<string, string | undefined>>;
+  /** Keys are resolved handoff record paths (`producer.result` lives in these).
+   * Missing keys represent missing files. */
+  readonly handoffRecords?: Readonly<Record<string, string | undefined>>;
+  /** Keys are resolved result-file paths a handoff record pins by content.
+   * Missing keys represent missing files. */
+  readonly results?: Readonly<Record<string, string | undefined>>;
 }
 
 export class StaticObservabilityReadError extends Data.TaggedError("StaticObservabilityReadError")<{
@@ -211,6 +236,100 @@ function collectTranscriptPaths(
     }
     collectTranscriptPaths(item, runDir, paths, nextAncestors);
   }
+}
+
+/** The handoff record each acceptance points at, resolved the same way a
+ * transcript path is. The record is what pins the published result file, so it
+ * is the reference this analysis follows. */
+function collectHandoffRecordPaths(
+  value: unknown,
+  runDir: string,
+  paths: Set<string>,
+  ancestors: readonly object[] = [],
+): void {
+  if (value === null || typeof value !== "object") return;
+  if (ancestors.includes(value)) return;
+  const nextAncestors = [...ancestors, value];
+  if (Array.isArray(value)) {
+    for (const item of value) collectHandoffRecordPaths(item, runDir, paths, nextAncestors);
+    return;
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "handoffRecordPath" && typeof item === "string" && item !== "") {
+      paths.add(resolve(runDir, item));
+      continue;
+    }
+    collectHandoffRecordPaths(item, runDir, paths, nextAncestors);
+  }
+}
+
+/** A handoff record is the producer's canonical evidence, and it pins the
+ * published result file it vouches for by content. Check that both are still
+ * there and that the pin still holds. A record without that pin — written
+ * before the result was pinned, or by a writer that does not pin — is not a
+ * reference and its record is left alone once it is found. */
+function validateHandoffReferences(
+  handoffRecordPaths: ReadonlySet<string>,
+  handoffRecords: Readonly<Record<string, string | undefined>>,
+  results: Readonly<Record<string, string | undefined>>,
+  runDir: string,
+  issues: StaticObservabilityIssue[],
+): void {
+  for (const path of handoffRecordPaths) {
+    const raw = handoffRecords[path];
+    // A progress row that names a record nothing wrote is as incomplete as a
+    // record whose pinned result is gone: the run's evidence has a hole.
+    if (raw === undefined) {
+      issue(issues, "ref-missing", path, "referenced handoff record does not exist");
+      continue;
+    }
+    const document = parseJson(path, raw, issues);
+    if (document === undefined) continue;
+    const producer = document.producer;
+    if (!isRecord(producer)) continue;
+    const result = producer.result;
+    if (!isRecord(result)) continue;
+    const pinnedPath = result.path;
+    const pinnedDigest = result.sha256;
+    if (!isNonEmptyString(pinnedPath) || !isNonEmptyString(pinnedDigest)) continue;
+    const resolved = resolve(runDir, pinnedPath);
+    const content = results[resolved];
+    if (content === undefined) {
+      issue(issues, "ref-missing", path, `referenced result ${resolved} does not exist`);
+      continue;
+    }
+    const actual = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+    if (actual !== pinnedDigest) {
+      issue(
+        issues,
+        "ref-mismatch",
+        path,
+        `referenced result ${resolved} hashes to ${actual}, record pinned ${pinnedDigest}`,
+      );
+    }
+  }
+}
+
+/** The published result files a set of handoff records pin. Read before the
+ * analysis so their contents can be checked against the pin. */
+function collectResultPaths(
+  handoffRecords: Readonly<Record<string, string | undefined>>,
+  runDir: string,
+): readonly string[] {
+  const paths = new Set<string>();
+  for (const raw of Object.values(handoffRecords)) {
+    if (raw === undefined) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      continue;
+    }
+    if (!isRecord(value) || !isRecord(value.producer) || !isRecord(value.producer.result)) continue;
+    const pinnedPath = value.producer.result.path;
+    if (isNonEmptyString(pinnedPath)) paths.add(resolve(runDir, pinnedPath));
+  }
+  return [...paths].sort();
 }
 
 function validateLogRecords(
@@ -382,9 +501,9 @@ function validateProgressRecords(
   path: string,
   issues: StaticObservabilityIssue[],
 ): void {
-  const executionIds = new Set<string>();
+  const runIds = new Set<string>();
+  // Below the kind split: an accepted stage and nothing else carries these.
   const requiredStrings = [
-    "executionId",
     "invocationId",
     "stageId",
     "stage",
@@ -394,59 +513,119 @@ function validateProgressRecords(
     "handoffRecordPath",
   ] as const;
   for (const { value: record, line } of records) {
+    // Every record kind carries these.
     const malformedFields: string[] = [];
     if (record.version !== 1) malformedFields.push("version");
     if (!isTimestamp(record.timestamp)) malformedFields.push("timestamp");
-    for (const field of requiredStrings) {
-      if (!isNonEmptyString(record[field])) malformedFields.push(field);
-    }
-    if (!isSafePositiveInteger(record.attempt)) malformedFields.push("attempt");
-    if (!isRecord(record.workspace)) malformedFields.push("workspace");
-    if (record.iteration !== undefined && !isSafeNonNegativeInteger(record.iteration)) malformedFields.push("iteration");
-    for (const field of ["instanceId", "resultPath", "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel"] as const) {
-      if (record[field] !== undefined && !isNonEmptyString(record[field])) malformedFields.push(field);
+    if (!isNonEmptyString(record.runId)) malformedFields.push("runId");
+    // A line that names its kind is one of the records the stream carries for
+    // a start, an end or a job close, and it holds none of the fields below.
+    // A line without one is an accepted stage — which is what every line was
+    // before the kinds existed. `progressRecordKind` owns that rule; this
+    // module only needs its consequence.
+    if (typeof record.kind !== "string") {
+      for (const field of requiredStrings) {
+        if (!isNonEmptyString(record[field])) malformedFields.push(field);
+      }
+      if (!isSafePositiveInteger(record.attempt)) malformedFields.push("attempt");
+      if (!isRecord(record.workspace)) malformedFields.push("workspace");
+      if (record.iteration !== undefined && !isSafeNonNegativeInteger(record.iteration)) malformedFields.push("iteration");
+      for (const field of ["instanceId", "resultPath", "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel"] as const) {
+        if (record[field] !== undefined && !isNonEmptyString(record[field])) malformedFields.push(field);
+      }
     }
     if (malformedFields.length > 0) {
       issue(issues, "invalid-record", path, `progress record has invalid field(s): ${malformedFields.join(", ")}`, line);
     }
-    if (isNonEmptyString(record.executionId)) executionIds.add(record.executionId);
+    if (isNonEmptyString(record.runId)) runIds.add(record.runId);
   }
-  if (executionIds.size > 1) {
-    issue(issues, "invalid-record", path, `progress records contain multiple execution ids: ${[...executionIds].join(", ")}`);
+  if (runIds.size > 1) {
+    issue(issues, "invalid-record", path, `progress records contain multiple execution ids: ${[...runIds].join(", ")}`);
   }
 }
 
-function validateSnapshot(
-  snapshot: JsonRecord | undefined,
+/** Writer-side half of the record contract: undeclared fields are forbidden on
+ * write (experiments belong in an `extra` envelope). A field the writer's own
+ * declared table does not know for the record's kind — a typo, or a newer
+ * writer's field this build has no meaning for — is reported, one issue per
+ * record. A record whose kind the table does not know is skipped, the same
+ * tolerance the folds apply. */
+function validateDeclaredProgressFields(
+  records: readonly ParsedJsonlRecord[],
+  declared: Readonly<Record<string, readonly string[]>>,
   path: string,
   issues: StaticObservabilityIssue[],
 ): void {
-  if (snapshot === undefined) return;
-  const validStatus = snapshot.status === "running" || snapshot.status === "completed" ||
-    snapshot.status === "failed" || snapshot.status === "paused";
-  const planned = snapshot.plannedStages;
-  const completed = snapshot.completedStages;
-  const accepted = snapshot.acceptedStages;
-  const remaining = snapshot.remainingStages;
+  for (const { value: record, line } of records) {
+    const kind = typeof record.kind === "string" ? record.kind : "stage-accepted";
+    const fields = declared[kind];
+    if (fields === undefined) continue;
+    const undeclared = Object.keys(record).filter((field) => !fields.includes(field));
+    if (undeclared.length > 0) {
+      issue(issues, "undeclared-field", path, `${kind} record carries undeclared field(s): ${undeclared.join(", ")}`, line);
+    }
+  }
+}
+
+/** status.json is the ledger's view, rewritten on every append — so a view
+ * older than the ledger, or missing while the ledger exists, is a refresh that
+ * did not complete. That is reportable, not fatal, and `--rebuild` is the fix.
+ * The comparison is the timestamps, not a re-fold: the view's own `updatedAt`
+ * is the last progress record's timestamp, so a fresh view equals it. */
+function validateStatusFreshness(
+  status: JsonRecord | undefined,
+  statusPath: string,
+  progressRecords: readonly ParsedJsonlRecord[],
+  issues: StaticObservabilityIssue[],
+): void {
+  if (progressRecords.length === 0) return;
+  const last = progressRecords[progressRecords.length - 1]?.value;
+  if (last === undefined || !isTimestamp(last.timestamp)) return;
+  if (status === undefined) {
+    issue(issues, "view-stale", statusPath, "status.json is missing while the ledger holds records; rebuild it with `piano logs --rebuild`");
+    return;
+  }
+  // A malformed updatedAt is validateStatus's finding, not this one's.
+  if (!isTimestamp(status.updatedAt)) return;
+  if (Date.parse(status.updatedAt) < Date.parse(last.timestamp)) {
+    issue(issues, "view-stale", statusPath, `status.json is older than the ledger's last record (${String(status.updatedAt)} < ${String(last.timestamp)}); rebuild it with \`piano logs --rebuild\``);
+  }
+}
+
+/** The run's state document is the one view of how a run is doing, so what it * must carry is small: who the run is, when it was last updated, how it ended,
+ * and how much of its plan is done. Its identity field is `runId` — the name
+ * the document settled on when the three diverged status files became one. */
+function validateStatus(
+  status: JsonRecord | undefined,
+  path: string,
+  issues: StaticObservabilityIssue[],
+): void {
+  if (status === undefined) return;
+  const validStatus = status.status === "running" || status.status === "completed" ||
+    status.status === "failed" || status.status === "paused" || status.status === "cancelled";
+  const planned = status.plannedStages;
+  const completed = status.completedStages;
+  const accepted = status.acceptedStages;
+  const remaining = status.remainingStages;
   const malformedFields: string[] = [];
-  if (snapshot.version !== 1) malformedFields.push("version");
-  if (!isTimestamp(snapshot.updatedAt)) malformedFields.push("updatedAt");
-  if (!isNonEmptyString(snapshot.executionId)) malformedFields.push("executionId");
+  if (status.version !== 1) malformedFields.push("version");
+  if (!isTimestamp(status.updatedAt)) malformedFields.push("updatedAt");
+  if (!isNonEmptyString(status.runId)) malformedFields.push("runId");
   if (!validStatus) malformedFields.push("status");
   if (!isSafeNonNegativeInteger(planned)) malformedFields.push("plannedStages");
   if (!isSafeNonNegativeInteger(completed)) malformedFields.push("completedStages");
   if (!isSafeNonNegativeInteger(accepted)) malformedFields.push("acceptedStages");
   if (!isSafeNonNegativeInteger(remaining)) malformedFields.push("remainingStages");
-  if (!isRecord(snapshot.stageCounts)) malformedFields.push("stageCounts");
+  if (!isRecord(status.stageCounts)) malformedFields.push("stageCounts");
   if (malformedFields.length > 0) {
-    issue(issues, "invalid-record", path, `progress snapshot has invalid field(s): ${malformedFields.join(", ")}`);
+    issue(issues, "invalid-record", path, `run status has invalid field(s): ${malformedFields.join(", ")}`);
     return;
   }
   if (!isSafeNonNegativeInteger(planned) || !isSafeNonNegativeInteger(completed) || !isSafeNonNegativeInteger(accepted) || !isSafeNonNegativeInteger(remaining)) {
     return;
   }
   if (completed > planned || accepted > planned || remaining > planned) {
-    issue(issues, "invalid-record", path, "progress snapshot stage counts exceed plannedStages");
+    issue(issues, "invalid-record", path, "run status stage counts exceed plannedStages");
   }
 }
 
@@ -498,19 +677,24 @@ export function analyzeStaticObservability(
   const issues: StaticObservabilityIssue[] = [];
   const logPath = join(runDir, "log.jsonl");
   const tracePath = join(runDir, "trace.jsonl");
-  const trajectoryPath = join(runDir, "trajectory.json");
+  const trajectoryPath = join(runDir, "trajectory.jsonl");
   const progressPath = join(runDir, "progress.jsonl");
-  const snapshotPath = join(runDir, "progress.json");
+  const statusPath = join(runDir, "status.json");
+  // A run's trajectory is recorded in two forms. The stream is the record and
+  // the document beside it is folded from it, so whichever is there describes
+  // the run — and the checks below read one document either way.
+  const foldedTrajectory = parseTrajectory(input.trajectoryStream);
+  const trajectoryText = foldedTrajectory === undefined ? input.trajectory : JSON.stringify(foldedTrajectory);
 
   addRequiredFileIssue(issues, logPath, "log", input.log);
   addRequiredFileIssue(issues, tracePath, "trace", input.trace);
-  addRequiredFileIssue(issues, trajectoryPath, "trajectory", input.trajectory);
+  addRequiredFileIssue(issues, trajectoryPath, "trajectory", trajectoryText);
 
   const logRecords = parseJsonl(logPath, input.log, issues);
   const traceRecords = parseJsonl(tracePath, input.trace, issues);
   const progressRecords = parseJsonl(progressPath, input.progress, issues);
-  const trajectory = parseJson(trajectoryPath, input.trajectory, issues);
-  const snapshot = parseJson(snapshotPath, input.progressSnapshot, issues);
+  const trajectory = parseJson(trajectoryPath, trajectoryText, issues);
+  const status = parseJson(statusPath, input.status, issues);
   if (input.log !== undefined && logRecords.length === 0 && input.log.trim() !== "") {
     issue(issues, "empty-file", logPath, "log contains no valid records");
   }
@@ -528,22 +712,32 @@ export function analyzeStaticObservability(
   }
 
   const transcriptPaths = new Set<string>();
+  const handoffRecordPaths = new Set<string>();
   if (trajectory !== undefined) {
     validateTrajectory(trajectory, runId, trajectoryPath, issues);
     collectTranscriptPaths(trajectory, runDir, transcriptPaths);
+    collectHandoffRecordPaths(trajectory, runDir, handoffRecordPaths);
   }
   validateProgressRecords(progressRecords, progressPath, issues);
-  for (const { value: record } of progressRecords) collectTranscriptPaths(record, runDir, transcriptPaths);
-  validateSnapshot(snapshot, snapshotPath, issues);
+  if (input.declaredProgressFields !== undefined) {
+    validateDeclaredProgressFields(progressRecords, input.declaredProgressFields, progressPath, issues);
+  }
+  for (const { value: record } of progressRecords) {
+    collectTranscriptPaths(record, runDir, transcriptPaths);
+    collectHandoffRecordPaths(record, runDir, handoffRecordPaths);
+  }
+  validateStatus(status, statusPath, issues);
+  validateStatusFreshness(status, statusPath, progressRecords, issues);
   const transcriptContents = input.transcripts ?? {};
   for (const path of transcriptPaths) validateTranscript(path, transcriptContents[path], issues);
+  validateHandoffReferences(handoffRecordPaths, input.handoffRecords ?? {}, input.results ?? {}, runDir, issues);
 
   const files: readonly StaticObservabilityFile[] = [
     fileSummary("log", logPath, true, input.log, logRecords.length),
     fileSummary("trace", tracePath, true, input.trace, traceRecords.length),
-    fileSummary("trajectory", trajectoryPath, true, input.trajectory, trajectory === undefined ? 0 : 1),
+    fileSummary("trajectory", trajectoryPath, true, trajectoryText, trajectory === undefined ? 0 : 1),
     fileSummary("progress", progressPath, false, input.progress, progressRecords.length),
-    fileSummary("progress-snapshot", snapshotPath, false, input.progressSnapshot, snapshot === undefined ? 0 : 1),
+    fileSummary("status", statusPath, false, input.status, status === undefined ? 0 : 1),
   ];
   return {
     runDir,
@@ -551,6 +745,7 @@ export function analyzeStaticObservability(
     valid: issues.length === 0,
     files,
     transcriptPaths: [...transcriptPaths].sort(),
+    handoffRecordPaths: [...handoffRecordPaths].sort(),
     logRecordCount: logRecords.length,
     traceRecordCount: traceRecords.length,
     progressRecordCount: progressRecords.length,
@@ -572,27 +767,40 @@ function readOptional(
 /** Read a run directory and perform the same static analysis used by tests and callers. */
 export function inspectStaticObservability(
   runDir: string,
+  declaredProgressFields?: Readonly<Record<string, readonly string[]>>,
 ): Effect.Effect<StaticObservabilityReport, StaticObservabilityReadError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const resolvedRunDir = resolve(runDir);
-    const [log, trace, trajectory, progress, progressSnapshot] = yield* Effect.all([
+    const [log, trace, trajectoryStream, progress, status] = yield* Effect.all([
       readOptional(fileSystem, join(resolvedRunDir, "log.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "trace.jsonl")),
-      readOptional(fileSystem, join(resolvedRunDir, "trajectory.json")),
+      readOptional(fileSystem, join(resolvedRunDir, "trajectory.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "progress.jsonl")),
-      readOptional(fileSystem, join(resolvedRunDir, "progress.json")),
+      readOptional(fileSystem, join(resolvedRunDir, "status.json")),
     ] as const, { concurrency: "unbounded" });
     const initial = analyzeStaticObservability({
       runDir: resolvedRunDir,
       log,
       trace,
-      trajectory,
+      trajectoryStream,
       progress,
-      progressSnapshot,
+      status,
+      ...(declaredProgressFields === undefined ? {} : { declaredProgressFields }),
     });
     const transcriptEntries = yield* Effect.forEach(
       initial.transcriptPaths,
+      (path) => readOptional(fileSystem, path).pipe(Effect.map((content) => [path, content] as const)),
+      { concurrency: "unbounded" },
+    );
+    const handoffEntries = yield* Effect.forEach(
+      initial.handoffRecordPaths,
+      (path) => readOptional(fileSystem, path).pipe(Effect.map((content) => [path, content] as const)),
+      { concurrency: "unbounded" },
+    );
+    const handoffRecords = Object.fromEntries(handoffEntries);
+    const resultEntries = yield* Effect.forEach(
+      collectResultPaths(handoffRecords, resolvedRunDir),
       (path) => readOptional(fileSystem, path).pipe(Effect.map((content) => [path, content] as const)),
       { concurrency: "unbounded" },
     );
@@ -600,10 +808,13 @@ export function inspectStaticObservability(
       runDir: resolvedRunDir,
       log,
       trace,
-      trajectory,
+      trajectoryStream,
       progress,
-      progressSnapshot,
+      status,
+      ...(declaredProgressFields === undefined ? {} : { declaredProgressFields }),
       transcripts: Object.fromEntries(transcriptEntries),
+      handoffRecords,
+      results: Object.fromEntries(resultEntries),
     });
   });
 }
@@ -614,7 +825,7 @@ export function formatStaticObservabilityReport(report: StaticObservabilityRepor
   const lines = [
     `OBSERVABILITY ${state}: ${report.runId}`,
     `run: ${report.runDir}`,
-    `records: log=${report.logRecordCount} trace=${report.traceRecordCount} progress=${report.progressRecordCount} transcripts=${report.transcriptPaths.length}`,
+    `records: log=${report.logRecordCount} trace=${report.traceRecordCount} progress=${report.progressRecordCount} transcripts=${report.transcriptPaths.length} handoffs=${report.handoffRecordPaths.length}`,
   ];
   for (const file of report.files) {
     const marker = file.present ? "present" : file.required ? "missing" : "absent (optional)";

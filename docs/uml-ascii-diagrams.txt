@@ -175,12 +175,14 @@ meout?: number  (整段墙钟上限)                 │
                        │ CompiledWorkflow  «record»              │
                        ├─────────────────────────────────────────┤
                        │ name · sourcePath · autoCommit: boolean │
-                       │ stages: CompiledStage[]  ◆              │
+                       │ nodes: WorkflowRuntimeNode[]  ◆ (树)     │
+                       │ stages: CompiledStage[]  ◆ (叶子 DAG)    │
                        │ regions: WorkflowRegionPlan[]  ◆        │
                        ├─────────────────────────────────────────┤
                        │ lower: 区域拍平为叶子 DAG (Kahn 拓扑)            │
+                       │ 同一趟递归同时发射 nodes 树（声明序）                │
                        └─────────────────────────────────────────┘
-        CompiledWorkflow ◆— stages / regions（组合）
+        CompiledWorkflow ◆— nodes 树 / stages 叶子平面 / regions 索引（同一对象的三个视图）
                                             │
                                             ▼
                      ─────────────────────────────────────────────────
@@ -191,23 +193,15 @@ meout?: number  (整段墙钟上限)                 │
        │ CompiledStage  «record»   │           │ WorkflowRegionPlan  «record»              │
        ├───────────────────────────┤           ├───────────────────────────────────────────┤
        │ id · stage: WorkflowStage │           │ id · name · kind: "loop" | "map"          │
-       │ regionPath: string[]      │           │ entry · exit · entryStageId · exitStageId │
+       │ parentId?: region id      │           │ entryStageId · exitStageId  (点号 id)     │
        │ dependsOn: string[]       │           │ from: string[] · parentId?                │
        └───────────────────────────┘           │ iterations? · feedback?   (loop)          │
                       │                        │ over? · count?           (map)            │
+                      │                        │ children: WorkflowRuntimeNode[] ◆ (递归)  │
                       │                        └───────────────────────────────────────────┘
                       │
-        scheduleWorkflow(): 排序 → ScheduledStage（order 决定执行次序）
-                      │
-                      ▼
-  ┌───────────────────┬───────────────────┐
-  │ ScheduledStage  «record»              │
-  ├───────────────────────────────────────┤
-  │ id · order: number · stage            │
-  │ dependsOn: string[] · regionPath?     │
-  ├───────────────────────────────────────┤
-  │ scheduleWorkflow() → ScheduledStage[] │
-  └───────────────────────────────────────┘
+        WorkflowRuntimeNode = CompiledStage | WorkflowRegionPlan（用 "stage" in node 区分）
+        compileWorkflow() 一趟发射 nodes 树；无第二次重建、无 order 字段、无 ScheduledStage
 
 
 

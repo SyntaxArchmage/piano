@@ -26,9 +26,13 @@ export {
 export { failureDetails, isCancellation } from "./errors.js";
 export {
   AsyncTrajectoryWriter,
+  foldTrajectoryStream,
+  parseTrajectory,
+  trajectoryStreamPath,
   type ITrajectoryWriter,
   TrajectoryWriter,
   type TrajectoryDocument,
+  type TrajectoryStreamRecord,
   type TrajectoryTurn,
   type TrajectoryWriteInput,
 } from "./trajectory.js";

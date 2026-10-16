@@ -68,7 +68,7 @@ describe("DurationRecorder attempts wiring", () => {
     return {
       version: 1,
       timestamp: "2026-09-04T00:00:00.000Z",
-      executionId: "e",
+      runId: "e",
       invocationId,
       stageId: invocationId,
       stage: "s",

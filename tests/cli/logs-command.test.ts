@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,10 +86,10 @@ describe("piano logs commands ", () => {
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 1, depth: 0, span_id: "sp-1", parent_id: null, event: "enter", fn: "run" },
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 2, depth: 0, span_id: "sp-1", parent_id: null, event: "exit", fn: "run", ok: true, duration_ms: 1 },
       ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8"),
-      writeFile(join(runDir, "trajectory.json"), JSON.stringify({
+      writeFile(join(runDir, "trajectory.jsonl"), JSON.stringify({
         version: 1,
         runId,
-        updatedAt: timestamp,
+        timestamp,
         status: "completed",
         promptLength: 1,
         events: [],
@@ -151,30 +151,25 @@ describe("piano logs picker rows", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("extracts workflow, status, and prompt from the trajectory tail", async () => {
+  it("takes the row from the run's state document", async () => {
     const prompt = 'Implement a `matmul.cu` that prints "TFLOPS: <value>"\nand nothing else.';
-    // Padding the events array past the 64KB tail window proves the picker
-    // reads only the document's trailing block — never the whole (huge) file.
-    const document = JSON.stringify({
+    // One small document is the whole row. The trajectory beside it is the
+    // evidence and is never opened to list a run.
+    await writeFile(join(root, runId, "trajectory.jsonl"), "x".repeat(200_000), "utf8");
+    await writeFile(join(root, runId, "status.json"), JSON.stringify({
       version: 1,
       runId,
-      updatedAt: "2026-08-21T10:32:07.123Z",
-      events: [{ type: "resource" }, { type: "noise", fill: "x".repeat(70_000) }],
-      workspaceCwd: "/tmp/ws",
-      workflowPath: "/home/albert/.piano/gpu-cuda-tuning.yml",
       status: "failed",
-      sessionId: "s-1",
-      transcriptPath: "/tmp/t.jsonl",
+      workflowPath: "/home/albert/.piano/gpu-cuda-tuning.yml",
       turns: [{ prompt, status: "failed", eventCount: 3 }],
-    });
-    const file = join(root, runId, "trajectory.json");
-    await writeFile(file, document + "\n", "utf8");
-    expect(readRunRowMetadata(file)).toEqual({
+    }), "utf8");
+
+    expect(readRunRowMetadata(join(root, runId))).toEqual({
       workflow: "gpu-cuda-tuning",
       status: "failed",
       prompt,
     });
-    const label = runPickerLabel(runId, readRunRowMetadata(file));
+    const label = runPickerLabel(runId, readRunRowMetadata(join(root, runId)));
     expect(label.startsWith("2026-08-21 12:00 · gpu-cuda-tuning · [failed] · Implement a `matmul.cu`")).toBe(true);
     expect(label.endsWith("…")).toBe(true);
   });
@@ -184,29 +179,254 @@ describe("piano logs picker rows", () => {
       .toBe("2026-08-21 12:00 · w · hi");
   });
 
-  it("degrades to an id+time row without a trajectory", () => {
-    const missing = join(root, "20260821T130000-def456", "trajectory.json");
+  it("keeps the row of a run that failed before it named a workflow", async () => {
+    // A run can fail while loading its workflow, so its state has a prompt and
+    // no workflowPath. The row must keep the prompt rather than dropping to an
+    // id+time label.
+    const runIdNoWorkflow = "20260821T150000-nowf01";
+    await mkdir(join(root, runIdNoWorkflow), { recursive: true });
+    await writeFile(join(root, runIdNoWorkflow, "status.json"), JSON.stringify({
+      version: 1,
+      runId: runIdNoWorkflow,
+      status: "failed",
+      turns: [{ prompt: "hello", status: "failed", eventCount: 0 }],
+    }), "utf8");
+
+    expect(readRunRowMetadata(join(root, runIdNoWorkflow))).toEqual({ status: "failed", prompt: "hello" });
+  });
+
+  it("degrades to an id+time row without a state document", () => {
+    const missing = join(root, "20260821T130000-def456");
     expect(readRunRowMetadata(missing)).toEqual({});
     expect(runPickerLabel(runId, {})).toBe("2026-08-21 12:00");
     expect(runPickerLabel("legacy-dir", {})).toBe("legacy-dir");
   });
+});
 
-  it("finds the trailing block past the small window when prompts are huge", async () => {
-    // Workflow handoff prompts can push the document's trailing block past
-    // the 64KB window; the metadata reader pays one bigger read for those.
-    const document = JSON.stringify({
-      version: 1,
-      runId,
-      events: [{ type: "resource" }],
-      workflowPath: "/home/albert/.piano/gpu-cuda-tuning.yml",
-      status: "completed",
-      turns: [{ prompt: "x".repeat(200_000), status: "completed", eventCount: 1 }],
-    });
-    const file = join(root, runId, "trajectory.json");
-    await writeFile(file, document + "\n", "utf8");
-    const row = readRunRowMetadata(file);
-    expect(row.workflow).toBe("gpu-cuda-tuning");
-    expect(row.status).toBe("completed");
-    expect(row.prompt).toBe("x".repeat(200_000));
+describe("piano logs --jobs", () => {
+  let root: string;
+  const runId = "20260821T120000-abc123";
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "piano-logs-jobs-"));
+    const runDir = join(root, runId);
+    await mkdir(runDir, { recursive: true });
+    // Two jobs: the first paused after accepting two invocations (one on its
+    // second attempt), the second alive mid-span. The fold under test is the
+    // same one `/continue` consumes.
+    const records = [
+      {
+        version: 1, kind: "execution-started", timestamp: "2026-08-21T10:00:00.000Z",
+        runId: runId, jobOrdinal: 1, prompt: "fix the matmul kernel", resumed: false,
+      },
+      {
+        version: 1, kind: "stage-started", timestamp: "2026-08-21T10:00:01.000Z",
+        runId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
+        stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
+      },
+      {
+        version: 1, timestamp: "2026-08-21T10:00:02.000Z",
+        runId: runId, jobOrdinal: 1, invocationId: "tune.profile@root",
+        stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 2,
+      },
+      {
+        version: 1, timestamp: "2026-08-21T10:00:03.000Z",
+        runId: runId, jobOrdinal: 1, invocationId: "tune.race@tune/iter-0/tune.race/slot-1",
+        stageId: "tune.race", stage: "Race", worker: "cuda-idea", attempt: 1,
+      },
+      {
+        version: 1, kind: "execution-finished", timestamp: "2026-08-21T10:00:04.000Z",
+        runId: runId, status: "paused",
+      },
+      {
+        version: 1, kind: "execution-started", timestamp: "2026-08-21T10:05:00.000Z",
+        runId: runId, jobOrdinal: 2, prompt: "second pass", resumed: true,
+      },
+      {
+        version: 1, kind: "stage-started", timestamp: "2026-08-21T10:05:01.000Z",
+        runId: runId, jobOrdinal: 2, invocationId: "tune.profile@root",
+        stageId: "tune.profile", stage: "Profile", worker: "cuda-profile", attempt: 1,
+      },
+    ];
+    await writeFile(join(runDir, "progress.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("lists each job with its state, span and accepted counts", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("#1"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("paused"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("accepted=2"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("fix the matmul kernel"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("#2"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("alive"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("second pass"));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("says so when the ledger predates the job ledger instead of listing nothing", async () => {
+    // The real shape every run on this machine before the refactor has: accepted
+    // lines carrying no kind and no execution anchor to group them by.
+    const legacy = [
+      {
+        version: 1, timestamp: "2026-08-20T10:00:00.000Z", executionId: runId,
+        invocationId: "tuning@root", stageId: "tuning", stage: "tuning", worker: "basic", attempt: 1,
+      },
+    ];
+    await writeFile(join(root, runId, "progress.jsonl"), legacy.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("no records this build reads"));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("prints one job's spans and accepted invocations with attempts", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--jobs", "--job", "1", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("Job #1"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("span 1"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("2026-08-21T10:00:00.000Z"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("2026-08-21T10:00:04.000Z"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("tune.profile@root"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("attempt=2"));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining("tune.race@tune/iter-0/tune.race/slot-1"));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("uses the picker when no run id is given", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const pickable = vi.fn(() => Effect.succeed(runId));
+    try {
+      await Effect.runPromise(logsCommand(["--jobs"], { runsRoot: root, pickRun: pickable }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(pickable).toHaveBeenCalledWith(root, false);
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("fails for a missing job with the available ordinals", async () => {
+    const exit = await Effect.runPromiseExit(
+      logsCommand(["--jobs", "--job", "9", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("LogsStorageError");
+      expect(exit.cause.error.message).toContain("#1");
+      expect(exit.cause.error.message).toContain("#2");
+    }
+  });
+
+  it("rejects --job without --jobs and combining --jobs with --trace", async () => {
+    for (const args of [[ "--job", "1", runId ], [ "--jobs", "--trace", runId ]]) {
+      const exit = await Effect.runPromiseExit(logsCommand(args, { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+        expect(exit.cause.error._tag).toBe("CliArgumentError");
+      }
+    }
+  });
+
+  it("refuses a run id outside the runs root", async () => {    const exit = await Effect.runPromiseExit(
+      logsCommand(["--jobs", "../outside"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("LogsStorageError");
+    }
+  });
+});
+
+describe("piano logs --rebuild", () => {
+  let root: string;
+  const runId = "20260821T120000-abc123";
+
+  const writeLedger = async (records: readonly Record<string, unknown>[]) => {
+    const runDir = join(root, runId);
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "progress.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
+  };
+  const finishedJob = [
+    {
+      version: 1, kind: "execution-started", timestamp: "2026-08-21T10:00:00.000Z",
+      runId, jobOrdinal: 1, prompt: "first pass", resumed: false,
+      plan: { plannedStages: 2, stageCounts: { first: { planned: 1, completed: 0 }, second: { planned: 1, completed: 0 } } },
+    },
+    {
+      version: 1, kind: "execution-finished", timestamp: "2026-08-21T10:00:04.000Z",
+      runId: runId, status: "completed",
+    },
+  ];
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "piano-logs-rebuild-"));
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("writes the state document back from the ledgers", async () => {
+    await writeLedger(finishedJob);
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--rebuild", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Rebuilt ${runId}/status.json`));
+      const status = JSON.parse(await readFile(join(root, runId, "status.json"), "utf8")) as {
+        runId?: string;
+        jobs?: Array<{ jobOrdinal?: number; state?: string }>;
+      };
+      expect(status.runId).toBe(runId);
+      expect(status.jobs).toMatchObject([{ jobOrdinal: 1, state: "finished" }]);
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("refuses to fold over a live run's view unless forced", async () => {
+    // An open job: started and never finished — the run's own writer owns the view.
+    await writeLedger(finishedJob.slice(0, 1));
+    const refused = await Effect.runPromiseExit(
+      logsCommand(["--rebuild", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(refused._tag).toBe("Failure");
+    if (refused._tag === "Failure" && refused.cause._tag === "Fail") {
+      expect(refused.cause.error._tag).toBe("LogsStorageError");
+      expect(refused.cause.error.message).toContain("still running");
+    }
+
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand(["--rebuild", runId, "--force"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Rebuilt ${runId}/status.json`));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("rejects --force without --rebuild and mixing --rebuild with --jobs", async () => {
+    await writeLedger(finishedJob);
+    for (const args of [["--force"], ["--rebuild", runId, "--jobs"]]) {
+      const exit = await Effect.runPromiseExit(logsCommand(args, { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(exit._tag).toBe("Failure");
+      if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+        expect(exit.cause.error._tag).toBe("CliArgumentError");
+      }
+    }
   });
 });

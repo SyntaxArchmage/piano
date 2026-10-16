@@ -5,17 +5,18 @@
 //  1. The run list is unbounded and grows with every run, so it is enumerated in
 //     full (newest first — a run id sorts chronologically) but only the rows
 //     inside the viewport are rendered, and only those rows have their
-//     `trajectory.json` read. Metadata loading is therefore proportional to what
+//     `status.json` read. Metadata loading is therefore proportional to what
 //     the user looks at, not to how many runs they have ever made.
 //  2. Filtering needs metadata the list itself does not carry (name, first
 //     prompt). Rows load lazily, so a query can only match what has been read;
 //     the footer states how many rows are still unread rather than implying the
 //     filter saw everything.
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { RST, type PianoTheme } from "./theme.js";
-import { formatRunId, oneLine, summarizeRun, trajectoryPath, trajectoryReadFailed, type RunSummary, type RunTrajectory } from "./session-resume.js";
+import { formatRunId, oneLine, readRunRow, type RunSummary } from "./session-resume.js";
 
 export interface SessionPickerDeps {
   readonly runsRoot: string;
@@ -221,22 +222,19 @@ export class SessionPicker implements Component {
     this.deps.onRender?.();
   }
 
-  /** Read the metadata for the drawn window, applying the resume layer's
-   * verdict on each trajectory: an absent document drops the run, anything
-   * else keeps it — unreadable or malformed as an id-only row. */
+  /** Read the metadata for the drawn window: a run the resume layer drops
+   * (nothing recorded to replay) leaves the list, every other run keeps a row —
+   * its state document's fields, or just its id when that document is absent. */
   private load(runIds: readonly string[]): void {
     for (const runId of runIds) {
       if (this.summaries.has(runId) || this.loading.has(runId)) continue;
       this.loading.add(runId);
-      void readFile(trajectoryPath(this.deps.runsRoot, runId), "utf8").then(
-        (raw): RunTrajectory => ({ kind: "present", raw }),
-        (cause: unknown): RunTrajectory => trajectoryReadFailed(cause),
-      ).then((result) => {
+      void readRunRow(join(this.deps.runsRoot, runId)).then((row) => {
         this.loading.delete(runId);
-        if (result.kind === "absent") {
+        if (row === undefined) {
           this.runIds = this.runIds.filter((listed) => listed !== runId);
         } else {
-          this.summaries.set(runId, summarizeRun(runId, result.kind === "present" ? result.raw : undefined));
+          this.summaries.set(runId, row);
         }
         this.deps.onRender?.();
       });

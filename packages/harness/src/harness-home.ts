@@ -10,7 +10,7 @@ import {
   type HarnessName,
   type ResolvedHarnessConfig,
 } from "./harness-config.js";
-import type { AgentHarnessOptions } from "./pi.js";
+import type { AgentHarnessOptions } from "./agent-contract.js";
 
 /** One generated directory per native config *format*, not per harness: `pi` and
  * `pi-cli` are the same agent reading the same files, so they share one. Codex
@@ -133,10 +133,16 @@ export function dshResumeOverlayPath(dshHome: string): string {
  * reopen.
  *
  * The runner is standalone Node ESM — the dsh launcher imports it inside its own
- * process, where nothing compiles `.ts` — so it cannot import this constant. The
- * runner test asserts the shipped plugin reads this exact name, which is what
+ * process, where nothing compiles `.ts` — so it cannot import this constant.
+ * `tests/harness/harness-home.test.ts` pins this exact name as a literal and
+ * the runtime resume tests fail when either side renames it, which is what
  * keeps the two sides from drifting apart silently. */
 export const DSH_RESUME_SESSION_ENV = "PIANO_DSH_RESUME_SESSION";
+
+/** The environment variable dsh reads its gateway secret from, when the user's
+ * config does not name one of its own. One name: it lands in the generated
+ * settings, the capability probe's env, and a real run's env. */
+export const DSH_API_KEY_ENV = "PIANO_DSH_API_KEY";
 
 /** Where the runner's own module lives.
  *
@@ -207,7 +213,7 @@ function dshWebSearchOffPatch(): string {
 function dshSettings(config: ResolvedHarnessConfig, models: readonly string[]): string {
   if (config.provider === undefined && config.model === undefined) return "{}\n";
   const provider = config.provider ?? "deepseek-official";
-  const apiKeyEnv = config.apiKeyEnv ?? "PIANO_DSH_API_KEY";
+  const apiKeyEnv = config.apiKeyEnv ?? DSH_API_KEY_ENV;
   if (provider === "deepseek-official") {
     // The official route's catalog is dsh's own; only the credential and
     // endpoint are deployment settings.

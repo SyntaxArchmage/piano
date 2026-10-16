@@ -1,14 +1,15 @@
 // Escape-then-exit is a pause, not a failure. The engine half of the UX:
 // a turn interrupted mid-flight must leave (1) `resume.json` carrying the
 // harness session that turn opened — the partial transcript is on disk — and
-// (2) `progress.json` finalized as "paused", never "failed". The next prompt
-// then reopens the same actor conversation and runs to completion. The TUI
-// half lives in tests/tui/pause-exit-resume.test.ts.
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+// (2) the run finalized as "paused", never "failed", in both `progress.json`
+// and the append-only stream behind it. The next prompt then reopens the same
+// actor conversation and runs to completion. The TUI half lives in
+// tests/tui/pause-exit-resume.test.ts.
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sleep, waitFor } from "../common/terminal.js";
-import { readJson } from "../common/fs.js";
+import { readJson, readResumeActors } from "../common/fs.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
@@ -35,6 +36,14 @@ workflow:
         harness: pi
         from: []
 `;
+
+/** The last record of a run's append-only progress stream: how the run ended,
+ * as the stream itself tells it. */
+async function lastProgressRecord(runDir: string): Promise<{ kind?: string; status?: string }> {
+  const text = await readFile(join(runDir, "progress.jsonl"), "utf8");
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  return JSON.parse(lines.at(-1) ?? "{}") as { kind?: string; status?: string };
+}
 
 const SIGNOFF_STAGE_WORKFLOW = `version: 3
 workflow:
@@ -109,7 +118,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: text,
-            executionId: session.id,
+            runId: session.id,
             ...(signal === undefined ? {} : { signal }),
             ...(execution === undefined ? {} : { execution: execution as never }),
             agentRunner: runner,
@@ -130,8 +139,7 @@ describe("Escape pauses a run instead of failing it", () => {
 
       // The interrupted attempt's session survived into the canonical state
       // file: same sessionId, continuation present.
-      const resumeState = await readJson(join(session.runDir, "resume.json"));
-      const actors = resumeState.actors as Record<string, Record<string, unknown>>;
+      const actors = await readResumeActors(session.runDir);
       const actor = Object.values(actors)[0];
       expect(actor).toBeDefined();
       expect(actor?.harness).toBe("pi");
@@ -142,8 +150,14 @@ describe("Escape pauses a run instead of failing it", () => {
         transcriptPath: HANGING_SESSION.transcriptPath,
       });
 
-      // The convenience snapshot says paused, not failed.
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
+      // The convenience snapshot says paused, not failed — and the stream says
+      // the same thing, which is what makes the outcome survive a snapshot a
+      // wedged finalizer never reached.
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
+      expect(await lastProgressRecord(session.runDir)).toMatchObject({
+        kind: "execution-finished",
+        status: "paused",
+      });
 
       // Prompt 2 on the same run: the next-prompt path (identical to /resume)
       // hands the harness the exact session the interrupted turn opened.
@@ -159,12 +173,16 @@ describe("Escape pauses a run instead of failing it", () => {
         .toBe(HANGING_SESSION.transcriptPath);
 
       // Paused -> running -> completed: one execution across the pause.
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("completed");
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("completed");
+      expect(await lastProgressRecord(session.runDir)).toMatchObject({
+        kind: "execution-finished",
+        status: "completed",
+      });
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      expect(after?.id).toBe(continued.executionId);
-      expect(after?.promptIndex).toBe(2);
+      expect(after?.id).toBe(continued.runId);
+      expect(after?.jobOrdinal).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -188,7 +206,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "long task",
-            executionId: session.id,
+            runId: session.id,
             agentRunner: stuckRunner,
           })),
           Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -199,7 +217,7 @@ describe("Escape pauses a run instead of failing it", () => {
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
       // The durable verdict for an interrupted run: paused, never failed.
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -246,7 +264,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "long task",
-            executionId: session.id,
+            runId: session.id,
             agentRunner: runner,
           })),
           Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -257,8 +275,7 @@ describe("Escape pauses a run instead of failing it", () => {
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
 
-      const resumeState = await readJson(join(session.runDir, "resume.json"));
-      const actors = resumeState.actors as Record<string, Record<string, unknown>>;
+      const actors = await readResumeActors(session.runDir);
       const actor = Object.values(actors)[0];
       expect(actor?.harness).toBe("pi");
       expect(actor?.sessionId).toBe(announced.sessionId);
@@ -336,7 +353,7 @@ describe("Escape pauses a run instead of failing it", () => {
             runDir: session.runDir,
             cwd: root,
             prompt: "start the work",
-            executionId: session.id,
+            runId: session.id,
             signal: controller.signal,
             agentRunner: runner,
             signoff,
@@ -350,9 +367,7 @@ describe("Escape pauses a run instead of failing it", () => {
       // "nothing was saved": the rework continues in the same conversation and
       // an interrupt during it must not fall back to a pre-turn resume state.
       await waitFor("the review was rejected", () => gate.length === 1);
-      const midActor = Object.values(
-        (await readJson(join(session.runDir, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      const midActor = Object.values(await readResumeActors(session.runDir))[0];
       expect(midActor?.sessionId).toBe("sess-r");
       expect(midActor?.turns).toBe(1);
       expect(midActor?.continuation).toBeDefined();
@@ -365,10 +380,8 @@ describe("Escape pauses a run instead of failing it", () => {
       controller.abort();
       const exit = await Effect.runPromise(Fiber.await(fiber));
       expect(Exit.isFailure(exit) && isCancellation(exit.cause)).toBe(true);
-      expect((await readJson(join(session.runDir, "progress.json"))).status).toBe("paused");
-      const finalActor = Object.values(
-        (await readJson(join(session.runDir, "resume.json"))).actors as Record<string, Record<string, unknown>>,
-      )[0];
+      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
+      const finalActor = Object.values(await readResumeActors(session.runDir))[0];
       // The rejected turn's count survived the interrupt (live map read, not
       // the stale pre-attempt snapshot).
       expect(finalActor?.sessionId).toBe("sess-r");

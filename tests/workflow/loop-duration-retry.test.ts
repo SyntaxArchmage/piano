@@ -239,7 +239,7 @@ describe("duration-bound loop execution", () => {
         root,
         workflowPath: join(root, "duration.yml"),
         runDir: session.runDir,
-        executionId: "duration",
+        runId: "duration",
         cwd: root,
         prompt: "keep working",
         agentRunner: (request) => Effect.promise(async () => {
@@ -281,7 +281,7 @@ describe("duration-bound loop execution", () => {
         root,
         workflowPath: join(root, "duration.yml"),
         runDir: session.runDir,
-        executionId: "duration-progress",
+        runId: "duration-progress",
         cwd: root,
         prompt: "keep working",
         agentRunner: (_request) => Effect.promise(async () => {
@@ -291,7 +291,7 @@ describe("duration-bound loop execution", () => {
           // count exceeds its planned count, so an unknown-length loop must
           // grow its denominator rather than divide by one iteration.
           try {
-            snapshots.push(JSON.parse(await readFile(join(session.runDir, "progress.json"), "utf8")));
+            snapshots.push(JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")));
           } catch {
             // The first attempt may run before any snapshot exists.
           }
@@ -313,9 +313,14 @@ describe("duration-bound loop execution", () => {
       }
       // With more than one round the denominator must have grown past its
       // initial single-iteration value, which is the behaviour under test.
+      // The settled document carries the growth; a mid-run sample cannot,
+      // because the sample is taken at the start of a round — before that
+      // round is accepted — so it is always one round behind and only shows
+      // the growth from the third sample on. A window that fits two rounds
+      // would skip the assertion entirely.
       if (snapshots.length > 1) {
-        const last = snapshots.at(-1)!;
-        expect(last.stageCounts["tune.work"]?.planned).toBeGreaterThan(1);
+        const settled = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8"));
+        expect(settled.stageCounts["tune.work"]?.planned).toBeGreaterThan(1);
       }
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -338,7 +343,7 @@ describe("stage retry execution", () => {
         root,
         workflowPath: join(root, "retry.yml"),
         runDir: session.runDir,
-        executionId: "retry",
+        runId: "retry",
         cwd: root,
         prompt: "write something",
         agentRunner: (request) => Effect.suspend(() => {
@@ -383,7 +388,7 @@ describe("stage retry execution", () => {
         root,
         workflowPath: join(root, "retry.yml"),
         runDir: session.runDir,
-        executionId: "retry-exhausted",
+        runId: "retry-exhausted",
         cwd: root,
         prompt: "write something",
         agentRunner: () => Effect.suspend(() => {
@@ -424,7 +429,7 @@ workflow:
         root,
         workflowPath: join(root, "plain.yml"),
         runDir: session.runDir,
-        executionId: "plain",
+        runId: "plain",
         cwd: root,
         prompt: "write something",
         agentRunner: () => Effect.suspend(() => {

@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type TrajectoryFixture, writeTrajectoryRun } from "../common/trajectory-fixture.js";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 
@@ -23,20 +24,25 @@ vi.mock("@piano/orchestrator", () => ({
     stages: [{
       id: "respond",
       dependsOn: [],
-      regionPath: [],
       stage: { name: "respond", worker: "basic", harness: "pi", from: [] },
     }],
     regions: [],
+    nodes: [{
+      id: "respond",
+      dependsOn: [],
+      stage: { name: "respond", worker: "basic", harness: "pi", from: [] },
+    }],
   })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "done",
     sessionId: "worker-session",
     transcriptPath: "/tmp/worker.jsonl",
     progressPath: "/tmp/progress.jsonl",
-    progressSnapshotPath: "/tmp/progress.json",
   })),
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  refreshRunStatus: vi.fn(() => Effect.void),
+  runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
     workflowPath: "/repo/recipes/workflows/basic.yaml",
@@ -83,7 +89,7 @@ function fakeSession(id: string, runsRoot: string, cwd: string): Session {
       flush: vi.fn(() => Effect.void),
     },
     trajectory: {
-      path: join(runsRoot, id, "trajectory.json"),
+      path: join(runsRoot, id, "trajectory.jsonl"),
       write,
       rename,
       flush: vi.fn(() => Effect.void),
@@ -91,9 +97,8 @@ function fakeSession(id: string, runsRoot: string, cwd: string): Session {
   } as unknown as Session;
 }
 
-async function writeTrajectory(runsRoot: string, runId: string, document: unknown): Promise<void> {
-  await mkdir(join(runsRoot, runId), { recursive: true });
-  await writeFile(join(runsRoot, runId, "trajectory.json"), `${JSON.stringify(document)}\n`, "utf8");
+async function writeTrajectory(runsRoot: string, runId: string, document: TrajectoryFixture): Promise<void> {
+  await writeTrajectoryRun(join(runsRoot, runId), document);
 }
 
 const twoTurns = {
@@ -171,7 +176,7 @@ describe("in-place run takeover", () => {
     expect(result?.turns[0]?.status).toBe("completed");
     expect(result?.workspaceCwd).toBe("/repo/work");
     expect(result?.workflowGraph).toMatchObject({ name: "smoke", path: "/repo/recipes/workflows/basic.yaml" });
-    expect(result?.progressSnapshotPath).toBe(join(runsRoot, OTHER, "progress.json"));
+    expect(result?.statusPath).toBe(join(runsRoot, OTHER, "status.json"));
     // The workflow the run recorded is reloaded, not the one already open.
     expect(loadWorkflow).toHaveBeenCalledWith("/repo/recipes/workflows/basic.yaml", "/repo");
   });
@@ -192,7 +197,7 @@ describe("in-place run takeover", () => {
         document: { version: 3, workflow: { name: "smoke", nodes: [] } },
       }),
       expect.objectContaining({
-        executionId: OTHER,
+        runId: OTHER,
         runDir: join(runsRoot, OTHER),
         // The resumed run's workspace, not the one the session started in.
         cwd: "/repo/work",
@@ -265,7 +270,7 @@ describe("in-place run takeover", () => {
 
     expect(failure).toMatchObject({ _tag: "LogsStorageError", operation: "read-trajectory" });
     expect(executeWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-      executionId: OPEN,
+      runId: OPEN,
       runDir: join(runsRoot, OPEN),
     }));
   });

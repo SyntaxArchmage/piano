@@ -41,7 +41,7 @@ export class LogWriter implements ILogWriter {
   constructor(
     readonly runId: string,
     readonly path: string,
-    readonly traceId: string = runId,
+    readonly traceId: string,
   ) {}
 
   append(
@@ -49,6 +49,12 @@ export class LogWriter implements ILogWriter {
     fields: LogFields = {},
   ): Effect.Effect<void, LogWriteError, FileSystem.FileSystem> {
     const { runId, path, traceId } = this;
+    // Trace lines belong to trace.jsonl alone: log.jsonl is the ops stream,
+    // and mirroring the traced boundaries' enter/exit/error into it made a
+    // second copy nothing read. The line's shape is unchanged — it is simply
+    // not written here. The id stays on every log line, so a reader can still
+    // join the two files.
+    if (fields.namespace === "trace") return Effect.void;
     return Effect.gen(function* () {
       const entry = yield* Effect.try({
         try: () => ({
@@ -113,7 +119,7 @@ export class AsyncLogWriter implements ILogWriter {
 
   constructor(
     readonly runId: string,
-    readonly traceId: string = runId,
+    readonly traceId: string,
   ) {}
 
   commit(path: string): Effect.Effect<void, LogWriteError, FileSystem.FileSystem> {

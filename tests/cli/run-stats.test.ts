@@ -5,6 +5,7 @@ import {
   emptyRunStats,
   foldRunStats,
   formatTokens,
+  markTerminal,
   statsStatusLabel,
   usageRows,
 } from "../../packages/cli/src/run-stats.js";
@@ -62,19 +63,28 @@ describe("applyRunStat", () => {
     expect(stats.failedStages).toBe(1);
   });
 
-  it("marks the run terminal on done and records evidence", () => {
+  it("keeps a closed turn's ending out of the run's state", () => {
     let stats = emptyRunStats();
+    stats = applyRunStat(stats, agentEnd(false));
+    const afterTurn = stats;
     stats = applyRunStat(stats, done(0));
-    expect(stats.completed).toBe(true);
-    expect(stats.terminal).toBe("completed");
-    expect(stats.sessionId).toBe("s1");
-    expect(stats.transcriptPath).toBe("/tmp/t.json");
+
+    // One stage's turn closed. The workflow may have many more to run, so the
+    // run is still running — the footer must not say otherwise from here on.
+    expect(stats).toBe(afterTurn);
+    expect(stats.terminal).toBeUndefined();
+    expect(statsStatusLabel(stats)).toBe("running");
+
+    // The run's own outcome is what settles the label.
+    expect(statsStatusLabel(markTerminal(stats, "completed"))).toBe("completed");
+    expect(statsStatusLabel(markTerminal(stats, "failed"))).toBe("failed");
   });
 
-  it("reports a non-zero exit as failed", () => {
-    let stats = emptyRunStats();
-    stats = applyRunStat(stats, done(1));
-    expect(stats.terminal).toBe("failed");
+  it("does not read a turn's exit status as the run's terminal state", () => {
+    // Both harnesses hard-code exitStatus 0 on `done`; a non-zero value would
+    // be a turn-level signal either way, and turn level is not run level.
+    const stats = applyRunStat(emptyRunStats(), done(1));
+    expect(stats.terminal).toBeUndefined();
   });
 
   it("does not mutate its input", () => {
@@ -86,16 +96,14 @@ describe("applyRunStat", () => {
 });
 
 describe("foldRunStats", () => {
-  it("folds events in order and advances elapsed", () => {
-    const stats = foldRunStats([toolEnd(), toolEnd(true), agentEnd(false)], 1000, 5000);
+  it("folds events in order", () => {
+    const stats = foldRunStats([toolEnd(), toolEnd(true), agentEnd(false)]);
     expect(stats.toolCalls).toBe(2);
     expect(stats.completedStages).toBe(1);
-    expect(stats.elapsedMs).toBe(4000);
   });
 
-  it("clamps elapsed to zero", () => {
-    const stats = foldRunStats([], 5000, 1000);
-    expect(stats.elapsedMs).toBe(0);
+  it("returns the empty state for no events", () => {
+    expect(foldRunStats([])).toEqual(emptyRunStats());
   });
 });
 
@@ -116,7 +124,7 @@ describe("formatTokens", () => {
 describe("statsStatusLabel", () => {
   it("reports waiting before any event and running after activity", () => {
     expect(statsStatusLabel(emptyRunStats())).toBe("waiting");
-    expect(statsStatusLabel(foldRunStats([toolEnd()], 0, 0))).toBe("running");
+    expect(statsStatusLabel(foldRunStats([toolEnd()]))).toBe("running");
   });
 });
 
@@ -128,7 +136,7 @@ describe("usageRows", () => {
   });
 
   it("renders token/tool/stage/status labels", () => {
-    const stats = foldRunStats([usage(1200, 400), toolEnd(), agentEnd(false)], 0, 0);
+    const stats = foldRunStats([usage(1200, 400), toolEnd(), agentEnd(false)]);
     const rows = usageRows(stats, theme);;
     expect(rows[0]).toContain("tokens");
     expect(rows[0]).toContain("1.2k");

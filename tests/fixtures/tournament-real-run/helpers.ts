@@ -99,8 +99,8 @@ export async function findNewRun(home: string, before: ReadonlySet<string>): Pro
 
 /** Run-completion evidence the guards share across frontends. */
 export async function readRunTrajectoryStatus(runDir: string): Promise<string> {
-  const trajectory = JSON.parse(await readFile(join(runDir, "trajectory.json"), "utf8")) as { status?: string };
-  return trajectory.status ?? "missing";
+  const status = JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as { status?: string };
+  return status.status ?? "missing";
 }
 
 export async function listRunIds(home: string): Promise<ReadonlySet<string>> {

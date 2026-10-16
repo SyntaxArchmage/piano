@@ -86,22 +86,22 @@ describe(" TUI workflow graph visual effect", () => {
     resetCapabilitiesCache();
   });
 
-  it("streams animated Kitty frames and updates the WORKFLOW summary from progress.json", async () => {
+  it("streams animated Kitty frames and updates the WORKFLOW summary from the run's state document", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "setInterval", "Date", "performance"] });
     setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
     const root = await mkdtemp(join(tmpdir(), "piano-graph-visual-"));
-    const progressPath = join(root, "progress.json");
+    const statusPath = join(root, "status.json");
     const terminal = new FakeTerminal();
     let resolvePrompt: ((effect: Effect.Effect<string, never>) => void) | undefined;
     let session: Promise<{ readonly type: "closed" }> | undefined;
 
     try {
-      await writeFile(progressPath, `${JSON.stringify(runningSnapshot)}\n`, "utf8");
+      await writeFile(statusPath, `${JSON.stringify(runningSnapshot)}\n`, "utf8");
       session = Effect.runPromise(runTui({
         terminal,
         historyRoot: root,
         workflowGraph: { name: "basic", path: "/tmp/basic.yml", stages: [{ id: "respond", dependsOn: [] }] },
-        progressSnapshotPath: progressPath,
+        statusPath,
         runPrompt: () => Effect.async<string, never>((resume) => {
           resolvePrompt = resume;
         }),
@@ -124,7 +124,7 @@ describe(" TUI workflow graph visual effect", () => {
       expect(firstImageId).toBeDefined();
       expect(imageIds.every((imageId) => imageId === firstImageId)).toBe(true);
 
-      await writeFile(progressPath, `${JSON.stringify(completedSnapshot)}\n`, "utf8");
+      await writeFile(statusPath, `${JSON.stringify(completedSnapshot)}\n`, "utf8");
       // A heartbeat may still be completing the read that started before this
       // write. Advance through the following heartbeat as well so the test
       // observes the eventual completed snapshot, not a stale cached frame.

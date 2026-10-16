@@ -144,6 +144,14 @@ describe(" trajectory reducer", () => {
     expect(loopIteration("tune.measure@tune/iter-9007199254740993")).toBeUndefined();
   });
 
+  it("attributes the loop frame of map-in-loop and nested-loop invocations", () => {
+    // A tail-anchored pattern sees the trailing "slot-1" and reports no
+    // iteration; a segment scan still finds the loop frame. Nested loops
+    // report the innermost frame, matching the storage convention.
+    expect(loopIteration("tune.race.implement@tune/iter-2/tune.race/slot-1")).toBe(2);
+    expect(loopIteration("deep.stage@outer/iter-1/inner/iter-4")).toBe(4);
+  });
+
   it("falls back to the plain 'agent' label for a non-workflow spawn", () => {
     let state = emptyTrajectoryState();
     state = fold(state, { type: "spawn", harness: "pi", skills: [] });

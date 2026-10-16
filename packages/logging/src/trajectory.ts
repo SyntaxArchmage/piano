@@ -1,6 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
 
 /** One accepted prompt in a run, recorded so `resume` can replay the piano
@@ -11,7 +11,7 @@ export interface TrajectoryTurn {
   /** Cumulative `events` length after this turn, measured on the merged and
    * compacted array, so replay slices `[turns[i-1].eventCount, turns[i].eventCount)`.
    * Per-turn deltas would not be stable: `compactTrajectoryEvents` dedups `usage`
-   * by `workflow.invocationId`, which carries no executionId, so a later turn can
+   * by `workflow.invocationId`, which carries no runId, so a later turn can
    * collapse an event an earlier turn had already contributed. */
   readonly eventCount: number;
 }
@@ -34,6 +34,16 @@ export interface TrajectoryDocument {
    * session cwd after `/workspace`. */
   readonly workspaceCwd?: string;
   readonly turns?: readonly TrajectoryTurn[];
+  /** How many stream records this document already includes.
+   *
+   * A write appends its record and then rewrites the document, so a crash
+   * between the two leaves the document short by the record that landed.
+   * Counting them is what lets a reader fold exactly the records the document
+   * is missing, rather than guessing from timestamps — two writes can share a
+   * millisecond, and a guess would drop one of them.
+   *
+   * Absent on a document written before this field existed, which reads the
+   * same as zero: a document that includes no records at all. */
 }
 
 /** Write input for one turn. `turns` is writer-owned because `eventCount` can
@@ -45,6 +55,60 @@ export type TrajectoryWriteInput =
      * appending a turn entry. */
     readonly prompt?: string;
   };
+
+/** One line of the append-only trajectory stream: what one write recorded,
+ * plus the identity and the moment it recorded it.
+ *
+ * Turns and the cumulative event ledger are folded from these rather than
+ * stored. A turn's extent is where its prompt is, and its `eventCount` is what
+ * the fold had counted by then; storing them would mean every write had to read
+ * the whole run back first, which is what re-serializing the growing document
+ * cost. Fields a write does not speak about are absent, and the fold takes the
+ * newest one that does. */
+export interface TrajectoryStreamRecord {
+  readonly version: 1;
+  readonly runId: string;
+  readonly timestamp: string;
+  /** Prompt text, when this write closed a turn. */
+  readonly prompt?: string;
+  readonly status?: "completed" | "failed" | "cancelled";
+  readonly promptLength?: number;
+  readonly events: readonly unknown[];
+  readonly sessionId?: string;
+  readonly transcriptPath?: string;
+  readonly error?: unknown;
+  readonly name?: string;
+  readonly workflowPath?: string;
+  readonly workspaceCwd?: string;
+}
+
+/** The run's trajectory stream, beside the state document that describes it. */
+export function trajectoryStreamPath(runDir: string): string {
+  return join(runDir, "trajectory.jsonl");
+}
+
+/** Append one record to the trajectory stream beside a document path.
+ *
+ * The stream's single writer seam: both writes go through it, so the file has
+ * one place that knows its line format. */
+function appendTrajectoryRecord(
+  fileSystem: FileSystem.FileSystem,
+  path: string,
+  record: TrajectoryStreamRecord,
+): Effect.Effect<void, TrajectoryWriteError, never> {
+  return Effect.gen(function* () {
+    const line = yield* Effect.try({
+      try: () => `${stringifyTrajectory(record)}\n`,
+      catch: (cause) => new TrajectoryWriteError({ operation: "serialize", path, message: errorMessage(cause) }),
+    });
+    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
+      Effect.mapError((cause) => new TrajectoryWriteError({ operation: "mkdir", path, message: errorMessage(cause) })),
+    );
+    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
+      Effect.mapError((cause) => new TrajectoryWriteError({ operation: "write", path, message: errorMessage(cause) })),
+    );
+  });
+}
 
 const MAX_TRAJECTORY_STRING = 8_192;
 const MAX_TRAJECTORY_ARRAY = 128;
@@ -398,38 +462,190 @@ function compactTrajectoryEvent(event: unknown): unknown | undefined {
   }
 }
 
+/** The slot a `usage` event belongs to, or `undefined` when it is not one.
+ * Pi reports these repeatedly while streaming a turn, so one key owns one slot
+ * in the ledger however many times it arrives. */
+function usageSlotKey(compact: unknown): string | undefined {
+  if (typeof compact !== "object" || compact === null || Array.isArray(compact)) return undefined;
+  const value = compact as Record<string, unknown>;
+  if (value.type !== "usage") return undefined;
+  const workflow = value.workflow;
+  const invocation = typeof workflow === "object" && workflow !== null && !Array.isArray(workflow)
+    ? (workflow as Record<string, unknown>).invocationId
+    : undefined;
+  return typeof invocation === "string" ? invocation : "run";
+}
+
 function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[] {
   const compacted: unknown[] = [];
   const usageSlots = new Map<string, number>();
   for (const event of events) {
     const compact = compactTrajectoryEvent(event);
     if (compact === undefined) continue;
-    if (
-      typeof compact === "object" &&
-      compact !== null &&
-      !Array.isArray(compact) &&
-      (compact as Record<string, unknown>).type === "usage"
-    ) {
-      const workflow = (compact as Record<string, unknown>).workflow;
-      const invocation = typeof workflow === "object" && workflow !== null && !Array.isArray(workflow)
-        ? (workflow as Record<string, unknown>).invocationId
-        : undefined;
-      const key = typeof invocation === "string" ? invocation : "run";
-      const prior = usageSlots.get(key);
-      if (prior === undefined) {
-        usageSlots.set(key, compacted.length);
-        compacted.push(compact);
-      } else {
-        // Pi reports cumulative usage repeatedly while streaming a turn. Keep
-        // the latest snapshot for each stage/actor; metrics use the maximum,
-        // and transcripts retain every raw update for forensic inspection.
-        compacted[prior] = compact;
-      }
+    const key = usageSlotKey(compact);
+    if (key === undefined) {
+      compacted.push(compact);
       continue;
     }
-    compacted.push(compact);
+    const prior = usageSlots.get(key);
+    if (prior === undefined) {
+      usageSlots.set(key, compacted.length);
+      compacted.push(compact);
+    } else {
+      // Keep the latest snapshot for each stage/actor; metrics use the
+      // maximum, and transcripts retain every raw update for forensic
+      // inspection. The slot keeps its first position, so the ledger's order
+      // is the order events first appeared.
+      compacted[prior] = compact;
+    }
   }
   return compacted;
+}
+
+/** Parse a run's trajectory from whichever of its two on-disk forms is there.
+ *
+ * The stream wins: every write lands in it first, and the document is folded
+ * from it. The document is read for runs written before the stream existed, and
+ * when the stream holds nothing usable — a torn or empty file describes no run.
+ *
+ * Takes raw file contents rather than paths because its callers read files
+ * through different layers, some through Effects and some synchronously. The
+ * choice between the two forms lives here and nowhere else. */
+/** What a run's trajectory says, folded from its append-only stream.
+ *
+ * Takes raw contents rather than a path because its callers read the file
+ * through different layers, some with Effects and some synchronously. */
+export function parseTrajectory(stream: string | undefined): TrajectoryDocument | undefined {
+  return foldTrajectoryStream(parseStreamRecords(stream));
+}
+
+function parseStreamRecords(raw: string | undefined): readonly TrajectoryStreamRecord[] {
+  const records: TrajectoryStreamRecord[] = [];
+  for (const line of (raw ?? "").split("\n")) {
+    const record = parseStreamRecord(line);
+    if (record !== undefined) records.push(record);
+  }
+  return records;
+}
+
+/** One stream record, or `undefined` for a blank, torn, or shapeless line.
+ *
+ * The identity is what tells a record from any other object that happens to be
+ * JSON: a file of bare events, say, must not fold into a run. */
+function parseStreamRecord(line: string): TrajectoryStreamRecord | undefined {
+  if (line.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    // Torn mid-append: it describes a write that never finished, and the
+    // records before it are still good.
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const record = parsed as { runId?: unknown; timestamp?: unknown };
+  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
+  return parsed as TrajectoryStreamRecord;
+}
+
+/** Rebuild a run's trajectory from its stream.
+ *
+ * Events concatenate and compact in order, a turn's extent is where its prompt
+ * sits, and each optional field takes its newest definition. */
+export function foldTrajectoryStream(
+  records: readonly TrajectoryStreamRecord[],
+): TrajectoryDocument | undefined {
+  const last = records.at(-1);
+  if (last === undefined) return undefined;
+
+  // One linear pass: a `usage` key holds one slot from where it first appeared,
+  // so the ledger's length at any point is the distinct keys seen so far plus
+  // the events that are not usage snapshots.
+  const turns: TrajectoryTurn[] = [];
+  const seenUsage = new Set<string>();
+  let eventCount = 0;
+  for (const record of records) {
+    for (const event of record.events) {
+      const key = usageSlotKey(event);
+      if (key !== undefined) {
+        if (seenUsage.has(key)) continue;
+        seenUsage.add(key);
+      }
+      eventCount += 1;
+    }
+    // A turn entry belongs to a record that carried a prompt, so non-turn
+    // updates (rename, session id backfill) never inflate the replay index.
+    // A record that carries one always carries the status it closed with.
+    if (record.prompt !== undefined && record.status !== undefined) {
+      turns.push({ prompt: record.prompt, status: record.status, eventCount });
+    }
+  }
+
+  // The newest record that speaks about a field wins; one that says nothing
+  // about it leaves the field out.
+  const newest = <K extends "status" | "promptLength" | "sessionId" | "transcriptPath" | "error" | "name" | "workflowPath" | "workspaceCwd">(
+    key: K,
+  ): TrajectoryStreamRecord[K] | undefined => {
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const value = records[index]?.[key];
+      if (value !== undefined) return value;
+    }
+    return undefined;
+  };
+  const status = newest("status");
+  const promptLength = newest("promptLength");
+  // A stream that never said how a run ended does not describe a document.
+  if (status === undefined || promptLength === undefined) return undefined;
+
+  return {
+    version: 1,
+    runId: last.runId,
+    updatedAt: last.timestamp,
+    promptLength,
+    events: mergeTrajectoryLedgers(records.map((record) => record.events)),
+    ...(turns.length === 0 ? {} : { turns }),
+    ...(newest("sessionId") === undefined ? {} : { sessionId: newest("sessionId") }),
+    ...(newest("transcriptPath") === undefined ? {} : { transcriptPath: newest("transcriptPath") }),
+    ...(newest("error") === undefined ? {} : { error: newest("error") }),
+    ...(newest("name") === undefined ? {} : { name: newest("name") }),
+    ...(newest("workflowPath") === undefined ? {} : { workflowPath: newest("workflowPath") }),
+    ...(newest("workspaceCwd") === undefined ? {} : { workspaceCwd: newest("workspaceCwd") }),
+    // Last, and after `workflowPath`, because the log picker reads a bounded
+    // tail of this file rather than the whole of it — a run's events are the
+    // bulk of the document and they sit between. A document that put the
+    // status anywhere else would show a failed run without saying so.
+    status,
+  };
+}
+
+/** Concatenate ledgers that are already compacted, keeping one slot per usage
+ * key — the rule the writer applies, without compacting a second time.
+ *
+ * Compacting twice is not idempotent: a value that could not be read is
+ * replaced by a sentinel, and the second pass would find the sentinel where it
+ * expects the value and drop the field. Records carry compacted events, so the
+ * fold merges them rather than revisiting them. */
+function mergeTrajectoryLedgers(ledgers: readonly (readonly unknown[])[]): readonly unknown[] {
+  const merged: unknown[] = [];
+  const usageSlots = new Map<string, number>();
+  for (const ledger of ledgers) {
+    for (const event of ledger) {
+      const key = usageSlotKey(event);
+      if (key === undefined) {
+        merged.push(event);
+        continue;
+      }
+      const prior = usageSlots.get(key);
+      if (prior === undefined) {
+        usageSlots.set(key, merged.length);
+        merged.push(event);
+      } else {
+        // The slot keeps its first position and takes the latest snapshot.
+        merged[prior] = event;
+      }
+    }
+  }
+  return merged;
 }
 
 function stringifyTrajectory(value: unknown): string {
@@ -454,139 +670,58 @@ export class TrajectoryWriter {
     const { runId, path } = this;
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const previous = yield* fileSystem.readFileString(path).pipe(
-        Effect.flatMap((content) => Effect.try({
-          try: () => JSON.parse(content) as Partial<TrajectoryDocument>,
-          catch: (cause) => new TrajectoryWriteError({
-            operation: "read",
-            path,
-            message: errorMessage(cause),
-          }),
-        })),
-        Effect.catchAll((cause) => cause._tag === "SystemError" && cause.reason === "NotFound"
-          ? Effect.succeed(undefined)
-          : Effect.fail(cause instanceof TrajectoryWriteError ? cause : new TrajectoryWriteError({
-            operation: "read",
-            path,
-            message: errorMessage(cause),
-          }))),
-      );
-      const { prompt, ...fields } = document;
-      const events = compactTrajectoryEvents([
-        ...(previous === undefined || !Array.isArray(previous.events) ? [] : previous.events),
-        ...document.events,
-      ]);
-      const priorTurns = previous === undefined || !Array.isArray(previous.turns) ? [] : previous.turns;
-      const merged = {
-        ...fields,
-        events,
-        // A turn entry is appended only when the caller supplies the prompt
-        // text, so non-turn updates (rename, session id backfill) never inflate
-        // the replay index.
-        ...(prompt === undefined
-          ? (priorTurns.length === 0 ? {} : { turns: priorTurns })
-          : { turns: [...priorTurns, { prompt, status: document.status, eventCount: events.length }] }),
-        ...(previous === undefined || document.sessionId !== undefined || previous.sessionId === undefined
-          ? {}
-          : { sessionId: previous.sessionId }),
-        ...(previous === undefined || document.transcriptPath !== undefined || previous.transcriptPath === undefined
-          ? {}
-          : { transcriptPath: previous.transcriptPath }),
-        ...(previous === undefined || document.name !== undefined || previous.name === undefined
-          ? {}
-          : { name: previous.name }),
-        ...(previous === undefined || document.workflowPath !== undefined || previous.workflowPath === undefined
-          ? {}
-          : { workflowPath: previous.workflowPath }),
-        ...(previous === undefined || document.workspaceCwd !== undefined || previous.workspaceCwd === undefined
-          ? {}
-          : { workspaceCwd: previous.workspaceCwd }),
-      };
-      const content = yield* Effect.try({
-        try: () => `${stringifyTrajectory({
-          version: 1 as const,
-          runId,
-          updatedAt: new Date().toISOString(),
-          ...merged,
-        })}\n`,
-        catch: (cause) => new TrajectoryWriteError({
-          operation: "serialize",
-          path,
-          message: errorMessage(cause),
-        }),
+      const now = new Date().toISOString();
+      // The record lands before the document rewritten from it: a failure
+      // between the two must leave the document stale, not the record missing.
+      //
+      // The rewrite is the whole write's cost — it merges the run so far and
+      // serializes it — so this is what still makes a write grow with the run.
+      // It is kept because the document is what a reader reads directly; a run
+      // without one falls back to folding the stream, which cannot describe a
+      // run whose stream began after its document did.
+      yield* appendTrajectoryRecord(fileSystem, path, {
+        version: 1,
+        runId,
+        timestamp: now,
+        status: document.status,
+        promptLength: document.promptLength,
+        events: compactTrajectoryEvents(document.events),
+        ...(document.prompt === undefined ? {} : { prompt: document.prompt }),
+        ...(document.sessionId === undefined ? {} : { sessionId: document.sessionId }),
+        ...(document.transcriptPath === undefined ? {} : { transcriptPath: document.transcriptPath }),
+        ...(document.error === undefined ? {} : { error: document.error }),
+        ...(document.name === undefined ? {} : { name: document.name }),
+        ...(document.workflowPath === undefined ? {} : { workflowPath: document.workflowPath }),
+        ...(document.workspaceCwd === undefined ? {} : { workspaceCwd: document.workspaceCwd }),
       });
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => new TrajectoryWriteError({
-          operation: "mkdir",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
-      yield* fileSystem.writeFileString(path, content).pipe(
-        Effect.mapError((cause) => new TrajectoryWriteError({
-          operation: "write",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
     });
   }
 
-  /** Persist a human-assigned run name into the existing trajectory document,
-   * preserving every other field (status, events, session id, transcript path).
-   * A missing file yields a `read` TrajectoryWriteError rather than a fresh doc,
-   * since a run must already exist before it can be named. */
+  /** Persist a human-assigned run name as one more record.
+   *
+   * Naming changes a history rather than starting one: a run the stream cannot
+   * describe has nothing to name, and is refused before anything is written. */
   rename(
     name: string,
   ): Effect.Effect<void, TrajectoryWriteError, FileSystem.FileSystem> {
     const { runId, path } = this;
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const previous = yield* fileSystem.readFileString(path).pipe(
-        Effect.flatMap((content) => Effect.try({
-          try: () => JSON.parse(content) as Partial<TrajectoryDocument>,
-          catch: (cause) => new TrajectoryWriteError({
-            operation: "read",
-            path,
-            message: errorMessage(cause),
-          }),
-        })),
-        Effect.mapError((cause) => cause instanceof TrajectoryWriteError
-          ? cause
-          : new TrajectoryWriteError({
-            operation: "read",
-            path,
-            message: errorMessage(cause),
-          })),
-      );
-      const merged = { ...previous, name };
-      const content = yield* Effect.try({
-        try: () => `${JSON.stringify({
-          ...merged,
-          version: 1 as const,
-          runId,
-          updatedAt: new Date().toISOString(),
-        }, null, 2)}\n`,
-        catch: (cause) => new TrajectoryWriteError({
-          operation: "serialize",
+      const stream = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
+      if (parseTrajectory(stream) === undefined) {
+        return yield* Effect.fail(new TrajectoryWriteError({
+          operation: "read",
           path,
-          message: errorMessage(cause),
-        }),
+          message: "no trajectory recorded for this run",
+        }));
+      }
+      yield* appendTrajectoryRecord(fileSystem, path, {
+        version: 1,
+        runId,
+        timestamp: new Date().toISOString(),
+        events: [],
+        name,
       });
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => new TrajectoryWriteError({
-          operation: "mkdir",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
-      yield* fileSystem.writeFileString(path, content).pipe(
-        Effect.mapError((cause) => new TrajectoryWriteError({
-          operation: "write",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
     });
   }
 }

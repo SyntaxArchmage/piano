@@ -17,11 +17,9 @@ export {
   compileWorkflow,
   PI_WORKFLOW_HARNESS,
   parseWorkflow,
-  scheduleWorkflow,
   stageModelForSlot,
   type CompiledStage,
   type CompiledWorkflow,
-  type ScheduledStage,
   type WorkflowDocument,
   type WorkflowHarness,
   type WorkflowLoop,
@@ -31,6 +29,14 @@ export {
   type WorkflowStage,
   type WorkflowTournament,
 } from "./workflow.js";
+export {
+  ACTOR_KEY_VERSION,
+  actorSessionDirectory,
+  migrateLegacyActorKey,
+  workflowActorKey,
+  type WorkflowRuntimeFrame,
+  type WorkflowRuntimeInvocation,
+} from "./workflow-runtime.js";
 export {
   admitWinner,
   betterByDirection,
@@ -44,6 +50,7 @@ export {
   type SelectionRejection,
 } from "./selection.js";
 export { WorkflowError, type WorkflowPhase } from "./errors.js";
+export { iterationOfInvocationId, runtimeRegionInstanceId } from "./workflow-runtime.js";
 export {
   allocateMapWorkspace,
   cleanupMapWorkspaces,
@@ -108,18 +115,47 @@ export {
 } from "./workflow-resume.js";
 export {
   appendWorkflowProgress,
+  applyProgressRecord,
+  closeWorkflowJob,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
+  parseProgressStreamRecord,
+  progressRecordDeclaredFields,
+  progressRecordKind,
   workflowProgressPath,
-  workflowProgressSnapshotPath,
   type WorkflowProgressRecord,
+  type WorkflowProgressStartRecord,
+  type WorkflowProgressExecutionStartRecord,
+  type WorkflowProgressExecutionFinishRecord,
+  type WorkflowProgressJobClosedRecord,
+  type WorkflowProgressRegionFinalizedRecord,
+  type WorkflowProgressStreamRecord,
+  type WorkflowRegionFinalizedPayload,
   type WorkflowProgressCurrent,
   type WorkflowProgressPlan,
   type WorkflowProgressProjection,
   type WorkflowProgressSnapshot,
   type WorkflowProgressStageCount,
 } from "./progress.js";
+export {
+  foldJobSpans,
+  jobs,
+  latestJob,
+  type JobSpan,
+  type JobView,
+} from "./job-spans.js";
+export {
+  readRunStatus,
+  rebuildRunStatus,
+  refreshRunStatus,
+  runStatusFromParts,
+  runStatusPath,
+  writeRunStatus,
+  type RunJob,
+  type RunStatus,
+  type RunTurn,
+} from "./run-status.js";
 export {
   snapshotWorkerContract,
   type WorkerContractReference,

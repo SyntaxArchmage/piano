@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { SelectionRecorder, selectionApplyRate, type SelectionRecord } from "../src/index.js";
 
 function decision(outcome: SelectionRecord["outcome"]): SelectionRecord {
-  return { type: "selection", executionId: "run-1", timestamp: "2026-09-04T00:00:00.000Z", outcome };
+  return { type: "selection", runId: "run-1", timestamp: "2026-09-04T00:00:00.000Z", outcome };
 }
 
 function readRecords(recorder: SelectionRecorder, runDir: string) {

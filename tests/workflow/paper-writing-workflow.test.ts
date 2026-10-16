@@ -57,8 +57,8 @@ async function compileRecipeWorkflow(name: string) {
 }
 
 function runLogging<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Logging>): Promise<Exit.Exit<A, E>> {
-  const log = new LogWriter("test", join(tmpdir(), "piano-paper-writing-log.jsonl"));
-  const trace = new TraceWriter("test", join(tmpdir(), "piano-paper-writing-trace.jsonl"));
+  const log = new LogWriter("test", join(tmpdir(), "piano-paper-writing-log.jsonl"), "trace-test");
+  const trace = new TraceWriter("test", join(tmpdir(), "piano-paper-writing-trace.jsonl"), "trace-test");
   return Effect.runPromiseExit(effect.pipe(
     Effect.provideService(Logging, loggingService(log, trace)),
     Effect.provide(NodeFileSystem.layer),
@@ -75,8 +75,8 @@ function timedShape(compiled: CompiledWorkflow) {
     regions: compiled.regions.map((region) => ({
       id: region.id,
       kind: region.kind,
-      entry: region.entry,
-      exit: region.exit,
+      entryStageId: region.entryStageId,
+      exitStageId: region.exitStageId,
       feedback: region.feedback,
       parentId: region.parentId,
       from: region.from,
@@ -97,8 +97,8 @@ describe("paper-writing workflow template", () => {
     expect(polish).toMatchObject({
       kind: "loop",
       name: "polish",
-      entry: "storyline",
-      exit: "revise",
+      entryStageId: "polish.storyline",
+      exitStageId: "polish.revise",
       // The reviewer's issues are the loop's memory between rounds.
       feedback: "review",
       duration: FULL_DURATION_SECONDS,
@@ -117,13 +117,12 @@ describe("paper-writing workflow template", () => {
       STAGE_ORDER.map(([name, worker]) => [name, worker]),
     );
 
-    // The loop's membership, by whose parent region is `polish`. Region ids are
-    // dotted paths, so membership is asserted through the region path instead.
+    // The loop's membership, by whose enclosing region is `polish`.
     const inLoop = compiled.stages
-      .filter((stage) => stage.regionPath.includes("polish"))
+      .filter((stage) => stage.parentId === "polish")
       .map((stage) => stage.stage.name);
     expect(inLoop).toEqual(["storyline", "figures", "write", "audit", "review", "revise"]);
-    expect(compiled.stages.find((stage) => stage.stage.name === "prepare")?.regionPath).toEqual([]);
+    expect(compiled.stages.find((stage) => stage.stage.name === "prepare")?.parentId).toBeUndefined();
   });
 
   it("assigns the specialized model team to every paper stage", async () => {

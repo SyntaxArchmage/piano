@@ -99,53 +99,61 @@ function progressRecords(runDir: string): LegacyRecords {
 }
 
 function legacyEvents(runDir: string): LegacyEvents {
-  const path = join(runDir, "trajectory.json");
+  const path = join(runDir, "trajectory.jsonl");
   if (!existsSync(path)) return { events: [], issues: [] };
   const events: AgentEvent[] = [];
   const issues: string[] = [];
   try {
-    const document = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    const rawEvents = Array.isArray(document)
-      ? document
-      : isRecord(document) && Array.isArray(document.events)
-        ? document.events
-        : undefined;
-    if (rawEvents === undefined) {
-      issues.push("trajectory.json must contain an events array");
-      return { events, issues };
+    // The stream is the record; the per-run document it used to be folded
+    // into is gone, so each line's `events` array is what this adapter reads.
+    const rawEvents: unknown[] = [];
+    for (const [index, line] of readFileSync(path, "utf8").split("\n").entries()) {
+      if (line.trim() === "") continue;
+      let record: unknown;
+      try {
+        record = JSON.parse(line) as unknown;
+      } catch (cause) {
+        issues.push(`trajectory.jsonl line ${index + 1} is not JSON: ${errorMessage(cause)}`);
+        continue;
+      }
+      if (!isRecord(record) || !Array.isArray(record.events)) {
+        issues.push(`trajectory.jsonl line ${index + 1} has no events array`);
+        continue;
+      }
+      rawEvents.push(...record.events);
     }
     for (const [index, value] of rawEvents.entries()) {
       if (!isRecord(value)) {
-        issues.push(`trajectory.json event ${index + 1} is not an object`);
+        issues.push(`trajectory.jsonl event ${index + 1} is not an object`);
         continue;
       }
       if (typeof value.type !== "string" || value.type.length === 0) {
-        issues.push(`trajectory.json event ${index + 1} must have a string type`);
+        issues.push(`trajectory.jsonl event ${index + 1} must have a string type`);
         continue;
       }
       // Keep the adapter's structural boundary explicit. These are the fields
       // evaluateTrajectory reads for the corresponding event types; malformed
       // known events are reported instead of being allowed to throw later.
       if (value.type === "message_end" && !isRecord(value.message)) {
-        issues.push(`trajectory.json event ${index + 1} message_end has no object message`);
+        issues.push(`trajectory.jsonl event ${index + 1} message_end has no object message`);
         continue;
       }
       if (value.type === "usage" && !isRecord(value.usage)) {
-        issues.push(`trajectory.json event ${index + 1} usage has no object usage`);
+        issues.push(`trajectory.jsonl event ${index + 1} usage has no object usage`);
         continue;
       }
       if (value.type === "tool_execution_start" && typeof value.toolName !== "string") {
-        issues.push(`trajectory.json event ${index + 1} tool_execution_start has no string toolName`);
+        issues.push(`trajectory.jsonl event ${index + 1} tool_execution_start has no string toolName`);
         continue;
       }
       if (value.type === "tool_execution_end" && typeof value.isError !== "boolean") {
-        issues.push(`trajectory.json event ${index + 1} tool_execution_end has no boolean isError`);
+        issues.push(`trajectory.jsonl event ${index + 1} tool_execution_end has no boolean isError`);
         continue;
       }
       events.push(value as AgentEvent);
     }
   } catch (cause) {
-    issues.push(`trajectory.json could not be read: ${errorMessage(cause)}`);
+    issues.push(`trajectory.jsonl could not be read: ${errorMessage(cause)}`);
   }
   return { events, issues };
 }

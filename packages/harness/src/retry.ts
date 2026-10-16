@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { logger, type Logging, type Source } from "@piano/logging";
-import type { AgentContinuation, AgentResult } from "./pi.js";
+import type { AgentContinuation, AgentResult } from "./agent-contract.js";
 import { AgentError } from "./errors.js";
 
 /** Hardcoded reliability floor for failed agent exits: one initial attempt

@@ -1,6 +1,6 @@
 // The run's workflow execution is get-or-create, never re-created, across
 // prompts: a second prompt on a finished run continues the same execution
-// (same executionId) on the same resumed actor (same sessionId, turns 2) —
+// (same runId) on the same resumed actor (same sessionId, turns 2) —
 // the identical path /resume takes. This is the engine half of the TUI's
 // queued-next-prompt behavior (tests/tui/prompt-queue.test.ts).
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -78,7 +78,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
                 runDir: session.runDir,
                 cwd: root,
                 prompt: text,
-                executionId: session.id,
+                runId: session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signoff,
                 agentRunner: runner,
@@ -96,11 +96,11 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const second = await prompt("second prompt");
       expect(second.text).toBeTruthy();
       // Same run = same execution; the actor was resumed, not re-created.
-      expect(second.executionId).toBe(first.executionId);
+      expect(second.runId).toBe(first.runId);
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      expect(after?.promptIndex).toBe(2);
+      expect(after?.jobOrdinal).toBe(2);
       const firstActor = continued?.actors.values().next().value;
       const secondActor = after?.actors.values().next().value;
       // Resumed the very same harness session: one actor, two turns.
@@ -142,7 +142,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
               runDir: session.runDir,
               cwd: root,
               prompt: text,
-              executionId: session.id,
+              runId: session.id,
               ...(execution === undefined ? {} : { execution }),
               signoff,
               agentRunner: runner,
@@ -168,12 +168,75 @@ describe("a finished run's next prompt continues its workflow execution", () => 
   });
 
   // A live coding session switches workflow (a different stage, a different
-  // harness) and switches back. Each prompt persists the actor table, so a
+  // worker) and switches back. Each prompt persists the actor table, so a
   // prompt that ran other actors must not evict the ones it did not touch:
   // evicted means unreachable, and the session the harness still holds on disk
   // is silently abandoned — the prompt after that starts the conversation over.
   it("keeps a workflow's actor while other prompts run a different workflow", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-switch-workflow-"));
+    try {
+      const FIRST_STAGE = join(root, "first.yml");
+      const SECOND_STAGE = join(root, "second.yml");
+      await writeFile(FIRST_STAGE, SIGNOFF_WORKFLOW);
+      await writeFile(
+        SECOND_STAGE,
+        SIGNOFF_WORKFLOW.replace("name: agent", "name: reviewer").replace("worker: basic", "worker: smoke-test-agent"),
+      );
+      const session = await Effect.runPromise(
+        createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      const runner: AgentRunner = (request, options) => executeAgent(request, { ...options, sdk: fakeSdk() });
+      const signoff = (_request: WorkflowSignoffRequest) => Effect.succeed({ type: "continue" as const });
+      const prompt = (workflowPath: string, text: string) =>
+        Effect.runPromise(
+          loadWorkflow(workflowPath, root).pipe(
+            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+              Effect.flatMap((execution) => executeWorkflow(loaded, {
+                runDir: session.runDir,
+                cwd: root,
+                prompt: text,
+                runId: session.id,
+                ...(execution === undefined ? {} : { execution }),
+                signoff,
+                agentRunner: runner,
+              })),
+            )),
+            Effect.provideService(Logging, loggingService(session.log, session.trace)),
+            Effect.provide(NodeFileSystem.layer),
+          ),
+        );
+      const readBack = () =>
+        Effect.runPromise(
+          readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        );
+
+      await prompt(FIRST_STAGE, "first prompt");
+      const firstActorKey = `v2/${session.id}/pi/basic/root`;
+      const firstSession = (await readBack())?.actors.get(firstActorKey)?.continuation.sessionId;
+      expect(firstSession).toBeDefined();
+
+      await prompt(SECOND_STAGE, "second prompt");
+      const both = await readBack();
+
+      // The workflow that did not run is still resumable, identity and all.
+      expect(both?.actors.get(firstActorKey)?.continuation.sessionId).toBe(firstSession);
+      expect(both?.actors.has(`v2/${session.id}/pi/smoke-test-agent/root`)).toBe(true);
+
+      // Returning to it reopens that same conversation instead of starting over.
+      await prompt(FIRST_STAGE, "third prompt");
+      const after = await readBack();
+      expect(after?.actors.get(firstActorKey)?.turns).toBeGreaterThanOrEqual(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // One worker, one memory: switching to a different workflow that reuses the
+  // same worker continues the same conversation instead of opening a second
+  // one. This is what makes "run a workflow, then keep working on it" resume
+  // the same chat.
+  it("shares one conversation across workflows that reuse the same worker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-switch-worker-"));
     try {
       const FIRST_STAGE = join(root, "first.yml");
       const SECOND_STAGE = join(root, "second.yml");
@@ -192,7 +255,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
                 runDir: session.runDir,
                 cwd: root,
                 prompt: text,
-                executionId: session.id,
+                runId: session.id,
                 ...(execution === undefined ? {} : { execution }),
                 signoff,
                 agentRunner: runner,
@@ -202,27 +265,17 @@ describe("a finished run's next prompt continues its workflow execution", () => 
             Effect.provide(NodeFileSystem.layer),
           ),
         );
-      const readBack = () =>
-        Effect.runPromise(
-          readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
-        );
 
       await prompt(FIRST_STAGE, "first prompt");
-      const firstActorKey = `${session.id}/pi/agent/root`;
-      const firstSession = (await readBack())?.actors.get(firstActorKey)?.continuation.sessionId;
-      expect(firstSession).toBeDefined();
-
       await prompt(SECOND_STAGE, "second prompt");
-      const both = await readBack();
-
-      // The workflow that did not run is still resumable, identity and all.
-      expect(both?.actors.get(firstActorKey)?.continuation.sessionId).toBe(firstSession);
-      expect(both?.actors.has(`${session.id}/pi/reviewer/root`)).toBe(true);
-
-      // Returning to it reopens that same conversation instead of starting over.
-      await prompt(FIRST_STAGE, "third prompt");
-      const after = await readBack();
-      expect(after?.actors.get(firstActorKey)?.turns).toBeGreaterThanOrEqual(2);
+      const actors = await Effect.runPromise(
+        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      // ONE actor under the worker key: the reviewer stage continued the
+      // agent stage's conversation instead of opening its own.
+      const actorKey = `v2/${session.id}/pi/basic/root`;
+      expect([...(actors?.actors.keys() ?? [])]).toEqual([actorKey]);
+      expect(actors?.actors.get(actorKey)?.turns).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -13,11 +13,18 @@ import {
   Logging,
   logger,
   loggingService,
+  parseTrajectory,
   TRACE,
 } from "../../packages/logging/src/index.js";
 
 const provideNode = <A, E>(program: Effect.Effect<A, E, import("@effect/platform").FileSystem.FileSystem>) =>
   program.pipe(Effect.provide(NodeFileSystem.layer));
+
+/** The run as its readers see it: the stream folded back into one document. */
+async function readTrajectory(runDir: string): Promise<Record<string, unknown>> {
+  const raw = await readFile(join(runDir, "trajectory.jsonl"), "utf8");
+  return parseTrajectory(raw) as unknown as Record<string, unknown>;
+}
 
 describe("logging Effect boundary", () => {
   let root: string;
@@ -35,8 +42,6 @@ describe("logging Effect boundary", () => {
 
     expect(log).toContain('"event":"run.created"');
     expect(log).toContain('"function":"createSession"');
-    expect(log).toContain('"event":"function.enter"');
-    expect(log).toContain('"event":"function.exit"');
     const runCreated = JSON.parse(log.split("\n").find((line) => line.includes('"event":"run.created"')) ?? "{}") as Record<string, unknown>;
     expect(runCreated).toMatchObject({
       timestamp: expect.any(String),
@@ -61,7 +66,7 @@ describe("logging Effect boundary", () => {
       transcriptPath: "/tmp/session.jsonl",
     })));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory).toMatchObject({
       version: 1,
       runId: session.id,
@@ -91,7 +96,7 @@ describe("logging Effect boundary", () => {
       transcriptPath: "/tmp/session-2.jsonl",
     })));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory).toMatchObject({
       status: "completed",
       promptLength: 6,
@@ -116,7 +121,7 @@ describe("logging Effect boundary", () => {
     })));
     await Effect.runPromise(provideNode(session.trajectory.rename("fix matmul kernel")));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory).toMatchObject({
       name: "fix matmul kernel",
       status: "completed",
@@ -144,7 +149,7 @@ describe("logging Effect boundary", () => {
       events: [{ type: "message_end", prompt: "second" }],
     })));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory.turns).toEqual([
       { prompt: "first", status: "completed", eventCount: 2 },
       // Cumulative, so replay slices [2, 3) for this turn.
@@ -168,7 +173,7 @@ describe("logging Effect boundary", () => {
     })));
     await Effect.runPromise(provideNode(session.trajectory.rename("fix matmul kernel")));
 
-    const trajectory = JSON.parse(await readFile(join(session.runDir, "trajectory.json"), "utf8")) as Record<string, unknown>;
+    const trajectory = await readTrajectory(session.runDir);
     expect(trajectory.turns).toEqual([{ prompt: "first", status: "completed", eventCount: 1 }]);
   });
 
@@ -183,7 +188,7 @@ describe("logging Effect boundary", () => {
     root = await mkdtemp(join(tmpdir(), "piano-logging-"));
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const writer = new LogWriter("test", join(root, "log.jsonl"));
+    const writer = new LogWriter("test", join(root, "log.jsonl"), "trace-test");
     const exit = await Effect.runPromiseExit(provideNode(writer.append("bad.payload", { data: circular })));
 
     expect(exit._tag).toBe("Failure");
@@ -212,8 +217,6 @@ describe("logging Effect boundary", () => {
     const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
     const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
     expect(log).toContain('"event":"test.started"');
-    expect(log).toContain('"event":"function.enter"');
-    expect(log).toContain('"event":"function.exit"');
     const testStarted = JSON.parse(log.split("\n").find((line) => line.includes('"event":"test.started"')) ?? "{}") as Record<string, unknown>;
     expect(testStarted).toMatchObject({ namespace: "tests", attributes: { purpose: "test" } });
     expect(trace).toContain('"fn":"outer"');
@@ -239,15 +242,10 @@ describe("logging Effect boundary", () => {
       expect(exit.cause.error).toBe("business failure");
     }
     const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
-    const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
     expect(trace).toContain('"event":"error"');
     expect(trace).toContain('"fn":"failed"');
-    expect(log).toContain('"event":"function.error"');
     const traceError = JSON.parse(trace.split("\n").find((line) => line.includes('"event":"error"')) ?? "{}") as Record<string, unknown>;
-    const logError = JSON.parse(log.split("\n").find((line) => line.includes('"event":"function.error"')) ?? "{}") as Record<string, unknown>;
     expect(traceError).toMatchObject({ status: "error", error: { type: "string", message: "business failure" } });
-    expect(logError.attributes).toMatchObject({ error: { type: "string", message: "business failure" } });
-    expect(logError).toMatchObject({ severity: "error", outcome: "failure" });
   });
 
   it("keeps error formatting total when a cause getter throws", () => {
@@ -266,7 +264,7 @@ describe("logging Effect boundary", () => {
     expect(isCancellation(throwingCause)).toBe(false);
   });
 
-  it("records cancellation as a non-error outcome and recognizes Effect interrupts", async () => {
+  it("recognizes Effect interrupts and still spans the interrupted boundaries", async () => {
     root = await mkdtemp(join(tmpdir(), "piano-logging-"));
     const session = await Effect.runPromise(provideNode(createSession({ cwd: root, runsRoot: join(root, "runs") })));
     expect(isCancellation({ _tag: "Interrupt" })).toBe(true);
@@ -304,49 +302,46 @@ describe("logging Effect boundary", () => {
 
     expect(exit._tag).toBe("Failure");
     expect(interruptedExit._tag).toBe("Failure");
-    const logRecords = (await readFile(join(session.runDir, "log.jsonl"), "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const cancelled = logRecords.find((record) => record.event === "function.error" && record.function === "cancelled");
-    const interrupted = logRecords.find((record) => record.event === "function.error" && record.function === "interrupted");
-    const externallyInterrupted = logRecords.find((record) => record.event === "function.error" && record.function === "externallyInterrupted");
-    expect(cancelled).toMatchObject({ severity: "debug", outcome: "cancelled" });
-    expect(interrupted).toMatchObject({ severity: "debug", outcome: "cancelled" });
-    expect(externallyInterrupted).toMatchObject({ severity: "debug", outcome: "cancelled" });
     const traceRecords = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
+    // Every interrupted boundary still gets a span; an external interrupt
+    // carries the interrupt itself rather than a business error. The old
+    // debug/"cancelled" marker lived only in the mirrored log line, which is
+    // gone — the trace is the one record of a span.
+    const cancelledTrace = traceRecords.find((record) => record.fn === "cancelled");
+    const interruptedTrace = traceRecords.find((record) => record.fn === "interrupted");
+    expect(cancelledTrace).toBeDefined();
+    expect(interruptedTrace).toBeDefined();
     const externalTraceError = traceRecords.find((record) => record.event === "error" && record.fn === "externallyInterrupted");
     expect(externalTraceError).toMatchObject({ status: "error" });
     expect(JSON.stringify(externalTraceError)).toContain("Interrupt");
   });
 
-  it("correlates function logs with their trace spans", async () => {
+  it("keeps traced boundaries out of the run log and in the trace", async () => {
     root = await mkdtemp(join(tmpdir(), "piano-logging-"));
     const session = await Effect.runPromise(provideNode(createSession({ cwd: root, runsRoot: join(root, "runs") })));
-    await Effect.runPromise(
+    await Effect.runPromiseExit(
       TRACE(
-        { module: "tests", file: "logging.test.ts", function: "correlated" },
-        Effect.succeed("ok"),
+        { module: "tests", file: "logging.test.ts", function: "quiet" },
+        Effect.fail({ kind: "cancelled", message: "not mirrored" }),
       ).pipe(
         Effect.provideService(Logging, loggingService(session.log, session.trace)),
         Effect.provide(NodeFileSystem.layer),
       ),
     );
 
-    const logRecords = (await readFile(join(session.runDir, "log.jsonl"), "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const traceRecords = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const enterLog = logRecords.find((record) => record.event === "function.enter" && record.function === "correlated");
-    const enterTrace = traceRecords.find((record) => record.event === "enter" && record.fn === "correlated");
-    expect(enterLog?.span_id).toBe(enterTrace?.span_id);
+    // The traced boundary's enter/error lines are not mirrored into the ops
+    // log — a traced run's log holds only what its own events said.
+    const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+    for (const line of log.split("\n").filter(Boolean)) {
+      const record = JSON.parse(line) as { namespace?: string };
+      expect(record.namespace).not.toBe("trace");
+    }
+    // The span itself is in the trace, which is where a debug reader looks.
+    const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+    expect(trace).toContain('"fn":"quiet"');
   });
 
   it("bounds trace arguments and results", async () => {

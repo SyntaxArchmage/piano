@@ -4,20 +4,26 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SessionPicker } from "../../packages/cli/src/session-picker.js";
 
-async function writeRun(root: string, runId: string, document?: unknown): Promise<void> {
+/** A run as the picker finds it: a trajectory to replay (which is what keeps the
+ * run listed) and the state document its row is projected from. */
+async function writeRun(root: string, runId: string, state?: Record<string, unknown>): Promise<void> {
   const runDir = join(root, runId);
   await mkdir(runDir, { recursive: true });
-  if (document !== undefined) {
-    await writeFile(join(runDir, "trajectory.json"), `${JSON.stringify(document)}\n`, "utf8");
+  if (state !== undefined) {
+    await writeFile(
+      join(runDir, "trajectory.jsonl"),
+      `${JSON.stringify({ version: 1, runId, timestamp: "2026-09-01T00:00:00.000Z", status: "completed", events: [] })}\n`,
+      "utf8",
+    );
+    await writeFile(join(runDir, "status.json"), `${JSON.stringify(state)}\n`, "utf8");
   }
 }
 
-function trajectory(fields: Record<string, unknown>): unknown {
+function state(fields: Record<string, unknown>): Record<string, unknown> {
   return {
     version: 1,
     updatedAt: "2026-09-01T00:00:00.000Z",
     status: "completed",
-    events: [],
     ...fields,
   };
 }
@@ -60,12 +66,12 @@ function openPicker(root: string, currentRunId?: string): Harness {
 describe("SessionPicker", () => {
   it("lists runs newest first with their name, workflow, and first prompt", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-picker-"));
-    await writeRun(root, "20260901T070228-aaa111", trajectory({
+    await writeRun(root, "20260901T070228-aaa111", state({
       name: "kernel tuning",
       workflowPath: "/repo/recipes/workflows/gpu-cuda-tuning.yaml",
       turns: [{ prompt: "tune the matmul", status: "completed", eventCount: 0 }],
     }));
-    await writeRun(root, "20260830T101500-bbb222", trajectory({
+    await writeRun(root, "20260830T101500-bbb222", state({
       workflowPath: "/repo/recipes/workflows/basic.yaml",
       turns: [{ prompt: "summarize the repo", status: "completed", eventCount: 0 }],
     }));
@@ -85,7 +91,7 @@ describe("SessionPicker", () => {
 
   it("marks the run the TUI is currently writing to", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-picker-"));
-    await writeRun(root, "20260901T070228-aaa111", trajectory({}));
+    await writeRun(root, "20260901T070228-aaa111", state({}));
 
     const output = await openPicker(root, "20260901T070228-aaa111").settle();
 
@@ -94,8 +100,8 @@ describe("SessionPicker", () => {
 
   it("filters on the run id, name, workflow, and prompt", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-picker-"));
-    await writeRun(root, "20260901T070228-aaa111", trajectory({ name: "kernel tuning" }));
-    await writeRun(root, "20260830T101500-bbb222", trajectory({
+    await writeRun(root, "20260901T070228-aaa111", state({ name: "kernel tuning" }));
+    await writeRun(root, "20260830T101500-bbb222", state({
       turns: [{ prompt: "summarize the repo", status: "completed", eventCount: 0 }],
     }));
 
@@ -114,7 +120,7 @@ describe("SessionPicker", () => {
     // More runs than fit the viewport, so some rows are never read and the
     // footer has to admit the filter cannot see them.
     for (let index = 0; index < 12; index += 1) {
-      await writeRun(root, `20260901T0700${String(index).padStart(2, "0")}-run${index}`, trajectory({
+      await writeRun(root, `20260901T0700${String(index).padStart(2, "0")}-run${index}`, state({
         name: `run ${index}`,
       }));
     }
@@ -131,8 +137,8 @@ describe("SessionPicker", () => {
 
   it("returns the selected run id on Enter and cancels on Escape", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-picker-"));
-    await writeRun(root, "20260901T070228-aaa111", trajectory({}));
-    await writeRun(root, "20260830T101500-bbb222", trajectory({}));
+    await writeRun(root, "20260901T070228-aaa111", state({}));
+    await writeRun(root, "20260830T101500-bbb222", state({}));
 
     const chooser = openPicker(root);
     await chooser.settle();
@@ -154,7 +160,7 @@ describe("SessionPicker", () => {
     // Present but unparseable: still listed, without metadata, so a run the
     // user is looking for is never hidden.
     await mkdir(join(root, "20260830T101500-bad"), { recursive: true });
-    await writeFile(join(root, "20260830T101500-bad", "trajectory.json"), "{not json\n", "utf8");
+    await writeFile(join(root, "20260830T101500-bad", "trajectory.jsonl"), "{not json\n", "utf8");
 
     const output = await openPicker(root).settle();
 

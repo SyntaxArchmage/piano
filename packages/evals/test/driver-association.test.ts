@@ -123,7 +123,10 @@ describe("parallel presentation", () => {
     await mkdir(join(root, id));
     await mkdir(join(root, id, "trajectories"));
     await writeFile(join(root, id, "log.jsonl"), JSON.stringify({ type: "run.started", workspace }) + "\n");
-    await writeFile(join(root, id, "progress.json"), JSON.stringify({
+    await writeFile(join(root, id, "status.json"), JSON.stringify({
+      version: 1,
+      runId: id,
+      status: "running",
       completedStages: progress.completed,
       plannedStages: progress.planned,
       current: { stageId: progress.stage },

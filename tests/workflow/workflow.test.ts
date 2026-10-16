@@ -16,7 +16,6 @@ import {
   setWorkflowSelection,
   resolveWorkerResources,
   parseWorkflow,
-  scheduleWorkflow,
   stageModelForSlot,
   WorkflowError,
   type WorkflowDocument,
@@ -95,8 +94,8 @@ function run<A, E>(effect: Effect.Effect<A, E, never>): Promise<Exit.Exit<A, E>>
 }
 
 function runLogging<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Logging>): Promise<Exit.Exit<A, E>> {
-  const log = new LogWriter("test", join(tmpdir(), "piano-workflow-log.jsonl"));
-  const trace = new TraceWriter("test", join(tmpdir(), "piano-workflow-trace.jsonl"));
+  const log = new LogWriter("test", join(tmpdir(), "piano-workflow-log.jsonl"), "trace-test");
+  const trace = new TraceWriter("test", join(tmpdir(), "piano-workflow-trace.jsonl"), "trace-test");
   return run(effect.pipe(
     Effect.provideService(Logging, loggingService(log, trace)),
     Effect.provide(NodeFileSystem.layer),
@@ -109,7 +108,7 @@ function firstStage(document: WorkflowDocument) {
 }
 
 describe(" single-stage workflow", () => {
-  it("parses, compiles, and schedules the latest DSL shape sequentially", async () => {
+  it("compiles the latest DSL shape into one ordered leaf", async () => {
     await expect(readFile(codingWorkflowTemplatePath, "utf8")).resolves.toBe(CODING_WORKFLOW);
     const parsed = await run(parseWorkflow(CODING_WORKFLOW, SOURCE));
     expect(Exit.isSuccess(parsed)).toBe(true);
@@ -117,14 +116,11 @@ describe(" single-stage workflow", () => {
     const compiled = await run(compileWorkflow(parsed.value, SOURCE));
     expect(Exit.isSuccess(compiled)).toBe(true);
     if (!Exit.isSuccess(compiled)) return;
-    const scheduled = await run(scheduleWorkflow(compiled.value));
-    expect(Exit.isSuccess(scheduled)).toBe(true);
-    if (Exit.isSuccess(scheduled)) {
-      expect(scheduled.value.map((item) => item.stage.name)).toEqual(["coding"]);
-      expect(scheduled.value[0]?.stage.worker).toBe("basic");
-      expect(scheduled.value[0]?.stage.harness).toBe("dsh");
-      expect(scheduled.value[0]?.stage.tools).toEqual(["read", "bash", "edit", "write", "web_search"]);
-    }
+    // compileWorkflow already emits leaves in dependency order.
+    expect(compiled.value.stages.map((item) => item.stage.name)).toEqual(["coding"]);
+    expect(compiled.value.stages[0]?.stage.worker).toBe("basic");
+    expect(compiled.value.stages[0]?.stage.harness).toBe("dsh");
+    expect(compiled.value.stages[0]?.stage.tools).toEqual(["read", "bash", "edit", "write", "web_search"]);
   });
 
   it("defaults stage memory to enabled and accepts only boolean overrides", async () => {

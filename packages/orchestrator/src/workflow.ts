@@ -152,13 +152,16 @@ export interface WorkflowDocument {
   };
 }
 
-/** A region plan surviving compile: iteration/fan-out controls + resolved boundaries. */
+/** A region plan surviving compile: iteration/fan-out controls + resolved
+ * boundaries + its nested nodes. A region is an aggregated stage — `children`
+ * is the region tree plane, the leaves of which are also members of the leaf
+ * DAG plane (`CompiledWorkflow.stages`). */
 export interface WorkflowRegionPlan {
   readonly id: string;
   readonly name: string;
   readonly kind: "loop" | "map";
-  readonly entry: string;
-  readonly exit: string;
+  /** Dotted ids of the boundary leaves. The DSL's `entry`/`exit` names are
+   * lowering-only; anything running or reporting a region reads these. */
   readonly entryStageId: string;
   readonly exitStageId: string;
   readonly parentId?: string;
@@ -175,16 +178,23 @@ export interface WorkflowRegionPlan {
   /** Fan-out lanes only: whether they run concurrently. Absent outside fan-out
    * regions; false serializes the lanes. */
   readonly parallel?: boolean;
+  /** Nested stages and sub-regions, in declaration order. */
+  readonly children: readonly WorkflowRuntimeNode[];
 }
 
-/** A leaf stage after lowering: dotted id, region path, and its stage. */
+/** A leaf stage after lowering: dotted id, enclosing region, and its stage. */
 export interface CompiledStage {
   readonly id: string;
   readonly dependsOn: readonly string[];
-  /** Ancestor region names (dotted segments) for stages inside a loop/map. */
-  readonly regionPath: readonly string[];
+  /** Innermost enclosing region id, or undefined at top level. Regions nest via
+   * their own `parentId`, so the full ancestor chain is a pointer walk. */
+  readonly parentId?: string;
   readonly stage: WorkflowStage;
 }
+
+/** One node of the compiled scope tree: a leaf stage or an aggregated stage
+ * (region). Distinguished by presence of `stage`. */
+export type WorkflowRuntimeNode = CompiledStage | WorkflowRegionPlan;
 
 export interface CompiledWorkflow {
   readonly name: string;
@@ -192,17 +202,11 @@ export interface CompiledWorkflow {
   /** Leaf stages ordered by dependency (regions flattened into leaves). */
   readonly stages: readonly CompiledStage[];
   readonly regions: readonly WorkflowRegionPlan[];
+  /** Root scope of the compiled region tree. Same leaf/region objects as
+   * `stages`/`regions`, nested once at compile time. */
+  readonly nodes: readonly WorkflowRuntimeNode[];
   /** Orchestrator-owned winner auto-commit (ISSUE-017); see WorkflowDocument. */
   readonly autoCommit: boolean;
-}
-
-export interface ScheduledStage {
-  readonly id: string;
-  readonly order: number;
-  readonly dependsOn: readonly string[];
-  readonly stage: WorkflowStage;
-  /** Non-empty for stages nested inside a loop/map region. */
-  readonly regionPath?: readonly string[];
 }
 
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
@@ -698,31 +702,33 @@ interface Boundary {
   readonly exitStageId: string;
 }
 
-interface InternalLeaf {
-  readonly id: string;
-  readonly regionPath: readonly string[];
-  readonly stage: WorkflowStage;
-  dependsOn: readonly string[];
-}
-
 interface LoweredWorkflow {
-  readonly leaves: InternalLeaf[];
+  readonly leaves: CompiledStage[];
   readonly regions: WorkflowRegionPlan[];
+  /** This scope's nodes in declaration order: the region-tree children. */
+  readonly nodes: WorkflowRuntimeNode[];
   readonly boundaries: Map<string, Boundary>;
 }
 
+/** Lowering rewrites `from` names into resolved exit-stage ids once every
+ * boundary is known. The leaf is already published into the scope tree, so the
+ * rewiring happens in place on the one object both planes share. */
+function rewireDependsOn(leaf: CompiledStage, dependsOn: readonly string[]): void {
+  (leaf as { dependsOn: readonly string[] }).dependsOn = dependsOn;
+}
+
 /** The innermost fan-out region enclosing a leaf, with the lane count a
- * per-lane model list must match. `regionPath` names the enclosing regions
- * outermost-first and a region's id is exactly that dotted path, so the deepest
- * prefix resolving to a `map` region is the one the list is indexed against. */
+ * per-lane model list must match. `parentId` names the enclosing region, and a
+ * region's `parentId` its own, so the innermost `map` ancestor is the one the
+ * list is indexed against. */
 function innermostTournament(
-  leaf: InternalLeaf,
+  leaf: CompiledStage,
   regions: readonly WorkflowRegionPlan[],
 ): { readonly name: string; readonly count: number } | undefined {
-  for (let depth = leaf.regionPath.length; depth > 0; depth -= 1) {
-    const id = leaf.regionPath.slice(0, depth).join(".");
-    const region = regions.find((candidate) => candidate.id === id && candidate.kind === "map");
-    if (region?.count !== undefined) return { name: region.name, count: region.count };
+  const byId = new Map(regions.map((region) => [region.id, region]));
+  for (let id = leaf.parentId; id !== undefined; id = byId.get(id)?.parentId) {
+    const region = byId.get(id);
+    if (region?.kind === "map" && region.count !== undefined) return { name: region.name, count: region.count };
   }
   return undefined;
 }
@@ -733,7 +739,7 @@ function innermostTournament(
  * load time rather than at the first lane's first turn. */
 function validateSlotModels(
   sourcePath: string,
-  leaves: readonly InternalLeaf[],
+  leaves: readonly CompiledStage[],
   regions: readonly WorkflowRegionPlan[],
 ): void {
   for (const leaf of leaves) {
@@ -779,8 +785,9 @@ function lowerNodes(
     scopePath: readonly string[],
     parentId?: string,
   ): LoweredWorkflow => {
-    const leaves: InternalLeaf[] = [];
+    const leaves: CompiledStage[] = [];
     const regions: WorkflowRegionPlan[] = [];
+    const nodes: WorkflowRuntimeNode[] = [];
     const boundaries = new Map<string, Boundary>();
 
     const byName = new Map<string, WorkflowNode>();
@@ -805,7 +812,14 @@ function lowerNodes(
     for (const node of scopeNodes) {
       if ("stage" in node) {
         const id = runtimeId(scopePath, node.stage.name);
-        leaves.push({ id, regionPath: scopePath, stage: node.stage, dependsOn: [] });
+        const leaf: CompiledStage = {
+          id,
+          ...(parentId === undefined ? {} : { parentId }),
+          stage: node.stage,
+          dependsOn: [],
+        };
+        leaves.push(leaf);
+        nodes.push(leaf);
         boundaries.set(node.stage.name, { entryStageId: id, exitStageId: id });
         continue;
       }
@@ -885,12 +899,10 @@ function lowerNodes(
         throw scopeError(sourcePath, `${kind} "${region.name}" has an invalid boundary`);
       }
 
-      regions.push({
+      const plan: WorkflowRegionPlan = {
         id,
         name: region.name,
         kind,
-        entry: region.entry,
-        exit: region.exit,
         entryStageId: entryBoundary.entryStageId,
         exitStageId: exitBoundary.exitStageId,
         ...(parentId === undefined ? {} : { parentId }),
@@ -913,7 +925,10 @@ function lowerNodes(
             // Resolved here so the executor never re-derives the default.
             parallel: (region as WorkflowTournament).parallel !== false,
           }),
-      });
+        children: childLowered.nodes,
+      };
+      regions.push(plan);
+      nodes.push(plan);
       boundaries.set(region.name, {
         entryStageId: entryBoundary.entryStageId,
         exitStageId: exitBoundary.exitStageId,
@@ -933,23 +948,23 @@ function lowerNodes(
       if ("stage" in node) {
         const id = runtimeId(scopePath, node.stage.name);
         const leaf = leavesById.get(id);
-        if (leaf !== undefined) leaf.dependsOn = node.stage.from.map(resolveRef);
+        if (leaf !== undefined) rewireDependsOn(leaf, node.stage.from.map(resolveRef));
       } else {
         const region = "loop" in node ? node.loop : node.tournament;
         const boundary = boundaries.get(region.name);
         if (boundary !== undefined) {
           const entryLeaf = leavesById.get(boundary.entryStageId);
-          if (entryLeaf !== undefined) entryLeaf.dependsOn = region.from.map(resolveRef);
+          if (entryLeaf !== undefined) rewireDependsOn(entryLeaf, region.from.map(resolveRef));
         }
       }
     }
 
-    return { leaves, regions, boundaries };
+    return { leaves, regions, nodes, boundaries };
   };
 
   const result = lower(nodes, []);
   validateSlotModels(sourcePath, result.leaves, result.regions);
-  return { leaves: result.leaves, regions: result.regions, boundaries: result.boundaries };
+  return result;
 }
 
 /** The model a stage runs with in one tournament lane. A single id applies to
@@ -969,7 +984,7 @@ export function stageModelForSlot(
 }
 
 /** Kahn topological sort over dotted-id leaves, declaration order as tiebreak. */
-function orderLeaves(leaves: readonly InternalLeaf[]): readonly InternalLeaf[] | undefined {
+function orderLeaves(leaves: readonly CompiledStage[]): readonly CompiledStage[] | undefined {
   const byId = new Map(leaves.map((leaf) => [leaf.id, leaf]));
   const indegree = new Map(leaves.map((leaf, index) => [leaf.id, { count: leaf.dependsOn.length, index }]));
   const ready = leaves
@@ -996,7 +1011,7 @@ function orderLeaves(leaves: readonly InternalLeaf[]): readonly InternalLeaf[] |
   }
 
   if (ordered.length !== leaves.length) return undefined;
-  return ordered.map((id) => byId.get(id)).filter((leaf): leaf is InternalLeaf => leaf !== undefined);
+  return ordered.map((id) => byId.get(id)).filter((leaf): leaf is CompiledStage => leaf !== undefined);
 }
 
 export function compileWorkflow(
@@ -1031,13 +1046,9 @@ export function compileWorkflow(
       return {
         name: document.workflow.name,
         sourcePath,
-        stages: ordered.map((leaf) => ({
-          id: leaf.id,
-          dependsOn: leaf.dependsOn,
-          regionPath: leaf.regionPath,
-          stage: leaf.stage,
-        })),
+        stages: ordered,
         regions: lowered.regions,
+        nodes: lowered.nodes,
         autoCommit: document.workflow.autoCommit === true,
       };
     },
@@ -1045,17 +1056,4 @@ export function compileWorkflow(
       ? cause
       : workflowError("compile", sourcePath, errorMessage(cause)),
   });
-}
-
-/** Production schedule: ordered leaf-stage invocations with their region path. */
-export function scheduleWorkflow(
-  plan: CompiledWorkflow,
-): Effect.Effect<readonly ScheduledStage[], WorkflowError> {
-  return Effect.succeed(plan.stages.map((leaf, order) => ({
-    id: leaf.id,
-    order,
-    dependsOn: leaf.dependsOn,
-    stage: leaf.stage,
-    ...(leaf.regionPath.length === 0 ? {} : { regionPath: leaf.regionPath }),
-  })));
 }

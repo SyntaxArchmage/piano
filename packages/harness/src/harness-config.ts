@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { THINKING_LEVELS, type ThinkingLevel } from "./events.js";
+import { asRecord } from "./json-narrowing.js";
 
 /** The available adapter names are closed so an unavailable provider cannot silently
  * turn into a different provider. `pi` is the in-process SDK adapter; the other
@@ -52,15 +53,14 @@ interface ConfigRecord {
   readonly [key: string]: unknown;
 }
 
+/** A config value with content. Beyond the shared empty check this drops the
+ * template's `CHANGE_ME` placeholder, and trims, because a hand-edited JSON
+ * file collects whitespace that no harness wants to receive. The placeholder
+ * is compared against the raw value, so a configured `" CHANGE_ME "` trims to
+ * a literal the harness is then free to reject. */
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" && value !== "CHANGE_ME"
     ? value.trim()
-    : undefined;
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
     : undefined;
 }
 
@@ -78,7 +78,7 @@ function configuredFile(): ConfigRecord {
   if (!existsSync(path)) return {};
   try {
     const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return record(value) as ConfigRecord ?? {};
+    return asRecord(value) as ConfigRecord ?? {};
   } catch {
     // The selected adapter will report missing configuration or executable
     // details. A malformed optional config file must not crash discovery.
@@ -92,11 +92,11 @@ function nestedConfig(config: ConfigRecord, harness: HarnessName): Record<string
   // config readable during the rename, but never turn a missing dsh executable
   // into a Pi executable.
   if (harness === "dsh") {
-    return record(config.dsh) ?? record(config.deepseek) ?? {};
+    return asRecord(config.dsh) ?? asRecord(config.deepseek) ?? {};
   }
   // The in-process `pi` adapter also accepts the root-level provider/model
   // fields: they predate per-harness nesting and are shared with doctor.
-  return record(config[key])
+  return asRecord(config[key])
     ?? (harness === "pi" ? config : undefined)
     ?? {};
 }
@@ -126,7 +126,7 @@ function envValue(harness: HarnessName, suffix: string): string | undefined {
  * section, or `PIANO_PI_BASE_URL` value always wins. */
 function gatewayBaseUrl(config: ConfigRecord): string | undefined {
   for (const key of ["dsh", "deepseek", "claude"] as const) {
-    const baseUrl = stringValue(record(config[key])?.baseUrl);
+    const baseUrl = stringValue(asRecord(config[key])?.baseUrl);
     if (baseUrl !== undefined) return baseUrl;
   }
   return undefined;

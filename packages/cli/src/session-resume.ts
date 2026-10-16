@@ -1,18 +1,25 @@
-// Read side of `/resume` and `piano resume`: turn a run's `trajectory.json` into
-// the picker row and the chat replay.
+// Read side of `/resume` and `piano resume`: turn a run's state document into
+// the picker row, and its recorded trajectory into the chat replay.
 //
-// Both readers are deliberately tolerant. A run directory may predate the resume
-// fields, may hold a partially written document from a killed process, or may
-// hold no trajectory at all — none of that should make a run unlistable or
-// unresumable, so missing pieces degrade to `undefined` rather than an error.
-// Only a malformed (unparseable) document surfaces as a typed failure, and only
-// for the run the user explicitly asked to resume.
+// Two different questions, two different sources. The row is a state question
+// and answers from `status.json`, the one document a run keeps — the trajectory
+// it also holds is evidence of what happened, not an account of how the run is
+// doing. The replay is an evidence question and reads the trajectory itself.
+//
+// Both readers are deliberately tolerant. A run directory may predate its state
+// document, may hold a partially written document from a killed process, or may
+// hold no trajectory at all — none of that should make a resumable run
+// unlistable or unresumable, so missing pieces degrade to `undefined` rather
+// than an error. Only a malformed (unparseable) trajectory surfaces as a typed
+// failure, and only for the run the user explicitly asked to resume.
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
+import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
-import type { FailureDetails, TrajectoryDocument } from "@piano/logging";
+import { parseTrajectory, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
+import { runStatusPath, type RunStatus } from "@piano/orchestrator";
 import { LogsStorageError } from "./errors.js";
 
 /** One replayable prompt and the events it produced. */
@@ -20,8 +27,8 @@ export interface ResumeTurn {
   readonly prompt: string;
   readonly status: "completed" | "failed" | "cancelled";
   readonly events: readonly AgentEvent[];
-  /** Recorded failure. Only the final turn can carry one: `trajectory.json`
-   * keeps a single document-level `error`, overwritten each turn. */
+  /** Recorded failure. Only the final turn can carry one: the trajectory
+   * records a single `error`, overwritten each turn. */
   readonly error?: FailureDetails;
 }
 
@@ -45,36 +52,45 @@ export interface RunSummary {
   readonly updatedAt?: string;
 }
 
-export function trajectoryPath(runsRoot: string, runId: string): string {
-  return join(runsRoot, runId, "trajectory.json");
+const STREAM_FILE = "trajectory.jsonl";
+
+/** One picker row for a run, or `undefined` when the run recorded no trajectory
+ * at all — a directory left by a session that was opened and closed without a
+ * prompt. The picker resumes runs, so a run it could not replay is clutter,
+ * not history, and leaves the list.
+ *
+ * The row's metadata is the run's state document. A run that predates one, or
+ * whose state document will not parse, stays listed as an id-only row: hiding
+ * history the user could be looking for is worse than showing it without
+ * metadata. */
+export async function readRunRow(runDir: string): Promise<RunSummary | undefined> {
+  const [resumable, status] = await Promise.all([hasTrajectory(runDir), readRunState(runDir)]);
+  if (!resumable) return undefined;
+  return summarizeRun(basename(runDir), status);
 }
 
-/** What looking for one run's trajectory can find, and what each outcome means
- * for resumability. This is the resume layer's own rule, so every reader — the
- * TUI picker, `resume --list`, a future run browser — filters on one verdict
- * instead of re-deciding what a missing file means.
- *
- * - `present`: the document's bytes; summarise and replay as usual.
- * - `absent`: no `trajectory.json` at all, so there is nothing to replay and
- *   `readResumeContext` could only fail. A run in this state is a directory
- *   left by a session that was opened and closed without a prompt — clutter,
- *   not history.
- * - `unreadable`: the file is there but could not be read (permissions, a
- *   transient I/O error). Keep the run listed as an id-only row: hiding
- *   history the user could be looking for is worse than showing it without
- *   metadata. A malformed document is `present` — the bytes were read. */
-export type RunTrajectory =
-  | { readonly kind: "present"; readonly raw: string }
-  | { readonly kind: "absent" }
-  | { readonly kind: "unreadable" };
+/** Whether the run recorded a trajectory to replay. Only a trajectory that is
+ * not there at all counts against it — one that cannot be read is not evidence
+ * of absence, so the run stays listed. */
+async function hasTrajectory(runDir: string): Promise<boolean> {
+  return readFile(join(runDir, STREAM_FILE), "utf8").then(
+    () => true,
+    (cause: unknown) => (cause as NodeJS.ErrnoException).code !== "ENOENT",
+  );
+}
 
-/** Interpret a failed trajectory read. Only ENOENT means "no trajectory", the
- * one outcome that makes a run unresumable; every other failure is treated as
- * transient so the run stays listed. */
-export function trajectoryReadFailed(cause: unknown): RunTrajectory {
-  return cause instanceof Error && (cause as NodeJS.ErrnoException).code === "ENOENT"
-    ? { kind: "absent" }
-    : { kind: "unreadable" };
+/** The run's state document, or `undefined` when it is missing, unreadable, or
+ * will not parse. Never fails: a state document that answers is the row, and
+ * one that does not is no row — not a reason to refuse the run. */
+async function readRunState(runDir: string): Promise<Partial<RunStatus> | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Partial<RunStatus>
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Collapse a prompt to one line so a row stays one row. */
@@ -147,73 +163,45 @@ function failureOf(value: unknown): FailureDetails | undefined {
     : undefined;
 }
 
-/** Read and parse a run's trajectory, failing when it is absent or malformed. */
-function readDocument(
-  path: string,
+/** Read and fold a run's trajectory, failing when it is absent or malformed. */
+function readTrajectory(
+  runsRoot: string,
+  runId: string,
 ): Effect.Effect<Partial<TrajectoryDocument>, LogsStorageError, FileSystem.FileSystem> {
+  const path = join(runsRoot, runId, STREAM_FILE);
   const storageError = (message: string): LogsStorageError =>
     new LogsStorageError({ operation: "read-trajectory", path, message });
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(path).pipe(
-      Effect.mapError((cause) => cause._tag === "SystemError" && cause.reason === "NotFound"
-        ? storageError("no trajectory recorded for this run")
-        : storageError(String(cause))),
-    );
-    return yield* Effect.try({
-      try: () => JSON.parse(raw) as Partial<TrajectoryDocument>,
-      catch: (cause) => storageError(String(cause)),
-    });
+    const stream = yield* fileSystem.readFileString(path).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+    const parsed = parseTrajectory(stream);
+    if (parsed !== undefined) return parsed;
+    return yield* Effect.fail(storageError(
+      stream === undefined ? "no trajectory recorded for this run" : "the recorded trajectory could not be parsed",
+    ));
   });
 }
 
-/** Metadata for one picker row, from raw file bytes. Pure and total so both the
- * Effect reader below and the TUI picker (which reads with `node:fs/promises`,
- * off the Effect runtime) share one interpretation of a trajectory. A run that
- * cannot be read or parsed still yields a row: hiding it would misrepresent
- * what the runs root contains. */
-export function summarizeRun(runId: string, raw: string | undefined): RunSummary {
-  let document: Partial<TrajectoryDocument> | undefined;
-  if (raw !== undefined) {
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        document = parsed as Partial<TrajectoryDocument>;
-      }
-    } catch {
-      // Malformed or half-written document: fall through to the id-only row.
-    }
-  }
-  if (document === undefined) return { runId };
-  const turns = Array.isArray(document.turns) ? document.turns : [];
-  const firstPrompt = typeof turns[0]?.prompt === "string"
-    ? turns[0].prompt
-    : legacyPrompt(Array.isArray(document.events) ? document.events : []);
+/** Metadata for one picker row, from a run's state document. Pure and total so
+ * the picker (which reads with `node:fs/promises`, off the Effect runtime) and
+ * any other row consumer share one interpretation of a run's state. A run whose
+ * state is missing or unparsable still yields a row: hiding it would
+ * misrepresent what the runs root contains. */
+export function summarizeRun(runId: string, status: Partial<RunStatus> | undefined): RunSummary {
+  if (status === undefined) return { runId };
+  const turns = Array.isArray(status.turns) ? status.turns : [];
+  const firstPrompt = typeof turns[0]?.prompt === "string" ? turns[0].prompt : undefined;
   return {
     runId,
-    ...(typeof document.name === "string" ? { name: document.name } : {}),
+    ...(typeof status.name === "string" ? { name: status.name } : {}),
     ...(firstPrompt === undefined ? {} : { prompt: stripStageContext(firstPrompt) }),
-    ...(typeof document.workflowPath === "string"
-      ? { workflow: basename(document.workflowPath).replace(/\.ya?ml$/i, "") }
+    ...(typeof status.workflowPath === "string"
+      ? { workflow: basename(status.workflowPath).replace(/\.ya?ml$/i, "") }
       : {}),
-    ...(typeof document.workspaceCwd === "string" ? { workspaceCwd: document.workspaceCwd } : {}),
-    ...(typeof document.status === "string" ? { status: document.status } : {}),
-    ...(typeof document.updatedAt === "string" ? { updatedAt: document.updatedAt } : {}),
+    ...(typeof status.workspaceCwd === "string" ? { workspaceCwd: status.workspaceCwd } : {}),
+    ...(typeof status.status === "string" ? { status: status.status } : {}),
+    ...(typeof status.updatedAt === "string" ? { updatedAt: status.updatedAt } : {}),
   };
-}
-
-/** Metadata for one run, read through the Effect filesystem. Never fails. */
-export function readRunSummary(
-  runsRoot: string,
-  runId: string,
-): Effect.Effect<RunSummary, never, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(trajectoryPath(runsRoot, runId)).pipe(
-      Effect.catchAll(() => Effect.succeed(undefined)),
-    );
-    return summarizeRun(runId, raw);
-  });
 }
 
 /** Full replay context for the run the user chose. Fails when the run has no
@@ -223,8 +211,7 @@ export function readResumeContext(
   runsRoot: string,
   runId: string,
 ): Effect.Effect<ResumeContext, LogsStorageError, FileSystem.FileSystem> {
-  const path = trajectoryPath(runsRoot, runId);
-  return readDocument(path).pipe(Effect.map((document): ResumeContext => {
+  return readTrajectory(runsRoot, runId).pipe(Effect.map((document): ResumeContext => {
     const allEvents = Array.isArray(document.events) ? document.events : [];
     const recorded = Array.isArray(document.turns) ? document.turns : undefined;
     const status = document.status ?? "completed";
