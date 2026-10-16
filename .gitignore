@@ -17,7 +17,6 @@ evals/workloads/*/workspace/__pycache__/
 evals/workloads/*/workspace/bench/
 evals/workloads/*/workspace/reports/
 evals/workloads/*/workspace/state/
-evals/**/
 
 # Only AGENTS/CLAUDE/README are tracked markdown files at repo root.
 /*.md
