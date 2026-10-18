@@ -58,7 +58,7 @@ export interface WorkflowGraphInvocationTime {
 export interface WorkflowGraphSnapshot {
   readonly plannedStages?: number;
   readonly completedStages?: number;
-  readonly status?: "running" | "completed" | "failed" | "paused";
+  readonly status?: "running" | "completed" | "failed" | "paused" | "cancelled";
   readonly current?: {
     readonly stageId?: string;
     readonly status?: "running" | "accepted" | "failed";
@@ -71,7 +71,7 @@ export interface WorkflowGraphSnapshot {
   readonly invocationTime?: Readonly<Record<string, WorkflowGraphInvocationTime>>;
 }
 
-const GRAPH_STATUSES = new Set(["running", "completed", "failed", "paused"]);
+const GRAPH_STATUSES = new Set(["running", "completed", "failed", "paused", "cancelled"]);
 const CURRENT_STATUSES = new Set(["running", "accepted", "failed"]);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -363,7 +363,8 @@ function nodeStatus(stage: WorkflowGraphStage, snapshot: WorkflowGraphSnapshot |
   // Only explicitly terminal statuses suppress the running-pulse check. An
   // absent status field (partial/legacy snapshot) is treated as live so the
   // graph behaves the same as before this fix for status-less snapshots.
-  const terminal = snapshotStatus === "completed" || snapshotStatus === "paused";
+  // A cancelled run is a human stop like paused: nothing is working anymore.
+  const terminal = snapshotStatus === "completed" || snapshotStatus === "paused" || snapshotStatus === "cancelled";
   const current = snapshot?.current;
   if (!terminal && current?.stageId === stage.id && current.status === "running") return "running";
   if (current?.stageId === stage.id && current.status === "failed") return "failed";
@@ -474,7 +475,7 @@ function displayDefinition(
     // all slots as failed when the map was active, pending otherwise; a live
     // run shows the active map's slots as running, others as pending.
     const snapshotStatus = snapshot?.status;
-    const terminal = snapshotStatus === "completed" || snapshotStatus === "paused";
+    const terminal = snapshotStatus === "completed" || snapshotStatus === "paused" || snapshotStatus === "cancelled";
     const visualStatus: WorkflowGraphNodeStatus = terminal
       ? "completed"
       : snapshotStatus === "failed" && active ? "failed"

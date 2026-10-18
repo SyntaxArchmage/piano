@@ -269,6 +269,26 @@ describe("WorkflowGraph", () => {
     expect(slots).not.toContain("◉");
   });
 
+  it("renders a cancelled snapshot as terminal, not a live stage", () => {
+    setCapabilities({ images: null, trueColor: true, hyperlinks: false });
+    // A cancelled run is a human stop like paused: the interrupted stage may
+    // still say "running" in current.status, but nothing is working, so the
+    // graph must not pulse — and before the status union named "cancelled",
+    // the whole snapshot was rejected and the graph silently froze instead.
+    const rows = renderWorkflowGraphLineDag(definition, {
+      ...runningSnapshot,
+      status: "cancelled",
+      current: { stageId: "profile.models", status: "running" },
+    }, darkTheme, 100, true).map(stripAnsi).join("\n");
+    expect(rows).not.toContain("◉");
+    expect(rows).toContain("✓");
+    const slots = renderWorkflowGraphLineDag(mapDefinition, {
+      status: "cancelled",
+      current: { stageId: "fanout.implement", status: "running" },
+    }, darkTheme, 100, true).map(stripAnsi).join("\n");
+    expect(slots).not.toContain("◉");
+  });
+
   it("gives every map slot its own lane time", () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
     const rows = renderWorkflowGraphLineDag({
@@ -485,6 +505,8 @@ describe("WorkflowGraph", () => {
 
   it("rejects malformed snapshots at the CLI boundary", () => {
     expect(parseWorkflowGraphSnapshot({ plannedStages: 1, completedStages: 0 })).toBeDefined();
+    expect(parseWorkflowGraphSnapshot({ status: "cancelled" })).toBeDefined();
+    expect(parseWorkflowGraphSnapshot({ status: "unknown" })).toBeUndefined();
     expect(parseWorkflowGraphSnapshot({ plannedStages: -1 })).toBeUndefined();
     expect(parseWorkflowGraphSnapshot({ plannedStages: 1.5 })).toBeUndefined();
     expect(parseWorkflowGraphSnapshot({ completedStages: 0.5 })).toBeUndefined();
