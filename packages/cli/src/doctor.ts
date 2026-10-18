@@ -27,8 +27,10 @@ import {
 import {
   LogWriter,
   loggingService,
+  logStreamPath,
   Logging,
   TraceWriter,
+  traceStreamPath,
 } from "@piano/logging";
 import { CliArgumentError } from "./errors.js";
 
@@ -88,6 +90,16 @@ function runExecutable(file: string, args: readonly string[]): Promise<string> {
   });
 }
 
+/** A probe is its own throwaway session, so its trace id is minted like a
+ * session's — never the run id wearing a trace id's clothes. */
+function probeLogging(runId: string, root: string) {
+  const traceId = randomBytes(16).toString("hex");
+  return loggingService(
+    new LogWriter(runId, logStreamPath(root), traceId),
+    new TraceWriter(runId, traceStreamPath(root), traceId),
+  );
+}
+
 /** Run the smallest useful request through the selected native harness. A
  * version command is intentionally not enough: it cannot prove that the
  * harness can authenticate, resolve a model, or complete a request. */
@@ -98,13 +110,7 @@ async function runSubprocessProbe(
 ): Promise<HarnessProbeResult> {
   const root = await mkdtemp(join(tmpdir(), `piano-doctor-${harness}-`));
   const runId = `doctor-${harness}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  // A probe is its own throwaway session, so its trace id is minted like a
-  // session's — never the run id wearing a trace id's clothes.
-  const traceId = randomBytes(16).toString("hex");
-  const logging = loggingService(
-    new LogWriter(runId, join(root, "log.jsonl"), traceId),
-    new TraceWriter(runId, join(root, "trace.jsonl"), traceId),
-  );
+  const logging = probeLogging(runId, root);
   try {
     const exit = await Effect.runPromise(
       prepareHarnessHomes({
@@ -382,11 +388,7 @@ async function runPiModelProbe(
   const probeApiKey = configuredApiKey(config);
   const root = await mkdtemp(join(tmpdir(), "piano-doctor-pi-"));
   const runId = `doctor-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const traceId = randomBytes(16).toString("hex");
-  const logging = loggingService(
-    new LogWriter(runId, join(root, "log.jsonl"), traceId),
-    new TraceWriter(runId, join(root, "trace.jsonl"), traceId),
-  );
+  const logging = probeLogging(runId, root);
   try {
     const exit = await Effect.runPromise(
       prepareHarnessHomes({

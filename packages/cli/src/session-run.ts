@@ -6,7 +6,7 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit } from "effect";
 import { stderr, stdout } from "node:process";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   createSession,
   failureDetails,
@@ -41,6 +41,7 @@ import {
   refreshRunStatus,
   runStatusPath,
   setWorkflowSelection,
+  workflowProgressPath,
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
@@ -234,7 +235,7 @@ function runSessionBody(
         import("@effect/platform").FileSystem.FileSystem
       > => Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
-        const ledger = yield* fileSystem.readFileString(join(runDir, "progress.jsonl")).pipe(
+        const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
           Effect.orElseSucceed(() => ""),
         );
         const records = parseProgressLines(ledger);

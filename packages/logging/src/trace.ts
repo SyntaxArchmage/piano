@@ -1,7 +1,12 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, FiberRef } from "effect";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { errorMessage, failureDetails, TraceWriteError, type FailureDetails } from "./errors.js";
+
+/** The run's trace-span stream, beside the other evidence files. */
+export function traceStreamPath(runDir: string): string {
+  return join(runDir, "trace.jsonl");
+}
 
 export interface TraceSpan {
   traceId: string;

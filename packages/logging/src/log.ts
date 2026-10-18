@@ -1,7 +1,12 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { errorMessage, LogWriteError } from "./errors.js";
+
+/** The run's ops-log stream, beside the other evidence files. */
+export function logStreamPath(runDir: string): string {
+  return join(runDir, "log.jsonl");
+}
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 

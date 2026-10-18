@@ -18,7 +18,7 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
-import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
+import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, workflowProgressPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { listRunIds } from "./runs.js";
@@ -544,7 +544,7 @@ function printJobs(
   jobOrdinal: number | undefined,
 ): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
   return resolveRunDir(runsRoot, run, "jobs").pipe(Effect.flatMap((runDir) => {
-  const ledgerPath = join(runDir, "progress.jsonl");
+  const ledgerPath = workflowProgressPath(runDir);
   return Effect.gen(function* () {
     const ledger = yield* Effect.try({
       try: () => readFileSync(ledgerPath, "utf8"),

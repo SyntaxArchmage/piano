@@ -10,8 +10,8 @@ import {
   TrajectoryWriteError,
   type TraceWriteError,
 } from "./errors.js";
-import { AsyncLogWriter, type ILogWriter, LogWriter } from "./log.js";
-import { AsyncTraceWriter, type ITraceWriter, TraceWriter } from "./trace.js";
+import { AsyncLogWriter, type ILogWriter, LogWriter, logStreamPath } from "./log.js";
+import { AsyncTraceWriter, type ITraceWriter, TraceWriter, traceStreamPath } from "./trace.js";
 import { AsyncTrajectoryWriter, trajectoryStreamPath, type ITrajectoryWriter, TrajectoryWriter } from "./trajectory.js";
 
 const SOURCE = { module: "logging", file: "session.ts", function: "createSession" } as const;
@@ -83,8 +83,8 @@ export function createSession(
         message: errorMessage(cause),
       })),
     );
-    const log = new LogWriter(values.id, join(values.runDir, "log.jsonl"), values.traceId);
-    const trace = new TraceWriter(values.id, join(values.runDir, "trace.jsonl"), values.traceId);
+    const log = new LogWriter(values.id, logStreamPath(values.runDir), values.traceId);
+    const trace = new TraceWriter(values.id, traceStreamPath(values.runDir), values.traceId);
     const trajectory = new TrajectoryWriter(values.id, trajectoryStreamPath(values.runDir));
     const span = yield* trace.enter("createSession", undefined, SOURCE);
     yield* log.append("run.created", {
@@ -142,8 +142,8 @@ export function createStagingSession(
           message: errorMessage(cause),
         })),
       );
-      yield* log.commit(join(runDir, "log.jsonl"));
-      yield* trace.commit(join(runDir, "trace.jsonl"));
+      yield* log.commit(logStreamPath(runDir));
+      yield* trace.commit(traceStreamPath(runDir));
       yield* trajectory.commit(trajectoryStreamPath(runDir));
     }),
   };
