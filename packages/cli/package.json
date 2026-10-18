@@ -12,6 +12,7 @@
     "@effect/platform": "0.97.1",
     "@effect/platform-node": "0.108.1",
     "@resvg/resvg-js": "^2.6.2",
+    "@piano/evals": "0.1.0",
     "@piano/harness": "0.1.0",
     "@piano/logging": "0.1.0",
     "@piano/orchestrator": "0.1.0",
