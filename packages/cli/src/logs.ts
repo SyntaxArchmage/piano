@@ -23,9 +23,9 @@ import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./e
 import { programName } from "./program-name.js";
 import { listRunIds } from "./runs.js";
 import { formatRunId, oneLine, summarizeRun } from "./session-resume.js";
+import { RST } from "./theme.js";
 
 const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`;
-const RST = "\x1b[0m";
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
   blue: "\x1b[38;2;129;162;190m",

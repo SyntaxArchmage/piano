@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { Key, matchesKey, ProcessTerminal, TUI, type Component, type Terminal } from "@earendil-works/pi-tui";
 import { TuiError } from "./errors.js";
+import { RST } from "./theme.js";
 
 export interface AskQuestionOption {
   readonly id: string;
@@ -60,7 +61,6 @@ export interface AskQuestionDeps {
   readonly terminal?: Terminal;
 }
 
-const RESET = "\x1b[0m";
 const ESC = String.fromCharCode(27);
 const ANSI_SGR = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
 const MOUSE_SEQUENCE = new RegExp(`^${ESC}\\[<(\\d+);(\\d+);(\\d+)[Mm]$`);
@@ -103,26 +103,26 @@ export class AskQuestion implements Component {
   render(width: number): string[] {
     const styles = this.styles;
     const rows = [
-      `${styles.title}${fit(this.spec.title, width)}${RESET}`,
+      `${styles.title}${fit(this.spec.title, width)}${RST}`,
     ];
-    if (this.spec.message) rows.push(`${styles.muted}${fit(this.spec.message, width)}${RESET}`);
+    if (this.spec.message) rows.push(`${styles.muted}${fit(this.spec.message, width)}${RST}`);
     for (const detail of this.spec.details ?? []) {
-      rows.push(`${styles.muted}${fit(detail, width)}${RESET}`);
+      rows.push(`${styles.muted}${fit(detail, width)}${RST}`);
     }
     this.spec.options.forEach((option, index) => {
       const selected = !this.textMode && index === this.selectedIndex;
       const prefix = selected ? "❯ " : "  ";
-      const description = option.description ? ` ${styles.muted}${option.description}${RESET}` : "";
+      const description = option.description ? ` ${styles.muted}${option.description}${RST}` : "";
       const content = `${prefix}${option.label}${description}`;
       rows.push(selected
-        ? `${styles.selectedBg}${styles.selectedFg}${fit(content, width)}${RESET}`
+        ? `${styles.selectedBg}${styles.selectedFg}${fit(content, width)}${RST}`
         : styles.option === ""
           ? fit(content, width)
-          : `${styles.option}${fit(content, width)}${RESET}`);
+          : `${styles.option}${fit(content, width)}${RST}`);
     });
     if (this.spec.allowText) {
-      const value = this.text || `${styles.muted}${this.spec.placeholder ?? "Type a custom answer"}${RESET}`;
-      const prefix = this.textMode ? `${styles.caret}❯ ${RESET}` : "  ";
+      const value = this.text || `${styles.muted}${this.spec.placeholder ?? "Type a custom answer"}${RST}`;
+      const prefix = this.textMode ? `${styles.caret}❯ ${RST}` : "  ";
       rows.push(`${prefix}${fit(value, Math.max(0, width - 2))}`);
     }
     return rows;
