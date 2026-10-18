@@ -12,6 +12,7 @@ import {
 } from "@piano/contract";
 import { logger, TRACE, type Logging, type Source } from "@piano/logging";
 import { WorkflowError, errorMessage, workflowError } from "./errors.js";
+import { LOAD_SOURCE } from "./execution-logs.js";
 import { pathWithin } from "./path-within.js";
 import {
   compileWorkflow,
@@ -431,10 +432,7 @@ interface WorkflowRecordResolution {
   readonly creates: boolean;
 }
 
-const DEFAULT_WORKFLOW_LOG = logger(
-  { module: "orchestrator", file: "workflow-file.ts", function: "loadDefaultWorkflow" },
-  { namespace: "workflow" },
-);
+const DEFAULT_WORKFLOW_LOG = logger(LOAD_SOURCE, { namespace: "workflow" });
 
 /** Resolve the recorded default workflow from config.json. Best-effort
  * throughout: an unreadable file creates a fresh record, malformed JSON runs
