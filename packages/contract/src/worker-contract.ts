@@ -188,14 +188,14 @@ export class WorkerContractLoadError extends Error {
   }
 }
 
-export interface WorkerContractValidationSuccess {
+interface WorkerContractValidationSuccess {
   readonly success: true;
   readonly value: unknown;
   readonly metrics: readonly ContractMetric[];
   readonly projections: readonly ContractProjection[];
 }
 
-export interface WorkerContractValidationFailure {
+interface WorkerContractValidationFailure {
   readonly success: false;
   readonly error: ContractValidationError;
 }

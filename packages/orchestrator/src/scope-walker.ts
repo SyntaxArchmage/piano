@@ -67,7 +67,7 @@ export interface WalkerWorkspaceState {
 /** Everything the scope walker reaches outside itself. The run/actor/semaphore
  * state it shares with the stage runner lives in `stageRunnerContext` alone —
  * one copy, so the two can never disagree. */
-export interface ScopeWalkerContext {
+interface ScopeWalkerContext {
   readonly stageRunnerContext: StageRunnerContext;
   /** Append one `region-finalized` line under the progress semaphore. The
    * composer owns identity (execution id, job ordinal); the walker owns the
@@ -86,11 +86,11 @@ export interface ScopeWalkerContext {
   readonly consolidate: (args: ConsolidateAndGateRequest) => Effect.Effect<ConsolidationCarrying, never, FileSystem.FileSystem | Logging>;
 }
 
-export interface ResultGroup {
+interface ResultGroup {
   readonly results: readonly InternalStageResult[];
 }
 
-export interface NodeExecution {
+interface NodeExecution {
   readonly boundary: ResultGroup;
   readonly stages: readonly InternalStageResult[];
   /** A validated stage explicitly reported a terminal blocked outcome. */
@@ -100,7 +100,7 @@ export interface NodeExecution {
 /** The direct-child completion table is local to one runtime scope. A loop
  * uses it only to retrieve an explicitly named feedback child after an
  * iteration; it never turns an upstream actor continuation into feedback. */
-export interface ScopeExecution extends NodeExecution {
+interface ScopeExecution extends NodeExecution {
   readonly completed: ReadonlyMap<string, ResultGroup>;
 }
 

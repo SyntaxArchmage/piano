@@ -3,14 +3,14 @@ import { join } from "node:path";
 import type { WorkflowRegionPlan } from "./workflow.js";
 
 /** One loop expansion frame: identifies evidence only. */
-export interface WorkflowLoopFrame {
+interface WorkflowLoopFrame {
   readonly kind: "loop";
   readonly regionId: string;
   readonly iteration: number;
 }
 
 /** One fan-out expansion frame: also defines an independent actor lane. */
-export interface WorkflowMapFrame {
+interface WorkflowMapFrame {
   readonly kind: "map";
   readonly regionId: string;
   readonly slot: number;
