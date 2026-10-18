@@ -407,7 +407,7 @@ export class ScrollableChatArea implements Component {
  * behind it — neither is torn down by the visit, so leaving the side agent
  * restores the mission chat exactly as it was left. The indirection exists
  * because the scroll viewport binds its content once, at construction. */
-export class ChatSurface implements Component {
+class ChatSurface implements Component {
   constructor(private front: Component) {}
 
   setFront(front: Component): void {

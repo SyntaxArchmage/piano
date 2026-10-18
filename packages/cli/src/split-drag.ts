@@ -11,7 +11,7 @@
 
 export const DEFAULT_SPLIT_RATIO = 0.3;
 export const MIN_RIGHT_COLUMNS = 20; // right pane never shrinks below this
-export const MIN_CHAT_COLUMNS = 30;        // left pane never shrinks below this
+const MIN_CHAT_COLUMNS = 30;        // left pane never shrinks below this
 export const SPLIT_CAPTURE_RANGE = 1;      // ±N columns around the border arm the grab
 
 export interface SgrMouseEvent {

@@ -245,7 +245,7 @@ export function themeForLuminance(luma: number): PianoTheme {
 }
 
 /** Resolve a theme from env: PIANO_THEME override, or COLORFGBG shell hint. */
-export function themeFromEnv(env: Record<string, string | undefined>): PianoTheme | null {
+function themeFromEnv(env: Record<string, string | undefined>): PianoTheme | null {
   const t = env.PIANO_THEME?.trim().toLowerCase();
   if (t === "light") return lightTheme;
   if (t === "dark") return darkTheme;
