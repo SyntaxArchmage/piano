@@ -65,7 +65,7 @@ export class TraceWriter implements ITraceWriter {
   ): Effect.Effect<TraceSpan, TraceWriteError, FileSystem.FileSystem> {
     const { runId, traceId } = this;
     const stack = this.stack;
-    const append = (record: TraceRecord) => this.append(record);
+    const append = (record: TraceRecord) => this.writeRecord(record);
     const nextSpanId = () => `sp-${++this.counter}`;
     const nextSequence = () => ++this.seq;
     return Effect.gen(function* () {
@@ -127,7 +127,7 @@ export class TraceWriter implements ITraceWriter {
   ): Effect.Effect<void, TraceWriteError, FileSystem.FileSystem> {
     const { runId, traceId } = this;
     const stack = this.stack;
-    const append = (record: TraceRecord) => this.append(record);
+    const append = (record: TraceRecord) => this.writeRecord(record);
     const nextSequence = () => ++this.seq;
     return Effect.gen(function* () {
       yield* append({
@@ -152,10 +152,6 @@ export class TraceWriter implements ITraceWriter {
         ),
       ));
     });
-  }
-
-  private append(record: TraceRecord): Effect.Effect<void, TraceWriteError, FileSystem.FileSystem> {
-    return this.writeRecord(record);
   }
 
   protected writeRecord(record: TraceRecord): Effect.Effect<void, TraceWriteError, FileSystem.FileSystem> {
@@ -209,13 +205,11 @@ function summarizeTraceValue(value: unknown): unknown {
   }
 }
 
-type PendingRecord = TraceRecord;
-
 /** Buffers trace records in memory until {@link commit} is called.  The span
  * stack (FiberRef) and counter allocation work normally during staging so
  * callers can hold real TraceSpan values; only the disk write is deferred. */
 export class AsyncTraceWriter extends TraceWriter {
-  private queue: PendingRecord[] | null = [];
+  private queue: TraceRecord[] | null = [];
 
   constructor(
     runId: string,

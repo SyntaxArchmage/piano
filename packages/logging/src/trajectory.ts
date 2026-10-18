@@ -439,25 +439,11 @@ function compactTrajectoryEvent(event: unknown): unknown | undefined {
         },
       });
     }
-    case "resource":
-    case "spawn":
-    case "done":
-    case "error":
-    case "agent_start":
-    case "agent_settled":
-    case "turn_start":
-    case "queue_update":
-    case "compaction_start":
-    case "compaction_end":
-    case "auto_retry_start":
-    case "auto_retry_end":
-    case "summarization_retry_scheduled":
-    case "summarization_retry_attempt_start":
-    case "summarization_retry_finished":
-    case "session_info_changed":
-    case "thinking_level_changed":
-      return envelope(compactTrajectoryExtras(source, ["type", "workflow"]));
     default:
+      // Every remaining known event type (resource, spawn, done, error, the
+      // agent/turn/queue/compaction/retry/summarization lifecycle, session
+      // info, thinking level) passes through with its extras compacted, the
+      // same as anything unknown.
       return envelope(compactTrajectoryExtras(source, ["type", "workflow"]));
   }
 }
