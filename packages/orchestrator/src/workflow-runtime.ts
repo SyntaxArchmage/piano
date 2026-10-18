@@ -2,11 +2,32 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { WorkflowRegionPlan } from "./workflow.js";
 
-/** One dynamic expansion frame. Loop frames identify evidence only; map frames
- * also define an independent actor lane. */
-export type WorkflowRuntimeFrame =
-  | { readonly kind: "loop"; readonly regionId: string; readonly iteration: number }
-  | { readonly kind: "map"; readonly regionId: string; readonly slot: number };
+/** One loop expansion frame: identifies evidence only. */
+export interface WorkflowLoopFrame {
+  readonly kind: "loop";
+  readonly regionId: string;
+  readonly iteration: number;
+}
+
+/** One fan-out expansion frame: also defines an independent actor lane. */
+export interface WorkflowMapFrame {
+  readonly kind: "map";
+  readonly regionId: string;
+  readonly slot: number;
+}
+
+/** One dynamic expansion frame. */
+export type WorkflowRuntimeFrame = WorkflowLoopFrame | WorkflowMapFrame;
+
+/** The frames of one kind, in chain order. The only place that narrows the
+ * frame union by kind; callers never repeat the type predicate. */
+export function loopFrames(frames: readonly WorkflowRuntimeFrame[]): readonly WorkflowLoopFrame[] {
+  return frames.filter((frame): frame is WorkflowLoopFrame => frame.kind === "loop");
+}
+
+export function mapFrames(frames: readonly WorkflowRuntimeFrame[]): readonly WorkflowMapFrame[] {
+  return frames.filter((frame): frame is WorkflowMapFrame => frame.kind === "map");
+}
 
 /** One concrete execution of a statically compiled stage. */
 export interface WorkflowRuntimeInvocation {
@@ -140,8 +161,7 @@ export const ACTOR_KEY_VERSION = "v2";
  * across iterations. Exported so the ledger's `actor-turn` record spells the
  * lane the same way the actor key and session directory do. */
 export function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
-  return frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
+  return mapFrames(frames)
     .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
 }
 

@@ -15,7 +15,7 @@ import {
   type WorkerContractValidationError,
 } from "@piano/contract";
 import type { CompiledWorkflow, WorkflowRetry } from "./workflow.js";
-import type { WorkflowRuntimeFrame, WorkflowRuntimeInvocation } from "./workflow-runtime.js";
+import { loopFrames, mapFrames, type WorkflowRuntimeInvocation } from "./workflow-runtime.js";
 import { VALIDATE_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { validateStagePayload } from "./stage-validation.js";
@@ -187,12 +187,8 @@ export function workflowProgressProjection(
   completedByStage: ReadonlyMap<string, number>,
   knownLoopIterations: ReadonlyMap<string, number> = new Map(),
 ): WorkflowProgressProjection {
-  const loopFrame = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop")
-    .at(-1);
-  const mapFrame = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-    .at(-1);
+  const loopFrame = loopFrames(invocation.frames).at(-1);
+  const mapFrame = mapFrames(invocation.frames).at(-1);
   const innermostFrame = invocation.frames.at(-1);
   // A duration-bound loop's denominator is only knowable from the run itself,
   // so the plan is re-derived whenever this invocation sits inside one. The
