@@ -222,6 +222,10 @@ export function workflowProgressProjection(
       .map((stage) => stage.id);
   const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
   const stageCount = stageIds.length;
+  const stageLabel = stageIndex > 0 && stageCount > 0
+    ? `${invocation.stageName} ${stageIndex}/${stageCount}`
+    : invocation.stageName;
+  const completedLabel = `${acceptedStages}/${effectivePlan.plannedStages} stages completed`;
   const stageCounts: Readonly<Record<string, WorkflowProgressStageCount>> = Object.fromEntries(
     Object.entries(effectivePlan.stageCounts).map(([stageId, count]) => [stageId, {
       planned: count.planned,
@@ -243,24 +247,17 @@ export function workflowProgressProjection(
     const outerMap = mapFrame === undefined
       ? undefined
       : regionsById.get(mapFrame.regionId);
-    const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
-    const stageCount = stageIds.length;
     const iterationLabel = region?.iterations === undefined
       ? `iter-${loopFrame.iteration + 1}`
       : `iter-${loopFrame.iteration + 1}/${region.iterations}`;
-    const stageLabel = stageIndex > 0 && stageCount > 0
-      ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-      : invocation.stageName;
     return {
       ...base,
-      ...(stageIndex > 0 ? { stageIndex } : {}),
-      ...(stageCount > 0 ? { stageCount } : {}),
       iteration: loopFrame.iteration,
       ...(region?.iterations === undefined ? {} : { iterations: region.iterations }),
       ...(mapFrame === undefined ? {} : { mapSlot: mapFrame.slot }),
       ...(outerMap?.count === undefined ? {} : { mapSlots: outerMap.count }),
       scope: region?.name ?? loopFrame.regionId,
-      hint: `${iterationLabel} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
+      hint: `${iterationLabel} · ${stageLabel} · ${completedLabel}`,
     };
   }
   if (innermostFrame?.kind === "map" && mapFrame !== undefined) {
@@ -270,9 +267,6 @@ export function workflowProgressProjection(
       : regionsById.get(loopFrame.regionId);
     const regionName = region?.name ?? mapFrame.regionId;
     const slots = region?.count;
-    const stageLabel = stageIndex > 0 && stageCount > 0
-      ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-      : invocation.stageName;
     return {
       ...base,
       mapSlot: mapFrame.slot,
@@ -281,16 +275,13 @@ export function workflowProgressProjection(
       ...(loopRegion?.iterations === undefined ? {} : { iterations: loopRegion.iterations }),
       scope: regionName,
       hint: slots === undefined
-        ? `${regionName}/slot-${mapFrame.slot + 1} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`
-        : `${regionName}/slot-${mapFrame.slot + 1}/${slots} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
+        ? `${regionName}/slot-${mapFrame.slot + 1} · ${stageLabel} · ${completedLabel}`
+        : `${regionName}/slot-${mapFrame.slot + 1}/${slots} · ${stageLabel} · ${completedLabel}`,
     };
   }
-  const stageLabel = stageIndex > 0 && stageCount > 0
-    ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-    : invocation.stageName;
   return {
     ...base,
-    hint: `${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
+    hint: `${stageLabel} · ${completedLabel}`,
   };
 }
 
