@@ -49,6 +49,13 @@ export function parseSgrMouse(sequence: string): SgrMouseEvent | null {
   return { kind, button, col, row };
 }
 
+/** Scroll step of a wheel event's SGR button code: button 0 scrolls up (-1),
+ * button 1 scrolls down (+1), anything else (horizontal wheel) is ignored (0). */
+export function wheelDelta(button: number): number {
+  const wheelButton = button & 3;
+  return wheelButton === 0 ? -1 : wheelButton === 1 ? 1 : 0;
+}
+
 /** Return whether a 1-based mouse column is inside the visible right pane. */
 export function isWithinRightPane(col: number, ratio: number, columns: number): boolean {
   if (!Number.isSafeInteger(col) || col < 1 || !Number.isFinite(columns) || columns < 1) return false;

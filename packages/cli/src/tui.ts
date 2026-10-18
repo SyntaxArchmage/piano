@@ -33,7 +33,7 @@ import { buildSideBanner, renderSideFooter, sideFooterRunToken } from "./side-sc
 import { TrajectoryPanel } from "./trajectory-panel.js";
 import { renderStatusPanel } from "./status-panel.js";
 import { WorkflowGraph, type WorkflowGraphDefinition } from "./workflow-graph.js";
-import { DEFAULT_SPLIT_RATIO, emptySplitDrag, isWithinRightPane, parseSgrMouse, rightColumns, stepSplitDrag } from "./split-drag.js";
+import { DEFAULT_SPLIT_RATIO, emptySplitDrag, isWithinRightPane, parseSgrMouse, rightColumns, stepSplitDrag, wheelDelta } from "./split-drag.js";
 import { SideBySide } from "./tui-face.js";
 import { COPY_MODE_KEYS, ERROR_EXPAND_KEYS, TOOL_EXPAND_KEYS, dispatchShortcut, getScrollKeyBindings, matchShortcut, matchesKeyPress } from "./shortcuts.js";
 import { appendPromptHistory, loadPromptHistory } from "./prompt-history.js";
@@ -599,9 +599,16 @@ export function runTui(
         let activeRunId: string | undefined = deps.currentRunId;
         let blinkTimer: ReturnType<typeof setInterval> | undefined;
         let removeInput: () => void = () => {};
-        let workspaceOverlay: { hide: () => void } | undefined;
-        let workflowOverlay: { hide: () => void } | undefined;
-        let sessionOverlay: { hide: () => void } | undefined;
+        /** The modal pickers' overlay handles, one slot each. A slot is
+         * non-undefined exactly while that picker owns the keyboard (see
+         * `pickerOpen`); the open/close rites are `mountPickerOverlay` and
+         * `closePickerOverlay`. */
+        const pickerOverlays: {
+          workspace?: { hide: () => void };
+          workflow?: { hide: () => void };
+          session?: { hide: () => void };
+        } = {};
+        type PickerName = keyof typeof pickerOverlays;
         /** True while a sign-off question is mounted as the last block of the
          * chat area. It owns the keyboard while open, so Escape must reach the
          * question (cancelling the review) instead of interrupting the agent,
@@ -610,8 +617,8 @@ export function runTui(
         /** True while a modal picker owns the keyboard. Escape and the trajectory
          * overlay resize both have to defer to it. */
         const pickerOpen = (): boolean =>
-          workspaceOverlay !== undefined || workflowOverlay !== undefined || sessionOverlay !== undefined
-          || signoffOpen;
+          pickerOverlays.workspace !== undefined || pickerOverlays.workflow !== undefined
+          || pickerOverlays.session !== undefined || signoffOpen;
         let trajectoryOverlayResizePending = false;
         // Reassignable overlay handle: drag-resize recreates the trajectory
         // overlay because OverlayHandle has no setWidth (decision 0024). It always
@@ -647,9 +654,9 @@ export function runTui(
             if (prompt.fiber !== undefined) Effect.runFork(Fiber.interrupt(prompt.fiber));
           }
           trajectoryOverlay.hide();
-          workspaceOverlay?.hide();
-          workflowOverlay?.hide();
-          sessionOverlay?.hide();
+          pickerOverlays.workspace?.hide();
+          pickerOverlays.workflow?.hide();
+          pickerOverlays.session?.hide();
           terminal.write("\x1b[?1002;1006l");
           tui.stop();
           process.off("SIGCONT", onContinue);
@@ -806,6 +813,26 @@ export function runTui(
         const recreatePendingTrajectoryOverlay = (): void => {
           if (trajectoryOverlayResizePending) recreateTrajectoryOverlay();
         };
+        /** The modal pickers' shared opening rite: a centered overlay that owns
+         * the focus until it is dismissed. */
+        const mountPickerOverlay = (which: PickerName, picker: Component): void => {
+          pickerOverlays[which] = tui.showOverlay(picker, { anchor: "center", width: "70%", maxHeight: "70%" });
+          tui.setFocus(picker);
+          tui.requestRender();
+        };
+        /** The modal pickers' shared closing rite: hide the picker, restore a
+         * trajectory overlay that deferred to it, and hand the focus back to the
+         * editor. */
+        const closePickerOverlay = (which: PickerName): void => {
+          pickerOverlays[which]?.hide();
+          pickerOverlays[which] = undefined;
+          recreatePendingTrajectoryOverlay();
+          tui.setFocus(editor);
+        };
+        /** The chat's one failure line: what broke, and the error's own words. */
+        const reportFailure = (what: string, error: unknown): void => {
+          missionScreen.transcript.appendText(`  ${theme.error}✗ ${what} failed${RST} ${theme.error}${error instanceof Error ? error.message : String(error)}${RST}`);
+        };
         /**
          * Put one screen in front.
          *
@@ -853,26 +880,20 @@ export function runTui(
           return true;
         };
         const openWorkspacePicker = (): void => {
-          if (workspaceOverlay !== undefined) return;
+          if (pickerOverlays.workspace !== undefined) return;
           const picker = new WorkspacePicker({
             cwd: workspaceCwd,
             onRender: () => tui.requestRender(),
             theme,
             onCancel: () => {
-              workspaceOverlay?.hide();
-              workspaceOverlay = undefined;
-              recreatePendingTrajectoryOverlay();
-              tui.setFocus(editor);
+              closePickerOverlay("workspace");
               tui.requestRender();
             },
             onChoose: (cwd) => {
               const previous = workspaceCwd;
               const finish = (): void => {
                 workspaceCwd = cwd;
-                workspaceOverlay?.hide();
-                workspaceOverlay = undefined;
-                recreatePendingTrajectoryOverlay();
-                tui.setFocus(editor);
+                closePickerOverlay("workspace");
                 missionScreen.transcript.appendText(`  ${theme.dim}workspace: ${cwd}${RST}`);
                 // Both the side footer and the side banner name the tree the
                 // side agent can write to, so a workspace change has to rewrite
@@ -887,7 +908,7 @@ export function runTui(
               Effect.runFork(deps.onWorkspaceChange(cwd).pipe(
                 Effect.tap(() => Effect.sync(finish)),
                 Effect.tapError((error) => Effect.sync(() => {
-                  missionScreen.transcript.appendText(`  ${theme.error}✗ workspace change failed${RST} ${theme.error}${error instanceof Error ? error.message : String(error)}${RST}`);
+                  reportFailure("workspace change", error);
                   workspaceCwd = previous;
                   tui.requestRender();
                 })),
@@ -895,50 +916,36 @@ export function runTui(
               ));
             },
           });
-          workspaceOverlay = tui.showOverlay(picker, {
-            anchor: "center",
-            width: "70%",
-            maxHeight: "70%",
-          });
-          tui.setFocus(picker);
-          tui.requestRender();
+          mountPickerOverlay("workspace", picker);
         };
         const openWorkflowPicker = (): void => {
-          if (workflowOverlay !== undefined || deps.onWorkflowChange === undefined) return;
+          if (pickerOverlays.workflow !== undefined || deps.onWorkflowChange === undefined) return;
           const picker = new WorkflowPicker({
             cwd: workspaceCwd,
             onRender: () => tui.requestRender(),
             theme,
             onCancel: () => {
-              workflowOverlay?.hide();
-              workflowOverlay = undefined;
-              recreatePendingTrajectoryOverlay();
-              tui.setFocus(editor);
+              closePickerOverlay("workflow");
               tui.requestRender();
             },
             onChoose: (workflowPath, builtinName) => {
               Effect.runFork(deps.onWorkflowChange!(workflowPath, builtinName).pipe(
                 Effect.tap((definition) => Effect.sync(() => {
                   bindGraph(definition);
-                  workflowOverlay?.hide();
-                  workflowOverlay = undefined;
-                  recreatePendingTrajectoryOverlay();
-                  tui.setFocus(editor);
+                  closePickerOverlay("workflow");
                   missionScreen.transcript.appendText(`  ${theme.dim}workflow: ${definition.name ?? workflowPath}${theme.dim} · ${definition.path ?? workflowPath}${RST}`);
                   refreshFooter();
                   tui.requestRender();
                 })),
                 Effect.tapError((error) => Effect.sync(() => {
-                  missionScreen.transcript.appendText(`  ${theme.error}✗ workflow change failed${RST} ${theme.error}${error instanceof Error ? error.message : String(error)}${RST}`);
+                  reportFailure("workflow change", error);
                   tui.requestRender();
                 })),
                 Effect.catchAll(() => Effect.void),
               ));
             },
           });
-          workflowOverlay = tui.showOverlay(picker, { anchor: "center", width: "70%", maxHeight: "70%" });
-          tui.setFocus(picker);
-          tui.requestRender();
+          mountPickerOverlay("workflow", picker);
         };
         /** Replace the chat with a resumed run's conversation, so the TUI reads
          * as if this session had never been interrupted. */
@@ -992,7 +999,7 @@ export function runTui(
           Effect.runFork(deps.onResume(runId).pipe(
             Effect.tap((result) => Effect.sync(() => replayResume(result))),
             Effect.tapError((error) => Effect.sync(() => {
-              missionScreen.transcript.appendText(`  ${theme.error}✗ resume failed${RST} ${theme.error}${error instanceof Error ? error.message : String(error)}${RST}`);
+              reportFailure("resume", error);
               tui.requestRender();
             })),
             Effect.catchAll(() => Effect.void),
@@ -1000,33 +1007,25 @@ export function runTui(
           ));
         };
         const openSessionPicker = (): void => {
-          if (sessionOverlay !== undefined || deps.runsRoot === undefined || deps.onResume === undefined) return;
-          const closePicker = (): void => {
-            sessionOverlay?.hide();
-            sessionOverlay = undefined;
-            recreatePendingTrajectoryOverlay();
-            tui.setFocus(editor);
-          };
+          if (pickerOverlays.session !== undefined || deps.runsRoot === undefined || deps.onResume === undefined) return;
           const picker = new SessionPicker({
             runsRoot: deps.runsRoot,
             ...(activeRunId === undefined ? {} : { currentRunId: activeRunId }),
             onRender: () => tui.requestRender(),
             theme,
             onCancel: () => {
-              closePicker();
+              closePickerOverlay("session");
               tui.requestRender();
             },
             onChoose: (runId) => {
               // Close first: the takeover rewrites the chat, and a still-focused
               // overlay would sit on top of the replay.
-              closePicker();
+              closePickerOverlay("session");
               tui.requestRender();
               startResume(runId);
             },
           });
-          sessionOverlay = tui.showOverlay(picker, { anchor: "center", width: "70%", maxHeight: "70%" });
-          tui.setFocus(picker);
-          tui.requestRender();
+          mountPickerOverlay("session", picker);
         };
         /** Mount one sign-off question as the newest block of the chat area,
          * drawn as a bordered panel — purple outline over a very dark purple
@@ -1397,8 +1396,7 @@ export function runTui(
                     tui.requestRender();
                   })),
                   Effect.tapError((error) => Effect.sync(() => {
-                    const message = error instanceof Error ? error.message : String(error);
-                    missionScreen.transcript.appendText(`  ${theme.error}✗ rename failed${RST} ${theme.error}${message}${RST}`);
+                    reportFailure("rename", error);
                     tui.requestRender();
                   })),
                   Effect.catchAll(() => Effect.void),
@@ -1493,8 +1491,7 @@ export function runTui(
             // The wheel addresses the screen in front, exactly like the keys:
             // the ledger beside the chat is that screen's own.
             if (split.visible && isWithinRightPane(ev.col, split.ratio, terminal.columns) && front.trajectory.isWithin(ev.row)) {
-              const wheelButton = ev.button & 3;
-              const delta = wheelButton === 0 ? -1 : wheelButton === 1 ? 1 : 0;
+              const delta = wheelDelta(ev.button);
               if (delta !== 0) {
                 if (front.trajectory.scrollBy(delta)) tui.requestRender();
               }
@@ -1504,8 +1501,7 @@ export function runTui(
                 : terminal.columns;
               const inChat = Number.isSafeInteger(ev.col) && ev.col >= 1 && ev.col <= chatWidth && chatViewport.isWithin(ev.row);
               if (inChat) {
-                const wheelButton = ev.button & 3;
-                const delta = wheelButton === 0 ? -1 : wheelButton === 1 ? 1 : 0;
+                const delta = wheelDelta(ev.button);
                 if (delta !== 0) {
                   if (chatViewport.scrollBy(delta)) tui.requestRender();
                 }
