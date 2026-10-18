@@ -13,6 +13,8 @@ vi.mock("../../packages/cli/src/tui.js", () => ({
 }));
 
 vi.mock("@piano/orchestrator", () => ({
+  LOAD_SOURCE: { module: "orchestrator", file: "workflow-file.ts", function: "loadDefaultWorkflow" },
+  EXPLICIT_LOAD_SOURCE: { module: "orchestrator", file: "workflow-file.ts", function: "loadWorkflow" },
   executeWorkflow: vi.fn(),
   loadAndExecuteWorkflow: vi.fn(),
   // A fresh fixture run has no progress stream, so there is nothing to continue.

@@ -29,8 +29,10 @@ import {
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
+  EXPLICIT_LOAD_SOURCE,
   foldJobSpans,
   latestJob,
+  LOAD_SOURCE,
   loadDefaultWorkflow,
   loadWorkflow,
   parseProgressStreamRecord,
@@ -166,9 +168,7 @@ function runSessionBody(
     : undefined;
   return Effect.gen(function* () {
     const initialWorkflow = yield* TRACE(
-      options.workflowPath === undefined
-        ? { module: "orchestrator", file: "workflow-file.ts", function: "loadDefaultWorkflow" }
-        : { module: "orchestrator", file: "workflow-file.ts", function: "loadWorkflow" },
+      options.workflowPath === undefined ? LOAD_SOURCE : EXPLICIT_LOAD_SOURCE,
       options.workflowPath === undefined
         ? loadDefaultWorkflow(session.root)
         : loadWorkflow(options.workflowPath, session.root),

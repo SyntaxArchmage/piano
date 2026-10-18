@@ -14,6 +14,10 @@ export {
   type WorkerResources,
 } from "./workflow-file.js";
 export {
+  EXPLICIT_LOAD_SOURCE,
+  LOAD_SOURCE,
+} from "./execution-logs.js";
+export {
   compileWorkflow,
   PI_WORKFLOW_HARNESS,
   parseWorkflow,

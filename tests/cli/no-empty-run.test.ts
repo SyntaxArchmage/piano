@@ -28,6 +28,8 @@ vi.mock("@piano/harness", async (importOriginal) => ({
 }));
 
 vi.mock("@piano/orchestrator", () => ({
+  LOAD_SOURCE: { module: "orchestrator", file: "workflow-file.ts", function: "loadDefaultWorkflow" },
+  EXPLICIT_LOAD_SOURCE: { module: "orchestrator", file: "workflow-file.ts", function: "loadWorkflow" },
   compileWorkflow: vi.fn(() => Effect.succeed({ name: "smoke", stages: [], regions: [], nodes: [] })),
   executeWorkflow: vi.fn(() => Effect.succeed({
     text: "ok",

@@ -13,6 +13,8 @@ vi.mock("../../packages/cli/src/tui.js", () => ({
 }));
 
 vi.mock("@piano/orchestrator", () => ({
+  LOAD_SOURCE: { module: "orchestrator", file: "workflow-file.ts", function: "loadDefaultWorkflow" },
+  EXPLICIT_LOAD_SOURCE: { module: "orchestrator", file: "workflow-file.ts", function: "loadWorkflow" },
   compileWorkflow: vi.fn(() => Effect.succeed({
     name: "smoke",
     sourcePath: "/tmp/piano/workflow.yml",
