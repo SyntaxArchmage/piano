@@ -1,4 +1,5 @@
 export { createSession, createStagingSession, defaultRoot, defaultRunsRoot, type CreateSessionOptions, type Session, type SessionError, type StagingSession } from "./session.js";
+export { appendJsonlLine } from "./jsonl.js";
 export { AsyncLogWriter, type ILogWriter, LogWriter, logStreamPath, type LogLevel, type LogFields } from "./log.js";
 export { AsyncTraceWriter, type ITraceWriter, TraceWriter, traceStreamPath, type TraceSpan } from "./trace.js";
 export {

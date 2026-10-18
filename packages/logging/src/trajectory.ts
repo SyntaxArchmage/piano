@@ -1,7 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
+import { appendJsonlLine } from "./jsonl.js";
 
 /** One accepted prompt in a run, recorded so `resume` can replay the piano
  * conversation turn by turn instead of as one flat event stream. */
@@ -89,8 +90,8 @@ export function trajectoryStreamPath(runDir: string): string {
 
 /** Append one record to the trajectory stream beside a document path.
  *
- * The stream's single writer seam: both writes go through it, so the file has
- * one place that knows its line format. */
+ * The stream's single place that knows its line format; the bytes land
+ * through the shared JSONL writer mechanism in jsonl.ts. */
 function appendTrajectoryRecord(
   fileSystem: FileSystem.FileSystem,
   path: string,
@@ -101,12 +102,13 @@ function appendTrajectoryRecord(
       try: () => `${stringifyTrajectory(record)}\n`,
       catch: (cause) => new TrajectoryWriteError({ operation: "serialize", path, message: errorMessage(cause) }),
     });
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => new TrajectoryWriteError({ operation: "mkdir", path, message: errorMessage(cause) })),
-    );
-    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError((cause) => new TrajectoryWriteError({ operation: "write", path, message: errorMessage(cause) })),
-    );
+    // The append step is this stream's "write" operation — the label predates
+    // the shared mechanism and its error text stays byte-identical.
+    yield* appendJsonlLine(fileSystem, path, line, (step, cause) => new TrajectoryWriteError({
+      operation: step === "append" ? "write" : step,
+      path,
+      message: errorMessage(cause),
+    }));
   });
 }
 

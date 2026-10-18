@@ -1,7 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, FiberRef } from "effect";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { errorMessage, failureDetails, TraceWriteError, type FailureDetails } from "./errors.js";
+import { appendJsonlLine } from "./jsonl.js";
 
 /** The run's trace-span stream, beside the other evidence files. */
 export function traceStreamPath(runDir: string): string {
@@ -171,20 +172,11 @@ export class TraceWriter implements ITraceWriter {
         }),
       });
       const fileSystem = yield* FileSystem.FileSystem;
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => new TraceWriteError({
-          operation: "mkdir",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
-      yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-        Effect.mapError((cause) => new TraceWriteError({
-          operation: "append",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
+      yield* appendJsonlLine(fileSystem, path, line, (step, cause) => new TraceWriteError({
+        operation: step,
+        path,
+        message: errorMessage(cause),
+      }));
     });
   }
 }

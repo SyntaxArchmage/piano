@@ -1,7 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { errorMessage, LogWriteError } from "./errors.js";
+import { appendJsonlLine } from "./jsonl.js";
 
 /** The run's ops-log stream, beside the other evidence files. */
 export function logStreamPath(runDir: string): string {
@@ -97,20 +98,11 @@ export class LogWriter implements ILogWriter {
         }),
       });
       const fileSystem = yield* FileSystem.FileSystem;
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => new LogWriteError({
-          operation: "mkdir",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
-      yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-        Effect.mapError((cause) => new LogWriteError({
-          operation: "append",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
+      yield* appendJsonlLine(fileSystem, path, line, (step, cause) => new LogWriteError({
+        operation: step,
+        path,
+        message: errorMessage(cause),
+      }));
     });
   }
 }
