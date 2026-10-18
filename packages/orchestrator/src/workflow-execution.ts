@@ -1026,18 +1026,7 @@ export function executeWorkflow(
         }).pipe(Effect.asVoid));
       const walker = createScopeWalker({
         stageRunnerContext,
-        progressSemaphore,
         persistRegionFinalized,
-        request,
-        loaded,
-        compiled,
-        runId,
-        jobOrdinal,
-        actors,
-        announcedContinuations,
-        actorContexts,
-        knownLoopIterations,
-        workflowTrajectory,
         autoCommit,
         preExistingDirty,
         workspaceState,

@@ -8,9 +8,7 @@
 import { Either, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { join } from "node:path";
-import type { AgentContinuation } from "@piano/harness";
 import type { Logging } from "@piano/logging";
-import type { WorkflowTrajectory } from "@piano/trajectory";
 import {
   allocateMapWorkspace,
   applyWinnerWorkspace,
@@ -48,20 +46,15 @@ import {
 import { appendWorkflowProgress, type WorkflowProgressRegionFinalizedRecord, type WorkflowRegionFinalizedPayload } from "./progress.js";
 import { actorTurnRow } from "./resume-state.js";
 import type {
-  CompiledWorkflow,
   WorkflowRegionPlan,
   WorkflowRuntimeNode,
 } from "./workflow.js";
-import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
-  ActorExecutionContext,
-  ActorState,
   InternalStageResult,
 } from "./execution-types.js";
 import type {
   ConsolidateAndGateRequest,
   WorkflowExecutionError,
-  WorkflowExecutionRequest,
   WorkflowWorkspaceCandidate,
 } from "./workflow-execution.js";
 import type { ConsolidationCarrying } from "./consolidation-transaction.js";
@@ -71,24 +64,15 @@ export interface WalkerWorkspaceState {
   preserve: boolean;
 }
 
-/** Everything the scope walker reaches outside itself. */
+/** Everything the scope walker reaches outside itself. The run/actor/semaphore
+ * state it shares with the stage runner lives in `stageRunnerContext` alone —
+ * one copy, so the two can never disagree. */
 export interface ScopeWalkerContext {
   readonly stageRunnerContext: StageRunnerContext;
-  readonly request: WorkflowExecutionRequest;
-  readonly loaded: LoadedWorkflow;
-  readonly compiled: CompiledWorkflow;
-  readonly runId: string;
-  readonly jobOrdinal: number;
-  readonly actors: Map<string, ActorState>;
-  readonly announcedContinuations: Map<string, AgentContinuation>;
-  readonly actorContexts: Map<string, ActorExecutionContext>;
-  readonly knownLoopIterations: Map<string, number>;
-  readonly progressSemaphore: Effect.Semaphore;
   /** Append one `region-finalized` line under the progress semaphore. The
    * composer owns identity (execution id, job ordinal); the walker owns the
    * moment a region exits. */
   readonly persistRegionFinalized: (payload: WorkflowRegionFinalizedPayload) => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
-  readonly workflowTrajectory: WorkflowTrajectory;
   readonly autoCommit: boolean;
   readonly preExistingDirty: ReadonlySet<string>;
   readonly workspaceState: WalkerWorkspaceState;
@@ -263,6 +247,14 @@ export function loopStopRequested(results: readonly InternalStageResult[]): bool
 export function createScopeWalker(context: ScopeWalkerContext) {
   const {
     stageRunnerContext,
+    persistRegionFinalized,
+    autoCommit,
+    preExistingDirty,
+    workspaceState,
+    commitRoundWinner,
+    consolidate,
+  } = context;
+  const {
     request,
     loaded,
     compiled,
@@ -272,14 +264,8 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     actorContexts,
     knownLoopIterations,
     progressSemaphore,
-    persistRegionFinalized,
     workflowTrajectory,
-    autoCommit,
-    preExistingDirty,
-    workspaceState,
-    commitRoundWinner,
-    consolidate,
-  } = context;
+  } = stageRunnerContext;
 
 const mapItems = (
   region: WorkflowRegionPlan,
