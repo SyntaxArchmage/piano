@@ -478,28 +478,14 @@ function usageSlotKey(compact: unknown): string | undefined {
 
 function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[] {
   const compacted: unknown[] = [];
-  const usageSlots = new Map<string, number>();
   for (const event of events) {
     const compact = compactTrajectoryEvent(event);
-    if (compact === undefined) continue;
-    const key = usageSlotKey(compact);
-    if (key === undefined) {
-      compacted.push(compact);
-      continue;
-    }
-    const prior = usageSlots.get(key);
-    if (prior === undefined) {
-      usageSlots.set(key, compacted.length);
-      compacted.push(compact);
-    } else {
-      // Keep the latest snapshot for each stage/actor; metrics use the
-      // maximum, and transcripts retain every raw update for forensic
-      // inspection. The slot keeps its first position, so the ledger's order
-      // is the order events first appeared.
-      compacted[prior] = compact;
-    }
+    if (compact !== undefined) compacted.push(compact);
   }
-  return compacted;
+  // The usage-slot rule lives in mergeTrajectoryLedgers alone: merging this
+  // batch as one ledger applies it exactly as the fold applies it across
+  // records — the slot keeps its first position and the latest snapshot.
+  return mergeTrajectoryLedgers([compacted]);
 }
 
 /** Parse a run's trajectory from whichever of its two on-disk forms is there.

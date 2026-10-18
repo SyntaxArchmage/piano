@@ -16,6 +16,14 @@ import { AsyncTrajectoryWriter, trajectoryStreamPath, type ITrajectoryWriter, Tr
 
 const SOURCE = { module: "logging", file: "session.ts", function: "createSession" } as const;
 
+/** Mint a run identity: the timestamp+random id (or the caller's, for a
+ * resume), its trace id, and the run directory the id names. One spelling
+ * shared by the immediate and the staging session. */
+function newRunIdentity(runsRoot: string, id?: string): { id: string; traceId: string; runDir: string } {
+  const runId = id ?? `${new Date().toISOString().slice(0, 19).replace(/[^0-9T]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
+  return { id: runId, traceId: randomBytes(16).toString("hex"), runDir: join(runsRoot, runId) };
+}
+
 export const defaultRoot = join(homedir(), ".piano");
 
 // Run data is user-level persistent state, not a project artifact: it must live
@@ -59,10 +67,7 @@ export function createSession(
         const cwd = resolve(opts.cwd ?? process.cwd());
         const root = resolve(opts.root ?? defaultRoot);
         const runsRoot = resolve(opts.runsRoot ?? defaultRunsRoot());
-        const id = opts.id ?? `${new Date().toISOString().slice(0, 19).replace(/[^0-9T]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
-        const traceId = randomBytes(16).toString("hex");
-        const runDir = join(runsRoot, id);
-        return { root, id, traceId, cwd, runDir };
+        return { root, cwd, ...newRunIdentity(runsRoot, opts.id) };
       },
       catch: (cause) => new SessionCreateError({
         operation: "prepare",
@@ -113,9 +118,7 @@ export function createStagingSession(
   const cwd = resolve(opts.cwd ?? process.cwd());
   const root = resolve(opts.root ?? defaultRoot);
   const runsRoot = resolve(opts.runsRoot ?? defaultRunsRoot());
-  const id = `${new Date().toISOString().slice(0, 19).replace(/[^0-9T]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
-  const traceId = randomBytes(16).toString("hex");
-  const runDir = join(runsRoot, id);
+  const { id, traceId, runDir } = newRunIdentity(runsRoot);
 
   const log = new AsyncLogWriter(id, traceId);
   const trace = new AsyncTraceWriter(id, traceId);
