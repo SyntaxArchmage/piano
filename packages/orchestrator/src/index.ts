@@ -84,10 +84,6 @@ export {
   consolidateAndGate,
   executeWorkflow,
   loadAndExecuteWorkflow,
-  retryBackoffSeconds,
-  RETRY_DEFAULT_BACKOFF_MAX_SECONDS,
-  RETRY_DEFAULT_BACKOFF_SECONDS,
-  VALIDATE_REPAIR_ATTEMPTS,
   type LoadAndExecuteWorkflowRequest,
   type WorkflowExecutionRequest,
   type WorkflowExecutionResult,
@@ -102,6 +98,12 @@ export {
   type WorkflowWorkspaceSelectionContext,
   type WorkflowWorkspaceWinner,
 } from "./workflow-execution.js";
+export {
+  retryBackoffSeconds,
+  RETRY_DEFAULT_BACKOFF_MAX_SECONDS,
+  RETRY_DEFAULT_BACKOFF_SECONDS,
+  VALIDATE_REPAIR_ATTEMPTS,
+} from "./stage-runner-support.js";
 export {
   ConsolidationEvidencePreparationError,
   prepareConsolidationEvidence,

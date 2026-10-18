@@ -65,7 +65,6 @@ import {
   VALIDATE_REPAIR_ATTEMPTS,
   workflowProgressPlan,
 } from "./stage-runner-support.js";
-export { RETRY_DEFAULT_BACKOFF_MAX_SECONDS, RETRY_DEFAULT_BACKOFF_SECONDS, VALIDATE_REPAIR_ATTEMPTS, retryBackoffSeconds } from "./stage-runner-support.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import {
   actorSessionDirectory,
