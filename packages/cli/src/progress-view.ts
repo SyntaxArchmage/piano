@@ -6,7 +6,7 @@
 // answer the question.
 
 import { readFile } from "node:fs/promises";
-import { runStatusPath } from "@piano/orchestrator";
+import { parseRunStatus, runStatusPath } from "@piano/orchestrator";
 import { parseWorkflowGraphSnapshot, type WorkflowGraphSnapshot } from "./workflow-graph.js";
 
 /** The run's progress view.
@@ -15,7 +15,7 @@ import { parseWorkflowGraphSnapshot, type WorkflowGraphSnapshot } from "./workfl
  * interactive session, so every failure lands on `undefined`. */
 export async function readWorkflowSnapshot(runDir: string): Promise<WorkflowGraphSnapshot | undefined> {
   try {
-    return parseWorkflowGraphSnapshot(JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown);
+    return parseWorkflowGraphSnapshot(parseRunStatus(await readFile(runStatusPath(runDir), "utf8")));
   } catch {
     return undefined;
   }

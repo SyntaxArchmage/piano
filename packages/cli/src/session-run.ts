@@ -35,7 +35,7 @@ import {
   LOAD_SOURCE,
   loadDefaultWorkflow,
   loadWorkflow,
-  parseProgressStreamRecord,
+  parseProgressLines,
   readWorkflowExecutionContinuation,
   readRunStatus,
   refreshRunStatus,
@@ -237,9 +237,7 @@ function runSessionBody(
         const ledger = yield* fileSystem.readFileString(join(runDir, "progress.jsonl")).pipe(
           Effect.orElseSucceed(() => ""),
         );
-        const records = ledger.split("\n")
-          .map((line) => parseProgressStreamRecord(line))
-          .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+        const records = parseProgressLines(ledger);
         return latestJob(foldJobSpans(records))?.regions;
       });
       const runPrompt = (

@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { Effect } from "effect";
 import { parseWorkflow } from "@piano/orchestrator";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
+import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { RST, type PianoTheme } from "./theme.js";
 
 export interface WorkflowPickerDeps {
@@ -26,21 +27,6 @@ interface BuiltinGroupItem {
 }
 
 type ListItem = WorkflowItem | BuiltinGroupItem;
-
-function fuzzyScore(value: string, query: string): number | undefined {
-  if (query === "") return 0;
-  const candidate = value.toLowerCase();
-  const needle = query.toLowerCase();
-  let cursor = 0;
-  let score = 0;
-  for (const character of needle) {
-    const index = candidate.indexOf(character, cursor);
-    if (index < 0) return undefined;
-    score += index === cursor ? 0 : index + 1;
-    cursor = index + 1;
-  }
-  return score;
-}
 
 async function findWorkflowFiles(root: string, excludePaths: Set<string>): Promise<WorkflowItem[]> {
   const candidates: string[] = [];
@@ -109,19 +95,6 @@ async function findBuiltinWorkflows(): Promise<WorkflowItem[]> {
 function entryName(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] ?? path;
-}
-
-function isPrintableInput(value: string): boolean {
-  return value.length > 0 && [...value].every((character) => {
-    const code = character.codePointAt(0) ?? 0;
-    return code >= 0x20 && code !== 0x7f;
-  });
-}
-
-function wrapBorder(rows: string[], width: number, theme: PianoTheme | undefined): string[] {
-  if (theme === undefined) return rows;
-  const line = theme.accent + "─".repeat(width) + RST;
-  return [line, ...rows, line];
 }
 
 /** Selects a schema-valid workflow file from the active workspace. */

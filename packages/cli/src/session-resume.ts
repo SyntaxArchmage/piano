@@ -19,7 +19,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
 import { parseTrajectory, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
-import { runStatusPath, type RunStatus } from "@piano/orchestrator";
+import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrator";
 import { LogsStorageError } from "./errors.js";
 
 /** One replayable prompt and the events it produced. */
@@ -84,10 +84,7 @@ async function hasTrajectory(runDir: string): Promise<boolean> {
  * one that does not is no row — not a reason to refuse the run. */
 async function readRunState(runDir: string): Promise<Partial<RunStatus> | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Partial<RunStatus>
-      : undefined;
+    return parseRunStatus(await readFile(runStatusPath(runDir), "utf8"));
   } catch {
     return undefined;
   }

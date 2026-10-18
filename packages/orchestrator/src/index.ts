@@ -150,6 +150,8 @@ export {
   type JobView,
 } from "./job-spans.js";
 export {
+  parseProgressLines,
+  parseRunStatus,
   readRunStatus,
   rebuildRunStatus,
   refreshRunStatus,
