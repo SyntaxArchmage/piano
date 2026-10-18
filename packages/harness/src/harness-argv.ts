@@ -44,9 +44,13 @@ export function piArguments(
   // pointing it at a path Piano also writes would leave two authors on one file
   // — duplicated messages, a second header, and a branch pi resumes from the
   // wrong leaf. `piSessionPath` is therefore Piano-named but pi-owned, and Piano's
-  // canonical evidence transcript is written separately. It is always passed:
-  // pi's own choice of file is not something Piano could hand back next turn.
-  if (rpc) args.push("--session", piSessionPath(request, transcriptPath));
+  // canonical evidence transcript is written separately. It is always passed, in
+  // both modes: pi's own choice of file is not something Piano could hand back
+  // next turn. json --print honors it like rpc does — it creates the file on a
+  // first turn and appends to it on a resume — while `--session-dir` alone makes
+  // every invocation mint a fresh session, silently dropping the conversation
+  // a continuation just handed back.
+  args.push("--session", piSessionPath(request, transcriptPath));
   for (const path of request.skillPaths ?? []) args.push("--skill", path);
   // The pi CLI accepts `--append-system-prompt <text>` (repeatable). Inline
   // the loaded resources so agents.md and the harness appendix reach the

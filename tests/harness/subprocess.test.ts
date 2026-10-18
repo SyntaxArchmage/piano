@@ -837,6 +837,53 @@ describe(" subprocess harness", () => {
     }
   });
 
+  // pi-cli's json --print mode used to receive only `--session-dir`, and from
+  // that alone pi mints a fresh session per invocation (verified against the
+  // real CLI): the continuation the engine persisted and handed back never
+  // reached the child, so every pi-cli turn silently restarted the
+  // conversation — across turns, loop iterations, and a pause + /continue.
+  // `--session` works in json mode exactly like in rpc mode: pi creates the
+  // named file on a first turn and appends to it on a resume.
+  it("hands pi-cli its session file on argv so a resumed turn reopens the same conversation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-subprocess-pi-cli-session-"));
+    try {
+      const session = await testSession(root);
+      const binPath = await fakeHarness(root);
+      const argsFile = join(root, "pi-cli-session-argv.txt");
+      const run = (continuation?: AgentContinuation) => Effect.runPromise(executeSubprocessAgent("pi-cli", {
+        cwd: root,
+        prompt: "hello",
+        sessionDir: join(session.runDir, "subprocess-sessions"),
+        ...(continuation === undefined ? {} : { continuation }),
+      }, {
+        binPath,
+        env: { PIANO_FAKE_MODE: "args", PIANO_FAKE_ARGS_FILE: argsFile },
+        retryDelaysMs: [],
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      const sessionArg = async (): Promise<string | undefined> => {
+        const args = (await readFile(argsFile, "utf8")).trim().split("\n");
+        const at = argvIndex(args, "--session");
+        return at === -1 ? undefined : args[at + 1];
+      };
+
+      const first = await run();
+      const firstSession = await sessionArg();
+      expect(firstSession, "pi-cli was not told which session file to open").toBeDefined();
+      expect(firstSession).toMatch(/\.pi-session\.jsonl$/);
+      // The continuation hands back the very path argv named, so the next
+      // turn's `--session` is a fixed point.
+      expect(first.continuation?.transcriptPath).toBe(firstSession);
+
+      await run(first.continuation);
+      expect(await sessionArg(), "the resumed pi-cli turn lost its session handle").toBe(firstSession);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("mounts the web_search extension only when a pi-cli stage names it", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-subprocess-websearch-"));
     try {
