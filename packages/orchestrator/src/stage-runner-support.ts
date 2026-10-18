@@ -14,7 +14,7 @@ import {
   ContractValidationError,
   type WorkerContractValidationError,
 } from "@piano/contract";
-import type { CompiledWorkflow, WorkflowRetry } from "./workflow.js";
+import { regionAncestors, regionIndex, type CompiledWorkflow, type WorkflowRetry } from "./workflow.js";
 import { loopFrames, mapFrames, type WorkflowRuntimeInvocation } from "./workflow-runtime.js";
 import { VALIDATE_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
@@ -190,13 +190,14 @@ export function workflowProgressProjection(
   const loopFrame = loopFrames(invocation.frames).at(-1);
   const mapFrame = mapFrames(invocation.frames).at(-1);
   const innermostFrame = invocation.frames.at(-1);
+  const regionsById = regionIndex(compiled.regions);
   // A duration-bound loop's denominator is only knowable from the run itself,
   // so the plan is re-derived whenever this invocation sits inside one. The
   // frames carry exactly the missing input: which iteration is running now.
   const effectiveLoopIterations = new Map(knownLoopIterations);
   for (const frame of invocation.frames) {
     if (frame.kind !== "loop") continue;
-    const frameRegion = compiled.regions.find((candidate) => candidate.id === frame.regionId);
+    const frameRegion = regionsById.get(frame.regionId);
     if (frameRegion?.duration !== undefined) {
       effectiveLoopIterations.set(
         frame.regionId,
@@ -209,7 +210,7 @@ export function workflowProgressProjection(
     : workflowProgressPlan(compiled, effectiveLoopIterations);
   const innermostRegion = innermostFrame === undefined
     ? undefined
-    : compiled.regions.find((candidate) => candidate.id === innermostFrame.regionId);
+    : regionsById.get(innermostFrame.regionId);
   const stageIds = innermostRegion === undefined
     ? compiled.stages
       .filter((stage) => stage.parentId === undefined)
@@ -238,10 +239,10 @@ export function workflowProgressProjection(
     ...(stageCount > 0 ? { stageCount } : {}),
   };
   if (innermostFrame?.kind === "loop" && loopFrame !== undefined) {
-    const region = compiled.regions.find((candidate) => candidate.id === loopFrame.regionId);
+    const region = regionsById.get(loopFrame.regionId);
     const outerMap = mapFrame === undefined
       ? undefined
-      : compiled.regions.find((candidate) => candidate.id === mapFrame.regionId);
+      : regionsById.get(mapFrame.regionId);
     const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
     const stageCount = stageIds.length;
     const iterationLabel = region?.iterations === undefined
@@ -263,10 +264,10 @@ export function workflowProgressProjection(
     };
   }
   if (innermostFrame?.kind === "map" && mapFrame !== undefined) {
-    const region = compiled.regions.find((candidate) => candidate.id === mapFrame.regionId);
+    const region = regionsById.get(mapFrame.regionId);
     const loopRegion = loopFrame === undefined
       ? undefined
-      : compiled.regions.find((candidate) => candidate.id === loopFrame.regionId);
+      : regionsById.get(loopFrame.regionId);
     const regionName = region?.name ?? mapFrame.regionId;
     const slots = region?.count;
     const stageLabel = stageIndex > 0 && stageCount > 0
@@ -303,15 +304,13 @@ export function workflowProgressPlan(
    * shrinks a fixed loop to the number of iterations actually completed. */
   loopIterations: ReadonlyMap<string, number> = new Map(),
 ): WorkflowProgressPlan {
-  const regionsById = new Map(compiled.regions.map((region) => [region.id, region]));
+  const regionsById = regionIndex(compiled.regions);
   const stageCounts: Record<string, WorkflowProgressStageCount> = {};
   for (const stage of compiled.stages) {
     let planned = 1;
-    for (let regionId = stage.parentId; regionId !== undefined; ) {
-      const region = regionsById.get(regionId);
-      if (region === undefined) break;
+    for (const region of regionAncestors(regionsById, stage.parentId)) {
       if (region.kind === "loop") {
-        const effectiveIterations = loopIterations.get(regionId);
+        const effectiveIterations = loopIterations.get(region.id);
         if (effectiveIterations !== undefined || region.duration !== undefined) {
           // `Math.max(1, …)` rather than the raw count: the current iteration is
           // the furthest one that can already hold accepted stages, so the
@@ -324,7 +323,6 @@ export function workflowProgressPlan(
       } else {
         planned *= region.count ?? 1;
       }
-      regionId = region.parentId;
     }
     stageCounts[stage.id] = { planned, completed: 0 };
   }

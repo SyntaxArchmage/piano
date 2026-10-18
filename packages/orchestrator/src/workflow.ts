@@ -742,6 +742,30 @@ function rewireDependsOn(leaf: CompiledStage, dependsOn: readonly string[]): voi
   (leaf as { dependsOn: readonly string[] }).dependsOn = dependsOn;
 }
 
+/** Region lookup by id — the one index over a compiled region table. */
+export function regionIndex(
+  regions: readonly WorkflowRegionPlan[],
+): ReadonlyMap<string, WorkflowRegionPlan> {
+  return new Map(regions.map((region) => [region.id, region]));
+}
+
+/** The chain of enclosing regions from `startId` outward, innermost first,
+ * following `parentId` pointers. The one walk of the region tree; it stops at
+ * an id the index does not hold. */
+export function regionAncestors(
+  index: ReadonlyMap<string, WorkflowRegionPlan>,
+  startId: string | undefined,
+): readonly WorkflowRegionPlan[] {
+  const chain: WorkflowRegionPlan[] = [];
+  for (let id = startId; id !== undefined; ) {
+    const region = index.get(id);
+    if (region === undefined) break;
+    chain.push(region);
+    id = region.parentId;
+  }
+  return chain;
+}
+
 /** The innermost fan-out region enclosing a leaf, with the lane count a
  * per-lane model list must match. `parentId` names the enclosing region, and a
  * region's `parentId` its own, so the innermost `map` ancestor is the one the
@@ -750,10 +774,8 @@ function innermostTournament(
   leaf: CompiledStage,
   regions: readonly WorkflowRegionPlan[],
 ): { readonly name: string; readonly count: number } | undefined {
-  const byId = new Map(regions.map((region) => [region.id, region]));
-  for (let id = leaf.parentId; id !== undefined; id = byId.get(id)?.parentId) {
-    const region = byId.get(id);
-    if (region?.kind === "map" && region.count !== undefined) return { name: region.name, count: region.count };
+  for (const region of regionAncestors(regionIndex(regions), leaf.parentId)) {
+    if (region.kind === "map" && region.count !== undefined) return { name: region.name, count: region.count };
   }
   return undefined;
 }
