@@ -18,11 +18,11 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
-import { foldJobSpans, jobs, parseProgressLines, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
+import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { listRunIds } from "./runs.js";
-import { formatRunId, oneLine } from "./session-resume.js";
+import { formatRunId, oneLine, summarizeRun } from "./session-resume.js";
 
 const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`;
 const RST = "\x1b[0m";
@@ -207,26 +207,24 @@ interface RunRowMetadata {
 }
 
 /** The row the run's state document carries: the workflow it ran, how it
- * ended, and the first prompt it was given. */
+ * ended, and the first prompt it was given. The interpretation is the resume
+ * picker's `summarizeRun`, so both pickers read one document one way — the
+ * prompt shows the user's own text, without appended stage context. */
 function readStatusRow(runDir: string): RunRowMetadata | undefined {
-  let parsed: unknown;
+  let raw: string;
   try {
-    parsed = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
+    raw = readFileSync(runStatusPath(runDir), "utf8");
   } catch {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const status = parsed as { workflowPath?: unknown; status?: unknown; turns?: unknown };
-  const row: { workflow?: string; status?: string; prompt?: string } = {};
-  if (typeof status.workflowPath === "string") {
-    row.workflow = basename(status.workflowPath).replace(/\.ya?ml$/i, "");
-  }
-  if (typeof status.status === "string") row.status = status.status;
-  if (Array.isArray(status.turns)) {
-    const first = status.turns[0] as { prompt?: unknown } | undefined;
-    if (typeof first?.prompt === "string") row.prompt = first.prompt;
-  }
-  return row;
+  const status = parseRunStatus(raw);
+  if (status === undefined) return undefined;
+  const { workflow, status: runState, prompt } = summarizeRun(basename(runDir), status);
+  return {
+    ...(workflow === undefined ? {} : { workflow }),
+    ...(runState === undefined ? {} : { status: runState }),
+    ...(prompt === undefined ? {} : { prompt }),
+  };
 }
 
 /** Exported for testing; the picker calls it once per listed run.

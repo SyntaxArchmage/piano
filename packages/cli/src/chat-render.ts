@@ -5,6 +5,7 @@
 // boxes — while the trajectory panel remains the timestamped event ledger.
 import { messageText, textDelta, type AgentEvent } from "@piano/harness";
 import { Container, Markdown, Text, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { formatCompactDuration } from "./duration.js";
 import { RST, type PianoTheme } from "./theme.js";
 import { formatToolOutput } from "./tool-output.js";
 import { loopIteration } from "./trajectory.js";
@@ -128,7 +129,7 @@ export class ToolCallBox {
       s += this.isError ? this.th.error + " ✗" + RST : this.th.success + " ✓" + RST;
     }
     if (this.durationMs !== undefined) {
-      s += " " + this.th.dim + formatDuration(this.durationMs) + RST;
+      s += " " + this.th.dim + formatCompactDuration(this.durationMs) + RST;
     }
     // The preview is the collapsed affordance: expanded shows the labeled
     // detail lines instead, so repeating it in the title would duplicate them.
@@ -148,16 +149,6 @@ export class ToolCallBox {
     }
     this.container.invalidate();
   }
-}
-
-/** Compact duration for tool/response timings: `812ms`, `12.4s`, `1m02s`. */
-function formatDuration(ms: number): string {
-  const rounded = Math.max(0, ms);
-  if (rounded < 1000) return `${Math.round(rounded)}ms`;
-  if (rounded < 60_000) return `${(rounded / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(rounded / 60_000);
-  const seconds = Math.round((rounded % 60_000) / 1000);
-  return `${minutes}m${String(seconds).padStart(2, "0")}s`;
 }
 
 function previewText(tool: string, detail: string): string {
@@ -583,7 +574,7 @@ export class TranscriptView {
     const role = event.message.role;
     if (role !== undefined && role !== "assistant") return;
     if (messageText(event.message) === undefined) return;
-    this.appendText(`  ${this.th.dim}✎ ${formatDuration(this.now() - startedAt)}${RST}`);
+    this.appendText(`  ${this.th.dim}✎ ${formatCompactDuration(this.now() - startedAt)}${RST}`);
   }
 
   appendText(text: string): void {
