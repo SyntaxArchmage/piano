@@ -19,6 +19,11 @@ async function waitFor(session: TuiSession, predicate: (screen: string) => boole
 }
 
 function workflow(harness: "claude" | "dsh"): string {
+  // Tool names are the harness's own native ids, validated at parse time:
+  // claude spells them capitalized (Read), dsh lowercase (read). A shared
+  // lowercase literal made the claude arm die at workflow parse — since the
+  // file is gated behind PIANO_HARNESS_REAL_E2E, no default run ever saw it.
+  const readTool = harness === "claude" ? "Read" : "read";
   return `version: 3
 workflow:
   name: ${harness}-chat-e2e
@@ -27,7 +32,7 @@ workflow:
         name: respond
         worker: basic
         harness: ${harness}
-        tools: [read]
+        tools: [${readTool}]
         from: []
 `;
 }
