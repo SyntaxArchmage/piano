@@ -24,10 +24,6 @@ import {
   WorkerContractValidationError,
 } from "@piano/contract";
 import {
-} from "./legacy-contract-projections.js";
-import {
-} from "./gpu-round-protocol.js";
-import {
   WorkflowTrajectory,
 } from "@piano/trajectory";
 import {
@@ -42,8 +38,6 @@ import {
   type LoadedWorkflow,
 } from "./workflow-file.js";
 import { errorMessage, WorkflowError, workflowError } from "./errors.js";
-import {
-} from "./stage-metrics.js";
 import type {
   ActorExecutionContext,
   ActorState,
@@ -58,11 +52,7 @@ import {
   WORKFLOW_LOG,
   WORKFLOW_SOURCE,
 } from "./execution-logs.js";
-import {
-} from "./artifact-paths.js";
-import {
-} from "./gpu-round-materialization.js";
-import { wholeWorkflowTask } from "./stage-prompt.js";
+import { STAGE_CONTEXT_GUARD_RAILS, wholeWorkflowTask } from "./stage-prompt.js";
 import { type StageRunnerContext, type StageRunnerCounters } from "./stage-runner.js";
 import {
   createScopeWalker,
@@ -71,10 +61,10 @@ import {
 import {
   projectionNumber,
   projectionString,
-  projectionValue,
+  resultProjectionValue,
+  VALIDATE_REPAIR_ATTEMPTS,
   workflowProgressPlan,
-} from "./stage-runner-support.js"; 
-import { VALIDATE_REPAIR_ATTEMPTS } from "./stage-runner-support.js";
+} from "./stage-runner-support.js";
 export { RETRY_DEFAULT_BACKOFF_MAX_SECONDS, RETRY_DEFAULT_BACKOFF_SECONDS, VALIDATE_REPAIR_ATTEMPTS, retryBackoffSeconds } from "./stage-runner-support.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import {
@@ -99,8 +89,6 @@ import {
   type PreparedConsolidationEvidence,
 } from "./consolidation-transaction.js";
 import {
-} from "./selection.js";
-import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
@@ -112,8 +100,6 @@ import {
 } from "./progress.js";
 import { foldJobSpans, nextJobOrdinal } from "./job-spans.js";
 import { runStatusPath } from "./run-status.js";
-import {
-} from "./contract-snapshot.js";
 import {
   buildCommitMessage,
   commitRoundFiles,
@@ -568,9 +554,7 @@ function runPreparedConsolidation(
             "\n\nRe-apply those paths from the frozen delta with permission-preserving copies (for example `cp -p`); the gate also compares file modes, so a copied file whose mode differs from the delta (such as a world-executable bit added by `install`) still counts as differing.",
         "",
         "## Workflow stage context",
-        "The user task above is the complete task for the whole workflow. Use this stage only to advance that task.",
-        "Do not replace, broaden, or reinterpret it as a repository review, an autonomous development loop, or duration-based work session unless the user explicitly asks for that.",
-        "Repository instruction files constrain how you execute the task; they do not replace or broaden it.",
+        ...STAGE_CONTEXT_GUARD_RAILS,
         "You are executing workflow stage `$consolidate/" + winnerKey + "` (winner consolidation).",
         "Treat the tournament parent `" + sourceCwd + "` as the only mutable target; your frozen file delta is saved at `" + evidence.winnerChangeDir + "`.",
         "Apply only the frozen file delta listed above through normal file-editing tools. Copy files so their permission bits match the delta (for example `cp -p`); the acceptance gate compares content and file modes. Leave Git metadata untouched: do not change HEAD, refs, index, locks, or operation state.",
@@ -931,7 +915,7 @@ export function executeWorkflow(
       const implementation = producers.get("workspace.changed-files")?.[0];
       const measure = producers.get("round.decision")?.[0];
       if (implementation === undefined || measure === undefined || projectionString(measure, "round.decision") !== "KEEP") return {};
-      const changedFiles = projectionValue(implementation, "workspace.changed-files");
+      const changedFiles = resultProjectionValue(implementation, "workspace.changed-files");
       if (!Array.isArray(changedFiles)) return {};
       const files = safeChangedFiles(
         changedFiles.filter((file): file is string => typeof file === "string"),
@@ -943,7 +927,7 @@ export function executeWorkflow(
       const rw = projectionNumber(measure, "profile.llc-rw-bandwidth-gbps")?.toFixed(2);
       const regressionValue = projectionNumber(measure, "round.regression-pp");
       const regression = regressionValue === undefined ? undefined : `${regressionValue}pp`;
-      const verifyStatus = projectionValue(measure, "verification.passed") === true ? "verify passed" : "verify failed";
+      const verifyStatus = resultProjectionValue(measure, "verification.passed") === true ? "verify passed" : "verify failed";
       const test = [
         latency !== undefined && rw !== undefined ? `${latency}us / ${rw} GB/s` : undefined,
         regression,

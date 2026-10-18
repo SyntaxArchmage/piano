@@ -60,7 +60,7 @@ import {
   workflowProgressPlan,
   ensureResultDirectory,
   projectionString,
-  projectionValue,
+  resultProjectionValue,
   scheduleStageRetry,
   trajectoryAgentObservation,
   validateStageResult,
@@ -1120,9 +1120,9 @@ export function executeStage(
         ...(projectionString(result, "round.decision") === undefined
           ? {}
           : { decision: projectionString(result, "round.decision") }),
-        ...(projectionValue(result, "benchmark.evidence") === undefined
+        ...(resultProjectionValue(result, "benchmark.evidence") === undefined
           ? {}
-          : { benchmark: projectionValue(result, "benchmark.evidence") }),
+          : { benchmark: resultProjectionValue(result, "benchmark.evidence") }),
         progress,
       },
     });

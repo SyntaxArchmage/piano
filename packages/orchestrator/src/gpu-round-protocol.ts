@@ -17,6 +17,11 @@ const GPU_ROUND_PROJECTION_FORMATS = {
   "benchmark.evidence": "json",
 } as const;
 
+/** The semantic projections every materializable round must carry — and whose
+ * values materialization may replace. Leaf projections such as
+ * verification.passed and benchmark.evidence intentionally do not participate:
+ * they are derived observations under the aggregate protocol values, not
+ * replacement roots. */
 const REQUIRED_GPU_ROUND_VALUES = [
   GPU_ROUND_MATERIALIZATION_MARKER,
   "round.iteration",
@@ -66,21 +71,6 @@ function protocolError(message: string): Error {
   return new Error(`invalid ${GPU_ROUND_MATERIALIZATION_MARKER} protocol: ${message}`);
 }
 
-/** These are the semantic projections whose values materialization may
- * replace. Leaf projections such as verification.passed and
- * benchmark.evidence intentionally do not participate: they are derived
- * observations under the aggregate protocol values, not replacement roots. */
-const MATERIALIZATION_PROJECTION_IDS = [
-  GPU_ROUND_MATERIALIZATION_MARKER,
-  "round.iteration",
-  "round.decision",
-  "round.candidate",
-  "round.current-best",
-  "round.verification",
-  "round.promotion",
-  "round.records",
-] as const;
-
 function pointerIsPrefix(prefix: readonly string[], value: readonly string[]): boolean {
   return prefix.length < value.length && prefix.every((token, index) => token === value[index]);
 }
@@ -93,7 +83,7 @@ function pointerIsPrefix(prefix: readonly string[], value: readonly string[]): b
 function validateMaterializationPointerLayout(
   declarationsById: ReadonlyMap<string, ContractProjectionDeclaration>,
 ): void {
-  const pointers = MATERIALIZATION_PROJECTION_IDS.map((id) => {
+  const pointers = REQUIRED_GPU_ROUND_VALUES.map((id) => {
     const declaration = declarationsById.get(id);
     if (declaration === undefined) throw protocolError(`missing projection declaration "${id}"`);
     return { id, tokens: pointerTokens(declaration.pointer) };

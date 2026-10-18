@@ -63,12 +63,6 @@ const LEGACY_PROJECTIONS: Readonly<Record<ContractName, readonly ContractProject
 };
 
 export function legacyContractProjectionDeclarations(
-  contractId: ContractName,
-): readonly ContractProjectionDeclaration[];
-export function legacyContractProjectionDeclarations(
-  contractId: string,
-): readonly ContractProjectionDeclaration[];
-export function legacyContractProjectionDeclarations(
   contractId: string,
 ): readonly ContractProjectionDeclaration[] {
   if (!Object.prototype.hasOwnProperty.call(LEGACY_PROJECTIONS, contractId)) {
@@ -83,14 +77,6 @@ export function legacyContractProjectionDeclarations(
 /** Project legacy payloads through the same package-owned core used by
  * validate:true worker contracts. Optional declarations preserve legacy
  * conditional payloads, notably BLOCKED rounds. */
-export function projectLegacyContractProjections(
-  contractId: ContractName,
-  payload: unknown,
-): readonly ContractProjection[];
-export function projectLegacyContractProjections(
-  contractId: string,
-  payload: unknown,
-): readonly ContractProjection[];
 export function projectLegacyContractProjections(
   contractId: string,
   payload: unknown,

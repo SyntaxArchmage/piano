@@ -6,7 +6,7 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import type { AgentEvent } from "@piano/harness";
+import { abortableSleep, type AgentEvent } from "@piano/harness";
 import { TRACE, type Logging } from "@piano/logging";
 import type { TokenUsage, TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
 import type { WorkflowProgressPlan, WorkflowProgressProjection, WorkflowProgressStageCount } from "./progress.js";
@@ -20,7 +20,6 @@ import { VALIDATE_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { validateStagePayload } from "./stage-validation.js";
 import type { InternalStageResult, ResolvedStageValidation, ValidatedStagePayload } from "./execution-types.js";
-import { abortableSleep } from "@piano/harness";
 import { dirname } from "node:path";
 
 /** One initial attempt and one resumed repair turn. A stage that declares
@@ -343,17 +342,13 @@ export function usageNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-export function projectionValue(result: InternalStageResult, id: string): unknown {
-  return resultProjectionValue(result, id);
-}
-
 export function projectionString(result: InternalStageResult, id: string): string | undefined {
-  const value = projectionValue(result, id);
+  const value = resultProjectionValue(result, id);
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 export function projectionNumber(result: InternalStageResult, id: string): number | undefined {
-  const value = projectionValue(result, id);
+  const value = resultProjectionValue(result, id);
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
