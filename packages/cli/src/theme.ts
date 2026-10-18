@@ -213,34 +213,6 @@ export const highContrastTheme: PianoTheme = {
   signoffSelectedFg: "\x1b[38;2;46;30;78m",
 };
 
-/**
- * Build a reverse-proof accent highlight for the "active stage" chip (used by
- * the footer's stage-progress capsules and the STAGE column). It:
- *   1. defensively turns off reverse-video (`\x1b[27m`) — kept in case a
- *      future theme reintroduces `\x1b[7m`, since a reverse-video bar would
- *      invert the chip into an illegible block;
- *   2. paints the accent as the background;
- *   3. picks a foreground that contrasts with the accent's luminance — white on
- *      dark accents, black on light ones (e.g. the high-contrast yellow).
- */
-export function accentBlock(theme: { accent: string }): string {
-  // accent is "\x1b[38;2;R;G;Bm" (24-bit) or "\x1b[3Xm" (palette)
-  const m = theme.accent.match(/(38;2;(\d+);(\d+);(\d+))|3(\d)/);
-  if (!m) return `\x1b[27m${theme.accent}`;
-  let bg: string;
-  let light: boolean;
-  if (m[1]) {
-    const [r, g, b] = [Number(m[2]), Number(m[3]), Number(m[4])];
-    bg = `\x1b[48;2;${r};${g};${b}m`;
-    light = 0.299 * r + 0.587 * g + 0.114 * b > 128;
-  } else {
-    const idx = Number(m[5]);
-    bg = `\x1b[4${idx}m`;
-    light = idx === 3 || idx === 7; // yellow and white are the light palette colors
-  }
-  return `\x1b[27m${bg}${light ? "\x1b[30m" : "\x1b[97m"}`;
-}
-
 // ── Background / theme detection ──────────────────────────────────────────────
 
 /** Parse an OSC-11 background reply into "#rrggbb", or null if not understood. */
