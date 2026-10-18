@@ -795,7 +795,12 @@ const executeScope = (
         boundary = exitResults;
       }
     } else {
-      const lastIteration = `${instance}/iter-${(finalized.iterations ?? 1) - 1}`;
+      // Spelled through runtimeInstanceId, the one writer of instance ids:
+      // the last iteration's id is the frame chain plus its loop frame.
+      const lastIteration = runtimeInstanceId([
+        ...frames,
+        { kind: "loop", regionId: region.id, iteration: (finalized.iterations ?? 1) - 1 },
+      ]);
       boundary = exitResults.filter((result) => result.instanceId === lastIteration);
     }
     if (boundary.length === 0) return undefined;
@@ -1145,7 +1150,12 @@ const executeScope = (
           ...(finalization.incumbent === undefined ? {} : { incumbent: finalization.incumbent }),
           ...(finalization.winner === undefined ? {} : {
             ...(winnerItem === undefined ? {} : {
-              winnerInstanceId: `${runtimeRegionInstanceId(frames, region.id)}/slot-${winnerItem.index}`,
+              // The slot's own instanceId speller (see slotFrames): the winner
+              // key and the result it must match come from one function.
+              winnerInstanceId: runtimeInstanceId([
+                ...frames,
+                { kind: "map", regionId: region.id, slot: winnerItem.index },
+              ]),
             }),
           }),
         });
