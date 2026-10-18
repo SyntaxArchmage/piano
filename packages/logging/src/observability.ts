@@ -2,7 +2,7 @@ import { Context, Effect, Exit } from "effect";
 import type { FileSystem } from "@effect/platform";
 import { type ILogWriter, type LogFields } from "./log.js";
 import { type ITraceWriter } from "./trace.js";
-import { failureDetails, isCancellation, type LogWriteError, type TraceWriteError } from "./errors.js";
+import { type LogWriteError, type TraceWriteError } from "./errors.js";
 
 export type ObservabilityError = LogWriteError | TraceWriteError;
 
@@ -61,7 +61,9 @@ export function LOG(
   });
 }
 
-/** Trace one Effect boundary, recording enter, exit, and failure as a span. */
+/** Trace one Effect boundary, recording enter, exit, and failure as a span.
+ * The span in trace.jsonl is the record: the ops log deliberately carries no
+ * mirror of it (see the namespace guard in log.ts). */
 export function TRACE<A, E, R>(
   source: Source,
   effect: Effect.Effect<A, E, R>,
@@ -72,27 +74,12 @@ export function TRACE<A, E, R>(
     const span = yield* service.trace.enter(source.function, args, source).pipe(
       Effect.catchAll(() => Effect.succeed(undefined)),
     );
-    const traceLog = logger(source, { namespace: "trace" });
-    yield* traceLog.trace("function.enter", {
-      ...(span === undefined ? {} : { spanId: span.spanId }),
-      ...(args === undefined ? {} : { data: { args } }),
-    });
     return yield* effect.pipe(
       Effect.onExit((exit) => Exit.isSuccess(exit)
         ? Effect.gen(function* () {
-          yield* traceLog.debug("function.exit", {
-            ...(span === undefined ? {} : { spanId: span.spanId }),
-            outcome: "success",
-          });
           if (span !== undefined) yield* service.trace.exit(span, exit.value).pipe(Effect.catchAll(() => Effect.void));
         })
         : Effect.gen(function* () {
-          const cancelled = isCancellation(exit.cause);
-          yield* traceLog[cancelled ? "debug" : "error"]("function.error", {
-            ...(span === undefined ? {} : { spanId: span.spanId }),
-            outcome: cancelled ? "cancelled" : "failure",
-            data: { error: failureDetails(exit.cause) },
-          });
           if (span !== undefined) yield* service.trace.error(span, exit.cause).pipe(Effect.catchAll(() => Effect.void));
         })),
     );

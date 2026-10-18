@@ -82,14 +82,6 @@ export function createSession(
     const trace = new TraceWriter(values.id, join(values.runDir, "trace.jsonl"), values.traceId);
     const trajectory = new TrajectoryWriter(values.id, trajectoryStreamPath(values.runDir));
     const span = yield* trace.enter("createSession", undefined, SOURCE);
-    yield* log.append("function.enter", {
-      module: SOURCE.module,
-      file: SOURCE.file,
-      function: "createSession",
-      level: "trace",
-      namespace: "trace",
-      spanId: span.spanId,
-    });
     yield* log.append("run.created", {
       module: SOURCE.module,
       file: SOURCE.file,
@@ -98,15 +90,6 @@ export function createSession(
       namespace: "logging",
       message: "Run created",
       data: { runDir: values.runDir, ...(opts.prompt === undefined ? {} : { promptLength: opts.prompt.length }) },
-    });
-    yield* log.append("function.exit", {
-      module: SOURCE.module,
-      file: SOURCE.file,
-      function: "createSession",
-      level: "trace",
-      namespace: "trace",
-      spanId: span.spanId,
-      outcome: "success",
     });
     yield* trace.exit(span, { id: values.id, runDir: values.runDir });
     return { ...values, log, trace, trajectory };
