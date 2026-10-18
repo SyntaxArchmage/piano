@@ -38,7 +38,7 @@ export interface WorkflowRuntimeInvocation {
   readonly frames: readonly WorkflowRuntimeFrame[];
 }
 
-export const DEFAULT_EXECUTION_ID_PREFIX = "execution";
+const DEFAULT_EXECUTION_ID_PREFIX = "execution";
 
 /** A caller-provided execution id is deliberately narrow because it becomes
  * part of the run evidence path. Callers that omit it receive a unique id. */
@@ -124,7 +124,7 @@ export function runtimeFramesFromInstanceId(
 
 /** Path segments shared by all per-invocation evidence. Static names and frame
  * values originate from the validated workflow or generated integers. */
-export function runtimeInvocationPathSegments(
+function runtimeInvocationPathSegments(
   invocation: WorkflowRuntimeInvocation,
 ): readonly string[] {
   return [

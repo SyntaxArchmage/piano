@@ -322,7 +322,7 @@ export function workflowProgressPlan(
   };
 }
 
-export function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usage" }>): TokenUsage {
+function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usage" }>): TokenUsage {
   const input = usageNumber(event.usage.input);
   const output = usageNumber(event.usage.output);
   const cacheRead = usageNumber(event.usage.cacheRead);
@@ -338,7 +338,7 @@ export function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usa
   };
 }
 
-export function usageNumber(value: unknown): number {
+function usageNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 

@@ -110,7 +110,7 @@ interface RuntimeTournamentCandidate extends WorkflowWorkspaceCandidate {
   readonly stopped?: boolean;
 }
 
-export function valueAtPath(value: unknown, path: readonly string[]): unknown {
+function valueAtPath(value: unknown, path: readonly string[]): unknown {
   let current = value;
   for (const segment of path) {
     if (typeof current !== "object" || current === null || Array.isArray(current)) return undefined;
@@ -134,7 +134,7 @@ function nodeFrom(node: WorkflowRuntimeNode): readonly string[] {
  * one ready node at a time and `completed` is inserted in that order, which is
  * the dependency order of the leaf DAG — not the declaration order the tree
  * carries. Consumers pick a run's final result from the tail of this list. */
-export function terminalGroups(
+function terminalGroups(
   nodes: readonly WorkflowRuntimeNode[],
   completed: ReadonlyMap<string, ResultGroup>,
 ): readonly InternalStageResult[] {
@@ -153,7 +153,7 @@ export function terminalGroups(
  * derived (metric-less report/fan-out is left inert) or when destinations are
  * ambiguous. A stopped candidate may still establish the shared metric
  * identity, but is never eligible to win. */
-export function automaticTournamentOutcome(
+function automaticTournamentOutcome(
   exitStageId: string,
   candidates: readonly RuntimeTournamentCandidate[],
 ): {
@@ -208,7 +208,7 @@ export function automaticTournamentOutcome(
  * child's explicit dependency order. A producer can be both inherited from a
  * parent scope and named as a direct dependency; keep the first occurrence so
  * its immutable handoff provenance is emitted exactly once. */
-export function mergeScopeInputs(
+function mergeScopeInputs(
   inherited: readonly InternalStageResult[],
   direct: readonly InternalStageResult[],
 ): readonly InternalStageResult[] {
@@ -221,7 +221,7 @@ export function mergeScopeInputs(
   });
 }
 
-export function isBlockedStageResult(result: InternalStageResult): boolean {
+function isBlockedStageResult(result: InternalStageResult): boolean {
   return resultProjectionValue(result, "workflow.status") === "blocked" ||
     resultProjectionValue(result, "round.decision") === "BLOCKED";
 }
@@ -229,7 +229,7 @@ export function isBlockedStageResult(result: InternalStageResult): boolean {
 /** A blocked loop round is terminal when its block is global-scoped (or
  * unlabeled, which defaults to global) or it fired on the loop's own entry
  * stage. A hypothesis-scoped block is absorbed and the loop continues. */
-export function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string | undefined): boolean {
+function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string | undefined): boolean {
   const blocked = child.boundary.results.filter(isBlockedStageResult);
   if (blocked.length === 0) return true;
   return blocked.some((result) =>
@@ -240,7 +240,7 @@ export function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string 
 
 /** Only a worker-contract projection may end a successful loop. Payload fields
  * with similar names remain ordinary domain data and cannot control scheduling. */
-export function loopStopRequested(results: readonly InternalStageResult[]): boolean {
+function loopStopRequested(results: readonly InternalStageResult[]): boolean {
   return results.some((result) => resultProjectionValue(result, "workflow.loop-control") === "stop");
 }
 

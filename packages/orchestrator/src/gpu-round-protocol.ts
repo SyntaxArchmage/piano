@@ -3,7 +3,7 @@ import type {
   ContractProjectionDeclaration,
 } from "@piano/contract";
 
-export const GPU_ROUND_MATERIALIZATION_MARKER = "round.materialization-v1";
+const GPU_ROUND_MATERIALIZATION_MARKER = "round.materialization-v1";
 
 const GPU_ROUND_PROJECTION_FORMATS = {
   [GPU_ROUND_MATERIALIZATION_MARKER]: "json",
