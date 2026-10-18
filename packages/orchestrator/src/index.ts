@@ -87,7 +87,6 @@ export {
   type LoadAndExecuteWorkflowRequest,
   type WorkflowExecutionRequest,
   type WorkflowExecutionResult,
-  type WorkflowStageExecutionResult,
   type WorkflowExecutionError,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
@@ -104,6 +103,7 @@ export {
   RETRY_DEFAULT_BACKOFF_SECONDS,
   VALIDATE_REPAIR_ATTEMPTS,
 } from "./stage-runner-support.js";
+export { type WorkflowStageExecutionResult } from "./execution-types.js";
 export {
   ConsolidationEvidencePreparationError,
   prepareConsolidationEvidence,

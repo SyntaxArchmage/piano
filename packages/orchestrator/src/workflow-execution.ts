@@ -44,7 +44,6 @@ import type {
   InternalStageResult,
   WorkflowStageExecutionResult,
 } from "./execution-types.js";
-export type { WorkflowStageExecutionResult } from "./execution-types.js";
 import {
   COMPILE_SOURCE,
   EXPLICIT_LOAD_SOURCE,
