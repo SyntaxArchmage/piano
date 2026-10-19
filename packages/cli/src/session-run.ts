@@ -23,25 +23,20 @@ import {
   type StagingSession,
   type TrajectoryWriteInput,
 } from "@piano/logging";
-import { FileSystem } from "@effect/platform";
 import {
   closeWorkflowJob,
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
   EXPLICIT_LOAD_SOURCE,
-  foldJobSpans,
-  latestJob,
   LOAD_SOURCE,
   loadDefaultWorkflow,
   loadWorkflow,
-  parseProgressLines,
   readWorkflowExecutionContinuation,
   readRunStatus,
   refreshRunStatus,
   runStatusPath,
   setWorkflowSelection,
-  workflowProgressPath,
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
@@ -233,14 +228,10 @@ function runSessionBody(
         ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord> | undefined,
         never,
         import("@effect/platform").FileSystem.FileSystem
-      > => Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-          Effect.orElseSucceed(() => ""),
-        );
-        const records = parseProgressLines(ledger);
-        return latestJob(foldJobSpans(records))?.regions;
-      });
+      > => Effect.map(readRunStatus(runDir), (status) => {
+        const regions = status?.jobs.at(-1)?.regions;
+        return regions === undefined ? undefined : new Map(Object.entries(regions));
+      }).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
       const runPrompt = (
         prompt: string,
         onEvent: (event: AgentEvent) => void,

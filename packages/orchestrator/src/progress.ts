@@ -1,9 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { appendJsonlLine } from "@piano/logging";
-import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
-import { refreshRunStatus } from "./run-status.js";
+import type { WorkflowError } from "./errors.js";
+import { readRunStatus, runStatusPath, writeRunStatus, type RunJob, type RunStatus } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
@@ -407,10 +406,6 @@ export function workflowProgressPath(runDir: string): string {
   return join(runDir, "progress.jsonl");
 }
 
-function progressError(path: string, operation: string, cause: unknown): WorkflowError {
-  return workflowError("schedule", path, `${operation}: ${errorMessage(cause)}`);
-}
-
 function emptyStageCounts(plan: WorkflowProgressPlan): Readonly<Record<string, WorkflowProgressStageCount>> {
   return Object.fromEntries(Object.entries(plan.stageCounts).map(([stageId, count]) => [stageId, {
     planned: count.planned,
@@ -650,6 +645,176 @@ export function applyProgressRecord(
   };
 }
 
+/** The state document's fields that are also the progress snapshot's. */
+function snapshotOf(status: RunStatus): WorkflowProgressSnapshot {
+  return {
+    version: 1,
+    updatedAt: status.updatedAt,
+    runId: status.runId,
+    status: status.status === "cancelled" ? "paused" : status.status,
+    plannedStages: status.plannedStages,
+    completedStages: status.completedStages,
+    acceptedStages: status.acceptedStages,
+    remainingStages: status.remainingStages,
+    stageCounts: status.stageCounts,
+    ...(status.invocationTime === undefined ? {} : { invocationTime: status.invocationTime }),
+    ...(status.current === undefined ? {} : { current: status.current }),
+    ...(status.error === undefined ? {} : { error: typeof status.error === "string" ? status.error : JSON.stringify(status.error) }),
+  };
+}
+
+function emptyRunStatus(runId: string, timestamp: string): RunStatus {
+  return {
+    version: 1,
+    runId,
+    updatedAt: timestamp,
+    status: "running",
+    promptLength: 0,
+    plannedStages: 0,
+    completedStages: 0,
+    acceptedStages: 0,
+    remainingStages: 0,
+    stageCounts: {},
+    jobs: [],
+    jobOrdinal: 0,
+    actors: {},
+  };
+}
+
+function updateJob(
+  jobs: readonly RunJob[],
+  ordinal: number,
+  update: (job: RunJob) => RunJob,
+): readonly RunJob[] {
+  const index = jobs.findIndex((job) => job.jobOrdinal === ordinal);
+  if (index < 0) return jobs;
+  const next = [...jobs];
+  next[index] = update(next[index]!);
+  return next;
+}
+
+function bumpAttempt(
+  attempts: Readonly<Record<string, number>>,
+  invocationId: string,
+  attempt: unknown,
+): Readonly<Record<string, number>> {
+  if (typeof attempt !== "number" || !Number.isFinite(attempt)) return attempts;
+  return { ...attempts, [invocationId]: Math.max(attempts[invocationId] ?? 0, attempt) };
+}
+
+/** Fold one record into the run's state document.
+ *
+ * The snapshot fields reuse {@link applyProgressRecord}; the record families
+ * that document alone cannot express — jobs, their finalized regions and the
+ * actor table — are applied alongside it. This is the whole state machine a
+ * run has: there is no second stream to reconcile, and writing the document is
+ * the commit. */
+export function applyRunStatusRecord(
+  previous: RunStatus | undefined,
+  record: WorkflowProgressStreamRecord,
+): RunStatus {
+  const snapshot = applyProgressRecord(previous === undefined ? undefined : snapshotOf(previous), record);
+  const base = previous ?? emptyRunStatus(record.runId, record.timestamp);
+  const next: RunStatus = {
+    ...base,
+    runId: snapshot.runId,
+    updatedAt: snapshot.updatedAt,
+    status: snapshot.status,
+    plannedStages: snapshot.plannedStages,
+    completedStages: snapshot.completedStages,
+    acceptedStages: snapshot.acceptedStages,
+    remainingStages: snapshot.remainingStages,
+    stageCounts: snapshot.stageCounts,
+    ...(snapshot.invocationTime === undefined ? {} : { invocationTime: snapshot.invocationTime }),
+    ...(snapshot.current === undefined ? {} : { current: snapshot.current }),
+    ...(snapshot.error === undefined ? {} : { error: snapshot.error }),
+  };
+  const kind = progressRecordKind(record);
+  if (kind === "execution-started") {
+    const started = record as WorkflowProgressExecutionStartRecord;
+    const ordinal = started.jobOrdinal ?? (next.jobs.at(-1)?.jobOrdinal ?? 0) + 1;
+    const existing = next.jobs.find((job) => job.jobOrdinal === ordinal);
+    const input = existing?.input ?? started.prompt;
+    const job: RunJob = {
+      jobOrdinal: ordinal,
+      state: "alive",
+      accepted: existing?.accepted ?? [],
+      attempts: existing?.attempts ?? {},
+      ...(input === undefined ? {} : { input }),
+      ...(existing?.regions === undefined ? {} : { regions: existing.regions }),
+    };
+    const jobs = [...next.jobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
+      .sort((left, right) => left.jobOrdinal - right.jobOrdinal);
+    return { ...next, jobs, jobOrdinal: ordinal };
+  }
+  if (kind === "stage-started") {
+    const started = record as WorkflowProgressStartRecord;
+    return {
+      ...next,
+      jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({
+        ...job,
+        state: "alive",
+        attempts: bumpAttempt(job.attempts, started.invocationId, started.attempt),
+      })),
+    };
+  }
+  if (kind === "stage-accepted") {
+    const accepted = record as WorkflowProgressRecord;
+    return {
+      ...next,
+      jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({
+        ...job,
+        state: "alive",
+        accepted: job.accepted.includes(accepted.invocationId) ? job.accepted : [...job.accepted, accepted.invocationId],
+        attempts: bumpAttempt(job.attempts, accepted.invocationId, accepted.attempt),
+      })),
+    };
+  }
+  if (kind === "region-finalized") {
+    const finalized = record as WorkflowProgressRegionFinalizedRecord;
+    return {
+      ...next,
+      jobs: updateJob(next.jobs, finalized.jobOrdinal, (job) => ({
+        ...job,
+        regions: { ...job.regions, [finalized.instance]: finalized },
+      })),
+    };
+  }
+  if (kind === "actor-turn") {
+    const turn = record as WorkflowProgressActorTurnRecord;
+    return {
+      ...next,
+      jobOrdinal: turn.jobOrdinal,
+      actors: {
+        ...next.actors,
+        [turn.actorKey]: {
+          harness: turn.harness,
+          sessionId: turn.sessionId,
+          transcriptPath: turn.transcriptPath,
+          turns: turn.turn,
+          ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
+        },
+      },
+    };
+  }
+  if (kind === "job-closed") {
+    const closed = record as WorkflowProgressJobClosedRecord;
+    return {
+      ...next,
+      jobs: updateJob(next.jobs, closed.jobOrdinal, (job) => ({ ...job, state: "finished", outcome: closed.outcome })),
+    };
+  }
+  if (kind === "execution-finished") {
+    const finished = record as WorkflowProgressExecutionFinishRecord;
+    if (finished.status === "paused") {
+      return { ...next, jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({ ...job, state: "paused" })) };
+    }
+    const outcome = finished.status;
+    return { ...next, jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({ ...job, state: "finished", outcome })) };
+  }
+  return next;
+}
+
 /** Create the initial snapshot before the first worker turn. This makes a
  * long-running workflow observable even while no stage has validated yet. */
 export function initializeWorkflowProgress(
@@ -660,7 +825,7 @@ export function initializeWorkflowProgress(
   prompt: string,
   resume: boolean,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressPath(runDir);
+  const path = runStatusPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,
@@ -676,41 +841,18 @@ export function initializeWorkflowProgress(
   });
 }
 
-/** Append one record to the run's progress stream.
+/** Apply one record to the run's state document and write it atomically.
  *
- * Every record type goes through here, so the file has one place that knows
- * its line format; the bytes land through the shared JSONL writer mechanism
- * in logging's jsonl.ts. */
-function appendProgressLine(
-  fileSystem: FileSystem.FileSystem,
-  path: string,
-  record: WorkflowProgressStreamRecord,
-): Effect.Effect<void, WorkflowError, never> {
-  return Effect.gen(function* () {
-    const line = yield* Effect.try({
-      try: () => `${JSON.stringify(record)}\n`,
-      catch: (cause) => progressError(path, "serialize", cause),
-    });
-    yield* appendJsonlLine(fileSystem, path, line, (step, cause) => progressError(path, step, cause));
-  });
-}
-
-/** Append one record to the stream, then bring the run's state document back
- * in step with it.
- *
- * The one path every writer takes. The record is written first on purpose: the
- * state document is a view of it, so a failure between the two must leave the
- * view stale rather than the record missing. */
+ * The one path every writer takes. The document is the record: there is no
+ * stream beside it to keep in step, and the atomic write makes a crash leave
+ * either the previous state or the next one, never a torn line. */
 function appendAndFold(
   runDir: string,
   record: WorkflowProgressStreamRecord,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    yield* appendProgressLine(fileSystem, workflowProgressPath(runDir), record);
-    // `run-status` folds this module's records back, which is why the two
-    // import each other's functions rather than one owning the other.
-    yield* refreshRunStatus(runDir);
+    const current = yield* readRunStatus(runDir);
+    yield* writeRunStatus(runDir, applyRunStatusRecord(current, record));
   });
 }
 
@@ -725,7 +867,7 @@ export function markWorkflowStageStarted(
   runId: string,
   current: Omit<WorkflowProgressCurrent, "status" | "progress">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressPath(runDir);
+  const path = runStatusPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,
@@ -756,7 +898,7 @@ export function appendWorkflowProgress(
     | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">
     | Omit<WorkflowProgressActorTurnRecord, "version" | "timestamp">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressPath(runDir);
+  const path = runStatusPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,
@@ -779,7 +921,7 @@ export function finalizeWorkflowProgress(
   status: "completed" | "failed" | "paused",
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressPath(runDir);
+  const path = runStatusPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,
@@ -802,7 +944,7 @@ export function closeWorkflowJob(
   jobOrdinal: number,
   outcome: "restarted",
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = workflowProgressPath(runDir);
+  const path = runStatusPath(runDir);
   return Effect.gen(function* () {
     yield* appendAndFold(runDir, {
       version: 1,

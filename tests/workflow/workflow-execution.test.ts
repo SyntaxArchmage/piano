@@ -18,19 +18,14 @@ import {
   allocateMapWorkspace,
   closeWorkflowJob,
   executeWorkflow,
-  foldJobSpans,
-  jobs,
-  latestJob,
   loadAndExecuteWorkflow,
   loadWorkflow,
-  progressRecordKind,
   readWorkflowExecutionContinuation,
   WorkflowError,
-  type WorkflowProgressStreamRecord,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowSignoffRequest,
   type WorkflowExecutionContinuation,
 } from "../../packages/orchestrator/src/index.js";
-import { foldActorTurns } from "../../packages/orchestrator/src/resume-state.js";
 import {
   AgentError,
   createSteeringChannel,
@@ -45,19 +40,6 @@ import {
 } from "../../packages/orchestrator/src/legacy-contract-projections.js";
 
 const runFile = promisify(execFile);
-
-/** The accepted-stage records of a run's append-only progress stream, in order.
- *
- * The stream also carries `stage-started` records, so a reader that wants "what
- * the orchestrator accepted" asks by kind instead of by line position. These
- * tests are about orchestration semantics — which stages ran, in what order,
- * with what payload — so they read the accepted records. */
-function acceptedProgress<T>(text: string): T[] {
-  return text.trim().split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, unknown>)
-    .filter((record) => progressRecordKind(record) === "stage-accepted") as T[];
-}
 
 const BASIC_WORKFLOW = `version: 3
 workflow:
@@ -727,6 +709,22 @@ function runWorkflowWithFileSystem<A>(
   ));
 }
 
+/** The run's state document, as its readers take it. */
+async function readRunStatusFile(runDir: string): Promise<{
+  status?: string;
+  completedStages?: number;
+  jobs: Array<{
+    jobOrdinal: number;
+    state: string;
+    accepted: string[];
+    attempts: Record<string, number>;
+    regions?: Record<string, WorkflowProgressRegionFinalizedRecord>;
+  }>;
+  actors: Record<string, Record<string, unknown>>;
+}> {
+  return JSON.parse(await readFile(join(runDir, "status.json"), "utf8"));
+}
+
 describe(" workflow execution", () => {
   it("materializes a validated CUDA KEEP before progress and downstream reads", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-promotion-run-"));
@@ -782,8 +780,6 @@ describe(" workflow execution", () => {
       expect(state.current_best.source).toBe("kernel.py");
       expect(state.current_best.promoted_at).toEqual(expect.any(String));
       expect(state.history).toHaveLength(1);
-      const progress = acceptedProgress<{ resultPayload?: { current_best?: { digest?: string } } }>(await readFile(result.progressPath, "utf8"));
-      expect(progress[0]?.resultPayload?.current_best?.digest).toBe(candidateDigest);
       const accepted = JSON.parse(await readFile(result.stages[0]!.resultPath!, "utf8")) as {
         current_best?: { path?: string; digest?: string };
         promotion?: { resulting_best?: { path?: string; digest?: string } };
@@ -1108,15 +1104,6 @@ describe(" workflow execution", () => {
       ]));
       expect(result.stages[0]?.projections?.find(({ id }) => id === "round.materialization-v1")?.value)
         .toEqual(result.stages[0]?.resultPayload);
-      const progress = acceptedProgress<{
-        resultPayload?: { decision?: string };
-        projections?: Array<{ id: string; value: unknown }>;
-      }>(await readFile(result.progressPath, "utf8"));
-      expect(progress[0]?.resultPayload?.decision).toBe("DISCARD");
-      expect(progress[0]?.projections).toContainEqual(expect.objectContaining({
-        id: "round.decision",
-        value: "DISCARD",
-      }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2170,9 +2157,6 @@ workflow:
       }));
       expect(calls.map(stageId)).toEqual(["setup", "summary"]);
       expect(result.stages.map((stage) => stage.stageId)).toEqual(["setup", "summary"]);
-      const progress = acceptedProgress<{ stageId: string; resultPayload?: { status?: string } }>(await readFile(result.progressPath, "utf8"));
-      expect(progress.map((record) => record.stageId)).toEqual(["setup", "summary"]);
-      expect(progress[0]?.resultPayload?.status).toBe("blocked");
       expect(result.stages[0]?.projections).toContainEqual(expect.objectContaining({
         id: "workflow.status",
         value: "blocked",
@@ -2925,7 +2909,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const turns = new Map<string, number>();
-      const result = await runWorkflow(session, loadAndExecuteWorkflow({
+      await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "loop-feedback.yml"),
         runDir: session.runDir,
@@ -3007,23 +2991,21 @@ workflow:
         id: "tune.measure@tune/iter-1",
         resultPayload: { text: "tune.measure@tune/iter-1" },
       });
-      const progress = acceptedProgress<{
-        stageId: string;
-        iteration?: number;
-        sessionId: string;
-        resultPayload?: { text?: string };
-      }>(await readFile(result.progressPath, "utf8"));
-      expect(progress).toHaveLength(7);
-      expect(progress.filter((record) => record.stageId === "tune.profile").map((record) => record.iteration)).toEqual([0, 1, 2]);
-      expect(progress.filter((record) => record.stageId === "tune.measure").map((record) => record.resultPayload?.text)).toEqual([
+      // The accepted invocations, in acceptance order, are the state
+      // document's job cursor; the payloads themselves are asserted in memory
+      // and in the handoff records above.
+      const status = await readRunStatusFile(session.runDir);
+      const acceptedIds = status.jobs.at(-1)?.accepted ?? [];
+      expect(acceptedIds).toHaveLength(7);
+      expect(acceptedIds.filter((id) => id.startsWith("tune.profile@"))).toEqual([
+        "tune.profile@tune/iter-0",
+        "tune.profile@tune/iter-1",
+        "tune.profile@tune/iter-2",
+      ]);
+      expect(acceptedIds.filter((id) => id.startsWith("tune.measure@"))).toEqual([
         "tune.measure@tune/iter-0",
         "tune.measure@tune/iter-1",
         "tune.measure@tune/iter-2",
-      ]);
-      expect(progress.filter((record) => record.stageId === "tune.profile").map((record) => record.sessionId)).toEqual([
-        "tune.profile-session-1",
-        "tune.profile-session-2",
-        "tune.profile-session-3",
       ]);
       const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
@@ -3279,8 +3261,8 @@ workflow:
       expect(Object.values(snapshot.invocationTime ?? {})
         .filter((time) => time.stageId === "tournament.implement")
         .map((time) => time.instanceId).sort()).toEqual(["tournament/slot-0", "tournament/slot-1"]);
-      const progressRecords = acceptedProgress<{ progress?: { completedStages?: number } }>(await readFile(join(session.runDir, "progress.jsonl"), "utf8"));
-      expect(progressRecords.map((record) => record.progress?.completedStages)).toEqual([1, 2, 3, 4, 5, 6]);
+      const status = await readRunStatusFile(session.runDir);
+      expect(status.completedStages).toBe(6);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4411,8 +4393,6 @@ workflow:
         model: "stage-model",
         thinkingLevel: "high",
       });
-      const [progress] = acceptedProgress<Record<string, unknown>>(await readFile(result.progressPath, "utf8"));
-      expect(progress).toMatchObject({ requestedModel: "stage-model", requestedThinkingLevel: "high", model: "stage-model", thinkingLevel: "high" });
       const handoffPath = result.stages[0]?.handoffRecordPath;
       expect(handoffPath).toBeDefined();
       const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { producer: Record<string, unknown> };
@@ -4665,21 +4645,19 @@ workflow:
       // The continue's cursor, folded from the run's own stream — exactly what
       // the CLI's /continue hands over: accepted invocations and the regions
       // that already exited.
-      const streamRecords = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as unknown);
-      const folded = jobs(foldJobSpans(streamRecords as readonly WorkflowProgressStreamRecord[]));
-      const cursor = folded.at(-1);
-      expect(cursor?.regions.size).toBe(1);
+      const status = await readRunStatusFile(session.runDir);
+      const cursor = status.jobs.at(-1)!;
+      expect(Object.keys(cursor.regions ?? {})).toHaveLength(1);
 
       const secondCalls: AgentRequest[] = [];
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
         root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: "map-skip", cwd: root, prompt: "map candidates",
         agentRunner: runner(secondCalls),
         continueJob: {
-          jobOrdinal: cursor!.jobOrdinal,
-          accepted: cursor!.accepted,
-          attempts: cursor!.attempts,
-          regions: cursor!.regions,
+          jobOrdinal: cursor.jobOrdinal,
+          accepted: new Set(cursor.accepted),
+          attempts: new Map(Object.entries(cursor.attempts)),
+          regions: new Map(Object.entries(cursor.regions ?? {})),
         },
       }));
       // The region was skipped whole: not one worker turn re-ran.
@@ -4693,9 +4671,8 @@ workflow:
       // The skip is what keeps the evidence singular: a re-entered region
       // would finalize again — a second region-finalized line and a second
       // selection observation for one decision.
-      const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as { kind?: string; instance?: string });
-      expect(afterStream.filter((line) => line.kind === "region-finalized" && line.instance === "tournament")).toHaveLength(1);
+      const after = await readRunStatusFile(session.runDir);
+      expect(Object.keys(after.jobs.at(-1)?.regions ?? {})).toHaveLength(1);
       const selectionLines = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8")).trim().split("\n");
       expect(selectionLines).toHaveLength(1);
     } finally {
@@ -4781,36 +4758,31 @@ workflow:
       ));
       await hanging;
 
-      const streamLines = async () => (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
-      const foldStream = async () => {
-        const records = (await streamLines()) as unknown as readonly WorkflowProgressStreamRecord[];
-        return latestJob(foldJobSpans(records));
-      };
+      const latestJobState = async () => (await readRunStatusFile(session.runDir)).jobs.at(-1);
       const deadline = Date.now() + 20_000;
-      while ((await streamLines()).filter((line) => line.kind === "region-finalized").length !== 1 && Date.now() < deadline) {
+      while (Object.keys((await latestJobState())?.regions ?? {}).length !== 1 && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      expect((await streamLines()).filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+      expect(Object.keys((await latestJobState())?.regions ?? {})).toHaveLength(1);
 
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
 
-      const cursor = (await foldStream())!;
-      // The loop exited before the pause: its evidence is on the stream and its
-      // exit result is the one a continue rebuilds from.
-      expect(cursor.regions.size).toBe(1);
-      expect(cursor.accepted.has("tune.report@tune/iter-1")).toBe(true);
+      const cursorJob = (await latestJobState())!;
+      // The loop exited before the pause: its exit evidence is in the state
+      // document and is what a continue rebuilds from.
+      expect(Object.keys(cursorJob.regions ?? {})).toHaveLength(1);
+      expect(cursorJob.accepted).toContain("tune.report@tune/iter-1");
 
       run = 1;
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
         root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
         agentRunner,
         continueJob: {
-          jobOrdinal: cursor.jobOrdinal,
-          accepted: cursor.accepted,
-          attempts: cursor.attempts,
-          regions: cursor.regions,
+          jobOrdinal: cursorJob.jobOrdinal,
+          accepted: new Set(cursorJob.accepted),
+          attempts: new Map(Object.entries(cursorJob.attempts)),
+          regions: new Map(Object.entries(cursorJob.regions ?? {})),
         },
       }));
 
@@ -4827,8 +4799,7 @@ workflow:
       ]));
       expect(secondRun.terminalStages[0]?.stageId).toBe("close");
       // One exit decision, one record: a re-entered loop would finalize again.
-      const afterStream = await streamLines();
-      expect(afterStream.filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+      expect(Object.keys((await latestJobState())?.regions ?? {})).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4849,19 +4820,16 @@ workflow:
         })),
       }));
 
-      const records = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .split("\n").filter((line) => line.trim() !== "")
-        .map((line) => JSON.parse(line) as { kind?: unknown; lane?: unknown });
+      const status = await readRunStatusFile(session.runDir);
       const execution = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      // The ledger's rows are the actor table now: the continue path folds the
-      // same rows, and nothing else carries the table.
-      expect(new Map(Object.entries(foldActorTurns(records)))).toEqual(execution?.actors);
-      // And each row carries the lane and the turn count, not just the key.
-      const turns = records.filter((record) => record.kind === "actor-turn");
-      expect(turns).toHaveLength(1);
-      expect(turns[0]).toMatchObject({ lane: "root", turn: 1, worker: "basic" });
+      // The state document's actor table is the table the continue path reads:
+      // one write, one reader, no second copy.
+      expect(new Map(Object.entries(status.actors))).toEqual(execution?.actors);
+      const keys = Object.keys(status.actors);
+      expect(keys).toHaveLength(1);
+      expect(status.actors[keys[0]!]).toMatchObject({ harness: "pi", turns: 1 });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4998,12 +4966,8 @@ workflow:
       // A stale hint (the state says 0) is a floor, never the answer.
       await run({ id: session.id, jobOrdinal: 0, actors: new Map() });
 
-      const ordinals = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n")
-        .map((line) => JSON.parse(line) as { kind?: string; jobOrdinal?: number })
-        .filter((record) => record.kind === "execution-started")
-        .map((record) => record.jobOrdinal);
-      expect(ordinals).toEqual([1, 2, 3]);
+      const status = await readRunStatusFile(session.runDir);
+      expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1, 2, 3]);
       // The trees follow the ordinals: three jobs, no job writing over another.
       expect((await readdir(join(session.runDir, "prompts"))).sort()).toEqual(["1", "2", "3"]);
       expect(calls).toHaveLength(3);
@@ -5246,9 +5210,8 @@ workflow:
       expect(winner).toBe("job-1/race/slot-1");
       // The region's exit is evidence of its own: one line, naming the
       // instance, the outcome and the winner a continue skips by.
-      const progressLines = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
-      const finalized = progressLines.filter((line) => line.kind === "region-finalized");
+      const status = await readRunStatusFile(session.runDir);
+      const finalized = Object.values(status.jobs.at(-1)?.regions ?? {});
       expect(finalized).toHaveLength(1);
       expect(finalized[0]).toMatchObject({
         jobOrdinal: 1,
@@ -5365,25 +5328,20 @@ workflow:
       ));
       await hanging;
 
-      const foldStream = async () => {
-        const raw = await readFile(join(session.runDir, "progress.jsonl"), "utf8").catch(() => "");
-        const records = raw.split("\n").filter((line) => line.trim() !== "")
-          .map((line) => JSON.parse(line) as WorkflowProgressStreamRecord);
-        return latestJob(foldJobSpans(records));
-      };
+      const latestJobState = async () => (await readRunStatusFile(session.runDir)).jobs.at(-1);
       const deadline = Date.now() + 20_000;
-      while ((await foldStream())?.accepted.has("race.bench@race/slot-1") !== true && Date.now() < deadline) {
+      while (!(await latestJobState())?.accepted.includes("race.bench@race/slot-1") && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      expect((await foldStream())?.accepted.has("race.bench@race/slot-1")).toBe(true);
+      expect((await latestJobState())?.accepted).toContain("race.bench@race/slot-1");
 
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
 
       // The pause landed mid-region: nothing finalized it, so the continue
       // re-enters and the winner's lane must come back from its evidence.
-      const cursor = (await foldStream())!;
-      expect(cursor.regions.size).toBe(0);
+      const cursorJob = (await latestJobState())!;
+      expect(Object.keys(cursorJob.regions ?? {})).toHaveLength(0);
       // The carried conversations come from the run's own resume evidence.
       const execution = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
@@ -5396,10 +5354,10 @@ workflow:
         ...(execution === undefined ? {} : { execution }),
         agentRunner,
         continueJob: {
-          jobOrdinal: cursor.jobOrdinal,
-          accepted: cursor.accepted,
-          attempts: cursor.attempts,
-          regions: cursor.regions,
+          jobOrdinal: cursorJob.jobOrdinal,
+          accepted: new Set(cursorJob.accepted),
+          attempts: new Map(Object.entries(cursorJob.attempts)),
+          regions: new Map(Object.entries(cursorJob.regions ?? {})),
         },
       }));
 
@@ -5429,9 +5387,8 @@ workflow:
         .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(selection).toHaveLength(1);
       expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
-      const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
-      expect(afterStream.filter((line) => line.kind === "region-finalized")).toHaveLength(1);
+      const after = await readRunStatusFile(session.runDir);
+      expect(Object.keys(after.jobs.at(-1)?.regions ?? {})).toHaveLength(1);
       // The carried winner reached the shared source.
       expect((await readFile(join(root, "kernel.py"), "utf8")).trim()).toBe("kernel-1");
       expect(secondRun.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
@@ -6356,8 +6313,8 @@ workflow:
             // Replace the ledger after the worker mutates the parent, making
             // the actor-state persistence (an `actor-turn` append) fail
             // deterministically.
-            await rm(join(session.runDir, "progress.jsonl"), { force: true });
-            await mkdir(join(session.runDir, "progress.jsonl"));
+            await rm(join(session.runDir, "status.json"), { force: true });
+            await mkdir(join(session.runDir, "status.json"));
           } else if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });

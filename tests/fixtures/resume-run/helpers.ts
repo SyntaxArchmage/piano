@@ -157,7 +157,13 @@ export interface RunStatusView {
     readonly turns?: number;
     readonly continuation?: { readonly nativeSessionId?: string; readonly sessionId?: string };
   }>;
-  readonly jobs?: Array<{ readonly jobOrdinal?: number; readonly state?: string }>;
+  readonly jobs?: Array<{
+    readonly jobOrdinal?: number;
+    readonly state?: string;
+    readonly accepted?: readonly string[];
+    readonly attempts?: Readonly<Record<string, number>>;
+    readonly regions?: Readonly<Record<string, unknown>>;
+  }>;
 }
 
 export async function readStatus(runDir: string): Promise<RunStatusView> {
@@ -194,19 +200,6 @@ export async function findNewRun(home: ResumeRunHome, before: ReadonlySet<string
 
 export async function listRunIds(home: ResumeRunHome): Promise<ReadonlySet<string>> {
   return new Set(await readdir(home.runsRoot).catch(() => [] as string[]));
-}
-
-interface ProgressRecord {
-  readonly kind?: string;
-  readonly invocationId?: string;
-  readonly attempt?: number;
-  readonly instance?: string;
-}
-
-async function readProgress(runDir: string): Promise<ProgressRecord[]> {
-  const text = await readFile(join(runDir, "progress.jsonl"), "utf8");
-  return text.split("\n").filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as ProgressRecord);
 }
 
 /** The core resume claims, shared verbatim by the session-tier and PTY
@@ -292,15 +285,14 @@ export async function assertResumeEvidence(input: {
   expect(proposeRows.map((row) => row.priorTurns)).toEqual([0, 1, 2]);
   expect(proposeRows[2]!.index, context("attempt 2 ran before the pause")).toBeGreaterThan(paused.index);
 
-  // ——— ENGINE side: invocation start counts. Iteration 0's stages were
-  // rebuilt from evidence (one start each, ever); the wedged propose started
-  // twice (attempt 1 before the pause, attempt 2 after); iteration 1's race
-  // stages ran once each, after the pause.
-  const progress = await readProgress(input.runDir);
-  const starts = progress
-    .filter((record) => record.kind === "stage-started")
-    .map((record) => record.invocationId ?? "");
-  const countOf = (invocationId: string): number => starts.filter((id) => id === invocationId).length;
+  // ——— ENGINE side: what the state document holds. Iteration 0's stages
+  // were rebuilt from evidence (one attempt each, ever); the wedged propose
+  // ran twice (attempt 1 before the pause, attempt 2 after); iteration 1's
+  // race stages ran once each, after the pause.
+  const job = status.jobs?.[0];
+  expect(job, context("the state document names no job")).toBeDefined();
+  const attempts = job?.attempts ?? {};
+  const countOf = (invocationId: string): number => attempts[invocationId] ?? 0;
   expect(countOf("tune.propose@tune/iter-0"), context("iter-0 propose restarted")).toBe(1);
   expect(countOf("tune.propose@tune/iter-1"), context("wedged propose did not re-run exactly once")).toBe(2);
   for (const slot of [0, 1]) {
@@ -315,15 +307,10 @@ export async function assertResumeEvidence(input: {
       ).toBe(1);
     }
   }
-  const attempts = progress
-    .filter((record) => record.kind === "stage-started" && record.invocationId === "tune.propose@tune/iter-1")
-    .map((record) => record.attempt);
-  expect(attempts, context("wedged propose attempts")).toEqual([1, 2]);
   // Iteration 0's tournament region finalized exactly once — the continue
   // skipped the finalized region instead of re-deciding it — and the loop
   // region itself finalized once, when the completed job bound its iterations.
-  const finalized = progress.filter((record) => record.kind === "region-finalized");
-  expect(finalized.map((record) => record.instance).sort(), context("region finalizations")).toEqual([
+  expect(Object.keys(job?.regions ?? {}).sort(), context("region finalizations")).toEqual([
     "tune",
     "tune/iter-0/tune.race",
     "tune/iter-1/tune.race",

@@ -94,8 +94,7 @@ import {
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
-import { foldJobSpans, nextJobOrdinal } from "./job-spans.js";
-import { parseProgressLines, runStatusPath } from "./run-status.js";
+import { readRunStatus, runStatusPath } from "./run-status.js";
 import {
   buildCommitMessage,
   commitRoundFiles,
@@ -335,25 +334,24 @@ function readRunJobLedger(
   hint: number | undefined,
 ): Effect.Effect<
   { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[] },
-  never,
+  WorkflowError,
   FileSystem.FileSystem
 > {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-      Effect.orElseSucceed(() => ""),
-    );
-    const records = parseProgressLines(ledger);
-    const spans = foldJobSpans(records);
+    const status = yield* readRunStatus(runDir);
     const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
       Effect.orElseSucceed(() => [] as readonly string[]),
     );
     const recordedOrdinals = entries
       .map((entry) => Number(entry))
       .filter((value) => Number.isSafeInteger(value) && value > 0);
+    const jobOrdinals = status?.jobs.map((job) => job.jobOrdinal) ?? [];
     return {
-      nextOrdinal: nextJobOrdinal(spans, recordedOrdinals, hint),
-      abandonedOrdinals: spans.filter((span) => span.closed !== undefined).map((span) => span.jobOrdinal),
+      nextOrdinal: Math.max(0, hint ?? 0, ...jobOrdinals, ...recordedOrdinals) + 1,
+      abandonedOrdinals: (status?.jobs ?? [])
+        .filter((job) => job.state === "finished" && job.outcome === "restarted")
+        .map((job) => job.jobOrdinal),
     };
   });
 }

@@ -154,7 +154,6 @@ export {
   parseProgressLines,
   parseRunStatus,
   readRunStatus,
-  rebuildRunStatus,
   refreshRunStatus,
   runStatusFromParts,
   runStatusPath,

@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   KeybindingsManager,
@@ -21,14 +21,14 @@ import {
   parseJsonRecord,
   traceStreamPathCandidates,
 } from "@piano/logging";
-import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, workflowProgressPath, type JobView } from "@piano/orchestrator";
+import { parseRunStatus, progressRecordDeclaredFields, runStatusPath, type RunJob } from "@piano/orchestrator";
 import { CliArgumentError, interactiveTerminalRequired, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { listRunIds } from "./runs.js";
 import { formatRunId, oneLine, summarizeRun } from "./session-resume.js";
 import { RST } from "./theme.js";
 
-const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`;
+const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>]`;
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
   blue: "\x1b[38;2;129;162;190m",
@@ -49,8 +49,6 @@ interface LogsOptions {
   jobs: boolean;
   jobOrdinal?: number;
   jobsRun?: string;
-  rebuildRun?: string;
-  force: boolean;
 }
 
 export interface LogsDeps {
@@ -69,8 +67,6 @@ function parseLogsArgs(
   let checkRun: string | undefined;
   let jobsFlag = false;
   let jobOrdinal: number | undefined;
-  let rebuildRun: string | undefined;
-  let force = false;
   const positionals: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? "";
@@ -95,25 +91,6 @@ function parseLogsArgs(
         return Effect.fail(new CliArgumentError({ message: `--jobs may be specified only once\n${usage}` }));
       }
       jobsFlag = true;
-      continue;
-    }
-    if (arg === "--rebuild") {
-      const value = args[index + 1];
-      if (value === undefined || value === "" || value.startsWith("-")) {
-        return Effect.fail(new CliArgumentError({ message: `--rebuild requires a run id\n${usage}` }));
-      }
-      if (rebuildRun !== undefined) {
-        return Effect.fail(new CliArgumentError({ message: `--rebuild may be specified only once\n${usage}` }));
-      }
-      rebuildRun = value;
-      index += 1;
-      continue;
-    }
-    if (arg === "--force") {
-      if (force) {
-        return Effect.fail(new CliArgumentError({ message: `--force may be specified only once\n${usage}` }));
-      }
-      force = true;
       continue;
     }
     if (arg === "--job") {
@@ -145,15 +122,6 @@ function parseLogsArgs(
   if (jobsFlag && checkRun !== undefined) {
     return Effect.fail(new CliArgumentError({ message: `--jobs and --check cannot be combined\n${usage}` }));
   }
-  if (force && rebuildRun === undefined) {
-    return Effect.fail(new CliArgumentError({ message: `--force requires --rebuild\n${usage}` }));
-  }
-  if (rebuildRun !== undefined && (trace || checkRun !== undefined || jobsFlag || jobOrdinal !== undefined)) {
-    return Effect.fail(new CliArgumentError({ message: `--rebuild cannot be combined with --trace, --check or --jobs\n${usage}` }));
-  }
-  if (rebuildRun !== undefined && positionals.length > 0) {
-    return Effect.fail(new CliArgumentError({ message: `--rebuild takes its run id, not a positional\n${usage}` }));
-  }
   if (!jobsFlag && positionals.length > 0) {
     // Keep the historical surface: plain `piano logs` takes no positional.
     return Effect.fail(new CliArgumentError({ message: `unknown option: ${positionals[0] ?? ""}\n${usage}` }));
@@ -168,8 +136,6 @@ function parseLogsArgs(
     ...(checkRun === undefined ? {} : { checkRun }),
     ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
     ...(positionals[0] === undefined ? {} : { jobsRun: positionals[0] }),
-    ...(rebuildRun === undefined ? {} : { rebuildRun }),
-    force,
   });
 }
 
@@ -493,108 +459,57 @@ function printStaticObservability(
   );
 }
 
-function jobStateLabel(state: JobView["state"], outcome: JobView["outcome"]): string {
+function jobStateLabel(state: RunJob["state"], outcome: RunJob["outcome"]): string {
   return outcome === undefined ? state : `${state}(${outcome})`;
 }
 
-function jobStateStyle(view: JobView): string {
+function jobStateStyle(view: Pick<RunJob, "state" | "outcome">): string {
   if (view.state === "alive") return COLORS.cyan;
   if (view.state === "paused") return COLORS.warn;
   return view.outcome === "failed" ? COLORS.error : COLORS.success;
 }
 
-/** `--jobs [<run-id>]` / `--jobs --job <ordinal> [<run-id>]`: fold the run's
- * progress ledger into its jobs. The ledger is the evidence; the fold is the
- * same one `/continue` consumes, so this prints exactly what a continue would
- * skip. */
-/** Fold a run's ledgers back into its state document — the recovery path when
- * the view is missing or torn. Refuses while the latest job is still open
- * unless forced: a live run's own writer owns the view. */
-function printRebuild(
-  runsRoot: string,
-  run: string,
-  force: boolean,
-): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  return resolveRunDir(runsRoot, run, "rebuild").pipe(Effect.flatMap((runDir) => Effect.gen(function* () {
-    const status = yield* rebuildRunStatus(runDir, { force }).pipe(
-      Effect.mapError((error) => new LogsStorageError({
-        operation: "rebuild",
-        path: runDir,
-        message: error.message,
-      })),
-    );
-    yield* Effect.sync(() => {
-      if (status === undefined) {
-        console.log(paint(COLORS.dim, `no ledgers to fold for ${run}`));
-        return;
-      }
-      const latest = status.jobs.at(-1);
-      console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Rebuilt ${run}/status.json`));
-      console.log([
-        paint(COLORS.dim, `jobs=${status.jobs.length}`),
-        paint(COLORS.dim, `turns=${status.turns?.length ?? 0}`),
-        ...(latest === undefined ? [] : [paint(COLORS.dim, `latest=#${latest.jobOrdinal} ${latest.state}`)]),
-      ].join("  "));
-    });
-  })));
-}
+/** `--jobs [<run-id>]` / `--jobs --job <ordinal> [<run-id>]`: print the run's
+ * jobs as its state document holds them — the same document `/continue`
+ * consumes, so this prints exactly what a continue would skip. */
 
 function printJobs(
   runsRoot: string,
   run: string,
   jobOrdinal: number | undefined,
 ): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  return resolveRunDir(runsRoot, run, "jobs").pipe(Effect.flatMap((runDir) => {
-  const ledgerPath = workflowProgressPath(runDir);
-  return Effect.gen(function* () {
-    const ledger = yield* Effect.try({
-      try: () => readFileSync(ledgerPath, "utf8"),
-      catch: (cause) => new LogsStorageError({ operation: "read", path: ledgerPath, message: String(cause) }),
-    });
-    const records = parseProgressLines(ledger);
-    if (records.length === 0) {
-      if (ledger.trim() === "") {
-        return yield* Effect.fail(new LogsStorageError({
-          operation: "jobs",
-          path: ledgerPath,
-          message: "the run has no progress ledger to fold jobs from",
-        }));
-      }
-      // A ledger with lines this build cannot read is not a missing ledger: it
-      // is one written before the record contract, and saying so beats an
-      // error that reads like the file is gone.
-      if (jobOrdinal === undefined) {
-        yield* Effect.sync(() => {
-          console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
-          console.log(paint(COLORS.dim, "no records this build reads — the ledger predates the record contract"));
-        });
-        return;
-      }
+  return resolveRunDir(runsRoot, run, "jobs").pipe(Effect.flatMap((runDir) => Effect.gen(function* () {
+    const statusPath = runStatusPath(runDir);
+    if (!existsSync(statusPath)) {
       return yield* Effect.fail(new LogsStorageError({
         operation: "jobs",
-        path: ledgerPath,
-        message: `job #${jobOrdinal} is not in a ledger this build can read`,
+        path: statusPath,
+        message: "the run has no readable state document",
       }));
     }
-    const views = jobs(foldJobSpans(records));
+    const status = yield* Effect.try({
+      try: () => parseRunStatus(readFileSync(statusPath, "utf8")),
+      catch: (cause) => new LogsStorageError({ operation: "read", path: statusPath, message: String(cause) }),
+    });
+    if (status === undefined) {
+      return yield* Effect.fail(new LogsStorageError({
+        operation: "jobs",
+        path: statusPath,
+        message: "the run has no readable state document",
+      }));
+    }
+    const views = status.jobs;
     if (jobOrdinal === undefined) {
       yield* Effect.sync(() => {
         console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
         if (views.length === 0) {
-          // Records but no jobs: the ledger predates the job ledger, so its
-          // accepted lines carry no execution anchor to group them by. Saying
-          // so beats an empty list that reads like a bug.
-          console.log(paint(COLORS.dim, "no jobs recorded — this run's ledger predates the job ledger; /restart starts one"));
+          console.log(paint(COLORS.dim, "no jobs recorded — the run's state document names no job; /restart starts one"));
         }
         for (const view of views) {
-          const last = view.spans[view.spans.length - 1];
-          const lastAt = last === undefined ? undefined : last.finishedAt ?? last.startedAt;
           console.log([
             paint(COLORS.bold, `#${view.jobOrdinal}`),
             paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
-            paint(COLORS.dim, `spans=${view.spans.length}`),
-            paint(COLORS.dim, `accepted=${view.accepted.size}`),
-            ...(lastAt === undefined ? [] : [paint(COLORS.dim, `last=${lastAt}`)]),
+            paint(COLORS.dim, `accepted=${view.accepted.length}`),
             ...(view.input === undefined ? [] : [oneLine(view.input, 60)]),
           ].join("  "));
         }
@@ -605,7 +520,7 @@ function printJobs(
     if (view === undefined) {
       return yield* Effect.fail(new LogsStorageError({
         operation: "jobs",
-        path: ledgerPath,
+        path: statusPath,
         message: views.length === 0
           ? `job ${jobOrdinal} not found: the run has no jobs`
           : `job ${jobOrdinal} not found; the run's jobs are ${views.map((candidate) => `#${candidate.jobOrdinal}`).join(", ")}`,
@@ -615,19 +530,13 @@ function printJobs(
       console.log([
         paint(`${COLORS.bold}${COLORS.accent}`, `Job #${view.jobOrdinal}`),
         paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
-        paint(COLORS.dim, `spans=${view.spans.length}`),
-        paint(COLORS.dim, `accepted=${view.accepted.size}`),
+        paint(COLORS.dim, `accepted=${view.accepted.length}`),
       ].join("  "));
-      view.spans.forEach((span, index) => {
-        const spanStyle = span.status === "running" ? COLORS.cyan : span.status === "failed" ? COLORS.error : COLORS.dim;
-        const closed = span.closed === undefined ? "" : paint(COLORS.dim, ` (${span.closed})`);
-        console.log(`  ${paint(COLORS.dim, `span ${index + 1}`)}  ${span.startedAt} → ${span.finishedAt ?? "…"}  ${paint(spanStyle, span.status)}${closed}`);
-      });
       const accepted = [...view.accepted].sort();
       if (accepted.length > 0) {
         console.log(paint(COLORS.dim, "  accepted:"));
         for (const invocationId of accepted) {
-          const attempt = view.attempts.get(invocationId);
+          const attempt = view.attempts[invocationId];
           console.log(`    ${invocationId}${attempt === undefined ? "" : paint(COLORS.dim, `  attempt=${attempt}`)}`);
         }
       }
@@ -636,8 +545,7 @@ function printJobs(
         console.log(`    ${oneLine(view.input, 120)}`);
       }
     });
-  });
-  }));
+  })));
 }
 
 export function logsCommand(
@@ -646,10 +554,6 @@ export function logsCommand(
 ): Effect.Effect<void, CliError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const options = yield* parseLogsArgs(args, deps);
-    if (options.rebuildRun !== undefined) {
-      yield* printRebuild(options.runsRoot, options.rebuildRun, options.force);
-      return;
-    }
     if (options.checkRun !== undefined) {
       yield* printStaticObservability(options.runsRoot, options.checkRun);
       return;

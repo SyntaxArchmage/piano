@@ -13,10 +13,9 @@ import { createSession, isCancellation, Logging, loggingService } from "../../pa
 import {
   executeWorkflow,
   loadWorkflow,
-  progressRecordKind,
 } from "../../packages/orchestrator/src/index.js";
 import { AgentError, type AgentResult, type AgentRunner } from "../../packages/harness/src/index.js";
-import { readJson, readStream } from "../common/fs.js";
+import { readJson } from "../common/fs.js";
 
 const TWO_STAGE_WORKFLOW = `version: 3
 workflow:
@@ -119,13 +118,8 @@ async function startRun(root: string, failWith?: "authentication", source = TWO_
 
 /** What the three records say about the run, side by side. */
 async function outcomeOf(runDir: string) {
-  const stream = await readStream(runDir, "progress.jsonl");
-  const last = stream.at(-1) ?? {};
   const snapshot = await readJson(join(runDir, "status.json"));
-  return {
-    streamEnd: { kind: progressRecordKind(last), status: last.status },
-    snapshot: snapshot.status,
-  };
+  return { snapshot: snapshot.status };
 }
 
 describe("a run's outcome is recorded the same way everywhere", () => {
@@ -137,7 +131,6 @@ describe("a run's outcome is recorded the same way everywhere", () => {
       expect(result.stages).toHaveLength(2);
 
       expect(await outcomeOf(runDir)).toEqual({
-        streamEnd: { kind: "execution-finished", status: "completed" },
         snapshot: "completed",
       });
     } finally {
@@ -153,7 +146,6 @@ describe("a run's outcome is recorded the same way everywhere", () => {
 
       expect(Exit.isFailure(exit)).toBe(true);
       expect(await outcomeOf(runDir)).toEqual({
-        streamEnd: { kind: "execution-finished", status: "failed" },
         snapshot: "failed",
       });
     } finally {
@@ -174,7 +166,6 @@ describe("a run's outcome is recorded the same way everywhere", () => {
       expect(Exit.isFailure(exit) && isCancellation(exit.cause)).toBe(true);
       // A pause, not a failure: the next prompt continues this run.
       expect(await outcomeOf(runDir)).toEqual({
-        streamEnd: { kind: "execution-finished", status: "paused" },
         snapshot: "paused",
       });
     } finally {

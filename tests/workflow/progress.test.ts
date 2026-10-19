@@ -14,9 +14,7 @@ import {
   markWorkflowStageStarted,
   progressRecordDeclaredFields,
   progressRecordKind,
-  workflowProgressPath,
   runStatusPath,
-  runStatusFromParts,
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
@@ -91,13 +89,6 @@ async function readTiming(runDir: string): Promise<SnapshotTiming> {
   return JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as SnapshotTiming;
 }
 
-/** The append-only stream, as its readers see it: one JSON object per line. */
-async function readStream(runDir: string): Promise<Record<string, unknown>[]> {
-  const text = await readFile(workflowProgressPath(runDir), "utf8").catch(() => "");
-  return text.split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
 
 describe("workflow stage time", () => {
   beforeEach(() => {
@@ -256,21 +247,15 @@ describe("workflow progress stream", () => {
       instanceId: "tune/iter-0",
     }));
 
-    // Not recovered from the invocation id: `"tune@tune/iter-0".split("@")[0]`
-    // is the stage name, not the execution.
-    const started = (await readStream(runDir)).find((line) => progressRecordKind(line) === "stage-started");
-    expect(started).toEqual({
-      version: 1,
-      kind: "stage-started",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution",
-      invocationId: "tune@tune/iter-0",
-      stageId: "tune",
-      stage: "tune",
-      worker: "worker",
-      attempt: 1,
-      instanceId: "tune/iter-0",
-    });
+    // The state document carries the execution id its caller holds — never one
+    // recovered from the invocation id (`"tune@tune/iter-0".split("@")[0]` is
+    // the stage name, not the execution).
+    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as {
+      runId: string;
+      current?: { invocationId?: string; stageId?: string; attempt?: number };
+    };
+    expect(status.runId).toBe("execution");
+    expect(status.current).toMatchObject({ invocationId: "tune@tune/iter-0", stageId: "tune", attempt: 1 });
   });
 
   it("opens the stream with the execution's own start, carrying its plan", async () => {
@@ -278,20 +263,14 @@ describe("workflow progress stream", () => {
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", true));
 
-    // First on the stream, so a run's boundary is legible from the record
-    // alone — and so the plan a reader needs to rebuild every count is in
-    // evidence rather than held outside it. The job ordinal ties the span to
-    // the job it belongs to.
-    expect((await readStream(runDir))[0]).toEqual({
-      version: 1,
-      kind: "execution-started",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution",
-      jobOrdinal: 1,
-      prompt: "do the work",
-      resumed: true,
-      plan: timingPlan,
-    });
+    // The state document opens with the run's boundary and the plan a reader
+    // needs for every count; the job ordinal ties the span to its job.
+    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as {
+      runId: string; status: string; plannedStages: number; jobOrdinal: number;
+      jobs: Array<{ jobOrdinal: number; state: string; input?: string }>;
+    };
+    expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4, jobOrdinal: 1 });
+    expect(status.jobs).toMatchObject([{ jobOrdinal: 1, state: "alive", input: "do the work" }]);
   });
 
   it("keeps a run going when its state document is unreadable", async () => {
@@ -304,18 +283,8 @@ describe("workflow progress stream", () => {
 
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
 
-    expect((await readStream(runDir))[0]).toMatchObject({ kind: "execution-started", runId: "execution" });
     const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as WorkflowProgressSnapshot;
     expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
-  });
-
-  it("keeps accepted records free of the discriminator, so existing files read the same", async () => {
-    const runDir = await newRunDir();
-    await run(appendWorkflowProgress(runDir, record()));
-
-    const accepted = (await readStream(runDir))[0] ?? {};
-    expect(accepted.kind).toBeUndefined();
-    expect(progressRecordKind(accepted)).toBe("stage-accepted");
   });
 
   it("skips an execution marker it cannot read instead of failing the view", () => {
@@ -393,7 +362,7 @@ describe("workflow progress stream", () => {
     expect(after).toEqual({ ...before, updatedAt: "2026-01-01T00:00:05.000Z" });
   });
 
-  it("answers which invocation is in flight, and since when, from the stream alone", async () => {
+  it("answers which invocation is in flight, and since when, from the state document", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
@@ -407,37 +376,15 @@ describe("workflow progress stream", () => {
       invocationId: "tune@tune/iter-1", stageId: "tune", stage: "tune", worker: "worker", attempt: 1,
     }));
 
-    // Fold the stream the way a reader would. Two facts have to come out of it
-    // that acceptance records cannot supply on their own: which invocation is
-    // still in flight and when it started, and how long the accepted one took.
-    const startedAt = new Map<string, string>();
-    const lastKind = new Map<string, "started" | "accepted">();
-    const durationMs = new Map<string, number>();
-    for (const line of await readStream(runDir)) {
-      const kind = progressRecordKind(line);
-      if (kind === "execution-started") continue;
-      const invocationId = String(line.invocationId);
-      const timestamp = String(line.timestamp);
-      if (kind === "stage-started") {
-        startedAt.set(invocationId, timestamp);
-        lastKind.set(invocationId, "started");
-        continue;
-      }
-      lastKind.set(invocationId, "accepted");
-      const since = startedAt.get(invocationId);
-      if (since !== undefined) durationMs.set(invocationId, Date.parse(timestamp) - Date.parse(since));
-    }
-    const inFlight = [...lastKind]
-      .filter(([, kind]) => kind === "started")
-      .map(([invocationId]) => ({ invocationId, since: startedAt.get(invocationId) }));
-
-    expect(durationMs.get("tune@tune/iter-0")).toBe(30_000);
-    expect(inFlight).toEqual([{ invocationId: "tune@tune/iter-1", since: "2026-01-01T00:01:00.000Z" }]);
-
-    // The snapshot written beside the stream says the same thing, which is what
-    // makes the snapshot a view rather than the only copy.
-    expect((await readTiming(runDir)).invocationTime?.["tune@tune/iter-1"]?.runningSince)
-      .toBe("2026-01-01T00:01:00.000Z");
+    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as {
+      current?: { invocationId?: string };
+      invocationTime?: Record<string, { runningSince?: string; completedMs?: number }>;
+    };
+    // Which invocation is still in flight, when it started, and how long the
+    // accepted one took: the two facts acceptance records cannot supply.
+    expect(status.current?.invocationId).toBe("tune@tune/iter-1");
+    expect(status.invocationTime?.["tune@tune/iter-1"]?.runningSince).toBe("2026-01-01T00:01:00.000Z");
+    expect(status.invocationTime?.["tune@tune/iter-0"]?.completedMs).toBe(30_000);
   });
 
   it("records how an execution ended even when there is no snapshot to fold", async () => {
@@ -447,14 +394,9 @@ describe("workflow progress stream", () => {
     const runDir = await newRunDir();
     await run(finalizeWorkflowProgress(runDir, "execution", "failed", "boom"));
 
-    expect((await readStream(runDir))[0]).toEqual({
-      version: 1,
-      kind: "execution-finished",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution",
-      status: "failed",
-      error: "boom",
-    });
+    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as { status: string; error?: unknown };
+    expect(status.status).toBe("failed");
+    expect(status.error).toBe("boom");
   });
 
   it("closes a job on the stream without touching the snapshot's run state", async () => {
@@ -463,54 +405,15 @@ describe("workflow progress stream", () => {
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
     await run(closeWorkflowJob(runDir, "execution", 1, "restarted"));
 
-    expect((await readStream(runDir)).at(-1)).toEqual({
-      version: 1,
-      kind: "job-closed",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution",
-      jobOrdinal: 1,
-      outcome: "restarted",
-    });
-    // The state document describes the latest span; a close moves only its
-    // timestamp, and the job's own reading comes from the fold.
+    // The human's close marks the job itself; the run keeps its own status.
     const status = JSON.parse(
       await readFile(runStatusPath(runDir), "utf8"),
-    ) as { updatedAt: string; status: string };
+    ) as { updatedAt: string; status: string; jobs: Array<{ state: string; outcome?: string }> };
     expect(status.updatedAt).toBe("2026-01-01T00:00:00.000Z");
     expect(status.status).toBe("running");
+    expect(status.jobs[0]).toMatchObject({ state: "finished", outcome: "restarted" });
   });
 
-  it("reproduces the snapshot by reducing the stream from nothing", async () => {
-    at("2026-01-01T00:00:00.000Z");
-    const runDir = await newRunDir();
-    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
-    const tune = { stageId: "tune", stage: "tune", worker: "worker" } as const;
-    const measure = { stageId: "measure", stage: "measure", worker: "worker" } as const;
-
-    await run(markWorkflowStageStarted(runDir, "execution", {
-      ...tune, invocationId: "tune@root", attempt: 1,
-    }));
-    at("2026-01-01T00:00:30.000Z");
-    await run(appendWorkflowProgress(runDir, record({
-      ...tune, invocationId: "tune@root", attempt: 1,
-      progress: { status: "accepted", acceptedStages: 1, completedStages: 1, plannedStages: 4, remainingStages: 3, stageCounts: timingPlan.stageCounts, hint: "1/4" },
-    })));
-    at("2026-01-01T00:01:00.000Z");
-    await run(markWorkflowStageStarted(runDir, "execution", {
-      ...measure, invocationId: "measure@root", attempt: 1,
-    }));
-    at("2026-01-01T00:02:00.000Z");
-    await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
-
-    // The state document the writers produced, and the same document rebuilt
-    // by folding the stream they wrote. Equal output is what makes the view a
-    // view of the stream rather than a second account of the run.
-    const written = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown;
-    const rebuilt = runStatusFromParts({ progressStream: await readFile(workflowProgressPath(runDir), "utf8") });
-
-    expect(rebuilt).toBeDefined();
-    expect(rebuilt).toEqual(written);
-  });
   it("keeps the declared-field table exactly as wide as the record types", () => {
     // The drift guard for the runtime table `--check`'s undeclared-field report
     // reads. Each record below is maximal — every declared field, optionals

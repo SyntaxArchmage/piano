@@ -1,5 +1,5 @@
 // Shared filesystem helpers for tests that read the runs root back off disk:
-// engine tests (progress.jsonl) and session tests (trajectory).
+// engine tests (status.json) and session tests (trajectory).
 // readJson mirrors the writers' single-JSON-document-per-file format.
 
 import { readFile, readdir } from "node:fs/promises";
@@ -25,19 +25,14 @@ export async function readStream(runDir: string, name: string): Promise<Record<s
  * folds them in the orchestrator. The retired resume stream is not read: a run
  * that predates the rows is covered by the orchestrator's own fallback. */
 export async function readResumeActors(runDir: string): Promise<Record<string, Record<string, unknown>>> {
-  const records = await readStream(runDir, "progress.jsonl");
-  const actors: Record<string, Record<string, unknown>> = {};
-  for (const record of records) {
-    if (record.kind !== "actor-turn") continue;
-    actors[String(record.actorKey)] = {
-      harness: record.harness,
-      sessionId: record.sessionId,
-      transcriptPath: record.transcriptPath,
-      turns: record.turn,
-      ...(record.continuation === undefined ? {} : { continuation: record.continuation }),
+  try {
+    const status = JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as {
+      actors?: Record<string, Record<string, unknown>>;
     };
+    return status.actors ?? {};
+  } catch {
+    return {};
   }
-  return actors;
 }
 
 /** List every file under dir, recursively. */

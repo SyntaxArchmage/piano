@@ -1,16 +1,16 @@
 /**
  * The run's state, as one document.
  *
- * A run records its work in append-only ledgers — `progress.jsonl` for what the
- * workflow did and which harness sessions hold the conversations, and
- * `trajectory.jsonl` for what the agent said. This is the one view of them.
- * Every reader asks for the run's state here instead of folding its own, so
- * "how is this run doing" has exactly one answer and cannot disagree with
- * itself between the log picker, the TUI and a resume.
+ * A run records what the agent said in the append-only `trajectory.jsonl`
+ * ledger and keeps the workflow's own bookkeeping — jobs, accepted
+ * invocations, the actor table — here, in the one mutable document. Every
+ * reader asks for the run's state here instead of folding its own, so "how is
+ * this run doing" has exactly one answer and cannot disagree with itself
+ * between the log picker, the TUI and a resume.
  *
- * The ledgers stay the only evidence. Nothing here is written that cannot be
- * rebuilt by folding them, which is what lets the per-source documents that
- * used to sit beside them go away without losing a run.
+ * The trajectory ledger stays the evidence for the narrative fields; the
+ * orchestrator writes the rest as it schedules, so the document is the source
+ * for them rather than a second view that could drift.
  */
 
 import { FileSystem } from "@effect/platform";
@@ -22,10 +22,10 @@ import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
 import {
   applyProgressRecord,
-  workflowProgressPath,
   type WorkflowProgressCurrent,
   type WorkflowProgressInvocationTime,
   type WorkflowProgressSnapshot,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowProgressStageCount,
   type WorkflowProgressStreamRecord,
 } from "./progress.js";
@@ -50,6 +50,10 @@ export interface RunJob {
   readonly attempts: Readonly<Record<string, number>>;
   /** The input the job runs. */
   readonly input?: string;
+  /** Regions that already finalized in this job, keyed by runtime instance.
+   * The `/continue` path rebuilds those boundaries instead of re-entering
+   * their workers. */
+  readonly regions?: Readonly<Record<string, WorkflowProgressRegionFinalizedRecord>>;
 }
 
 /** One turn as the state document records it: what the turn was asked and how
@@ -177,64 +181,57 @@ export function readRunStatus(
   });
 }
 
-/** Fold the ledgers a run has recorded, producing the state document. */
-function foldRunStatus(
-  runDir: string,
-): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const read = (path: string) => fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const trajectoryCandidates = trajectoryStreamPathCandidates(runDir);
-    const [progressStream, trajectoryPrimary, trajectoryLegacy] = yield* Effect.all([
-      read(workflowProgressPath(runDir)),
-      read(trajectoryCandidates[0]!),
-      read(trajectoryCandidates[1]!),
-    ], { concurrency: "unbounded" });
-    const trajectoryStream = trajectoryPrimary ?? trajectoryLegacy;
-    return runStatusFromParts({
-      ...(progressStream === undefined ? {} : { progressStream }),
-      ...(trajectoryStream === undefined ? {} : { trajectoryStream }),
-    });
-  });
-}
-
-/** Fold the ledgers and write the view.
+/** Bring the trajectory-derived fields of the state document up to date.
  *
- * Called after a record lands so the view a reader picks up is the one the
- * record describes. The fold is the same one a reader performs, so what a
- * write leaves behind is by construction what reading it back would give. */
+ * Called after a trajectory write (a turn, a rename). The job and actor tables
+ * are the orchestrator's own writes and are preserved: this only refreshes
+ * what the trajectory is the source of, so a rename cannot erase a run.
+ * A run with no state document yet is folded whole from its trajectory. */
 export function refreshRunStatus(
   runDir: string,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const status = yield* foldRunStatus(runDir);
-    if (status !== undefined) yield* writeRunStatus(runDir, status);
+    const raw = yield* readTrajectoryText(runDir);
+    const trajectory = parseTrajectory(raw);
+    const current = yield* readRunStatus(runDir);
+    if (current === undefined) {
+      if (raw === undefined) return;
+      const folded = runStatusFromParts({ trajectoryStream: raw });
+      if (folded !== undefined) yield* writeRunStatus(runDir, folded);
+      return;
+    }
+    if (trajectory === undefined) return;
+    const turns = trajectory.turns === undefined
+      ? current.turns
+      : trajectory.turns.map((turn) => ({ prompt: turn.prompt, status: turn.status }));
+    yield* writeRunStatus(runDir, {
+      ...current,
+      updatedAt: trajectory.updatedAt,
+      ...(trajectory.name === undefined ? {} : { name: trajectory.name }),
+      ...(trajectory.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
+      ...(trajectory.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
+      ...(trajectory.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
+      ...(trajectory.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
+      promptLength: trajectory.promptLength,
+      ...(turns === undefined ? {} : { turns }),
+      ...(current.error !== undefined || trajectory.error === undefined
+        ? (current.error === undefined ? {} : { error: current.error })
+        : { error: trajectory.error }),
+    });
   });
 }
 
-/** Rebuild a run's state document from its ledgers — the recovery path when the
- * view is missing or torn.
- *
- * Refuses while the latest job is still open: a live run's own writer owns the
- * view, and a second fold racing it could land a stale table over a newer one.
- * `force` folds anyway, for the operator who knows the run is not writing. */
-export function rebuildRunStatus(
+/** The raw trajectory stream, first candidate that is present. */
+function readTrajectoryText(
   runDir: string,
-  options: { readonly force?: boolean } = {},
-): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const status = yield* foldRunStatus(runDir);
-    if (status === undefined) return undefined;
-    const latest = status.jobs.at(-1);
-    if (latest?.state === "alive" && options.force !== true) {
-      return yield* Effect.fail(workflowError(
-        "schedule",
-        runStatusPath(runDir),
-        "the latest job is still running; rebuild with --force to fold the ledgers anyway",
-      ));
+    const fileSystem = yield* FileSystem.FileSystem;
+    for (const path of trajectoryStreamPathCandidates(runDir)) {
+      const text = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
+      if (text !== undefined) return text;
     }
-    yield* writeRunStatus(runDir, status);
-    return status;
+    return undefined;
   });
 }
 

@@ -6,9 +6,8 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import type { AgentContinuation } from "@piano/harness";
 import { type WorkflowError } from "./errors.js";
-import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
-import { workflowProgressPath } from "./progress.js";
-import { parseProgressLines } from "./run-status.js";
+import type { ResumeActorState } from "./resume-state.js";
+import { readRunStatus } from "./run-status.js";
 
 /** One actor's carried-over state: the complete record the ledger holds for
  * it. The identity fields are part of it because the orchestrator appends a
@@ -42,15 +41,9 @@ export function readWorkflowExecutionContinuation(
   _runId: string,
 ): Effect.Effect<WorkflowExecutionContinuation | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-      Effect.orElseSucceed(() => ""),
-    );
-    const ledgerRecords = parseProgressLines(ledger);
-    const table = actorTableFrom(ledgerRecords);
-    const runId = ledgerRecords.find((record) => record.runId !== undefined)?.runId;
-    if (runId === undefined) return undefined;
-    return finish(runId, table.jobOrdinal, table.actors);
+    const status = yield* readRunStatus(runDir);
+    if (status === undefined) return undefined;
+    return finish(status.runId, status.jobOrdinal, status.actors);
   });
 }
 
