@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { appendJsonlLine } from "@piano/logging";
+import { appendJsonlLine, parseRunStreamLine } from "@piano/logging";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
@@ -385,24 +385,11 @@ export const progressRecordDeclaredFields: Readonly<Record<string, readonly stri
 };
 
 /** Parse one stream line into a record, or `undefined` for a blank, torn, or
- * shapeless line. The single definition of the line format's acceptance rule,
- * shared by every stream reader (the snapshot fallback and the job fold) so
- * they cannot disagree about what a line means. */
+ * shapeless line. The acceptance rule itself lives in logging's jsonl.ts —
+ * the same rule the trajectory stream uses — so the two ledgers cannot
+ * disagree about what a line means. */
 export function parseProgressStreamRecord(line: string): WorkflowProgressStreamRecord | undefined {
-  if (line.trim() === "") return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    // Torn mid-append: it describes a write that never finished, and the
-    // records before it are still good.
-    return undefined;
-  }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  // Every kind carries these two, whichever shape it is.
-  const record = parsed as { runId?: unknown; timestamp?: unknown };
-  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
-  return parsed as WorkflowProgressStreamRecord;
+  return parseRunStreamLine<WorkflowProgressStreamRecord>(line);
 }
 
 export interface WorkflowProgressSnapshot {

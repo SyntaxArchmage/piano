@@ -27,3 +27,24 @@ export function appendJsonlLine<E>(
   });
 }
 
+/** One parsed JSONL line carrying the run-stream identity (`runId` and
+ * `timestamp` strings), or `undefined` for a blank, torn, or shapeless line.
+ * The single acceptance rule every run-stream reader shares — the trajectory
+ * stream and the progress ledger ask exactly this of a line — so no two
+ * readers can disagree about what counts as a record. */
+export function parseRunStreamLine<T>(line: string): T | undefined {
+  if (line.trim() === "") return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    // Torn mid-append: it describes a write that never finished, and the
+    // records before it are still good.
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const record = parsed as { runId?: unknown; timestamp?: unknown };
+  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
+  return parsed as T;
+}
+

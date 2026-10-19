@@ -2,7 +2,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
-import { appendJsonlLine } from "./jsonl.js";
+import { appendJsonlLine, parseRunStreamLine } from "./jsonl.js";
 
 /** One accepted prompt in a run, recorded so `resume` can replay the piano
  * conversation turn by turn instead of as one flat event stream. */
@@ -476,15 +476,6 @@ function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[]
   return mergeTrajectoryLedgers([compacted]);
 }
 
-/** Parse a run's trajectory from whichever of its two on-disk forms is there.
- *
- * The stream wins: every write lands in it first, and the document is folded
- * from it. The document is read for runs written before the stream existed, and
- * when the stream holds nothing usable — a torn or empty file describes no run.
- *
- * Takes raw file contents rather than paths because its callers read files
- * through different layers, some through Effects and some synchronously. The
- * choice between the two forms lives here and nowhere else. */
 /** What a run's trajectory says, folded from its append-only stream.
  *
  * Takes raw contents rather than a path because its callers read the file
@@ -496,30 +487,10 @@ export function parseTrajectory(stream: string | undefined): TrajectoryDocument 
 function parseStreamRecords(raw: string | undefined): readonly TrajectoryStreamRecord[] {
   const records: TrajectoryStreamRecord[] = [];
   for (const line of (raw ?? "").split("\n")) {
-    const record = parseStreamRecord(line);
+    const record = parseRunStreamLine<TrajectoryStreamRecord>(line);
     if (record !== undefined) records.push(record);
   }
   return records;
-}
-
-/** One stream record, or `undefined` for a blank, torn, or shapeless line.
- *
- * The identity is what tells a record from any other object that happens to be
- * JSON: a file of bare events, say, must not fold into a run. */
-function parseStreamRecord(line: string): TrajectoryStreamRecord | undefined {
-  if (line.trim() === "") return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    // Torn mid-append: it describes a write that never finished, and the
-    // records before it are still good.
-    return undefined;
-  }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const record = parsed as { runId?: unknown; timestamp?: unknown };
-  if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
-  return parsed as TrajectoryStreamRecord;
 }
 
 /** Rebuild a run's trajectory from its stream.
