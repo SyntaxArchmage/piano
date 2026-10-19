@@ -2,6 +2,12 @@ import type { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname } from "node:path";
 
+/** A parsed JSON object, never an array and never `null` — the predicate form
+ * callers use when control flow depends on the shape. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Append one already-serialized line to a JSONL stream: ensure the parent
  * directory exists, then append. This is the single writer mechanism every run
  * stream shares — log, trace, trajectory and the progress ledger all land their

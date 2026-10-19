@@ -8,6 +8,7 @@ import {
 import { RST, type PianoTheme } from "./theme.js";
 import { detectSixelSupport, encodeSixelPng } from "./sixel.js";
 import { formatCompactDuration } from "./duration.js";
+import { isRecord } from "@piano/logging";
 
 export interface WorkflowGraphStage {
   readonly id: string;
@@ -74,10 +75,6 @@ export interface WorkflowGraphSnapshot {
 const GRAPH_STATUSES = new Set(["running", "completed", "failed", "paused", "cancelled"]);
 const CURRENT_STATUSES = new Set(["running", "accepted", "failed"]);
 
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -90,28 +87,28 @@ function optionalNonNegativeInteger(value: Record<string, unknown>, key: string)
  * shape assertions. Invalid or partially-written snapshots are ignored so
  * the last valid view remains visible. */
 export function parseWorkflowGraphSnapshot(value: unknown): WorkflowGraphSnapshot | undefined {
-  if (!record(value)) return undefined;
+  if (!isRecord(value)) return undefined;
   if (!optionalNonNegativeInteger(value, "plannedStages") ||
     !optionalNonNegativeInteger(value, "completedStages")) return undefined;
   if (value.status !== undefined &&
     (typeof value.status !== "string" || !GRAPH_STATUSES.has(value.status))) return undefined;
   if (value.current !== undefined) {
-    if (!record(value.current)) return undefined;
+    if (!isRecord(value.current)) return undefined;
     if (value.current.stageId !== undefined && typeof value.current.stageId !== "string") return undefined;
     if (value.current.status !== undefined &&
       (typeof value.current.status !== "string" || !CURRENT_STATUSES.has(value.current.status))) return undefined;
   }
   if (value.stageCounts !== undefined) {
-    if (!record(value.stageCounts)) return undefined;
+    if (!isRecord(value.stageCounts)) return undefined;
     for (const count of Object.values(value.stageCounts)) {
-      if (!record(count) || !optionalNonNegativeInteger(count, "planned") ||
+      if (!isRecord(count) || !optionalNonNegativeInteger(count, "planned") ||
         !optionalNonNegativeInteger(count, "completed")) return undefined;
     }
   }
   if (value.invocationTime !== undefined) {
-    if (!record(value.invocationTime)) return undefined;
+    if (!isRecord(value.invocationTime)) return undefined;
     for (const time of Object.values(value.invocationTime)) {
-      if (!record(time)) return undefined;
+      if (!isRecord(time)) return undefined;
       if (time.stageId !== undefined && typeof time.stageId !== "string") return undefined;
       if (time.instanceId !== undefined && typeof time.instanceId !== "string") return undefined;
       if (!optionalNonNegativeInteger(time, "completedMs")) return undefined;
