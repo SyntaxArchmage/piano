@@ -402,6 +402,8 @@ export interface WorkflowProgressSnapshot {
   readonly error?: string;
 }
 
+/** @deprecated Current runs write no progress stream; `status.json` is the
+ * run's state. Kept for readers of runs that predate the retirement. */
 export function workflowProgressPath(runDir: string): string {
   return join(runDir, "progress.jsonl");
 }

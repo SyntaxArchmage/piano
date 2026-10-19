@@ -581,13 +581,13 @@ function validateStatusFreshness(
   const last = progressRecords[progressRecords.length - 1]?.value;
   if (last === undefined || !isTimestamp(last.timestamp)) return;
   if (status === undefined) {
-    issue(issues, "view-stale", statusPath, "status.json is missing while the ledger holds records; rebuild it with `piano logs --rebuild`");
+    issue(issues, "view-stale", statusPath, "status.json is missing while the legacy progress ledger holds records");
     return;
   }
   // A malformed updatedAt is validateStatus's finding, not this one's.
   if (!isTimestamp(status.updatedAt)) return;
   if (Date.parse(status.updatedAt) < Date.parse(last.timestamp)) {
-    issue(issues, "view-stale", statusPath, `status.json is older than the ledger's last record (${String(status.updatedAt)} < ${String(last.timestamp)}); rebuild it with \`piano logs --rebuild\``);
+    issue(issues, "view-stale", statusPath, `status.json is older than the legacy progress ledger's last record (${String(status.updatedAt)} < ${String(last.timestamp)})`);
   }
 }
 

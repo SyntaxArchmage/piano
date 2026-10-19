@@ -311,6 +311,7 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 
 **F5.1 协调落定（2026-10-15 晚，三方消息往返后）**
 - **G1 裁定（邻居 session 携开发者原话）**：`status.json` **取代**（不是并存）三个 fold 视图——`progress.json`/`trajectory.json`/`resume.json` 删除；`progress.jsonl` 等 append-only ledger 保留为证据与折叠源。「ignore historical compatibility, do it straightly; before delete, review all references」。我的 H3（`7793a7e`）与邻居的 `a18904c` 均被此裁定反转，按 G4 必须写进 PR 描述。
+- **G1 后续（2026-10-19，开发者裁定「progress must remove」）**：`progress.jsonl` 也不再写——每条 progress record 经 `applyRunStatusRecord` 直接落到 `status.json`（jobs / accepted / attempts / regions / actors），`--rebuild`/`--force` 删除。run 目录按受众分为 `system-log/`、`sessions/`、`eval-metrics/` + `status.json`。落库：`8a40406`（布局）、`a8eb127`（退休 index.json）、`8e9cd10`（退休 progress.jsonl）、`f8123e5`（evidence 指向 status.json）。
 - **parentId WIP 归属确认**：`piano-be` session（同一主 worktree、同一分支上未提交的 `workflow.ts`/`workflow-runtime.ts`/`workflow-execution.ts` 3 处 + 3 测试；`regionPath: readonly string[]` → `parentId?: string`，删 `isDirectStageInScope`）。已要求其**先落库再合并**（`workflow-runtime.ts` 在合并面上，git 会拒绝带脏合并）；合并后其 3 处执行侧站点需按分支拆分后的新家重锚（`workflowProgressPlan/Projection` → `stage-runner-support.ts`）。
 - **事故记录（我的）**：H3 探针把 pretty-bytes 留在了 picker 测试里并被提交（`7793a7e` 红），由 piano-43 发现、piano-be 询问后认领；修复 `d182881`（picker 测试回到 compact 现实；H3 的真守卫移到 `logging.test.ts` rename 测试的单行字节断言）。教训：**探针改动要么还原要么转正，不能带着中间态提交**；且当跳门禁必须覆盖被改测试文件本身。
 - **合并执行序**（邻居冻结于 `cc92410`，全量 1542 绿）：piano-be 落库 → 我 merge `cc92410` 进本分支 → 5 文件按「trajectory.ts 取邻居方向（document 删除，stream 保留单一 serializer 原则）、logs-command.test.ts 取其 status.json 契约版」解 → 全量门禁 → 报告。
