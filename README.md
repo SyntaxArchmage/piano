@@ -464,7 +464,7 @@ Key files:
   accepted invocations, attempts and finalized regions, and the actor table —
   the session id and transcript path per conversation, plus
   `runId`/`workflowPath`/`workspaceCwd` and a `name` once you `/rename` the
-  run. Every reader — the TUI graph, the pickers, `piano logs`, the headless
+  run. Every reader — the TUI graph, the pickers, the logs picker, the headless
   `status_path`, the evals — reads this one document; a monitor never has to
   infer progress from a worker name or count accepted lines by hand.
 - **`system-log/trajectory.jsonl`** — the append-only record each write
@@ -485,15 +485,20 @@ Key files:
   orchestrator (`createSession`, `loadOrCreateWorkflow`,
   `createAgentSession`, `executeWorker`, `executeAgent`, `sendPrompt`, …).
 
-### Inspect a run
+### Locate a run
 
 ```bash
-# interactive logs viewer (pick a run from a list)
+# pick a run from a list and print its directory
 piano logs
-piano logs --trace          # view trace spans instead of lifecycle events
-piano logs --jobs <run-id>  # list the run's jobs from its state document
-piano logs --check <run-id> # offline consistency check for run evidence
+# skip the picker
+piano logs 20260824T051320-f17b74
+# open the evidence with whatever tool you like
+cd "$(piano logs)"
 ```
+
+`piano logs` only prints the run directory's absolute path. It does not render
+or page through the evidence; use `jq`, `less`, `$EDITOR` or any other tool on
+the files below.
 
 To inspect raw evidence directly:
 
@@ -920,19 +925,12 @@ Run one workflow. With `-p` and a prompt, runs headlessly; without a prompt,
 opens the interactive TUI. `--json` streams newline-delimited events to stdout
 (requires headless mode).
 
-### `piano logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>]`
+### `piano logs [<run-id>]`
 
-Open the interactive logs viewer (default) or trace viewer (`--trace`), picking
-a run from the stored runs. `--check <run-id>` performs a non-interactive,
-read-only consistency check across the log, trace, trajectory, and
-referenced transcript, handoff, and result files; it prints a report and exits
-non-zero when evidence is missing, malformed, or inconsistent — including a
-record carrying fields this build does not declare (`undeclared-field`), a
-`status.json` that lags or is missing while a legacy progress ledger exists
-(`view-stale`), and a handoff record or its pinned result file that is gone or
-changed (`ref-missing` / `ref-mismatch`). `--jobs` reads a run's state
-document and lists each job with its state and accepted invocations;
-`--job <ordinal>` shows one job's detail.
+Print the absolute directory of a run. With no id, pick one from the stored
+runs; with an id, print it directly. stdout carries exactly the path (one
+line), so `cd "$(piano logs)"` works. The command does not read or render the
+run's evidence.
 
 ### `piano resume [<run-id>] [--list]`
 

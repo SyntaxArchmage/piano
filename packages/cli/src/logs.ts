@@ -1,3 +1,12 @@
+/**
+ * `piano logs [<run-id>]` — locate a run, then get out of the way.
+ *
+ * The command's whole job is to answer "where is that run on disk": it picks
+ * a run when no id is given and prints the run directory's absolute path on
+ * stdout. Reading the evidence is the operator's job — an editor, `jq`, `less`
+ * or any other tool they already use.
+ */
+
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
@@ -13,30 +22,19 @@ import {
   Text,
 } from "@earendil-works/pi-tui";
 import type { SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
-import {
-  defaultRunsRoot,
-  formatStaticObservabilityReport,
-  inspectStaticObservability,
-  logStreamPathCandidates,
-  parseJsonRecord,
-  traceStreamPathCandidates,
-} from "@piano/logging";
-import { parseRunStatus, progressRecordDeclaredFields, runStatusPath, type RunJob } from "@piano/orchestrator";
+import { defaultRunsRoot } from "@piano/logging";
+import { parseRunStatus, runStatusPath } from "@piano/orchestrator";
 import { CliArgumentError, interactiveTerminalRequired, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { listRunIds } from "./runs.js";
 import { formatRunId, oneLine, summarizeRun } from "./session-resume.js";
 import { RST } from "./theme.js";
 
-const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>]`;
+const usage = `usage: ${programName()} logs [<run-id>]`;
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
   blue: "\x1b[38;2;129;162;190m",
-  cyan: "\x1b[38;2;86;182;194m",
   dim: "\x1b[38;2;150;150;150m",
-  error: "\x1b[38;2;231;76;60m",
-  success: "\x1b[38;2;46;204;113m",
-  warn: "\x1b[38;2;240;198;116m",
   bold: "\x1b[1m",
 } as const;
 
@@ -44,98 +42,31 @@ const paint = (style: string, value: string): string => `${style}${value}${RST}`
 
 interface LogsOptions {
   runsRoot: string;
-  trace: boolean;
-  checkRun?: string;
-  jobs: boolean;
-  jobOrdinal?: number;
-  jobsRun?: string;
+  run?: string;
 }
 
 export interface LogsDeps {
   runsRoot?: string;
-  pickRun?: (
-    runsRoot: string,
-    trace: boolean,
-  ) => Effect.Effect<string | undefined, CliError, FileSystem.FileSystem>;
+  pickRun?: (runsRoot: string) => Effect.Effect<string | undefined, CliError, FileSystem.FileSystem>;
 }
 
 function parseLogsArgs(
   args: readonly string[],
   deps: LogsDeps,
 ): Effect.Effect<LogsOptions, CliArgumentError> {
-  let trace = false;
-  let checkRun: string | undefined;
-  let jobsFlag = false;
-  let jobOrdinal: number | undefined;
   const positionals: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] ?? "";
-    if (arg === "--trace") {
-      trace = true;
-      continue;
-    }
-    if (arg === "--check") {
-      const value = args[index + 1];
-      if (value === undefined || value === "" || value.startsWith("-")) {
-        return Effect.fail(new CliArgumentError({ message: `--check requires a run id\n${usage}` }));
-      }
-      if (checkRun !== undefined) {
-        return Effect.fail(new CliArgumentError({ message: `--check may be specified only once\n${usage}` }));
-      }
-      checkRun = value;
-      index += 1;
-      continue;
-    }
-    if (arg === "--jobs") {
-      if (jobsFlag) {
-        return Effect.fail(new CliArgumentError({ message: `--jobs may be specified only once\n${usage}` }));
-      }
-      jobsFlag = true;
-      continue;
-    }
-    if (arg === "--job") {
-      const value = args[index + 1];
-      if (value === undefined || !/^[1-9][0-9]*$/.test(value)) {
-        return Effect.fail(new CliArgumentError({ message: `--job requires a positive job ordinal\n${usage}` }));
-      }
-      if (jobOrdinal !== undefined) {
-        return Effect.fail(new CliArgumentError({ message: `--job may be specified only once\n${usage}` }));
-      }
-      jobOrdinal = Number(value);
-      index += 1;
-      continue;
-    }
+  for (const arg of args) {
     if (arg.startsWith("-")) {
       return Effect.fail(new CliArgumentError({ message: `unknown option: ${arg}\n${usage}` }));
     }
     positionals.push(arg);
   }
-  if (trace && checkRun !== undefined) {
-    return Effect.fail(new CliArgumentError({ message: `--trace and --check cannot be combined\n${usage}` }));
-  }
-  if (jobOrdinal !== undefined && !jobsFlag) {
-    return Effect.fail(new CliArgumentError({ message: `--job requires --jobs\n${usage}` }));
-  }
-  if (jobsFlag && trace) {
-    return Effect.fail(new CliArgumentError({ message: `--jobs and --trace cannot be combined\n${usage}` }));
-  }
-  if (jobsFlag && checkRun !== undefined) {
-    return Effect.fail(new CliArgumentError({ message: `--jobs and --check cannot be combined\n${usage}` }));
-  }
-  if (!jobsFlag && positionals.length > 0) {
-    // Keep the historical surface: plain `piano logs` takes no positional.
-    return Effect.fail(new CliArgumentError({ message: `unknown option: ${positionals[0] ?? ""}\n${usage}` }));
-  }
   if (positionals.length > 1) {
-    return Effect.fail(new CliArgumentError({ message: `--jobs accepts at most one run id\n${usage}` }));
+    return Effect.fail(new CliArgumentError({ message: `logs accepts at most one run id\n${usage}` }));
   }
   return Effect.succeed({
     runsRoot: deps.runsRoot ?? defaultRunsRoot(),
-    trace,
-    jobs: jobsFlag,
-    ...(checkRun === undefined ? {} : { checkRun }),
-    ...(jobOrdinal === undefined ? {} : { jobOrdinal }),
-    ...(positionals[0] === undefined ? {} : { jobsRun: positionals[0] }),
+    ...(positionals[0] === undefined ? {} : { run: positionals[0] }),
   });
 }
 
@@ -150,20 +81,26 @@ function selectTheme(): SelectListTheme {
   };
 }
 
-/** Resolve a run id to its directory, refusing any path that would escape the
- * runs root. The one guard every run-id-taking subcommand shares. */
+/** Resolve a run id to its existing directory, refusing any path that would
+ * escape the runs root. */
 function resolveRunDir(
   runsRoot: string,
   run: string,
-  operation: string,
 ): Effect.Effect<string, LogsStorageError> {
   const resolvedRunsRoot = resolve(runsRoot);
   const runDir = resolve(resolvedRunsRoot, run);
   if (dirname(runDir) !== resolvedRunsRoot) {
     return Effect.fail(new LogsStorageError({
-      operation,
+      operation: "logs",
       path: runDir,
       message: "run id must name a direct child of the runs root",
+    }));
+  }
+  if (!existsSync(runDir)) {
+    return Effect.fail(new LogsStorageError({
+      operation: "logs",
+      path: runDir,
+      message: `no run directory ${runDir}`,
     }));
   }
   return Effect.succeed(runDir);
@@ -177,8 +114,7 @@ interface RunRowMetadata {
 
 /** The row the run's state document carries: the workflow it ran, how it
  * ended, and the first prompt it was given. The interpretation is the resume
- * picker's `summarizeRun`, so both pickers read one document one way — the
- * prompt shows the user's own text, without appended stage context. */
+ * picker's `summarizeRun`, so both pickers read one document one way. */
 function readStatusRow(runDir: string): RunRowMetadata | undefined {
   let raw: string;
   try {
@@ -196,10 +132,7 @@ function readStatusRow(runDir: string): RunRowMetadata | undefined {
   };
 }
 
-/** Exported for testing; the picker calls it once per listed run.
- *
- * The run's state document is the row. It is one small file, so reading it is
- * the whole cost of listing a run. */
+/** Exported for testing; the picker calls it once per listed run. */
 export function readRunRowMetadata(runDir: string): RunRowMetadata {
   return readStatusRow(runDir) ?? {};
 }
@@ -217,7 +150,6 @@ export function runPickerLabel(runId: string, row: RunRowMetadata): string {
 
 function pickRun(
   runsRoot: string,
-  trace: boolean,
 ): Effect.Effect<string | undefined, TuiError | LogsStorageError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const runs = yield* listRunIds(runsRoot);
@@ -231,48 +163,17 @@ function pickRun(
     if (!stdin.isTTY || !stdout.isTTY) {
       yield* Effect.fail(interactiveTerminalRequired());
     }
-    const filename = trace ? "trace.jsonl" : "log.jsonl";
-    const evidencePaths = (runId: string): readonly string[] =>
-      trace ? traceStreamPathCandidates(join(runsRoot, runId)) : logStreamPathCandidates(join(runsRoot, runId));
-    const fileSystem = yield* FileSystem.FileSystem;
-    const items = yield* Effect.forEach(runs, (id) =>
-      Effect.gen(function* () {
-        const candidates = evidencePaths(id);
-        let present = false;
-        for (const candidate of candidates) {
-          const exists = yield* fileSystem.exists(candidate).pipe(
-            Effect.mapError((cause) => new LogsStorageError({
-              operation: "inspect-run",
-              path: candidate,
-              message: cause.message,
-            })),
-          );
-          if (exists) { present = true; break; }
-        }
-        if (!present) return undefined;
-        // No `description`: pi-tui's SelectList truncates the label into a
-        // ~32-column primary slot whenever a description is set, which would
-        // eat exactly the prompt tail this label exists to show. The full
-        // payload lives in the label; the raw id still prints in the
-        // `Logs: <run-id>` header after selection.
-        const row = readRunRowMetadata(join(runsRoot, id));
-        return { value: id, label: runPickerLabel(id, row) };
-      }),
-    ).pipe(Effect.map((entries) => entries.filter((entry) => entry !== undefined)));
-    if (items.length === 0) {
-      yield* Effect.fail(new LogsStorageError({
-        operation: "list-runs",
-        path: runsRoot,
-        message: `no runs found with a ${filename}`,
-      }));
-    }
+    const items = runs.map((id) => ({
+      value: id,
+      label: runPickerLabel(id, readRunRowMetadata(join(runsRoot, id))),
+    }));
     const selected = yield* Effect.try({
       try: () => {
         setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
         const tui = new TUI(new ProcessTerminal());
         const list = new SelectList(items, 10, selectTheme());
-        tui.addChild(new Text(paint(`${COLORS.bold}${COLORS.blue}`, trace ? "Select a run to inspect its trace:" : "Select a run to inspect its logs:"), 0, 0));
-        tui.addChild(new Text(paint(COLORS.dim, `${items.length} runs · ↑/↓ move · Enter open · Esc cancel`), 0, 0));
+        tui.addChild(new Text(paint(`${COLORS.bold}${COLORS.blue}`, "Select a run:"), 0, 0));
+        tui.addChild(new Text(paint(COLORS.dim, `${items.length} runs · ↑/↓ move · Enter select · Esc cancel`), 0, 0));
         tui.addChild(list);
         tui.setFocus(list);
         return { tui, list };
@@ -295,279 +196,15 @@ function pickRun(
   });
 }
 
-function time(value: unknown): string {
-  if (typeof value !== "string") return "????-??-?? ??:??:??.??? UTC??:??";
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return value;
-  const pad = (part: number): string => String(part).padStart(2, "0");
-  const offset = -date.getTimezoneOffset();
-  const sign = offset >= 0 ? "+" : "-";
-  const absoluteOffset = Math.abs(offset);
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
-    ` ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, "0")}` +
-    ` UTC${sign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`;
-}
-
-function formatValue(input: unknown): string {
-  if (typeof input === "string") return sanitize(input, payloadWidth());
-  try {
-    const encoded = JSON.stringify(input);
-    return sanitize(encoded === undefined ? "undefined" : encoded, payloadWidth());
-  } catch {
-    return "[unprintable]";
-  }
-}
-
-function formatAttributes(record: Record<string, unknown>): string {
-  const source = record.attributes ?? record.payload ?? record.data;
-  if (!source || typeof source !== "object" || Array.isArray(source)) return "";
-  return Object.entries(source as Record<string, unknown>)
-    .map(([key, entryValue]) => `${sanitize(key, payloadWidth())}=${key === "error" ? errorText(entryValue) : formatValue(entryValue)}`)
-    .join(" ");
-}
-
-function errorText(value: unknown): string {
-  if (value !== null && typeof value === "object") {
-    const error = value as Record<string, unknown>;
-    const type = typeof error.type === "string" ? error.type : "error";
-    const kind = typeof error.kind === "string" ? `[${error.kind}]` : "";
-    const message = typeof error.message === "string" ? error.message : "unknown failure";
-    return sanitize(`${type}${kind}: ${message}`, payloadWidth());
-  }
-  return sanitize(String(value), payloadWidth());
-}
-
-function levelColor(level: string): string {
-  if (level === "FATAL" || level === "ERROR") return COLORS.error;
-  if (level === "WARN") return COLORS.warn;
-  if (level === "TRACE" || level === "DEBUG") return COLORS.dim;
-  return COLORS.success;
-}
-
-const ESCAPE_RE = /[\r\n\t]/g;
-
-/** Terminal width for payload/message fields (fallback 120). */
-function payloadWidth(): number {
-  return typeof stdout.columns === "number" && stdout.columns > 40 ? stdout.columns : 120;
-}
-
-/** Escape control characters and truncate to `width` so a value stays on one line. */
-function sanitize(value: string, width: number): string {
-  const escaped = value.replace(ESCAPE_RE, (ch) =>
-    ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : "\\t");
-  return escaped.length <= width ? escaped : `${escaped.slice(0, Math.max(0, width - 1))}…`;
-}
-
-export function formatLog(line: string): string {
-  const parsed = parseJsonRecord(line);
-  if (parsed === undefined) return line;
-  const levelValue = parsed.severity ?? parsed.level;
-  const level = typeof levelValue === "string" ? levelValue.toUpperCase() : "INFO";
-  const moduleName = typeof parsed.module === "string" ? parsed.module : undefined;
-  const fileName = typeof parsed.file === "string" ? parsed.file : undefined;
-  const functionName = typeof parsed.function === "string" ? parsed.function : undefined;
-  const source = moduleName && fileName
-    ? `${moduleName}/${fileName}${functionName ? `::${functionName}` : ""}`
-    : functionName ?? fileName ?? moduleName;
-  const namespace = typeof parsed.namespace === "string" ? parsed.namespace : typeof parsed.ns === "string" ? parsed.ns : undefined;
-  const component = source || namespace || "piano";
-  const event = typeof parsed.event === "string" ? parsed.event : typeof parsed.event_name === "string" ? parsed.event_name : "event";
-  const message = typeof parsed.message === "string" ? sanitize(parsed.message, payloadWidth()) : undefined;
-  const outcome = typeof parsed.outcome === "string" ? parsed.outcome : typeof parsed.status === "string" ? parsed.status : undefined;
-  const context = [
-    typeof parsed.stage === "string" ? `stage=${parsed.stage}` : undefined,
-    typeof parsed.agent === "string" ? `agent=${parsed.agent}` : undefined,
-    outcome === undefined ? undefined : `outcome=${outcome}`,
-  ].filter((value): value is string => value !== undefined).join(" ");
-  const formattedAttributes = formatAttributes(parsed);
-  return [
-    paint(COLORS.dim, time(parsed.timestamp ?? parsed.ts)),
-    paint(levelColor(level), level.padEnd(5)),
-    paint(COLORS.cyan, component),
-    paint(`${COLORS.bold}${COLORS.blue}`, event),
-    message === undefined ? "" : paint(COLORS.dim, `— ${message}`),
-    context === "" ? "" : paint(COLORS.dim, `[${context}]`),
-    formattedAttributes ? paint(COLORS.dim, formattedAttributes) : "",
-  ].filter(Boolean).join(" ");
-}
-
-export function formatTrace(line: string): string {
-  const parsed = parseJsonRecord(line);
-  if (parsed === undefined) return line;
-  const depth = typeof parsed.depth === "number" && Number.isFinite(parsed.depth)
-    ? Math.max(0, Math.floor(parsed.depth))
-    : 0;
-  const event: readonly [string, string] = parsed.event === "enter"
-    ? ["▶", COLORS.blue]
-    : parsed.event === "error"
-      ? ["✗", COLORS.error]
-      : ["✓", COLORS.success];
-  const fn = typeof parsed.fn === "string" ? parsed.fn : "operation";
-  const source = sanitize(
-    typeof parsed.module === "string" && typeof parsed.file === "string"
-      ? `${parsed.module}/${parsed.file}::${fn}`
-      : fn,
-    payloadWidth(),
-  );
-  const duration = typeof parsed.duration_ms === "number" ? ` (${parsed.duration_ms}ms)` : "";
-  const error = parsed.event === "error" && parsed.error !== undefined ? `: ${errorText(parsed.error)}` : "";
-  return `${"  ".repeat(depth)}${paint(COLORS.dim, time(parsed.timestamp ?? parsed.ts))} ${paint(event[1], event[0])} ${paint(COLORS.cyan, source)}${paint(COLORS.dim, duration)}${error ? paint(COLORS.error, error) : ""}`;
-}
-
-function printLog(
-  runsRoot: string,
-  run: string,
-  trace: boolean,
-): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const candidates = trace ? traceStreamPathCandidates(join(runsRoot, run)) : logStreamPathCandidates(join(runsRoot, run));
-    const file = candidates[0]!;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const content = yield* fileSystem.readFileString(candidates[0]!).pipe(
-      // Current layout first; a pre-audience run still prints from its root.
-      Effect.catchAll(() => fileSystem.readFileString(candidates[1]!)),
-      Effect.mapError((cause) => new LogsStorageError({ operation: "read", path: file, message: cause.message })),
-    );
-    yield* Effect.sync(() => console.log(paint(`${COLORS.bold}${COLORS.accent}`, `${trace ? "Trace" : "Logs"}: ${run}`)));
-    yield* Effect.forEach(content.split("\n").filter(Boolean), (line) =>
-      Effect.sync(() => console.log(trace ? formatTrace(line) : formatLog(line))),
-    );
-  });
-}
-
-function printStaticObservability(
-  runsRoot: string,
-  run: string,
-): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  return resolveRunDir(runsRoot, run, "check").pipe(Effect.flatMap((runDir) =>
-    inspectStaticObservability(runDir, progressRecordDeclaredFields).pipe(
-      Effect.mapError((cause) => new LogsStorageError({
-        operation: "check",
-        path: runDir,
-        message: cause.message,
-      })),
-      Effect.flatMap((report) => Effect.sync(() => console.log(formatStaticObservabilityReport(report))).pipe(
-        Effect.andThen(report.valid
-          ? Effect.void
-          : Effect.fail(new LogsStorageError({
-            operation: "check",
-            path: runDir,
-            message: `static observability check found ${report.issues.length} issue(s)`,
-          }))),
-      )),
-    )),
-  );
-}
-
-function jobStateLabel(state: RunJob["state"], outcome: RunJob["outcome"]): string {
-  return outcome === undefined ? state : `${state}(${outcome})`;
-}
-
-function jobStateStyle(view: Pick<RunJob, "state" | "outcome">): string {
-  if (view.state === "alive") return COLORS.cyan;
-  if (view.state === "paused") return COLORS.warn;
-  return view.outcome === "failed" ? COLORS.error : COLORS.success;
-}
-
-/** `--jobs [<run-id>]` / `--jobs --job <ordinal> [<run-id>]`: print the run's
- * jobs as its state document holds them — the same document `/continue`
- * consumes, so this prints exactly what a continue would skip. */
-
-function printJobs(
-  runsRoot: string,
-  run: string,
-  jobOrdinal: number | undefined,
-): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  return resolveRunDir(runsRoot, run, "jobs").pipe(Effect.flatMap((runDir) => Effect.gen(function* () {
-    const statusPath = runStatusPath(runDir);
-    if (!existsSync(statusPath)) {
-      return yield* Effect.fail(new LogsStorageError({
-        operation: "jobs",
-        path: statusPath,
-        message: "the run has no readable state document",
-      }));
-    }
-    const status = yield* Effect.try({
-      try: () => parseRunStatus(readFileSync(statusPath, "utf8")),
-      catch: (cause) => new LogsStorageError({ operation: "read", path: statusPath, message: String(cause) }),
-    });
-    if (status === undefined) {
-      return yield* Effect.fail(new LogsStorageError({
-        operation: "jobs",
-        path: statusPath,
-        message: "the run has no readable state document",
-      }));
-    }
-    const views = status.jobs;
-    if (jobOrdinal === undefined) {
-      yield* Effect.sync(() => {
-        console.log(paint(`${COLORS.bold}${COLORS.accent}`, `Jobs: ${run}`));
-        if (views.length === 0) {
-          console.log(paint(COLORS.dim, "no jobs recorded — the run's state document names no job; /restart starts one"));
-        }
-        for (const view of views) {
-          console.log([
-            paint(COLORS.bold, `#${view.jobOrdinal}`),
-            paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
-            paint(COLORS.dim, `accepted=${view.accepted.length}`),
-            ...(view.input === undefined ? [] : [oneLine(view.input, 60)]),
-          ].join("  "));
-        }
-      });
-      return;
-    }
-    const view = views.find((candidate) => candidate.jobOrdinal === jobOrdinal);
-    if (view === undefined) {
-      return yield* Effect.fail(new LogsStorageError({
-        operation: "jobs",
-        path: statusPath,
-        message: views.length === 0
-          ? `job ${jobOrdinal} not found: the run has no jobs`
-          : `job ${jobOrdinal} not found; the run's jobs are ${views.map((candidate) => `#${candidate.jobOrdinal}`).join(", ")}`,
-      }));
-    }
-    yield* Effect.sync(() => {
-      console.log([
-        paint(`${COLORS.bold}${COLORS.accent}`, `Job #${view.jobOrdinal}`),
-        paint(jobStateStyle(view), jobStateLabel(view.state, view.outcome)),
-        paint(COLORS.dim, `accepted=${view.accepted.length}`),
-      ].join("  "));
-      const accepted = [...view.accepted].sort();
-      if (accepted.length > 0) {
-        console.log(paint(COLORS.dim, "  accepted:"));
-        for (const invocationId of accepted) {
-          const attempt = view.attempts[invocationId];
-          console.log(`    ${invocationId}${attempt === undefined ? "" : paint(COLORS.dim, `  attempt=${attempt}`)}`);
-        }
-      }
-      if (view.input !== undefined) {
-        console.log(paint(COLORS.dim, "  input:"));
-        console.log(`    ${oneLine(view.input, 120)}`);
-      }
-    });
-  })));
-}
-
 export function logsCommand(
   args: readonly string[] = process.argv.slice(2),
   deps: LogsDeps = {},
 ): Effect.Effect<void, CliError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const options = yield* parseLogsArgs(args, deps);
-    if (options.checkRun !== undefined) {
-      yield* printStaticObservability(options.runsRoot, options.checkRun);
-      return;
-    }
-    if (options.jobs) {
-      const picker = deps.pickRun ?? pickRun;
-      const run = options.jobsRun ?? (yield* picker(options.runsRoot, false));
-      if (run === undefined) return;
-      yield* printJobs(options.runsRoot, run, options.jobOrdinal);
-      return;
-    }
-    const picker = deps.pickRun ?? pickRun;
-    const run = yield* picker(options.runsRoot, options.trace);
+    const run = options.run ?? (yield* (deps.pickRun ?? pickRun)(options.runsRoot));
     if (run === undefined) return;
-    yield* printLog(options.runsRoot, run, options.trace);
+    const runDir = yield* resolveRunDir(options.runsRoot, run);
+    yield* Effect.sync(() => console.log(runDir));
   });
 }

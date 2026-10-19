@@ -38,15 +38,3 @@ export {
   type TrajectoryTurn,
   type TrajectoryWriteInput,
 } from "./trajectory.js";
-export {
-  analyzeStaticObservability,
-  formatStaticObservabilityReport,
-  inspectStaticObservability,
-  StaticObservabilityReadError,
-  type StaticObservabilityFileName,
-  type StaticObservabilityFile,
-  type StaticObservabilityInput,
-  type StaticObservabilityIssueCode,
-  type StaticObservabilityIssue,
-  type StaticObservabilityReport,
-} from "./static-analysis.js";

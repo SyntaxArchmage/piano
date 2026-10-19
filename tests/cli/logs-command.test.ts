@@ -1,3 +1,6 @@
+// `piano logs` locates a run and prints its absolute directory. The command
+// owns no viewer: these tests pin the picker seam, the path on stdout, and the
+// argument/run-id guards.
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,42 +10,46 @@ import { Effect } from "effect";
 import { defaultRunsRoot } from "../../packages/logging/src/index.js";
 import { logsCommand, readRunRowMetadata, runPickerLabel } from "../../packages/cli/src/logs.js";
 
-describe("piano logs commands ", () => {
+describe("piano logs", () => {
   let root: string;
   const runId = "20260821T120000-abc123";
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "piano-logs-command-"));
-    const runDir = join(root, runId);
-    await mkdir(runDir, { recursive: true });
-    await mkdir(join(runDir, "system-log"), { recursive: true });
-    await writeFile(join(runDir, "system-log", "log.jsonl"), JSON.stringify({
-      timestamp: "2026-08-21T10:32:07.123Z",
-      severity: "info",
-      stage: "session",
-      event: "run.created",
-      message: "Run created",
-    }) + "\n", "utf8");
-    await writeFile(join(runDir, "system-log", "trace.jsonl"), JSON.stringify({
-      timestamp: "2026-08-21T10:32:07.123Z",
-      depth: 0,
-      event: "exit",
-      fn: "createSession",
-      duration_ms: 1,
-    }) + "\n", "utf8");
+    await mkdir(join(root, runId), { recursive: true });
   });
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
-    process.exitCode = 0;
   });
 
-  it("runs piano logs and renders the selected log", async () => {
+  it("prints the absolute run directory for an explicit run id", async () => {
     const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
-      await Effect.runPromise(logsCommand([], { runsRoot: root, pickRun: () => Effect.succeed(runId) }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Logs: ${runId}`));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("run.created"));
+      await Effect.runPromise(logsCommand([runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(join(root, runId));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("prints the selected run's directory when no id is given", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand([], { runsRoot: root, pickRun: () => Effect.succeed(runId) })
+        .pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).toHaveBeenCalledWith(join(root, runId));
+    } finally {
+      output.mockRestore();
+    }
+  });
+
+  it("prints nothing when the picker is cancelled", async () => {
+    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      await Effect.runPromise(logsCommand([], { runsRoot: root, pickRun: () => Effect.succeed(undefined) })
+        .pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(output).not.toHaveBeenCalled();
     } finally {
       output.mockRestore();
     }
@@ -51,90 +58,36 @@ describe("piano logs commands ", () => {
   it("defaults to the workspace hidden runs root", async () => {
     const pickRun = vi.fn(() => Effect.succeed(undefined));
     await Effect.runPromise(logsCommand([], { pickRun }).pipe(Effect.provide(NodeFileSystem.layer)));
-    expect(pickRun).toHaveBeenCalledWith(defaultRunsRoot(), false);
+    expect(pickRun).toHaveBeenCalledWith(defaultRunsRoot());
   });
 
-  it("runs piano logs --trace and renders the selected trace", async () => {
-    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    try {
-      await Effect.runPromise(logsCommand(["--trace"], { runsRoot: root, pickRun: () => Effect.succeed(runId) }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Trace: ${runId}`));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("createSession"));
-    } finally {
-      output.mockRestore();
+  it("rejects a run id outside the runs root", async () => {
+    const exit = await Effect.runPromiseExit(logsCommand(["../outside"], { runsRoot: root })
+      .pipe(Effect.provide(NodeFileSystem.layer)));
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("LogsStorageError");
     }
   });
 
-  it("runs the offline observability check without requiring a TTY", async () => {
-    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    try {
-      const exit = await Effect.runPromiseExit(logsCommand(["--check", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+  it("fails for a run id with no directory", async () => {
+    const exit = await Effect.runPromiseExit(logsCommand(["20260821T130000-def456"], { runsRoot: root })
+      .pipe(Effect.provide(NodeFileSystem.layer)));
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+      expect(exit.cause.error._tag).toBe("LogsStorageError");
+      expect(exit.cause.error.message).toContain("no run directory");
+    }
+  });
+
+  it("rejects options and more than one run id", async () => {
+    for (const args of [["--trace"], [runId, runId]]) {
+      const exit = await Effect.runPromiseExit(logsCommand(args, { runsRoot: root })
+        .pipe(Effect.provide(NodeFileSystem.layer)));
       expect(exit._tag).toBe("Failure");
-      expect(output).toHaveBeenCalledWith(expect.stringContaining(`OBSERVABILITY FAIL: ${runId}`));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("missing-file"));
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it("returns success for a complete offline evidence set", async () => {
-    const timestamp = "2026-08-25T00:00:00.000Z";
-    const runDir = join(root, runId);
-    const transcriptPath = join(runDir, "transcript.jsonl");
-    await Promise.all([
-      writeFile(join(runDir, "system-log", "log.jsonl"), JSON.stringify({ timestamp, run_id: runId, trace_id: "trace-1", event: "run.created" }) + "\n", "utf8"),
-      writeFile(join(runDir, "system-log", "trace.jsonl"), [
-        { timestamp, run_id: runId, trace_id: "trace-1", seq: 1, depth: 0, span_id: "sp-1", parent_id: null, event: "enter", fn: "run" },
-        { timestamp, run_id: runId, trace_id: "trace-1", seq: 2, depth: 0, span_id: "sp-1", parent_id: null, event: "exit", fn: "run", ok: true, duration_ms: 1 },
-      ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8"),
-      writeFile(join(runDir, "system-log", "trajectory.jsonl"), JSON.stringify({
-        version: 1,
-        runId,
-        timestamp,
-        status: "completed",
-        promptLength: 1,
-        events: [],
-        transcriptPath,
-      }) + "\n", "utf8"),
-      writeFile(transcriptPath, JSON.stringify({ type: "message", message: { role: "assistant", content: "done" } }) + "\n", "utf8"),
-    ]);
-    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    try {
-      const exit = await Effect.runPromiseExit(logsCommand(["--check", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(exit._tag).toBe("Success");
-      expect(output).toHaveBeenCalledWith(expect.stringContaining(`OBSERVABILITY PASS: ${runId}`));
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it("rejects combining trace viewing with the offline check", async () => {
-    const exit = await Effect.runPromiseExit(logsCommand(["--trace", "--check", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error._tag).toBe("CliArgumentError");
-    }
-  });
-
-  it("rejects repeated checks and run ids outside the runs root", async () => {
-    const repeated = await Effect.runPromiseExit(logsCommand(["--check", runId, "--check", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-    expect(repeated._tag).toBe("Failure");
-    if (repeated._tag === "Failure" && repeated.cause._tag === "Fail") {
-      expect(repeated.cause.error._tag).toBe("CliArgumentError");
-    }
-
-    const traversal = await Effect.runPromiseExit(logsCommand(["--check", "../outside"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-    expect(traversal._tag).toBe("Failure");
-    if (traversal._tag === "Failure" && traversal.cause._tag === "Fail") {
-      expect(traversal.cause.error._tag).toBe("LogsStorageError");
-    }
-  });
-
-  it("rejects removed command options", async () => {
-    const exit = await Effect.runPromiseExit(logsCommand(["--verbose"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error._tag).toBe("CliArgumentError");
+      if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
+        expect(exit.cause.error._tag).toBe("CliArgumentError");
+      }
     }
   });
 });
@@ -156,7 +109,8 @@ describe("piano logs picker rows", () => {
     const prompt = 'Implement a `matmul.cu` that prints "TFLOPS: <value>"\nand nothing else.';
     // One small document is the whole row. The trajectory beside it is the
     // evidence and is never opened to list a run.
-    await writeFile(join(root, runId, "trajectory.jsonl"), "x".repeat(200_000), "utf8");
+    await mkdir(join(root, runId, "system-log"), { recursive: true });
+    await writeFile(join(root, runId, "system-log", "trajectory.jsonl"), "x".repeat(200_000), "utf8");
     await writeFile(join(root, runId, "status.json"), JSON.stringify({
       version: 1,
       runId,
@@ -201,151 +155,5 @@ describe("piano logs picker rows", () => {
     expect(readRunRowMetadata(missing)).toEqual({});
     expect(runPickerLabel(runId, {})).toBe("2026-08-21 12:00");
     expect(runPickerLabel("legacy-dir", {})).toBe("legacy-dir");
-  });
-});
-
-describe("piano logs --jobs", () => {
-  let root: string;
-  const runId = "20260821T120000-abc123";
-
-  beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "piano-logs-jobs-"));
-    const runDir = join(root, runId);
-    await mkdir(runDir, { recursive: true });
-    await mkdir(join(runDir, "system-log"), { recursive: true });
-    // Two jobs: the first paused after accepting two invocations (one on its
-    // second attempt), the second alive mid-span. `--jobs` prints the state
-    // document, the same one `/continue` consumes.
-    const document = {
-      version: 1,
-      runId,
-      updatedAt: "2026-08-21T10:05:01.000Z",
-      status: "paused",
-      promptLength: 0,
-      plannedStages: 2,
-      completedStages: 2,
-      acceptedStages: 2,
-      remainingStages: 0,
-      stageCounts: {},
-      jobOrdinal: 2,
-      actors: {},
-      jobs: [
-        {
-          jobOrdinal: 1,
-          state: "paused",
-          accepted: [
-            "tune.profile@root",
-            "tune.race@tune/iter-0/tune.race/slot-1",
-          ],
-          attempts: {
-            "tune.profile@root": 2,
-            "tune.race@tune/iter-0/tune.race/slot-1": 1,
-          },
-          input: "fix the matmul kernel",
-        },
-        {
-          jobOrdinal: 2,
-          state: "alive",
-          accepted: [],
-          attempts: { "tune.profile@root": 1 },
-          input: "second pass",
-        },
-      ],
-    };
-    await writeFile(join(runDir, "status.json"), JSON.stringify(document), "utf8");
-  });
-
-  afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
-  });
-
-  it("lists each job with its state, span and accepted counts", async () => {
-    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    try {
-      await Effect.runPromise(logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("#1"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("paused"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("accepted=2"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("fix the matmul kernel"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("#2"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("alive"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("second pass"));
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it("fails when the run has no readable state document", async () => {
-    // A run dir with no status.json (an interrupted run before its first
-    // write) cannot answer the question; say so instead of listing nothing.
-    await rm(join(root, runId, "status.json"), { force: true });
-    const exit = await Effect.runPromiseExit(
-      logsCommand(["--jobs", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error._tag).toBe("LogsStorageError");
-      expect(exit.cause.error.message).toContain("no readable state document");
-    }
-  });
-
-  it("prints one job's input and accepted invocations with attempts", async () => {
-    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    try {
-      await Effect.runPromise(logsCommand(["--jobs", "--job", "1", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("Job #1"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("paused"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("accepted=2"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("tune.profile@root"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("attempt=2"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("tune.race@tune/iter-0/tune.race/slot-1"));
-      expect(output).toHaveBeenCalledWith(expect.stringContaining("fix the matmul kernel"));
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it("uses the picker when no run id is given", async () => {
-    const output = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const pickable = vi.fn(() => Effect.succeed(runId));
-    try {
-      await Effect.runPromise(logsCommand(["--jobs"], { runsRoot: root, pickRun: pickable }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(pickable).toHaveBeenCalledWith(root, false);
-      expect(output).toHaveBeenCalledWith(expect.stringContaining(`Jobs: ${runId}`));
-    } finally {
-      output.mockRestore();
-    }
-  });
-
-  it("fails for a missing job with the available ordinals", async () => {
-    const exit = await Effect.runPromiseExit(
-      logsCommand(["--jobs", "--job", "9", runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error._tag).toBe("LogsStorageError");
-      expect(exit.cause.error.message).toContain("#1");
-      expect(exit.cause.error.message).toContain("#2");
-    }
-  });
-
-  it("rejects --job without --jobs and combining --jobs with --trace", async () => {
-    for (const args of [[ "--job", "1", runId ], [ "--jobs", "--trace", runId ]]) {
-      const exit = await Effect.runPromiseExit(logsCommand(args, { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
-      expect(exit._tag).toBe("Failure");
-      if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-        expect(exit.cause.error._tag).toBe("CliArgumentError");
-      }
-    }
-  });
-
-  it("refuses a run id outside the runs root", async () => {    const exit = await Effect.runPromiseExit(
-      logsCommand(["--jobs", "../outside"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    expect(exit._tag).toBe("Failure");
-    if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
-      expect(exit.cause.error._tag).toBe("LogsStorageError");
-    }
   });
 });
