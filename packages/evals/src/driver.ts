@@ -516,21 +516,21 @@ export function runCase(
     const workflowTrajectoryOutcome = runDir === undefined
       ? undefined
       : yield* workflowEvaluator.evaluate({ runDir }).pipe(Effect.either);
-    const workflowTrajectoryIndexPath = runDir === undefined
+    const workflowTrajectoryPath = runDir === undefined
       ? undefined
-      : join(runDir, "eval-metrics", "index.json");
+      : join(runDir, "eval-metrics");
     const workflowTrajectoryEvidence = workflowTrajectoryOutcome === undefined
       ? {}
       : workflowTrajectoryOutcome._tag === "Right"
         ? {
             workflowTrajectory: workflowTrajectoryOutcome.right,
-            ...(pathExists(workflowTrajectoryIndexPath)
-              ? { workflowTrajectoryPath: workflowTrajectoryIndexPath }
+            ...(pathExists(workflowTrajectoryPath)
+              ? { workflowTrajectoryPath }
               : {}),
           }
         : {
-            ...(pathExists(workflowTrajectoryIndexPath)
-              ? { workflowTrajectoryPath: workflowTrajectoryIndexPath }
+            ...(pathExists(workflowTrajectoryPath)
+              ? { workflowTrajectoryPath }
               : {}),
             workflowTrajectoryError: workflowTrajectoryOutcome.left.message,
           };

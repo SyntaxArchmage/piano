@@ -15,17 +15,16 @@ export {
   selectionRecordSchema,
   tokenUsageRecordSchema,
   toolCallRecordSchema,
-  trajectoryIndexSchema,
 } from "./schemas.js";
 export {
-  readTrajectoryIndex,
   streamPath,
-  trajectoryIndexPath,
 } from "./storage.js";
 export {
   defaultTrajectoryRecorders,
   WorkflowTrajectory,
+  type WorkflowTrajectorySnapshot,
   type WorkflowTrajectoryStatus,
+  type WorkflowTrajectoryStream,
 } from "./workflow-trajectory.js";
 export type {
   AttemptSummary,
@@ -44,8 +43,6 @@ export type {
   ToolCallScore,
   TrajectoryContractReference,
   TrajectoryEvaluator,
-  TrajectoryIndex,
-  TrajectoryIndexStream,
   TrajectoryRecorder,
   TrajectoryRecordContext,
   TrajectoryStreamDescriptor,

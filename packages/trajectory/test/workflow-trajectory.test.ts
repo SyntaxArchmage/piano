@@ -11,8 +11,6 @@ import {
   ToolCallRecorder,
   TrajectoryRecordError,
   WorkflowTrajectory,
-  readTrajectoryIndex,
-  trajectoryIndexSchema,
   type TrajectoryRecordContext,
   type WorkflowObservationRecorder,
 } from "../src/index.js";
@@ -136,15 +134,13 @@ describe("WorkflowTrajectory", () => {
     const duration = new DurationRecorder(runDir);
     const tokens = new TokenUsageRecorder(runDir);
     const tools = new ToolCallRecorder(runDir);
-    const [benchmarkRecords, durationRecords, tokenRecords, toolRecords, index] = await Promise.all([
+    const [benchmarkRecords, durationRecords, tokenRecords, toolRecords] = await Promise.all([
       run(benchmark.read(runDir)),
       run(duration.read(runDir)),
       run(tokens.read(runDir)),
       run(tools.read(runDir)),
-      run(readTrajectoryIndex(runDir, trajectoryIndexSchema)),
     ]);
 
-    expect(index?.status).toBe("completed");
     expect(benchmarkRecords).toHaveLength(4);
     const scored = benchmark.score(benchmarkRecords);
     expect(Object.values(scored.best).sort((a, b) => a - b)).toEqual([4, 14]);
@@ -210,18 +206,6 @@ describe("WorkflowTrajectory", () => {
     expect(records[0]?.reported).toEqual({ input: 120, output: 30, cacheRead: 0, cacheWrite: 0, total: 152 });
   });
 
-  it("retains an interrupted recording session as incomplete evidence", async () => {
-    const runDir = await mkdtemp(join(tmpdir(), "piano-trajectory-interrupted-"));
-    roots.push(runDir);
-    await run(WorkflowTrajectory.open(runDir, "execution-1"));
-
-    const resumed = await run(WorkflowTrajectory.open(runDir, "execution-1"));
-    await run(resumed.close("completed"));
-
-    expect(resumed.snapshot().streams.every((stream) => stream.status === "error")).toBe(true);
-    expect(resumed.snapshot().streams[0]?.errors).toContain("trajectory index: existing trajectory was not closed before resume");
-  });
-
   it("isolates a recorder failure and marks its stream incomplete", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-trajectory-error-"));
     roots.push(runDir);
@@ -238,15 +222,5 @@ describe("WorkflowTrajectory", () => {
       streams: [{ id: "broken", status: "error", errors: ["disk unavailable"] }],
     });
 
-    const recovered: WorkflowObservationRecorder = {
-      descriptor: broken.descriptor,
-      observe: () => Effect.void,
-    };
-    const resumed = await run(WorkflowTrajectory.open(runDir, "execution-1", [recovered]));
-    await run(resumed.close("completed"));
-    expect(resumed.snapshot()).toMatchObject({
-      status: "completed",
-      streams: [{ id: "broken", status: "error", errors: ["disk unavailable"] }],
-    });
   });
 });

@@ -4154,7 +4154,7 @@ workflow:
         { sessionId: "measure-1", outcome: "validation_failed", delta: { total: 10 } },
         { sessionId: "measure-2", outcome: "accepted", delta: { total: 10 } },
       ]);
-      expect(JSON.parse(await readFile(join(session.runDir, "eval-metrics", "index.json"), "utf8")))
+      expect(JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")))
         .toMatchObject({ status: "completed" });
       await expect(readFile(join(root, "state", "current-best.py"), "utf8")).resolves.toBe("candidate\n");
     } finally {

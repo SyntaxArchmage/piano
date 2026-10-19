@@ -9,9 +9,6 @@ import {
   TokenUsageRecorder,
   ToolCallRecorder,
   TrajectoryEvaluationError,
-  readTrajectoryIndex,
-  trajectoryIndexPath,
-  trajectoryIndexSchema,
   type BenchmarkScore,
   type DurationScore,
   type SelectionScore,
@@ -19,6 +16,7 @@ import {
   type ToolCallScore,
   type TrajectoryEvaluator,
 } from "@piano/trajectory";
+import { readRunStatus } from "@piano/orchestrator";
 import { evaluateLegacyRun } from "./legacy-run-adapter.js";
 
 export interface WorkflowEvaluationInput {
@@ -58,54 +56,26 @@ export interface WorkflowTrajectoryEvaluation {
   readonly selection?: SelectionScore;
 }
 
-function incompleteNativeEvaluation(runDir: string, issue?: string): WorkflowTrajectoryEvaluation {
-  return {
-    source: "native",
-    complete: false,
-    issues: [issue ?? `native trajectory evidence exists under ${join(runDir, "eval-metrics")} but eval-metrics/index.json is missing`],
-    benchmarks: [],
-    duration: { count: 0, totalMs: 0, maxMs: 0 },
-    tokens: { count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    tools: { count: 0, failures: 0, names: [], totalDurationMs: 0 },
-  };
-}
-
 export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluationInput, WorkflowTrajectoryEvaluation> {
   evaluate(input: WorkflowEvaluationInput) {
-    const path = trajectoryIndexPath(input.runDir);
+    const metricsDir = join(input.runDir, "eval-metrics");
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      const indexResult = yield* readTrajectoryIndex(input.runDir, trajectoryIndexSchema).pipe(
-        Effect.mapError((error) => new TrajectoryEvaluationError(path, error.message)),
-        Effect.either,
+      // The recorder streams are the evidence. A run that never opened the
+      // recorders has no directory and is read through the legacy adapter;
+      // everything else is native, with completeness taken from the run's
+      // state document rather than from a second index record.
+      const directoryExists = yield* fileSystem.exists(metricsDir).pipe(
+        Effect.mapError((cause) => new TrajectoryEvaluationError(metricsDir, String(cause))),
       );
-      if (indexResult._tag === "Left") {
-        const trajectoriesDir = join(input.runDir, "eval-metrics");
-        const directoryExists = yield* fileSystem.exists(trajectoriesDir).pipe(
-          Effect.mapError((cause) => new TrajectoryEvaluationError(trajectoriesDir, String(cause))),
-        );
-        if (directoryExists) {
-          return incompleteNativeEvaluation(input.runDir, `native trajectory index is malformed or unreadable: ${indexResult.left.message}`);
-        }
-        return yield* Effect.fail(indexResult.left);
-      }
-      const index = indexResult.right;
-      if (index === undefined) {
-        // A partially written native run must not be reinterpreted as an old
-        // run merely because its index was the last atomic write to complete.
-        const trajectoriesDir = join(input.runDir, "eval-metrics");
-        const directoryExists = yield* fileSystem.exists(trajectoriesDir).pipe(
-          Effect.mapError((cause) => new TrajectoryEvaluationError(trajectoriesDir, String(cause))),
-        );
-        if (directoryExists) {
-          const entries = yield* fileSystem.readDirectory(trajectoriesDir).pipe(
-            Effect.mapError((cause) => new TrajectoryEvaluationError(trajectoriesDir, String(cause))),
-          );
-          if (entries.some((entry) => entry !== "index.json")) {
-            return incompleteNativeEvaluation(input.runDir);
-          }
-        }
-        return evaluateLegacyRun(input.runDir);
+      if (!directoryExists) return evaluateLegacyRun(input.runDir);
+
+      const status = yield* readRunStatus(input.runDir).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+      const issues: string[] = [];
+      if (status === undefined) {
+        issues.push("run state document is missing or unreadable; completeness is unknown");
+      } else if (status.status !== "completed") {
+        issues.push(`run status is ${status.status}`);
       }
 
       const benchmarkRecorder = new BenchmarkRecorder(input.runDir);
@@ -113,34 +83,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
       const tokenRecorder = new TokenUsageRecorder(input.runDir);
       const toolRecorder = new ToolCallRecorder(input.runDir);
       const recorders = [benchmarkRecorder, durationRecorder, tokenRecorder, toolRecorder] as const;
-      const issues: string[] = [];
-      if (index.status !== "completed") issues.push(`trajectory index status is ${index.status}`);
-      for (const stream of index.streams) {
-        if (stream.status === "running") issues.push(`${stream.id}: stream is still running`);
-        if (stream.status === "error") {
-          issues.push(...(stream.errors.length === 0
-            ? [`${stream.id}: stream failed without an error detail`]
-            : stream.errors.map((error) => `${stream.id}: ${error}`)));
-        }
-      }
-      for (const recorder of recorders) {
-        const matches = index.streams.filter((stream) => stream.id === recorder.descriptor.id);
-        if (matches.length === 0) {
-          issues.push(`${recorder.descriptor.id}: stream is missing from trajectory index`);
-          continue;
-        }
-        if (matches.length > 1) {
-          issues.push(`${recorder.descriptor.id}: stream is declared more than once`);
-          continue;
-        }
-        const stream = matches[0]!;
-        if (stream.schema !== recorder.descriptor.schema || stream.path !== recorder.descriptor.path) {
-          issues.push(
-            `${recorder.descriptor.id}: expected ${recorder.descriptor.schema} at ${recorder.descriptor.path}, got ${stream.schema} at ${stream.path}`,
-          );
-        }
-      }
-
+      for (const recorder of recorders) void recorder;
       const benchmarkResult = yield* benchmarkRecorder.read(input.runDir).pipe(Effect.either);
       const durationResult = yield* durationRecorder.read(input.runDir).pipe(Effect.either);
       const tokenResult = yield* tokenRecorder.read(input.runDir).pipe(Effect.either);
@@ -148,7 +91,11 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
       // The selection stream is tournament-only: its absence is normal, but a
       // declared stream that fails to read is an evidence issue like the rest.
       const selectionRecorder = new SelectionRecorder(input.runDir);
-      const selectionResult = index.streams.some((stream) => stream.id === "selection")
+      const selectionPath = join(input.runDir, "eval-metrics", "selection.jsonl");
+      const hasSelectionStream = yield* fileSystem.exists(selectionPath).pipe(
+        Effect.mapError((cause) => new TrajectoryEvaluationError(selectionPath, String(cause))),
+      );
+      const selectionResult = hasSelectionStream
         ? yield* selectionRecorder.read(input.runDir).pipe(Effect.either)
         : undefined;
       if (benchmarkResult._tag === "Left") issues.push(benchmarkResult.left.message);
@@ -169,7 +116,8 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
         ["tool-calls", tools],
         ["selection", selections],
       ] as const) {
-        const mismatches = records.filter((record) => record.runId !== index.runId).length;
+        if (status === undefined) continue;
+        const mismatches = records.filter((record) => record.runId !== status.runId).length;
         if (mismatches > 0) issues.push(`${stream}: ${mismatches} record(s) belong to another execution`);
       }
       for (const digest of new Set(benchmarks.map((record) => record.contract.digest))) {
@@ -186,7 +134,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
       }
       return {
         source: "native" as const,
-        complete: index.status === "completed" && issues.length === 0,
+        complete: status?.status === "completed" && issues.length === 0,
         issues,
         benchmarks: benchmarks.map((record) => ({
           name: record.metric.name,

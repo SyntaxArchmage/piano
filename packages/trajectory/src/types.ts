@@ -266,15 +266,4 @@ export interface SelectionScore {
   readonly metricless: number;
 }
 
-export interface TrajectoryIndexStream extends TrajectoryStreamDescriptor {
-  readonly status: "running" | "completed" | "error";
-  readonly errors: readonly string[];
-}
 
-export interface TrajectoryIndex {
-  readonly version: 1;
-  readonly runId: string;
-  readonly updatedAt: string;
-  readonly status: "running" | "completed" | "failed" | "cancelled";
-  readonly streams: readonly TrajectoryIndexStream[];
-}

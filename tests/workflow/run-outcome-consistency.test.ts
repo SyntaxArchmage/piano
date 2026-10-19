@@ -122,15 +122,9 @@ async function outcomeOf(runDir: string) {
   const stream = await readStream(runDir, "progress.jsonl");
   const last = stream.at(-1) ?? {};
   const snapshot = await readJson(join(runDir, "status.json"));
-  const index = await readJson(join(runDir, "eval-metrics", "index.json"));
   return {
     streamEnd: { kind: progressRecordKind(last), status: last.status },
     snapshot: snapshot.status,
-    index: index.status,
-    // How many recorder streams the run left open. A finished run leaves none:
-    // an open one is what a later reader would take for "still going".
-    openStreams: (Array.isArray(index.streams) ? index.streams : [])
-      .filter((stream) => (stream as { status?: string }).status === "running").length,
   };
 }
 
@@ -145,8 +139,6 @@ describe("a run's outcome is recorded the same way everywhere", () => {
       expect(await outcomeOf(runDir)).toEqual({
         streamEnd: { kind: "execution-finished", status: "completed" },
         snapshot: "completed",
-        index: "completed",
-        openStreams: 0,
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -163,8 +155,6 @@ describe("a run's outcome is recorded the same way everywhere", () => {
       expect(await outcomeOf(runDir)).toEqual({
         streamEnd: { kind: "execution-finished", status: "failed" },
         snapshot: "failed",
-        index: "failed",
-        openStreams: 0,
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -186,8 +176,6 @@ describe("a run's outcome is recorded the same way everywhere", () => {
       expect(await outcomeOf(runDir)).toEqual({
         streamEnd: { kind: "execution-finished", status: "paused" },
         snapshot: "paused",
-        index: "cancelled",
-        openStreams: 0,
       });
     } finally {
       await rm(root, { recursive: true, force: true });
