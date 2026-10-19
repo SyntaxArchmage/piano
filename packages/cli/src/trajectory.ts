@@ -8,6 +8,7 @@
 
 import { messageText, type AgentEvent } from "@piano/harness";
 import { iterationOfInvocationId } from "@piano/orchestrator";
+import { jsonText } from "./text.js";
 
 /** The kind of action a trajectory entry records. */
 export type TrajectoryKind =
@@ -59,15 +60,6 @@ function argText(args: unknown): string {
   if (args === undefined) return "";
   if (typeof args === "string") return args;
   return jsonText(args);
-}
-
-function jsonText(value: unknown): string {
-  try {
-    const encoded = JSON.stringify(value);
-    return encoded === undefined ? "undefined" : encoded;
-  } catch {
-    return "[unprintable]";
-  }
 }
 
 /**

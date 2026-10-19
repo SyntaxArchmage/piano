@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { parseWorkflow } from "@piano/orchestrator";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
+import { visibleWidth } from "./text.js";
 import { RST, type PianoTheme } from "./theme.js";
 
 export interface WorkflowPickerDeps {
@@ -234,8 +235,3 @@ export class WorkflowPicker implements Component {
   }
 }
 
-/** Count visible columns in a string (strips ANSI escapes). */
-function visibleWidth(s: string): number {
-  // eslint-disable-next-line no-control-regex -- strip ANSI SGR codes
-  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
-}

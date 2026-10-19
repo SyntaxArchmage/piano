@@ -90,14 +90,12 @@ import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
-  parseProgressStreamRecord,
   workflowProgressPath,
   type WorkflowProgressRegionFinalizedRecord,
-  type WorkflowProgressStreamRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
 import { foldJobSpans, nextJobOrdinal } from "./job-spans.js";
-import { runStatusPath } from "./run-status.js";
+import { parseProgressLines, runStatusPath } from "./run-status.js";
 import {
   buildCommitMessage,
   commitRoundFiles,
@@ -345,9 +343,7 @@ function readRunJobLedger(
     const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
       Effect.orElseSucceed(() => ""),
     );
-    const records = ledger.split("\n")
-      .map((line) => parseProgressStreamRecord(line))
-      .filter((record): record is WorkflowProgressStreamRecord => record !== undefined);
+    const records = parseProgressLines(ledger);
     const spans = foldJobSpans(records);
     const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
       Effect.orElseSucceed(() => [] as readonly string[]),

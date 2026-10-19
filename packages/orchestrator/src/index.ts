@@ -126,7 +126,6 @@ export {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
-  parseProgressStreamRecord,
   progressRecordDeclaredFields,
   progressRecordKind,
   workflowProgressPath,

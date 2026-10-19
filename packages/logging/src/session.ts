@@ -86,11 +86,11 @@ export function createSession(
     const log = new LogWriter(values.id, logStreamPath(values.runDir), values.traceId);
     const trace = new TraceWriter(values.id, traceStreamPath(values.runDir), values.traceId);
     const trajectory = new TrajectoryWriter(values.id, trajectoryStreamPath(values.runDir));
-    const span = yield* trace.enter("createSession", undefined, SOURCE);
+    const span = yield* trace.enter(SOURCE.function, undefined, SOURCE);
     yield* log.append("run.created", {
       module: SOURCE.module,
       file: SOURCE.file,
-      function: "createSession",
+      function: SOURCE.function,
       level: "info",
       namespace: "logging",
       message: "Run created",

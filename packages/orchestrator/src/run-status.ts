@@ -16,13 +16,12 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { parseTrajectory, trajectoryStreamPath } from "@piano/logging";
+import { parseJsonRecord, parseRunStreamLines, parseTrajectory, trajectoryStreamPath } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
 import {
   applyProgressRecord,
-  parseProgressStreamRecord,
   workflowProgressPath,
   type WorkflowProgressCurrent,
   type WorkflowProgressInvocationTime,
@@ -263,26 +262,13 @@ function asRunJob(job: JobView): RunJob {
  * an object — the same tolerance every reader of the document needs, so none
  * of them hand-rolls its own. */
 export function parseRunStatus(raw: string): RunStatus | undefined {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as RunStatus
-      : undefined;
-  } catch {
-    // Torn mid-write: the ledgers behind it still hold the run.
-    return undefined;
-  }
+  // A torn write reads as absent; the ledgers behind it still hold the run.
+  return parseJsonRecord(raw) as RunStatus | undefined;
 }
 
 /** Parse a progress ledger's raw bytes into the records this build reads.
  * Blank and unreadable lines drop; the line acceptance rule lives in
- * `parseProgressStreamRecord`. */
+ * logging's jsonl.ts. */
 export function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {
-  if (raw === undefined) return [];
-  const records: WorkflowProgressStreamRecord[] = [];
-  for (const line of raw.split("\n")) {
-    const record = parseProgressStreamRecord(line);
-    if (record !== undefined) records.push(record);
-  }
-  return records;
+  return parseRunStreamLines<WorkflowProgressStreamRecord>(raw);
 }

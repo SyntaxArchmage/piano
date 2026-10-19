@@ -1,7 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { basename, dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { HARNESS_NAMES } from "@piano/harness";
@@ -10,7 +9,7 @@ import {
   WorkerContractLoadError,
   type CompiledWorkerContract,
 } from "@piano/contract";
-import { logger, TRACE, type Logging, type Source } from "@piano/logging";
+import { defaultRoot, logger, TRACE, type Logging, type Source } from "@piano/logging";
 import { WorkflowError, errorMessage, workflowError } from "./errors.js";
 import { LOAD_SOURCE } from "./execution-logs.js";
 import { pathWithin } from "./path-within.js";
@@ -21,7 +20,8 @@ import {
   type WorkflowStage,
 } from "./workflow.js";
 
-export const defaultRoot = join(homedir(), ".piano");
+/** The user-level Piano root; logging owns this constant. */
+export { defaultRoot };
 /** The only workflow state Piano keeps in its root: a JSON object whose
  * "workflow" key records the default workflow — "builtin:<template>" for a
  * shipped template (e.g. "builtin:coding-pi") or a path to a user file.

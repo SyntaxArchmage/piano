@@ -25,6 +25,7 @@ import {
   type ResolvedHarnessConfig,
 } from "@piano/harness";
 import {
+  isRecord,
   LogWriter,
   loggingService,
   logStreamPath,
@@ -248,10 +249,6 @@ export function formatModelSweepReport(reports: readonly ModelDoctorReport[]): s
     ...reports.map((report) => formatModelDoctorReport(report)),
     `${passed === reports.length ? "[PASS]" : "[WARN]"} models: ${passed}/${reports.length} responded successfully`,
   ].join("\n");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 export function parseModelIds(value: unknown): readonly string[] | undefined {

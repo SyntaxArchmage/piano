@@ -1,5 +1,6 @@
 import { truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { rightColumns } from "./split-drag.js";
+import { visibleWidth } from "./text.js";
 import { RST, darkTheme, type PianoTheme } from "./theme.js";
 
 let th: PianoTheme = darkTheme;
@@ -9,11 +10,6 @@ export function setTheme(t: PianoTheme): void { th = t; }
 
 const BOX_W = 64; // total box width, not counting the 2-char left indent
 
-/** Visible character count of a string that may contain ANSI codes. */
-function visLen(s: string): number {
-  // eslint-disable-next-line no-control-regex -- strip ANSI SGR codes
-  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
-}
 /** Background-accent code derived from the theme's foreground accent. */
 function accentBg(): string {
   // accent is "\x1b[38;2;R;G;Bm" (24-bit) or "\x1b[3Xm" (palette)
@@ -35,7 +31,7 @@ function boxBottom(w = BOX_W, pad = "  "): string {
 
 function boxRow(content: string, w = BOX_W, pad = "  "): string {
   const innerW = w - 4;
-  const padding = " ".repeat(Math.max(0, innerW - visLen(content)));
+  const padding = " ".repeat(Math.max(0, innerW - visibleWidth(content)));
   return `${pad}${th.accent}│${RST} ${content}${padding} ${th.accent}│${RST}`;
 }
 
@@ -46,7 +42,7 @@ function boxBlank(w = BOX_W, pad = "  "): string {
 /** Center a single-line (possibly ANSI-colored) string within the box width. */
 function centerLine(s: string): string {
   const innerW = BOX_W - 4;
-  const pad = Math.max(0, Math.floor((innerW - visLen(s)) / 2));
+  const pad = Math.max(0, Math.floor((innerW - visibleWidth(s)) / 2));
   return " ".repeat(pad) + s;
 }
 

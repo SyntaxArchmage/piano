@@ -6,6 +6,7 @@
 import { messageText, textDelta, type AgentEvent } from "@piano/harness";
 import { Container, Markdown, Text, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { formatCompactDuration } from "./duration.js";
+import { jsonText } from "./text.js";
 import { RST, type PianoTheme } from "./theme.js";
 import { formatToolOutput } from "./tool-output.js";
 import { loopIteration } from "./trajectory.js";
@@ -238,7 +239,7 @@ function stringifyArg(value: unknown): string {
     }
     if (typeof record.description === "string") return record.description;
   }
-  return safeJson(value);
+  return jsonText(value);
 }
 
 /** Max lines of a tool result kept in the expanded detail. A build log or a
@@ -252,7 +253,7 @@ const TOOL_OUTPUT_MAX_LINES = 40;
 function stringifyResult(value: unknown, isError: boolean): string {
   if (value === undefined) return isError ? "error" : "ok";
   const text = resultText(value);
-  if (text === undefined) return boundLines(safeJson(value));
+  if (text === undefined) return boundLines(jsonText(value));
   const trimmed = text.replace(/\s+$/, "");
   if (trimmed === "") return isError ? "error" : "(no output)";
   return boundLines(trimmed);
@@ -316,15 +317,6 @@ function boundLines(text: string): string {
   if (lines.length <= TOOL_OUTPUT_MAX_LINES) return text;
   const hidden = lines.length - TOOL_OUTPUT_MAX_LINES;
   return `${lines.slice(0, TOOL_OUTPUT_MAX_LINES).join("\n")}\n... +${hidden} lines`;
-}
-
-function safeJson(value: unknown): string {
-  try {
-    const encoded = JSON.stringify(value);
-    return encoded === undefined ? "undefined" : encoded;
-  } catch {
-    return "[unprintable]";
-  }
 }
 
 export class TranscriptView {
