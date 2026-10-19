@@ -2,7 +2,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
-import { appendJsonlLine, parseRunStreamLine } from "./jsonl.js";
+import { appendJsonlLine, parseRunStreamLines } from "./jsonl.js";
 
 /** One accepted prompt in a run, recorded so `resume` can replay the piano
  * conversation turn by turn instead of as one flat event stream. */
@@ -481,16 +481,7 @@ function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[]
  * Takes raw contents rather than a path because its callers read the file
  * through different layers, some with Effects and some synchronously. */
 export function parseTrajectory(stream: string | undefined): TrajectoryDocument | undefined {
-  return foldTrajectoryStream(parseStreamRecords(stream));
-}
-
-function parseStreamRecords(raw: string | undefined): readonly TrajectoryStreamRecord[] {
-  const records: TrajectoryStreamRecord[] = [];
-  for (const line of (raw ?? "").split("\n")) {
-    const record = parseRunStreamLine<TrajectoryStreamRecord>(line);
-    if (record !== undefined) records.push(record);
-  }
-  return records;
+  return foldTrajectoryStream(parseRunStreamLines<TrajectoryStreamRecord>(stream));
 }
 
 /** Rebuild a run's trajectory from its stream.

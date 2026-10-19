@@ -17,6 +17,7 @@ import {
   defaultRunsRoot,
   formatStaticObservabilityReport,
   inspectStaticObservability,
+  parseJsonRecord,
 } from "@piano/logging";
 import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, workflowProgressPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
@@ -342,17 +343,6 @@ function formatValue(input: unknown): string {
   }
 }
 
-function parseJson(line: string): Record<string, unknown> | undefined {
-  try {
-    const value: unknown = JSON.parse(line);
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function formatAttributes(record: Record<string, unknown>): string {
   const source = record.attributes ?? record.payload ?? record.data;
   if (!source || typeof source !== "object" || Array.isArray(source)) return "";
@@ -394,7 +384,7 @@ function sanitize(value: string, width: number): string {
 }
 
 export function formatLog(line: string): string {
-  const parsed = parseJson(line);
+  const parsed = parseJsonRecord(line);
   if (parsed === undefined) return line;
   const levelValue = parsed.severity ?? parsed.level;
   const level = typeof levelValue === "string" ? levelValue.toUpperCase() : "INFO";
@@ -427,7 +417,7 @@ export function formatLog(line: string): string {
 }
 
 export function formatTrace(line: string): string {
-  const parsed = parseJson(line);
+  const parsed = parseJsonRecord(line);
   if (parsed === undefined) return line;
   const depth = typeof parsed.depth === "number" && Number.isFinite(parsed.depth)
     ? Math.max(0, Math.floor(parsed.depth))

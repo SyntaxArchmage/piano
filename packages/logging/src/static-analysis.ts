@@ -3,6 +3,7 @@ import { Data, Effect } from "effect";
 import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { logStreamPath } from "./log.js";
+import { isRecord } from "./jsonl.js";
 import { traceStreamPath } from "./trace.js";
 import { parseTrajectory, trajectoryStreamPath } from "./trajectory.js";
 
@@ -112,10 +113,6 @@ interface TraceSpanState {
   readonly parentId: string | null;
   readonly depth: number;
   readonly line: number;
-}
-
-function isRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

@@ -8,6 +8,19 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Parse JSON text into an object, or `undefined` when it is not JSON or not
+ * an object (arrays and `null` included). A torn write reads as absent rather
+ * than as a failure — the same tolerance every reader of untrusted evidence
+ * needs. */
+export function parseJsonRecord(text: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Append one already-serialized line to a JSONL stream: ensure the parent
  * directory exists, then append. This is the single writer mechanism every run
  * stream shares — log, trace, trajectory and the progress ledger all land their
@@ -39,18 +52,21 @@ export function appendJsonlLine<E>(
  * stream and the progress ledger ask exactly this of a line — so no two
  * readers can disagree about what counts as a record. */
 export function parseRunStreamLine<T>(line: string): T | undefined {
-  if (line.trim() === "") return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line);
-  } catch {
-    // Torn mid-append: it describes a write that never finished, and the
-    // records before it are still good.
-    return undefined;
-  }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const record = parsed as { runId?: unknown; timestamp?: unknown };
+  const record = parseJsonRecord(line);
+  if (record === undefined) return undefined;
   if (typeof record.runId !== "string" || typeof record.timestamp !== "string") return undefined;
-  return parsed as T;
+  return record as T;
+}
+
+/** Parse a whole JSONL stream into the records this build accepts, dropping
+ * blank and unreadable lines. The one whole-stream read every run-stream
+ * reader shares. */
+export function parseRunStreamLines<T>(raw: string | undefined): readonly T[] {
+  const records: T[] = [];
+  for (const line of (raw ?? "").split("\n")) {
+    const record = parseRunStreamLine<T>(line);
+    if (record !== undefined) records.push(record);
+  }
+  return records;
 }
 
