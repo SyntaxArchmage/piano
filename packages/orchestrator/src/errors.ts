@@ -1,4 +1,9 @@
 import { Data } from "effect";
+import { errorMessage } from "@piano/logging";
+
+/** Re-exported for the orchestrator's own modules: one spelling of \"an
+ * unknown cause's message\" across the repo. */
+export { errorMessage };
 
 export type WorkflowPhase = "load" | "parse" | "compile" | "schedule";
 
@@ -18,10 +23,6 @@ export function workflowError(
     path,
     message: `workflow ${phase} failed at ${path}: ${message}`,
   });
-}
-
-export function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /** Whether a failure means "that path is not there". Callers treat the answer

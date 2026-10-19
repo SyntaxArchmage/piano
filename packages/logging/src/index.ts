@@ -24,7 +24,7 @@ export {
   type FailureDetails,
   type LoggingError,
 } from "./errors.js";
-export { failureDetails, isCancellation } from "./errors.js";
+export { errorMessage, failureDetails, isCancellation } from "./errors.js";
 export {
   AsyncTrajectoryWriter,
   foldTrajectoryStream,
