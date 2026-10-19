@@ -8,6 +8,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** The value as a record when it is a JSON object, or `undefined` — the
+ * value-returning form for callers that need the object itself. */
+export function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
 /** Parse JSON text into an object, or `undefined` when it is not JSON or not
  * an object (arrays and `null` included). A torn write reads as absent rather
  * than as a failure — the same tolerance every reader of untrusted evidence

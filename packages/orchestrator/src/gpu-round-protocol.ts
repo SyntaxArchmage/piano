@@ -2,6 +2,7 @@ import type {
   ContractProjection,
   ContractProjectionDeclaration,
 } from "@piano/contract";
+import { asRecord } from "@piano/logging";
 
 const GPU_ROUND_MATERIALIZATION_MARKER = "round.materialization-v1";
 
@@ -55,12 +56,6 @@ export interface GpuRoundMaterializationProtocol {
     readonly state_path: string;
   };
   readonly benchmark?: JsonRecord;
-}
-
-function record(value: unknown): JsonRecord | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as JsonRecord
-    : undefined;
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -150,7 +145,7 @@ export function gpuRoundMaterializationProtocol(
   };
 
   const marker = projection(GPU_ROUND_MATERIALIZATION_MARKER);
-  if (record(marker.value) === undefined) throw protocolError("materialization marker must project a JSON object");
+  if (asRecord(marker.value) === undefined) throw protocolError("materialization marker must project a JSON object");
 
   const iteration = projection("round.iteration").value;
   // Match both compatibility validators: Zod's integer check and JSON
@@ -167,38 +162,38 @@ export function gpuRoundMaterializationProtocol(
   }
 
   const candidateProjection = projection("round.candidate");
-  const candidate = record(candidateProjection.value);
+  const candidate = asRecord(candidateProjection.value);
   if (candidate === undefined || !nonEmptyString(candidate.path)) {
     throw protocolError("round.candidate must contain a non-empty path");
   }
 
   const currentBestProjection = projection("round.current-best");
-  const currentBest = record(currentBestProjection.value);
+  const currentBest = asRecord(currentBestProjection.value);
   if (currentBest === undefined || !nonEmptyString(currentBest.path)) {
     throw protocolError("round.current-best must contain a non-empty path");
   }
 
-  const verification = record(projection("round.verification").value);
+  const verification = asRecord(projection("round.verification").value);
   if (verification === undefined || typeof verification.compile_passed !== "boolean" ||
       typeof verification.verify_passed !== "boolean") {
     throw protocolError("round.verification must contain boolean compile_passed and verify_passed values");
   }
 
   const promotionProjection = projection("round.promotion");
-  const promotion = record(promotionProjection.value);
-  const resultingBest = record(promotion?.resulting_best);
+  const promotion = asRecord(promotionProjection.value);
+  const resultingBest = asRecord(promotion?.resulting_best);
   if (promotion === undefined || typeof promotion.promoted !== "boolean" ||
       resultingBest === undefined || !nonEmptyString(resultingBest.path)) {
     throw protocolError("round.promotion must contain promoted and resulting_best.path");
   }
 
-  const records = record(projection("round.records").value);
+  const records = asRecord(projection("round.records").value);
   if (records === undefined || !nonEmptyString(records.round_path) || !nonEmptyString(records.state_path)) {
     throw protocolError("round.records must contain non-empty round_path and state_path values");
   }
 
   const benchmarkValue = projectionsById.get("benchmark.evidence")?.value;
-  const benchmark = benchmarkValue === undefined ? undefined : record(benchmarkValue);
+  const benchmark = benchmarkValue === undefined ? undefined : asRecord(benchmarkValue);
   if (benchmarkValue !== undefined && benchmark === undefined) {
     throw protocolError("benchmark.evidence must be a JSON object when present");
   }
@@ -284,7 +279,7 @@ export function replaceProjectedValue(
       clone[position] = replace(current[position], index + 1);
       return clone;
     }
-    const currentRecord = record(current);
+    const currentRecord = asRecord(current);
     if (currentRecord === undefined || !Object.prototype.hasOwnProperty.call(currentRecord, token)) {
       throw protocolError(`projection "${projection.id}" does not select an existing payload value`);
     }

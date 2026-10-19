@@ -1,6 +1,7 @@
 import { load } from "js-yaml";
 import { Effect } from "effect";
 import { isAbsolute } from "node:path";
+import { asRecord } from "@piano/logging";
 import {
   configuredWorkflowHarness,
   HARNESS_NAMES,
@@ -234,12 +235,6 @@ const RETRY_KEYS = new Set(["attempts", "backoff", "backoffMax"]);
 const TOURNAMENT_KEYS = new Set(["name", "from", "over", "count", "parallel", "entry", "exit", "nodes"]);
 const NODE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
 function fail(
   phase: "parse" | "compile" | "schedule",
   path: string,
@@ -307,7 +302,7 @@ function parseRetry(
   path: string,
 ): Effect.Effect<WorkflowRetry | undefined, WorkflowError> {
   if (value === undefined) return Effect.succeed(undefined);
-  const region = record(value);
+  const region = asRecord(value);
   if (region === undefined) return fail("parse", path, "stage.retry must be an object");
   return Effect.gen(function* () {
     yield* rejectUnknown(region, RETRY_KEYS, "stage.retry", path);
@@ -469,7 +464,7 @@ function parseStage(
   value: unknown,
   path: string,
 ): Effect.Effect<WorkflowStage, WorkflowError> {
-  const stage = record(value);
+  const stage = asRecord(value);
   if (stage === undefined) return fail("parse", path, "stage must be an object");
   return Effect.gen(function* () {
     if (stage.contract !== undefined) {
@@ -556,7 +551,7 @@ function parseLoop(
   value: unknown,
   path: string,
 ): Effect.Effect<WorkflowLoop, WorkflowError> {
-  const region = record(value);
+  const region = asRecord(value);
   if (region === undefined) return fail("parse", path, "loop must be an object");
   return Effect.gen(function* () {
     yield* rejectUnknown(region, LOOP_KEYS, "loop", path);
@@ -601,7 +596,7 @@ function parseTournament(
   value: unknown,
   path: string,
 ): Effect.Effect<WorkflowTournament, WorkflowError> {
-  const region = record(value);
+  const region = asRecord(value);
   if (region === undefined) return fail("parse", path, "tournament must be an object");
   return Effect.gen(function* () {
     yield* rejectUnknown(region, TOURNAMENT_KEYS, "tournament", path);
@@ -623,7 +618,7 @@ function parseNode(
   value: unknown,
   path: string,
 ): Effect.Effect<WorkflowNode, WorkflowError> {
-  const node = record(value);
+  const node = asRecord(value);
   if (node === undefined) return fail("parse", path, "workflow node must be an object");
   const kinds = Object.keys(node).filter((key) => key === "stage" || key === "loop" || key === "map" || key === "tournament");
   if (kinds.length !== 1) {
@@ -658,8 +653,8 @@ export function parseWorkflow(
     catch: (cause) => workflowError("parse", sourcePath, errorMessage(cause)),
   }).pipe(
     Effect.flatMap((value) => {
-      const document = record(value);
-      const workflow = document === undefined ? undefined : record(document.workflow);
+      const document = asRecord(value);
+      const workflow = document === undefined ? undefined : asRecord(document.workflow);
       if (document === undefined || workflow === undefined) {
         return fail("parse", sourcePath, "workflow document must contain an object workflow");
       }
