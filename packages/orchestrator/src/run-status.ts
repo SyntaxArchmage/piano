@@ -268,7 +268,7 @@ export function parseRunStatus(raw: string): RunStatus | undefined {
 
 /** Parse a progress ledger's raw bytes into the records this build reads.
  * Blank and unreadable lines drop; the line acceptance rule lives in
- * `parseProgressStreamRecord`. */
+ * logging's jsonl.ts. */
 export function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {
   return parseRunStreamLines<WorkflowProgressStreamRecord>(raw);
 }

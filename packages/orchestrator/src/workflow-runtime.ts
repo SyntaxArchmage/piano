@@ -160,7 +160,7 @@ export const ACTOR_KEY_VERSION = "v2";
  * isolated actor; loop frames contribute nothing, so the same actor resumes
  * across iterations. Exported so the ledger's `actor-turn` record spells the
  * lane the same way the actor key and session directory do. */
-export function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
+function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly string[] {
   return mapFrames(frames)
     .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
 }

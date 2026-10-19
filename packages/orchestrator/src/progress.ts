@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { appendJsonlLine, parseRunStreamLine } from "@piano/logging";
+import { appendJsonlLine } from "@piano/logging";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
@@ -383,14 +383,6 @@ export const progressRecordDeclaredFields: Readonly<Record<string, readonly stri
     "actorKey", "harness", "worker", "lane", "sessionId", "transcriptPath", "turn", "continuation",
   ],
 };
-
-/** Parse one stream line into a record, or `undefined` for a blank, torn, or
- * shapeless line. The acceptance rule itself lives in logging's jsonl.ts —
- * the same rule the trajectory stream uses — so the two ledgers cannot
- * disagree about what a line means. */
-export function parseProgressStreamRecord(line: string): WorkflowProgressStreamRecord | undefined {
-  return parseRunStreamLine<WorkflowProgressStreamRecord>(line);
-}
 
 export interface WorkflowProgressSnapshot {
   readonly version: 1;

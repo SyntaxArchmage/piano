@@ -312,7 +312,7 @@ export function renderWorkflowGraphLineDag(
   }
 
   // Nodes and labels.
-  for (const { stage, status, lines, modelFrom, x, index } of nodes) {
+  for (const { status, lines, modelFrom, x, index } of nodes) {
     const color = faceStatusColor(status, theme);
     const modelColor = terminalColor(theme.mdLink);
     facePut(canvas, x, midY, faceStatus(status, pulseOn), color);
@@ -325,7 +325,6 @@ export function renderWorkflowGraphLineDag(
         : midY + 1 + lineIndex;            // lines start just below midY
       for (const [ci, ch] of [...line].entries()) facePut(canvas, labelX + ci, y, ch, lineColor);
     }
-    void stage;
   }
 
   return canvas.map((row) => row.map((cell) => cell.char === " " ? " " : `${cell.color}${cell.char}${RST}`).join(""));
