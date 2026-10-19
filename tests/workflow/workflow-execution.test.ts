@@ -608,7 +608,7 @@ function continuation(sessionId: string) {
 /** Map slot strategy index, derived from the per-slot lane path (slot-N). */
 async function strategySlot(request: AgentRequest): Promise<number> {
   const lane = request.sessionDir ?? request.cwd;
-  const matched = /\/slot-(\d+)(\/|$)/.exec(lane);
+  const matched = /[-/]slot-(\d+)(\/|$)/.exec(lane);
   if (matched?.[1] === undefined) throw new Error(`missing map slot lane: ${lane}`);
   return Number(matched[1]);
 }
@@ -2778,7 +2778,7 @@ workflow:
       expect(calls[1]?.continuation?.sessionId).toBe("session-first");
       expect(calls[1]?.contextFilePaths?.every((p) => p.endsWith("agents.pi.md"))).toBe(true);
       expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(1);
-      expect(calls[0]?.sessionDir).toContain("actors/pi/basic/root/session");
+      expect(calls[0]?.sessionDir).toContain("sessions/trajectory-pi-basic-root");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2862,7 +2862,7 @@ workflow:
       // the seed's conversation; each iteration then continues the last one.
       expect(proposes.map((call) => call.continuation?.sessionId)).toEqual(["seed-1", "tune.propose-1", "tune.propose-2"]);
       expect(new Set(proposes.map((call) => call.sessionDir))).toHaveLength(1);
-      expect(proposes[0]?.sessionDir).toContain("actors/pi/basic/root/session");
+      expect(proposes[0]?.sessionDir).toContain("sessions/trajectory-pi-basic-root");
       expect(new Set(proposes.map(validationPath)).size).toBe(3);
       const proposalStages = result.stages.filter((stage) => stage.stageId === "tune.propose");
       expect(proposalStages.map((stage) => stage.handoffRecordPath)).toEqual(expect.arrayContaining([
@@ -3206,8 +3206,8 @@ workflow:
         await expect(stat(join(call.cwd, ".piano-run.lock"))).rejects.toMatchObject({ code: "ENOENT" });
       }
       expect(implementCalls.map((call) => call.sessionDir)).toEqual(expect.arrayContaining([
-        expect.stringContaining("actors/pi/basic/tournament/slot-0/session"),
-        expect.stringContaining("actors/pi/basic/tournament/slot-1/session"),
+        expect.stringContaining("sessions/trajectory-pi-basic-tournament-slot-0"),
+        expect.stringContaining("sessions/trajectory-pi-basic-tournament-slot-1"),
       ]));
       const verifyCalls = calls.filter((call) => stageId(call) === "tournament.verify");
       expect(verifyCalls).toHaveLength(2);
@@ -3252,7 +3252,7 @@ workflow:
       for (const stage of mapStages) {
         await expect(readFile(stage.workspace.recordPath!, "utf8")).resolves.toContain(`"cwd": "${stage.workspace.cwd}"`);
       }
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log.match(/"event":"workspace.prepared"/g)).toHaveLength(3);
       const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
@@ -3327,7 +3327,7 @@ workflow:
       expect(result.stages.find((stage) => stage.stageId === "propose")?.projections).toContainEqual(
         expect.objectContaining({ id: "workflow.map-items", pointer: "/authoritative" }),
       );
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).not.toContain("workflow.map.legacy-payload-adapter");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -3372,7 +3372,7 @@ workflow:
       ))).rejects.toThrow(/canonical worker contract without required projection "workflow\.map-items"/);
 
       expect(mappedIds).toEqual([]);
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).not.toContain('"event":"workflow.map.legacy-payload-adapter"');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -3443,7 +3443,7 @@ workflow:
       ));
 
       expect(mappedIds.sort()).toEqual(["legacy-a", "legacy-b"]);
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"workflow.map.legacy-payload-adapter"');
       expect(log).toContain("declare outputs.projections id workflow.map-items");
     } finally {
@@ -3676,7 +3676,7 @@ workflow:
       expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
       expect(calls.some((call) => stageId(call) === "summary")).toBe(true);
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
-      const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
       const records = (await readFile(selectionPath, "utf8")).trim().split("\n")
         .map((line) => JSON.parse(line) as { outcome: string; skipped?: string });
       expect(records).toHaveLength(1);
@@ -4138,7 +4138,7 @@ workflow:
       expect(contractReference).toBeDefined();
       expect(calls[0]?.contextFilePaths).toContain(contractReference!.snapshotPath);
       expect(JSON.parse(await readFile(contractReference!.snapshotPath, "utf8"))).toMatchObject({ id: "triton-round-result" });
-      const benchmark = (await readFile(join(session.runDir, "trajectories", "benchmark.jsonl"), "utf8"))
+      const benchmark = (await readFile(join(session.runDir, "eval-metrics", "benchmark.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(benchmark).toHaveLength(1);
       expect(benchmark[0]).toMatchObject({
@@ -4148,13 +4148,13 @@ workflow:
         metric: { name: "throughput", unit: "items/s", best: 12 },
         contract: { id: "triton-round-result" },
       });
-      const tokens = (await readFile(join(session.runDir, "trajectories", "token-usage.jsonl"), "utf8"))
+      const tokens = (await readFile(join(session.runDir, "eval-metrics", "token-usage.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(tokens).toMatchObject([
         { sessionId: "measure-1", outcome: "validation_failed", delta: { total: 10 } },
         { sessionId: "measure-2", outcome: "accepted", delta: { total: 10 } },
       ]);
-      expect(JSON.parse(await readFile(join(session.runDir, "trajectories", "index.json"), "utf8")))
+      expect(JSON.parse(await readFile(join(session.runDir, "eval-metrics", "index.json"), "utf8")))
         .toMatchObject({ status: "completed" });
       await expect(readFile(join(root, "state", "current-best.py"), "utf8")).resolves.toBe("candidate\n");
     } finally {
@@ -4244,7 +4244,7 @@ workflow:
         }),
       }));
 
-      const records = (await readFile(join(session.runDir, "trajectories", "benchmark.jsonl"), "utf8"))
+      const records = (await readFile(join(session.runDir, "eval-metrics", "benchmark.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { iteration: number; metric: { best: number } });
       expect(records.map((record) => [record.iteration, record.metric.best])).toEqual([[0, 11], [1, 12]]);
       await expect(readFile(join(root, "state", "current-best.py"), "utf8")).resolves.toBe("candidate-2\n");
@@ -4358,9 +4358,9 @@ workflow:
       if (!Exit.isSuccess(result)) return;
       expect(result.value.text).toBe("ans = 4");
       expect(result.value.model).toBe("test-model");
-      await expect(stat(join(session.runDir, "actors", "pi", "basic", "root", "session"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
-      const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+      await expect(stat(join(session.runDir, "sessions", "trajectory-pi-basic-root"))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
+      const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
       expect(log).toContain('"event":"workflow.loaded"');
       expect(log).toContain('"event":"workflow.compiled"');
       expect(log).toContain('"event":"workflow.scheduled"');
@@ -4441,8 +4441,8 @@ workflow:
         Effect.provide(NodeFileSystem.layer),
       ));
       expect(Exit.isFailure(result)).toBe(true);
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
-      const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
+      const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
       expect(log).toContain('"event":"stage.validation.retrying"');
       expect(log).toContain('"event":"stage.failed"');
       expect(trace).toContain('"fn":"validateStageResult"');
@@ -4696,7 +4696,7 @@ workflow:
       const afterStream = (await readFile(join(session.runDir, "progress.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { kind?: string; instance?: string });
       expect(afterStream.filter((line) => line.kind === "region-finalized" && line.instance === "tournament")).toHaveLength(1);
-      const selectionLines = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8")).trim().split("\n");
+      const selectionLines = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8")).trim().split("\n");
       expect(selectionLines).toHaveLength(1);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -5234,7 +5234,7 @@ workflow:
 
       // Winner reference rendered into a trajectory record + the actual winner's
       // kernel materialized into the shared source by the worker consolidation.
-      const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
       const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string; winnerKey?: string; commit?: string; carrying?: { kind: string; reason?: string }; referee?: { name: string; unit: string; direction: string };
       });
@@ -5425,7 +5425,7 @@ workflow:
       expect(consolidationCall?.systemPromptPath).toBe(winnerExit?.systemPromptPath);
 
       // One decision, one selection: the re-entered region finalized once.
-      const selection = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+      const selection = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(selection).toHaveLength(1);
       expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
@@ -5524,7 +5524,7 @@ workflow:
       await runFile("git", ["-C", repo, "merge-base", "--is-ancestor", refCommit, "HEAD"], { encoding: "utf8" });
       expect((await readFile(join(repo, "kernel-1.py"), "utf8")).trim()).toBe("kernel-1");
 
-      const selection = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+      const selection = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as {
           outcome: string; winnerKey?: string; commit?: string; carrying?: { kind: string };
         });
@@ -5705,7 +5705,7 @@ workflow:
       if (Exit.isFailure(exit)) throw new Error(Cause.pretty(exit.cause));
       expect(calls.some((call) => stageId(call) === "summary")).toBe(true);
       expect(summaryKernel).toBe("kernel-0\n");
-      const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
       const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string;
         winnerKey?: string;
@@ -5790,7 +5790,7 @@ workflow:
 
       expect(calls.filter((call) => stageId(call).startsWith("$consolidate/")).length).toBe(0);
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
-      const records = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+      const records = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { outcome: string; skipped?: string });
       expect(records.at(-1)).toMatchObject({ outcome: "no-winner" });
       expect(records.at(-1)?.skipped).toContain("terminal blocked result");
@@ -6210,7 +6210,7 @@ workflow:
         expect(prompt).toContain("cp -p");
         expect(prompt).toContain("file modes");
       }
-      const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
       const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string; carrying?: { kind: string; reason?: string };
       });
@@ -6315,7 +6315,7 @@ workflow:
         expect(record.status).toBe("preserved");
         expect((await stat(record.cwd)).isDirectory()).toBe(true);
       }
-      const selections = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+      const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { outcome: string; carrying?: { kind: string } });
       expect(selections.at(-1)).toMatchObject({ outcome: "no-winner", carrying: { kind: "carry-failed" } });
     } finally {
@@ -6406,7 +6406,7 @@ workflow:
         expect(record.status).toBe("preserved");
         expect((await stat(record.cwd)).isDirectory()).toBe(true);
       }
-      const selections = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+      const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { outcome: string; carrying?: { kind: string; reason?: string } });
       expect(selections.at(-1)).toMatchObject({ outcome: "no-winner", carrying: { kind: "carry-failed" } });
       expect(selections.at(-1)?.carrying?.reason).toContain("actor/resume-state persistence failed");
@@ -6589,7 +6589,7 @@ workflow:
 
       // The tied second winner is admitted as evidence but cannot overwrite
       // the incumbent. A later strict improvement can be carried normally.
-      const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
       const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string; winnerKey?: string; carrying?: { kind: string; reason?: string };
       });
@@ -6780,7 +6780,7 @@ workflow:
         instanceId: "outer/slot-1/outer.race-b/slot-1",
       });
 
-      const selections = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8"))
+      const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { winnerKey?: string });
       expect(selections).toContainEqual(expect.objectContaining({ winnerKey: "job-1/outer/slot-1" }));
       const records = new Map(result.stages
@@ -7410,7 +7410,7 @@ workflow:
       expect(message).toContain("Impact area:");
       expect(message).toContain("Fix status:");
       expect(message).toContain("done");
-      const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(runLog).not.toContain("ambiguous projection producers");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -7436,7 +7436,7 @@ workflow:
       const log = await gitLog(repo);
       expect(log).not.toContain("kernel-r0.cc");
       expect(log).toContain("tests/unit/regression_test.cc");
-      const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(runLog).toContain('"event":"auto.commit.skipped"');
       expect(runLog).toContain('"severity":"warn"');
       expect(runLog).toContain('"reason":"ambiguous projection producers"');
@@ -7467,7 +7467,7 @@ workflow:
       const log = await gitLog(repo);
       expect(log).not.toContain("kernel-r0.cc");
       expect(log).toContain("tests/unit/regression_test.cc");
-      const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(runLog).toContain('"event":"auto.commit.skipped"');
       expect(runLog).toContain('"severity":"warn"');
       expect(runLog).toContain('"reason":"ambiguous projection producers"');
@@ -7499,7 +7499,7 @@ workflow:
       expect(log).toContain("kernel-r0.cc");
       expect(log).not.toContain("regression_test-a.cc");
       expect(log).not.toContain("regression_test-b.cc");
-      const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(runLog).toContain('"event":"auto.commit.skipped"');
       expect(runLog).toContain('"reason":"ambiguous projection producers"');
       expect(runLog).toContain('"id":"progress-record.path"');
@@ -7625,7 +7625,7 @@ workflow:
       expect(porcelain).toContain("?? kernel-r0.cc");
       expect(porcelain).not.toMatch(/^A /mu);
       // The warning carries the hook's stderr, not Effect's generic wrapper text.
-      const runLog = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(runLog).toContain("auto.commit.failed");
       expect(runLog).toContain("REJECTED-BY-HOOK");
       expect(runLog).not.toContain("An unknown error occurred in Effect.tryPromise");

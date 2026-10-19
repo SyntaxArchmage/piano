@@ -81,7 +81,7 @@ export interface SelectionRecord {
 }
 
 export async function readSelectionRecords(runDir: string): Promise<readonly SelectionRecord[]> {
-  const text = await readFile(join(runDir, "trajectories", "selection.jsonl"), "utf8");
+  const text = await readFile(join(runDir, "eval-metrics", "selection.jsonl"), "utf8");
   return text.trim().split("\n").map((line) => JSON.parse(line) as SelectionRecord);
 }
 
@@ -153,7 +153,7 @@ export async function assertRegionExitEvidence(input: {
 
   // The decision was logged at each region exit (twice), and no slot lane
   // survives: cleanup ran per exit, not deferred to the run-end backstop.
-  const log = await readFile(join(input.runDir, "log.jsonl"), "utf8");
+  const log = await readFile(join(input.runDir, "system-log", "log.jsonl"), "utf8");
   expect((log.match(/workspace\.winner\.consolidated/g) ?? []).length).toBe(2);
   const slotRoot = join(input.runDir, "workspaces", "slots");
   const lanes = await readdir(slotRoot).catch((error: NodeJS.ErrnoException) => {

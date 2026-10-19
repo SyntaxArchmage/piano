@@ -365,7 +365,7 @@ export async function assertResumeEvidence(input: {
   // ——— Business outcome identical to the tournament guards': the winner was
   // consolidated into the shared source and both iterations carried.
   expect((await readFile(join(input.workspace, "kernel.py"), "utf8")).trim()).toBe("kernel-1");
-  const selections = (await readFile(join(input.runDir, "trajectories", "selection.jsonl"), "utf8"))
+  const selections = (await readFile(join(input.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
     .trim().split("\n").map((line) => JSON.parse(line) as { outcome?: string });
   expect(selections.map((record) => record.outcome)).toEqual(["carried", "carried"]);
 }

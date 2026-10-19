@@ -118,7 +118,7 @@ describe.skipIf(!runReal)(" real /btw side agent", () => {
     const entries = await readdir(runDir);
     expect(entries).toContain("side-agent");
     expect(entries).not.toContain("executions");
-    const trajectory = parseTrajectory(await readFile(join(runDir, "trajectory.jsonl"), "utf8"));
+    const trajectory = parseTrajectory(await readFile(join(runDir, "system-log", "trajectory.jsonl"), "utf8"));
     expect(trajectory?.turns ?? []).toEqual([]);
   }, 240_000);
 

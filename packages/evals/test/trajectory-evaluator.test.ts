@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -81,7 +81,8 @@ describe("evaluateTrajectory", () => {
 
   it("reads newline-delimited AgentEvent records", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-evals-trajectory-jsonl-"));
-    const path = join(root, "trajectory.jsonl");
+    await mkdir(join(root, "system-log"), { recursive: true });
+    const path = join(root, "system-log", "trajectory.jsonl");
     await writeFile(path, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`);
 
     const result = await Effect.runPromise(evaluateTrajectoryFile(path));
@@ -96,7 +97,8 @@ describe("evaluateTrajectory", () => {
 
   it("rejects JSONL records without an event type", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-evals-trajectory-invalid-jsonl-"));
-    const path = join(root, "trajectory.jsonl");
+    await mkdir(join(root, "system-log"), { recursive: true });
+    const path = join(root, "system-log", "trajectory.jsonl");
     await writeFile(path, '{"foo":1}\n{"bar":2}\n');
 
     const result = await Effect.runPromiseExit(evaluateTrajectoryFile(path));

@@ -267,7 +267,7 @@ export function evaluateLegacyRun(runDir: string): WorkflowTrajectoryEvaluation 
   const duration = legacyDuration(runDir);
   let trajectory: ReturnType<typeof evaluateTrajectory>;
   const issues = [
-    "run has no trajectories/index.json; evidence was reconstructed through LegacyRunAdapter",
+    "run has no eval-metrics/index.json; evidence was reconstructed through LegacyRunAdapter",
     ...progress.issues,
     ...legacyTrajectory.issues,
     ...benchmarkIssues,

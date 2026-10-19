@@ -518,7 +518,7 @@ export function runCase(
       : yield* workflowEvaluator.evaluate({ runDir }).pipe(Effect.either);
     const workflowTrajectoryIndexPath = runDir === undefined
       ? undefined
-      : join(runDir, "trajectories", "index.json");
+      : join(runDir, "eval-metrics", "index.json");
     const workflowTrajectoryEvidence = workflowTrajectoryOutcome === undefined
       ? {}
       : workflowTrajectoryOutcome._tag === "Right"
@@ -1099,7 +1099,7 @@ export function progressTickLine(label: string, runDir: string, startedAt: numbe
   let best: string | undefined;
   try {
     const records: { iteration?: number; metric?: { name?: string; best?: number } }[] = [];
-    for (const line of readFileSync(join(runDir, "trajectories", "benchmark.jsonl"), "utf8").split("\n")) {
+    for (const line of readFileSync(join(runDir, "eval-metrics", "benchmark.jsonl"), "utf8").split("\n")) {
       if (line.trim() === "") continue;
       try {
         records.push(JSON.parse(line) as { iteration?: number; metric?: { name?: string; best?: number } });
@@ -1206,12 +1206,12 @@ export function findTranscriptPath(runDir: string): string | undefined {
     }
     return undefined;
   };
-  // `executions/` is the historical transcript root; the current orchestrator
-  // writes actor session transcripts under `actors/<harness>/<stage>/…`.
-  // Runs that fail before the top-level `transcriptPath` is persisted (and
-  // every multi-stage run, which has no single root transcript) rely on this
-  // fallback, so it must cover both layouts.
-  return find(join(runDir, "executions")) ?? find(join(runDir, "actors"));
+  // `executions/` and `actors/` are the historical transcript roots; the
+  // current orchestrator writes one conversation directory per actor under
+  // `sessions/`. Runs that fail before the top-level `transcriptPath` is
+  // persisted (and every multi-stage run, which has no single root
+  // transcript) rely on this fallback, so it must cover every layout.
+  return find(join(runDir, "sessions")) ?? find(join(runDir, "actors")) ?? find(join(runDir, "executions"));
 }
 
 export interface RunDirectoryAssociation {

@@ -114,12 +114,13 @@ describe(" static observability analysis", () => {
     const transcriptPath = join(runDir, "transcript.jsonl");
     const handoffPath = join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff", "record.json");
     await mkdir(runDir, { recursive: true });
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff"), { recursive: true });
     const artifacts = validArtifacts(transcriptPath, handoffPath);
     await Promise.all([
-      writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
-      writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
-      writeFile(join(runDir, "trajectory.jsonl"), artifacts.trajectory, "utf8"),
+      writeFile(join(runDir, "system-log", "log.jsonl"), artifacts.log, "utf8"),
+      writeFile(join(runDir, "system-log", "trace.jsonl"), artifacts.trace, "utf8"),
+      writeFile(join(runDir, "system-log", "trajectory.jsonl"), artifacts.trajectory, "utf8"),
       writeFile(join(runDir, "progress.jsonl"), artifacts.progress, "utf8"),
       writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
       writeFile(handoffPath, artifacts.handoff, "utf8"),
@@ -402,15 +403,16 @@ describe(" static observability analysis", () => {
     const handoffPath = join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff", "record.json");
     const resultPath = join(runDir, "prompts", "1", "invocations", "respond", "root", "attempts", "1", "result.json");
     const resultBytes = '{"ok":true}\n';
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "handoff"), { recursive: true });
     await mkdir(join(runDir, "prompts", "1", "invocations", "respond", "root", "attempts", "1"), { recursive: true });
     const artifacts = validArtifacts(transcriptPath, handoffPath);
     const accepted = JSON.parse(artifacts.progress) as Record<string, unknown>;
     accepted.handoffRecordPath = handoffPath;
     await Promise.all([
-      writeFile(join(runDir, "log.jsonl"), artifacts.log, "utf8"),
-      writeFile(join(runDir, "trace.jsonl"), artifacts.trace, "utf8"),
-      writeFile(join(runDir, "trajectory.jsonl"), artifacts.trajectory, "utf8"),
+      writeFile(join(runDir, "system-log", "log.jsonl"), artifacts.log, "utf8"),
+      writeFile(join(runDir, "system-log", "trace.jsonl"), artifacts.trace, "utf8"),
+      writeFile(join(runDir, "system-log", "trajectory.jsonl"), artifacts.trajectory, "utf8"),
       writeFile(join(runDir, "progress.jsonl"), `${JSON.stringify(accepted)}\n`, "utf8"),
       writeFile(join(runDir, "status.json"), artifacts.status, "utf8"),
       writeFile(transcriptPath, JSON.stringify({ type: "message", message: { role: "user", content: "work" } }) + "\n", "utf8"),

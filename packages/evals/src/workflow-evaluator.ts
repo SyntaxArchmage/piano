@@ -62,7 +62,7 @@ function incompleteNativeEvaluation(runDir: string, issue?: string): WorkflowTra
   return {
     source: "native",
     complete: false,
-    issues: [issue ?? `native trajectory evidence exists under ${join(runDir, "trajectories")} but trajectories/index.json is missing`],
+    issues: [issue ?? `native trajectory evidence exists under ${join(runDir, "eval-metrics")} but eval-metrics/index.json is missing`],
     benchmarks: [],
     duration: { count: 0, totalMs: 0, maxMs: 0 },
     tokens: { count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -80,7 +80,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
         Effect.either,
       );
       if (indexResult._tag === "Left") {
-        const trajectoriesDir = join(input.runDir, "trajectories");
+        const trajectoriesDir = join(input.runDir, "eval-metrics");
         const directoryExists = yield* fileSystem.exists(trajectoriesDir).pipe(
           Effect.mapError((cause) => new TrajectoryEvaluationError(trajectoriesDir, String(cause))),
         );
@@ -93,7 +93,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
       if (index === undefined) {
         // A partially written native run must not be reinterpreted as an old
         // run merely because its index was the last atomic write to complete.
-        const trajectoriesDir = join(input.runDir, "trajectories");
+        const trajectoriesDir = join(input.runDir, "eval-metrics");
         const directoryExists = yield* fileSystem.exists(trajectoriesDir).pipe(
           Effect.mapError((cause) => new TrajectoryEvaluationError(trajectoriesDir, String(cause))),
         );

@@ -21,7 +21,7 @@ async function headlessFailureEvidence(home: string): Promise<string> {
     const evidence = await Promise.all(ids.map(async (id) => {
       const runDir = join(runsRoot, id);
       try {
-        const trajectory = parseTrajectory(await readFile(join(runDir, "trajectory.jsonl"), "utf8")) as Record<string, unknown> | undefined;
+        const trajectory = parseTrajectory(await readFile(join(runDir, "system-log", "trajectory.jsonl"), "utf8")) as Record<string, unknown> | undefined;
         const events = trajectory?.events;
         const errors = Array.isArray(events)
           ? events.filter((event) => typeof event === "object" && event !== null && (event as { type?: unknown }).type === "error").slice(-3)
@@ -242,7 +242,7 @@ async function evidence(home: string, before: ReadonlySet<string>): Promise<RunE
   const ids = (await readdir(runs)).filter((id) => !before.has(id));
   expect(ids).toHaveLength(1);
   const runDir = join(runs, ids[0] ?? "");
-  const trajectoryPath = join(runDir, "trajectory.jsonl");
+  const trajectoryPath = join(runDir, "system-log", "trajectory.jsonl");
   const trajectory = (parseTrajectory(await readFile(trajectoryPath, "utf8")) ?? {}) as {
     status?: string;
     transcriptPath?: string;
@@ -265,10 +265,10 @@ async function evidence(home: string, before: ReadonlySet<string>): Promise<RunE
   const last = JSON.parse(lines.at(-1) ?? "{}") as { message?: { content?: Array<{ type?: string; text?: string }> } };
   const text = last.message?.content?.find((part) => part.type === "text")?.text ?? "";
   expect(text).not.toBe("");
-  const logPath = join(runDir, "log.jsonl");
+  const logPath = join(runDir, "system-log", "log.jsonl");
   const log = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { event?: string });
   expect(log.some((entry) => entry.event === "agentic.task.completed")).toBe(true);
-  const tracePath = join(runDir, "trace.jsonl");
+  const tracePath = join(runDir, "system-log", "trace.jsonl");
   const trace = (await readFile(tracePath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { event?: string; status?: string });
   expect(trace.some((entry) => entry.event === "exit" && entry.status === "ok")).toBe(true);
   return {

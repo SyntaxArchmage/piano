@@ -15,14 +15,15 @@ describe("piano logs commands ", () => {
     root = await mkdtemp(join(tmpdir(), "piano-logs-command-"));
     const runDir = join(root, runId);
     await mkdir(runDir, { recursive: true });
-    await writeFile(join(runDir, "log.jsonl"), JSON.stringify({
+    await mkdir(join(runDir, "system-log"), { recursive: true });
+    await writeFile(join(runDir, "system-log", "log.jsonl"), JSON.stringify({
       timestamp: "2026-08-21T10:32:07.123Z",
       severity: "info",
       stage: "session",
       event: "run.created",
       message: "Run created",
     }) + "\n", "utf8");
-    await writeFile(join(runDir, "trace.jsonl"), JSON.stringify({
+    await writeFile(join(runDir, "system-log", "trace.jsonl"), JSON.stringify({
       timestamp: "2026-08-21T10:32:07.123Z",
       depth: 0,
       event: "exit",
@@ -81,12 +82,12 @@ describe("piano logs commands ", () => {
     const runDir = join(root, runId);
     const transcriptPath = join(runDir, "transcript.jsonl");
     await Promise.all([
-      writeFile(join(runDir, "log.jsonl"), JSON.stringify({ timestamp, run_id: runId, trace_id: "trace-1", event: "run.created" }) + "\n", "utf8"),
-      writeFile(join(runDir, "trace.jsonl"), [
+      writeFile(join(runDir, "system-log", "log.jsonl"), JSON.stringify({ timestamp, run_id: runId, trace_id: "trace-1", event: "run.created" }) + "\n", "utf8"),
+      writeFile(join(runDir, "system-log", "trace.jsonl"), [
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 1, depth: 0, span_id: "sp-1", parent_id: null, event: "enter", fn: "run" },
         { timestamp, run_id: runId, trace_id: "trace-1", seq: 2, depth: 0, span_id: "sp-1", parent_id: null, event: "exit", fn: "run", ok: true, duration_ms: 1 },
       ].map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8"),
-      writeFile(join(runDir, "trajectory.jsonl"), JSON.stringify({
+      writeFile(join(runDir, "system-log", "trajectory.jsonl"), JSON.stringify({
         version: 1,
         runId,
         timestamp,
@@ -211,6 +212,7 @@ describe("piano logs --jobs", () => {
     root = await mkdtemp(join(tmpdir(), "piano-logs-jobs-"));
     const runDir = join(root, runId);
     await mkdir(runDir, { recursive: true });
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     // Two jobs: the first paused after accepting two invocations (one on its
     // second attempt), the second alive mid-span. The fold under test is the
     // same one `/continue` consumes.
@@ -359,6 +361,7 @@ describe("piano logs --rebuild", () => {
   const writeLedger = async (records: readonly Record<string, unknown>[]) => {
     const runDir = join(root, runId);
     await mkdir(runDir, { recursive: true });
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     await writeFile(join(runDir, "progress.jsonl"), records.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
   };
   const finishedJob = [

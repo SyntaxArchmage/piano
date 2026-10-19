@@ -211,13 +211,12 @@ export function actorSessionDirectory(
   harness: string,
   worker: string,
 ): string {
+  // One flat, human-readable name per conversation: the lane rides as the
+  // worker name's suffix (`tuning-slot-0`), never as nested directories.
   return join(
     runDir,
-    "actors",
-    harness,
-    worker,
-    ...actorLane(invocation.frames),
-    "session",
+    "sessions",
+    `trajectory-${harness}-${worker}-${actorLane(invocation.frames).join("-")}`,
   );
 }
 

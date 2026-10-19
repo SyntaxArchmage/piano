@@ -49,9 +49,9 @@ export async function writeTrajectoryRun(runDir: string, document: TrajectoryFix
       events,
     });
   }
-  await mkdir(runDir, { recursive: true });
+  await mkdir(join(runDir, "system-log"), { recursive: true });
   await writeFile(
-    join(runDir, "trajectory.jsonl"),
+    join(runDir, "system-log", "trajectory.jsonl"),
     records.map((record) => `${JSON.stringify(record)}\n`).join(""),
     "utf8",
   );

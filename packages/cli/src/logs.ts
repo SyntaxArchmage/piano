@@ -17,7 +17,9 @@ import {
   defaultRunsRoot,
   formatStaticObservabilityReport,
   inspectStaticObservability,
+  logStreamPathCandidates,
   parseJsonRecord,
+  traceStreamPathCandidates,
 } from "@piano/logging";
 import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, workflowProgressPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, interactiveTerminalRequired, LogsStorageError, TuiError, type CliError } from "./errors.js";
@@ -264,25 +266,32 @@ function pickRun(
       yield* Effect.fail(interactiveTerminalRequired());
     }
     const filename = trace ? "trace.jsonl" : "log.jsonl";
+    const evidencePaths = (runId: string): readonly string[] =>
+      trace ? traceStreamPathCandidates(join(runsRoot, runId)) : logStreamPathCandidates(join(runsRoot, runId));
     const fileSystem = yield* FileSystem.FileSystem;
     const items = yield* Effect.forEach(runs, (id) =>
-      fileSystem.exists(join(runsRoot, id, filename)).pipe(
-        Effect.map((exists) => {
-          if (!exists) return undefined;
-          // No `description`: pi-tui's SelectList truncates the label into a
-          // ~32-column primary slot whenever a description is set, which would
-          // eat exactly the prompt tail this label exists to show. The full
-          // payload lives in the label; the raw id still prints in the
-          // `Logs: <run-id>` header after selection.
-          const row = readRunRowMetadata(join(runsRoot, id));
-          return { value: id, label: runPickerLabel(id, row) };
-        }),
-        Effect.mapError((cause) => new LogsStorageError({
-          operation: "inspect-run",
-          path: join(runsRoot, id, filename),
-          message: cause.message,
-        })),
-      ),
+      Effect.gen(function* () {
+        const candidates = evidencePaths(id);
+        let present = false;
+        for (const candidate of candidates) {
+          const exists = yield* fileSystem.exists(candidate).pipe(
+            Effect.mapError((cause) => new LogsStorageError({
+              operation: "inspect-run",
+              path: candidate,
+              message: cause.message,
+            })),
+          );
+          if (exists) { present = true; break; }
+        }
+        if (!present) return undefined;
+        // No `description`: pi-tui's SelectList truncates the label into a
+        // ~32-column primary slot whenever a description is set, which would
+        // eat exactly the prompt tail this label exists to show. The full
+        // payload lives in the label; the raw id still prints in the
+        // `Logs: <run-id>` header after selection.
+        const row = readRunRowMetadata(join(runsRoot, id));
+        return { value: id, label: runPickerLabel(id, row) };
+      }),
     ).pipe(Effect.map((entries) => entries.filter((entry) => entry !== undefined)));
     if (items.length === 0) {
       yield* Effect.fail(new LogsStorageError({
@@ -445,10 +454,12 @@ function printLog(
   trace: boolean,
 ): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const filename = trace ? "trace.jsonl" : "log.jsonl";
-    const file = join(runsRoot, run, filename);
+    const candidates = trace ? traceStreamPathCandidates(join(runsRoot, run)) : logStreamPathCandidates(join(runsRoot, run));
+    const file = candidates[0]!;
     const fileSystem = yield* FileSystem.FileSystem;
-    const content = yield* fileSystem.readFileString(file).pipe(
+    const content = yield* fileSystem.readFileString(candidates[0]!).pipe(
+      // Current layout first; a pre-audience run still prints from its root.
+      Effect.catchAll(() => fileSystem.readFileString(candidates[1]!)),
       Effect.mapError((cause) => new LogsStorageError({ operation: "read", path: file, message: cause.message })),
     );
     yield* Effect.sync(() => console.log(paint(`${COLORS.bold}${COLORS.accent}`, `${trace ? "Trace" : "Logs"}: ${run}`)));

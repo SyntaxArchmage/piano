@@ -121,7 +121,7 @@ describe("parallel presentation", () => {
     progress: { completed: number; planned: number; stage: string; iteration: number; best: number },
   ): Promise<void> {
     await mkdir(join(root, id));
-    await mkdir(join(root, id, "trajectories"));
+    await mkdir(join(root, id, "eval-metrics"));
     await writeFile(join(root, id, "log.jsonl"), JSON.stringify({ type: "run.started", workspace }) + "\n");
     await writeFile(join(root, id, "status.json"), JSON.stringify({
       version: 1,
@@ -131,7 +131,7 @@ describe("parallel presentation", () => {
       plannedStages: progress.planned,
       current: { stageId: progress.stage },
     }));
-    await writeFile(join(root, id, "trajectories", "benchmark.jsonl"), JSON.stringify({
+    await writeFile(join(root, id, "eval-metrics", "benchmark.jsonl"), JSON.stringify({
       iteration: progress.iteration,
       metric: { name: "tflops", unit: "TFLOPS", direction: "higher", best: progress.best },
     }) + "\n");

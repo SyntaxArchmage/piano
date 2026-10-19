@@ -14,7 +14,7 @@ function detail(cause: unknown): string {
 }
 
 export function streamPath(runDir: string, descriptor: TrajectoryStreamDescriptor): string {
-  return join(runDir, "trajectories", descriptor.path);
+  return join(runDir, "eval-metrics", descriptor.path);
 }
 
 export function appendRecord<T>(
@@ -80,7 +80,7 @@ export function readRecords<T>(
 }
 
 export function trajectoryIndexPath(runDir: string): string {
-  return join(runDir, "trajectories", "index.json");
+  return join(runDir, "eval-metrics", "index.json");
 }
 
 export function writeTrajectoryIndex(

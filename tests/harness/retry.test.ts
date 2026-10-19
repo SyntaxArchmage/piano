@@ -328,7 +328,7 @@ describe("agent retry boundary", () => {
         [1, 1],
       ));
       expect(Exit.isSuccess(exit)).toBe(true);
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"agent.retry.scheduled"');
       expect(log).toContain('"kind":"rate-limit"');
       expect(log).toContain('"nextAttempt":2');

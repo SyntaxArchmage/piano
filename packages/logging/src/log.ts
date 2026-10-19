@@ -6,7 +6,14 @@ import { appendJsonlLine } from "./jsonl.js";
 
 /** The run's ops-log stream, beside the other evidence files. */
 export function logStreamPath(runDir: string): string {
-  return join(runDir, "log.jsonl");
+  return join(runDir, "system-log", "log.jsonl");
+}
+
+/** Read candidates for the ops-log stream: the current layout first, then the
+ * pre-audience layout, so runs recorded before the directory split stay
+ * readable. Writers use {@link logStreamPath} only. */
+export function logStreamPathCandidates(runDir: string): readonly string[] {
+  return [logStreamPath(runDir), join(runDir, "log.jsonl")];
 }
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";

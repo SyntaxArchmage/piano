@@ -69,12 +69,12 @@ describe("migrateLegacyActorKey", () => {
 describe("actorSessionDirectory", () => {
   it("keys the on-disk session directory by worker, not stage", () => {
     expect(actorSessionDirectory("/runs/r", invocation("respond"), "pi", "basic"))
-      .toBe("/runs/r/actors/pi/basic/root/session");
+      .toBe("/runs/r/sessions/trajectory-pi-basic-root");
     expect(actorSessionDirectory(
       "/runs/r",
       invocation("x", [{ kind: "map", regionId: "race", slot: 1 }]),
       "pi",
       "basic",
-    )).toBe("/runs/r/actors/pi/basic/race/slot-1/session");
+    )).toBe("/runs/r/sessions/trajectory-pi-basic-race-slot-1");
   });
 });

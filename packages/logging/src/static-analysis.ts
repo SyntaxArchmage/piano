@@ -2,10 +2,10 @@ import { FileSystem } from "@effect/platform";
 import { Data, Effect } from "effect";
 import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { logStreamPath } from "./log.js";
+import { logStreamPath, logStreamPathCandidates } from "./log.js";
 import { isRecord } from "./jsonl.js";
-import { traceStreamPath } from "./trace.js";
-import { parseTrajectory, trajectoryStreamPath } from "./trajectory.js";
+import { traceStreamPath, traceStreamPathCandidates } from "./trace.js";
+import { parseTrajectory, trajectoryStreamPath, trajectoryStreamPathCandidates } from "./trajectory.js";
 
 export type StaticObservabilityFileName =
   | "log"
@@ -763,6 +763,21 @@ function readOptional(
   );
 }
 
+/** Read the first candidate that is present: current layout first, legacy
+ * layouts after, so the check covers runs recorded before the split. */
+function readOptionalAny(
+  fileSystem: FileSystem.FileSystem,
+  paths: readonly string[],
+): Effect.Effect<string | undefined, StaticObservabilityReadError> {
+  return Effect.gen(function* () {
+    for (const path of paths) {
+      const content = yield* readOptional(fileSystem, path);
+      if (content !== undefined) return content;
+    }
+    return undefined;
+  });
+}
+
 /** Read a run directory and perform the same static analysis used by tests and callers. */
 export function inspectStaticObservability(
   runDir: string,
@@ -772,9 +787,9 @@ export function inspectStaticObservability(
     const fileSystem = yield* FileSystem.FileSystem;
     const resolvedRunDir = resolve(runDir);
     const [log, trace, trajectoryStream, progress, status] = yield* Effect.all([
-      readOptional(fileSystem, logStreamPath(resolvedRunDir)),
-      readOptional(fileSystem, traceStreamPath(resolvedRunDir)),
-      readOptional(fileSystem, trajectoryStreamPath(resolvedRunDir)),
+      readOptionalAny(fileSystem, logStreamPathCandidates(resolvedRunDir)),
+      readOptionalAny(fileSystem, traceStreamPathCandidates(resolvedRunDir)),
+      readOptionalAny(fileSystem, trajectoryStreamPathCandidates(resolvedRunDir)),
       readOptional(fileSystem, join(resolvedRunDir, "progress.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "status.json")),
     ] as const, { concurrency: "unbounded" });

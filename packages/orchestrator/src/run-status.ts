@@ -16,7 +16,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { parseJsonRecord, parseRunStreamLines, parseTrajectory, trajectoryStreamPath } from "@piano/logging";
+import { parseJsonRecord, parseRunStreamLines, parseTrajectory, trajectoryStreamPathCandidates } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
@@ -184,10 +184,13 @@ function foldRunStatus(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const read = (path: string) => fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const [progressStream, trajectoryStream] = yield* Effect.all([
+    const trajectoryCandidates = trajectoryStreamPathCandidates(runDir);
+    const [progressStream, trajectoryPrimary, trajectoryLegacy] = yield* Effect.all([
       read(workflowProgressPath(runDir)),
-      read(trajectoryStreamPath(runDir)),
+      read(trajectoryCandidates[0]!),
+      read(trajectoryCandidates[1]!),
     ], { concurrency: "unbounded" });
+    const trajectoryStream = trajectoryPrimary ?? trajectoryLegacy;
     return runStatusFromParts({
       ...(progressStream === undefined ? {} : { progressStream }),
       ...(trajectoryStream === undefined ? {} : { trajectoryStream }),

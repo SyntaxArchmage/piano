@@ -51,7 +51,7 @@ export function sideAgentRequest(turn: SideAgentTurn): AgentRequest {
     cwd: turn.cwd,
     prompt: turn.prompt,
     tools: [...SIDE_AGENT_TOOLS],
-    sessionDir: join(turn.runDir, SIDE_AGENT_DIR),
+    sessionDir: join(turn.runDir, "sessions", SIDE_AGENT_DIR),
     ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
     ...(turn.signal === undefined ? {} : { signal: turn.signal }),
     ...(turn.steering === undefined ? {} : { steering: turn.steering }),

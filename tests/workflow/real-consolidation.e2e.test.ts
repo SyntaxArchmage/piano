@@ -232,7 +232,7 @@ describe.skipIf(!runReal)(" real-model tournament winner consolidation (§6)", (
         // mechanism under test is that the winner worker received the real
         // handoff, the engine drew an honest gate conclusion, and nothing
         // crashed.
-        const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+        const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
         const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
         expect(records.length).toBeGreaterThanOrEqual(1);
         const terminal = records[records.length - 1];
@@ -402,7 +402,7 @@ workflow:
         throw new Error(Cause.pretty(outcome.cause));
       }
 
-      const selectionRecords = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
+      const selectionRecords = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string; winnerKey?: string; carrying?: { kind: string };
       });
       // Exactly one decision per tournament instance, whenever it happens:

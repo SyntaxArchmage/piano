@@ -122,7 +122,7 @@ async function outcomeOf(runDir: string) {
   const stream = await readStream(runDir, "progress.jsonl");
   const last = stream.at(-1) ?? {};
   const snapshot = await readJson(join(runDir, "status.json"));
-  const index = await readJson(join(runDir, "trajectories", "index.json"));
+  const index = await readJson(join(runDir, "eval-metrics", "index.json"));
   return {
     streamEnd: { kind: progressRecordKind(last), status: last.status },
     snapshot: snapshot.status,

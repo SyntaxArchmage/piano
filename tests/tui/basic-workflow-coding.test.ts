@@ -100,7 +100,7 @@ describe("basic workflow as a coding agent", () => {
       // One run directory, one session artifact file inside it.
       const runs = await readdir(join(root, "runs"));
       expect(runs).toHaveLength(1);
-      const artifacts = (await listFiles(join(root, "runs", runs[0]!, "actors"))).filter((f) => f.endsWith(".jsonl"));
+      const artifacts = (await listFiles(join(root, "runs", runs[0]!, "sessions"))).filter((f) => f.endsWith(".jsonl"));
       expect(artifacts).toHaveLength(1);
       expect(existsSync(state.transcriptPath)).toBe(true);
       terminal.onInput?.("/exit");

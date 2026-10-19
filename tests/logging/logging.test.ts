@@ -22,7 +22,7 @@ const provideNode = <A, E>(program: Effect.Effect<A, E, import("@effect/platform
 
 /** The run as its readers see it: the stream folded back into one document. */
 async function readTrajectory(runDir: string): Promise<Record<string, unknown>> {
-  const raw = await readFile(join(runDir, "trajectory.jsonl"), "utf8");
+  const raw = await readFile(join(runDir, "system-log", "trajectory.jsonl"), "utf8");
   return parseTrajectory(raw) as unknown as Record<string, unknown>;
 }
 
@@ -38,7 +38,7 @@ describe("logging Effect boundary", () => {
     const session = await Effect.runPromise(provideNode(createSession({ cwd: root, runsRoot: join(root, "runs") })));
     expect(session.root).toBe(defaultRoot);
     expect(session.runDir).toContain(`${join(root, "runs")}/`);
-    const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+    const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
 
     expect(log).toContain('"event":"run.created"');
     expect(log).toContain('"function":"createSession"');
@@ -50,7 +50,7 @@ describe("logging Effect boundary", () => {
       namespace: "logging",
       attributes: { runDir: session.runDir },
     });
-    const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+    const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
     expect(trace).toContain(`"trace_id":"${session.traceId}"`);
     expect(trace).toContain('"fn":"createSession"');
   });
@@ -188,7 +188,7 @@ describe("logging Effect boundary", () => {
     root = await mkdtemp(join(tmpdir(), "piano-logging-"));
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const writer = new LogWriter("test", join(root, "log.jsonl"), "trace-test");
+    const writer = new LogWriter("test", join(root, "system-log", "log.jsonl"), "trace-test");
     const exit = await Effect.runPromiseExit(provideNode(writer.append("bad.payload", { data: circular })));
 
     expect(exit._tag).toBe("Failure");
@@ -214,8 +214,8 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
-    const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+    const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
+    const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
     expect(log).toContain('"event":"test.started"');
     const testStarted = JSON.parse(log.split("\n").find((line) => line.includes('"event":"test.started"')) ?? "{}") as Record<string, unknown>;
     expect(testStarted).toMatchObject({ namespace: "tests", attributes: { purpose: "test" } });
@@ -241,7 +241,7 @@ describe("logging Effect boundary", () => {
     if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
       expect(exit.cause.error).toBe("business failure");
     }
-    const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+    const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
     expect(trace).toContain('"event":"error"');
     expect(trace).toContain('"fn":"failed"');
     const traceError = JSON.parse(trace.split("\n").find((line) => line.includes('"event":"error"')) ?? "{}") as Record<string, unknown>;
@@ -302,7 +302,7 @@ describe("logging Effect boundary", () => {
 
     expect(exit._tag).toBe("Failure");
     expect(interruptedExit._tag).toBe("Failure");
-    const traceRecords = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
+    const traceRecords = (await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -334,13 +334,13 @@ describe("logging Effect boundary", () => {
 
     // The traced boundary's enter/error lines are not mirrored into the ops
     // log — a traced run's log holds only what its own events said.
-    const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+    const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
     for (const line of log.split("\n").filter(Boolean)) {
       const record = JSON.parse(line) as { namespace?: string };
       expect(record.namespace).not.toBe("trace");
     }
     // The span itself is in the trace, which is where a debug reader looks.
-    const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+    const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
     expect(trace).toContain('"fn":"quiet"');
   });
 
@@ -359,7 +359,7 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const trace = await readFile(join(session.runDir, "trace.jsonl"), "utf8");
+    const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
     expect(trace).not.toContain(largeValue);
     expect(trace).toContain("...");
   });
@@ -378,7 +378,7 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const records = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
+    const records = (await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -400,7 +400,7 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const records = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
+    const records = (await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -433,7 +433,7 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const traceRecords = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
+    const traceRecords = (await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -462,7 +462,7 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const traceRecords = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
+    const traceRecords = (await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -497,7 +497,7 @@ describe("logging Effect boundary", () => {
       ),
     );
 
-    const traceRecords = (await readFile(join(session.runDir, "trace.jsonl"), "utf8"))
+    const traceRecords = (await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8"))
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as Record<string, unknown>);

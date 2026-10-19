@@ -33,6 +33,7 @@ const context: TrajectoryRecordContext = {
 describe("WorkflowEvaluator", () => {
   it("uses recorder scoring for a native workflow trajectory", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-evaluator-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
     const snapshot = '{"version":1,"id":"metric"}\n';
     const digest = createHash("sha256").update(snapshot).digest("hex");
@@ -80,6 +81,7 @@ describe("WorkflowEvaluator", () => {
 
   it("surfaces per-iteration series and hyperbolic score for a multi-iteration native trajectory", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-evaluator-series-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
     const snapshot = '{"version":1,"id":"metric"}\n';
     const digest = createHash("sha256").update(snapshot).digest("hex");
@@ -119,6 +121,7 @@ describe("WorkflowEvaluator", () => {
 
   it("scores the selection stream of a tournament run", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-evaluator-selection-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.observe({
@@ -262,9 +265,10 @@ describe("WorkflowEvaluator", () => {
 
   it("does not reinterpret native evidence as a legacy run when its index is missing", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-native-no-index-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await mkdir(join(runDir, "trajectories"), { recursive: true });
-    await writeFile(join(runDir, "trajectories", "benchmark.jsonl"), "partial native evidence\n");
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    await writeFile(join(runDir, "eval-metrics", "benchmark.jsonl"), "partial native evidence\n");
     await writeFile(join(runDir, "progress.jsonl"), JSON.stringify({
       resultPayload: {
         benchmark: { metric: "legacy", direction: "higher", best: 1, samples: [1] },
@@ -276,13 +280,14 @@ describe("WorkflowEvaluator", () => {
     expect(result.complete).toBe(false);
     expect(result.benchmarks).toEqual([]);
     expect(result.issues[0]).toContain("native trajectory evidence exists");
-    expect(result.issues[0]).toContain("trajectories/index.json is missing");
+    expect(result.issues[0]).toContain("eval-metrics/index.json is missing");
   });
 
   it("does not crash or misclassify an empty trajectories directory", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-empty-trajectories-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await mkdir(join(runDir, "trajectories"), { recursive: true });
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
 
     const result = await run(new WorkflowEvaluator().evaluate({ runDir }));
     expect(result.source).toBe("legacy");
@@ -291,20 +296,22 @@ describe("WorkflowEvaluator", () => {
 
   it("keeps temporary native index writes in the native incomplete path", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-temporary-index-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await mkdir(join(runDir, "trajectories"), { recursive: true });
-    await writeFile(join(runDir, "trajectories", "index.json.tmp-123"), "{}");
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    await writeFile(join(runDir, "eval-metrics", "index.json.tmp-123"), "{}");
 
     const result = await run(new WorkflowEvaluator().evaluate({ runDir }));
     expect(result).toMatchObject({ source: "native", complete: false, benchmarks: [] });
-    expect(result.issues[0]).toContain("trajectories/index.json is missing");
+    expect(result.issues[0]).toContain("eval-metrics/index.json is missing");
   });
 
   it("reports a malformed native index as incomplete native evidence", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-malformed-index-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await mkdir(join(runDir, "trajectories"), { recursive: true });
-    await writeFile(join(runDir, "trajectories", "index.json"), "{not-json}\n");
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    await writeFile(join(runDir, "eval-metrics", "index.json"), "{not-json}\n");
     await writeFile(join(runDir, "progress.jsonl"), `${JSON.stringify({
       resultPayload: { benchmark: { best: 99 } },
     })}\n`);
@@ -382,11 +389,12 @@ describe("WorkflowEvaluator", () => {
 
   it("reports a malformed declared stream as incomplete evidence", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-malformed-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.close("completed"));
-    await mkdir(join(runDir, "trajectories"), { recursive: true });
-    await writeFile(join(runDir, "trajectories", "benchmark.jsonl"), "{not-json}\n");
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    await writeFile(join(runDir, "eval-metrics", "benchmark.jsonl"), "{not-json}\n");
 
     const result = await run(new WorkflowEvaluator().evaluate({ runDir }));
     expect(result.source).toBe("native");
@@ -396,6 +404,7 @@ describe("WorkflowEvaluator", () => {
 
   it("fails closed when native records lose their contract snapshot lineage", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-lineage-"));
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.observe({
