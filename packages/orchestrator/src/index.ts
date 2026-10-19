@@ -14,6 +14,10 @@ export {
   type WorkerResources,
 } from "./workflow-file.js";
 export {
+  EXPLICIT_LOAD_SOURCE,
+  LOAD_SOURCE,
+} from "./execution-logs.js";
+export {
   compileWorkflow,
   PI_WORKFLOW_HARNESS,
   parseWorkflow,
@@ -80,14 +84,9 @@ export {
   consolidateAndGate,
   executeWorkflow,
   loadAndExecuteWorkflow,
-  retryBackoffSeconds,
-  RETRY_DEFAULT_BACKOFF_MAX_SECONDS,
-  RETRY_DEFAULT_BACKOFF_SECONDS,
-  VALIDATE_REPAIR_ATTEMPTS,
   type LoadAndExecuteWorkflowRequest,
   type WorkflowExecutionRequest,
   type WorkflowExecutionResult,
-  type WorkflowStageExecutionResult,
   type WorkflowExecutionError,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
@@ -98,6 +97,13 @@ export {
   type WorkflowWorkspaceSelectionContext,
   type WorkflowWorkspaceWinner,
 } from "./workflow-execution.js";
+export {
+  retryBackoffSeconds,
+  RETRY_DEFAULT_BACKOFF_MAX_SECONDS,
+  RETRY_DEFAULT_BACKOFF_SECONDS,
+  VALIDATE_REPAIR_ATTEMPTS,
+} from "./stage-runner-support.js";
+export { type WorkflowStageExecutionResult } from "./execution-types.js";
 export {
   ConsolidationEvidencePreparationError,
   prepareConsolidationEvidence,
@@ -146,6 +152,8 @@ export {
   type JobView,
 } from "./job-spans.js";
 export {
+  parseProgressLines,
+  parseRunStatus,
   readRunStatus,
   rebuildRunStatus,
   refreshRunStatus,

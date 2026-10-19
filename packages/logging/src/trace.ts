@@ -1,7 +1,13 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, FiberRef } from "effect";
-import { dirname } from "node:path";
+import { join } from "node:path";
 import { errorMessage, failureDetails, TraceWriteError, type FailureDetails } from "./errors.js";
+import { appendJsonlLine } from "./jsonl.js";
+
+/** The run's trace-span stream, beside the other evidence files. */
+export function traceStreamPath(runDir: string): string {
+  return join(runDir, "trace.jsonl");
+}
 
 export interface TraceSpan {
   traceId: string;
@@ -65,7 +71,7 @@ export class TraceWriter implements ITraceWriter {
   ): Effect.Effect<TraceSpan, TraceWriteError, FileSystem.FileSystem> {
     const { runId, traceId } = this;
     const stack = this.stack;
-    const append = (record: TraceRecord) => this.append(record);
+    const append = (record: TraceRecord) => this.writeRecord(record);
     const nextSpanId = () => `sp-${++this.counter}`;
     const nextSequence = () => ++this.seq;
     return Effect.gen(function* () {
@@ -127,7 +133,7 @@ export class TraceWriter implements ITraceWriter {
   ): Effect.Effect<void, TraceWriteError, FileSystem.FileSystem> {
     const { runId, traceId } = this;
     const stack = this.stack;
-    const append = (record: TraceRecord) => this.append(record);
+    const append = (record: TraceRecord) => this.writeRecord(record);
     const nextSequence = () => ++this.seq;
     return Effect.gen(function* () {
       yield* append({
@@ -154,10 +160,6 @@ export class TraceWriter implements ITraceWriter {
     });
   }
 
-  private append(record: TraceRecord): Effect.Effect<void, TraceWriteError, FileSystem.FileSystem> {
-    return this.writeRecord(record);
-  }
-
   protected writeRecord(record: TraceRecord): Effect.Effect<void, TraceWriteError, FileSystem.FileSystem> {
     const { path } = this;
     return Effect.gen(function* () {
@@ -170,20 +172,11 @@ export class TraceWriter implements ITraceWriter {
         }),
       });
       const fileSystem = yield* FileSystem.FileSystem;
-      yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-        Effect.mapError((cause) => new TraceWriteError({
-          operation: "mkdir",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
-      yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-        Effect.mapError((cause) => new TraceWriteError({
-          operation: "append",
-          path,
-          message: errorMessage(cause),
-        })),
-      );
+      yield* appendJsonlLine(fileSystem, path, line, (step, cause) => new TraceWriteError({
+        operation: step,
+        path,
+        message: errorMessage(cause),
+      }));
     });
   }
 }
@@ -209,13 +202,11 @@ function summarizeTraceValue(value: unknown): unknown {
   }
 }
 
-type PendingRecord = TraceRecord;
-
 /** Buffers trace records in memory until {@link commit} is called.  The span
  * stack (FiberRef) and counter allocation work normally during staging so
  * callers can hold real TraceSpan values; only the disk write is deferred. */
 export class AsyncTraceWriter extends TraceWriter {
-  private queue: PendingRecord[] | null = [];
+  private queue: TraceRecord[] | null = [];
 
   constructor(
     runId: string,

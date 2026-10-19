@@ -1,7 +1,8 @@
 import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
-import { RST, type PianoTheme } from "./theme.js";
+import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
+import { type PianoTheme } from "./theme.js";
 
 export interface WorkspacePickerDeps {
   readonly cwd: string;
@@ -14,34 +15,6 @@ export interface WorkspacePickerDeps {
 interface DirectoryItem {
   readonly name: string;
   readonly path: string;
-}
-
-function fuzzyScore(value: string, query: string): number | undefined {
-  if (query === "") return 0;
-  const candidate = value.toLowerCase();
-  const needle = query.toLowerCase();
-  let cursor = 0;
-  let score = 0;
-  for (const character of needle) {
-    const index = candidate.indexOf(character, cursor);
-    if (index < 0) return undefined;
-    score += index === cursor ? 0 : index + 1;
-    cursor = index + 1;
-  }
-  return score;
-}
-
-function isPrintableInput(value: string): boolean {
-  return value.length > 0 && [...value].every((character) => {
-    const code = character.codePointAt(0) ?? 0;
-    return code >= 0x20 && code !== 0x7f;
-  });
-}
-
-function wrapBorder(rows: string[], width: number, theme: PianoTheme | undefined): string[] {
-  if (theme === undefined) return rows;
-  const line = theme.accent + "─".repeat(width) + RST;
-  return [line, ...rows, line];
 }
 
 export class WorkspacePicker implements Component {

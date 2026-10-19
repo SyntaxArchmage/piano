@@ -23,14 +23,6 @@ export {
   trajectoryIndexPath,
 } from "./storage.js";
 export {
-  compareBenchmarkSeries,
-  compareRunCosts,
-  type BenchmarkSeriesComparison,
-  type BenchmarkSeriesComparisonPoint,
-  type RunCost,
-  type RunCostComparison,
-} from "./series-comparison.js";
-export {
   defaultTrajectoryRecorders,
   WorkflowTrajectory,
   type WorkflowTrajectoryStatus,

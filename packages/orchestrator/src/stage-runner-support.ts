@@ -6,7 +6,7 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import type { AgentEvent } from "@piano/harness";
+import { abortableSleep, type AgentEvent } from "@piano/harness";
 import { TRACE, type Logging } from "@piano/logging";
 import type { TokenUsage, TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
 import type { WorkflowProgressPlan, WorkflowProgressProjection, WorkflowProgressStageCount } from "./progress.js";
@@ -14,13 +14,12 @@ import {
   ContractValidationError,
   type WorkerContractValidationError,
 } from "@piano/contract";
-import type { CompiledWorkflow, WorkflowRetry } from "./workflow.js";
-import type { WorkflowRuntimeFrame, WorkflowRuntimeInvocation } from "./workflow-runtime.js";
+import { regionAncestors, regionIndex, type CompiledWorkflow, type WorkflowRetry } from "./workflow.js";
+import { loopFrames, mapFrames, type WorkflowRuntimeInvocation } from "./workflow-runtime.js";
 import { VALIDATE_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { validateStagePayload } from "./stage-validation.js";
 import type { InternalStageResult, ResolvedStageValidation, ValidatedStagePayload } from "./execution-types.js";
-import { abortableSleep } from "@piano/harness";
 import { dirname } from "node:path";
 
 /** One initial attempt and one resumed repair turn. A stage that declares
@@ -187,20 +186,17 @@ export function workflowProgressProjection(
   completedByStage: ReadonlyMap<string, number>,
   knownLoopIterations: ReadonlyMap<string, number> = new Map(),
 ): WorkflowProgressProjection {
-  const loopFrame = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop")
-    .at(-1);
-  const mapFrame = invocation.frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-    .at(-1);
+  const loopFrame = loopFrames(invocation.frames).at(-1);
+  const mapFrame = mapFrames(invocation.frames).at(-1);
   const innermostFrame = invocation.frames.at(-1);
+  const regionsById = regionIndex(compiled.regions);
   // A duration-bound loop's denominator is only knowable from the run itself,
   // so the plan is re-derived whenever this invocation sits inside one. The
   // frames carry exactly the missing input: which iteration is running now.
   const effectiveLoopIterations = new Map(knownLoopIterations);
   for (const frame of invocation.frames) {
     if (frame.kind !== "loop") continue;
-    const frameRegion = compiled.regions.find((candidate) => candidate.id === frame.regionId);
+    const frameRegion = regionsById.get(frame.regionId);
     if (frameRegion?.duration !== undefined) {
       effectiveLoopIterations.set(
         frame.regionId,
@@ -213,7 +209,7 @@ export function workflowProgressProjection(
     : workflowProgressPlan(compiled, effectiveLoopIterations);
   const innermostRegion = innermostFrame === undefined
     ? undefined
-    : compiled.regions.find((candidate) => candidate.id === innermostFrame.regionId);
+    : regionsById.get(innermostFrame.regionId);
   const stageIds = innermostRegion === undefined
     ? compiled.stages
       .filter((stage) => stage.parentId === undefined)
@@ -225,6 +221,10 @@ export function workflowProgressProjection(
       .map((stage) => stage.id);
   const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
   const stageCount = stageIds.length;
+  const stageLabel = stageIndex > 0 && stageCount > 0
+    ? `${invocation.stageName} ${stageIndex}/${stageCount}`
+    : invocation.stageName;
+  const completedLabel = `${acceptedStages}/${effectivePlan.plannedStages} stages completed`;
   const stageCounts: Readonly<Record<string, WorkflowProgressStageCount>> = Object.fromEntries(
     Object.entries(effectivePlan.stageCounts).map(([stageId, count]) => [stageId, {
       planned: count.planned,
@@ -242,40 +242,30 @@ export function workflowProgressProjection(
     ...(stageCount > 0 ? { stageCount } : {}),
   };
   if (innermostFrame?.kind === "loop" && loopFrame !== undefined) {
-    const region = compiled.regions.find((candidate) => candidate.id === loopFrame.regionId);
+    const region = regionsById.get(loopFrame.regionId);
     const outerMap = mapFrame === undefined
       ? undefined
-      : compiled.regions.find((candidate) => candidate.id === mapFrame.regionId);
-    const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
-    const stageCount = stageIds.length;
+      : regionsById.get(mapFrame.regionId);
     const iterationLabel = region?.iterations === undefined
       ? `iter-${loopFrame.iteration + 1}`
       : `iter-${loopFrame.iteration + 1}/${region.iterations}`;
-    const stageLabel = stageIndex > 0 && stageCount > 0
-      ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-      : invocation.stageName;
     return {
       ...base,
-      ...(stageIndex > 0 ? { stageIndex } : {}),
-      ...(stageCount > 0 ? { stageCount } : {}),
       iteration: loopFrame.iteration,
       ...(region?.iterations === undefined ? {} : { iterations: region.iterations }),
       ...(mapFrame === undefined ? {} : { mapSlot: mapFrame.slot }),
       ...(outerMap?.count === undefined ? {} : { mapSlots: outerMap.count }),
       scope: region?.name ?? loopFrame.regionId,
-      hint: `${iterationLabel} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
+      hint: `${iterationLabel} · ${stageLabel} · ${completedLabel}`,
     };
   }
   if (innermostFrame?.kind === "map" && mapFrame !== undefined) {
-    const region = compiled.regions.find((candidate) => candidate.id === mapFrame.regionId);
+    const region = regionsById.get(mapFrame.regionId);
     const loopRegion = loopFrame === undefined
       ? undefined
-      : compiled.regions.find((candidate) => candidate.id === loopFrame.regionId);
+      : regionsById.get(loopFrame.regionId);
     const regionName = region?.name ?? mapFrame.regionId;
     const slots = region?.count;
-    const stageLabel = stageIndex > 0 && stageCount > 0
-      ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-      : invocation.stageName;
     return {
       ...base,
       mapSlot: mapFrame.slot,
@@ -284,16 +274,13 @@ export function workflowProgressProjection(
       ...(loopRegion?.iterations === undefined ? {} : { iterations: loopRegion.iterations }),
       scope: regionName,
       hint: slots === undefined
-        ? `${regionName}/slot-${mapFrame.slot + 1} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`
-        : `${regionName}/slot-${mapFrame.slot + 1}/${slots} · ${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
+        ? `${regionName}/slot-${mapFrame.slot + 1} · ${stageLabel} · ${completedLabel}`
+        : `${regionName}/slot-${mapFrame.slot + 1}/${slots} · ${stageLabel} · ${completedLabel}`,
     };
   }
-  const stageLabel = stageIndex > 0 && stageCount > 0
-    ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-    : invocation.stageName;
   return {
     ...base,
-    hint: `${stageLabel} · ${acceptedStages}/${effectivePlan.plannedStages} stages completed`,
+    hint: `${stageLabel} · ${completedLabel}`,
   };
 }
 
@@ -307,15 +294,13 @@ export function workflowProgressPlan(
    * shrinks a fixed loop to the number of iterations actually completed. */
   loopIterations: ReadonlyMap<string, number> = new Map(),
 ): WorkflowProgressPlan {
-  const regionsById = new Map(compiled.regions.map((region) => [region.id, region]));
+  const regionsById = regionIndex(compiled.regions);
   const stageCounts: Record<string, WorkflowProgressStageCount> = {};
   for (const stage of compiled.stages) {
     let planned = 1;
-    for (let regionId = stage.parentId; regionId !== undefined; ) {
-      const region = regionsById.get(regionId);
-      if (region === undefined) break;
+    for (const region of regionAncestors(regionsById, stage.parentId)) {
       if (region.kind === "loop") {
-        const effectiveIterations = loopIterations.get(regionId);
+        const effectiveIterations = loopIterations.get(region.id);
         if (effectiveIterations !== undefined || region.duration !== undefined) {
           // `Math.max(1, …)` rather than the raw count: the current iteration is
           // the furthest one that can already hold accepted stages, so the
@@ -328,7 +313,6 @@ export function workflowProgressPlan(
       } else {
         planned *= region.count ?? 1;
       }
-      regionId = region.parentId;
     }
     stageCounts[stage.id] = { planned, completed: 0 };
   }
@@ -338,7 +322,7 @@ export function workflowProgressPlan(
   };
 }
 
-export function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usage" }>): TokenUsage {
+function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usage" }>): TokenUsage {
   const input = usageNumber(event.usage.input);
   const output = usageNumber(event.usage.output);
   const cacheRead = usageNumber(event.usage.cacheRead);
@@ -354,21 +338,17 @@ export function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usa
   };
 }
 
-export function usageNumber(value: unknown): number {
+function usageNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-export function projectionValue(result: InternalStageResult, id: string): unknown {
-  return resultProjectionValue(result, id);
-}
-
 export function projectionString(result: InternalStageResult, id: string): string | undefined {
-  const value = projectionValue(result, id);
+  const value = resultProjectionValue(result, id);
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 export function projectionNumber(result: InternalStageResult, id: string): number | undefined {
-  const value = projectionValue(result, id);
+  const value = resultProjectionValue(result, id);
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 

@@ -1,7 +1,7 @@
 /** Domain-neutral validation for paths that cross the workspace boundary. */
 import { sep } from "node:path";
 
-export type WorkspaceRelativePathViolation = "empty" | "blank" | "nul" | "absolute" | "segment";
+type WorkspaceRelativePathViolation = "empty" | "blank" | "nul" | "absolute" | "segment";
 
 const workspacePathSeparator = sep === "\\" ? /[\\/]/u : /\//u;
 const windowsDrivePath = /^[A-Za-z]:/u;

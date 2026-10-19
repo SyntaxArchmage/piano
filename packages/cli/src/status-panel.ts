@@ -1,12 +1,10 @@
 import { getCapabilities, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { PianoTheme } from "./theme.js";
+import { RST, type PianoTheme } from "./theme.js";
 import type { WorkflowGraph } from "./workflow-graph.js";
 import { detectSixelSupport } from "./sixel.js";
 import { TUI_SLASH_COMMANDS } from "./tui-commands.js";
 import type { ScrollModifier } from "./shortcuts.js";
 import { usageRows, emptyRunStats, type RunStats } from "./run-stats.js";
-
-const RESET = "\x1b[0m";
 
 interface FooterColumn {
   readonly header: string;
@@ -32,7 +30,7 @@ function layoutColumns(
   const total = Math.max(0, Math.floor(width));
   if (total === 0) return [];
 
-  const fullGap = `${theme.dim} │ ${RESET}`;
+  const fullGap = `${theme.dim} │ ${RST}`;
   const canUseFullGaps = total >= 3 * (columns.length - 1) + columns.length;
   const canUseCompactGaps = total >= 2 * columns.length - 1;
   const separator = canUseFullGaps ? fullGap : canUseCompactGaps ? " " : "";
@@ -54,8 +52,8 @@ function layoutColumns(
       row === 0 ? column.header : (column.rows[row - 1] ?? ""),
       widths[index] ?? 0,
     )).join(separator);
-    const solidBody = body.split(RESET).join(`${RESET}${theme.barBg}`);
-    return `${theme.barBg}${solidBody}${" ".repeat(Math.max(0, total - visibleWidth(body)))}${RESET}`;
+    const solidBody = body.split(RST).join(`${RST}${theme.barBg}`);
+    return `${theme.barBg}${solidBody}${" ".repeat(Math.max(0, total - visibleWidth(body)))}${RST}`;
   });
 }
 
@@ -79,7 +77,7 @@ export function renderStatusPanel(theme: PianoTheme, width: number, graph?: Work
   const renderWidth = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
   if (renderWidth === 0) return [];
   const imageCapable = getCapabilities().images !== null || detectSixelSupport();
-  const usageTheme = { dim: theme.dim, primary: theme.primary, accent: theme.accent, reset: RESET };
+  const usageTheme = { dim: theme.dim, primary: theme.primary, accent: theme.accent, reset: RST };
   // The usage column always renders four rows (tokens/tools/stages/status),
   // providing the "0/1 waiting"-style runtime watch regardless of whether a
   // workflow graph or events have streamed in yet. Without stats it renders
@@ -87,31 +85,31 @@ export function renderStatusPanel(theme: PianoTheme, width: number, graph?: Work
   const usageRowsBuilt = usageRows(stats ?? emptyRunStats(), usageTheme);
   const interactionColumns: readonly FooterColumn[] = [
     {
-      header: `${theme.dim}COMMANDS${RESET}`,
+      header: `${theme.dim}COMMANDS${RST}`,
       rows: TUI_SLASH_COMMANDS.map((command) =>
-        `${theme.primary}/${command.name}${RESET} ${theme.dim}${command.description ?? ""}${RESET}`),
+        `${theme.primary}/${command.name}${RST} ${theme.dim}${command.description ?? ""}${RST}`),
     },
     {
-      header: `${theme.dim}SHORTCUTS${RESET}`,
+      header: `${theme.dim}SHORTCUTS${RST}`,
       rows: [
-        `${theme.primary}Esc${RESET} ${theme.dim}interrupt${RESET}`,
-        `${theme.primary}Ctrl+C${RESET} ${theme.dim}exit${RESET}`,
-        `${theme.primary}Enter${RESET} ${theme.dim}submit${RESET}`,
+        `${theme.primary}Esc${RST} ${theme.dim}interrupt${RST}`,
+        `${theme.primary}Ctrl+C${RST} ${theme.dim}exit${RST}`,
+        `${theme.primary}Enter${RST} ${theme.dim}submit${RST}`,
         // "jump" covers both directions; the panel's own ↑/↓ more rows name
         // Keep the displayed modifier in sync with the terminal-specific key
         // bindings used by the input router.
-        `${theme.primary}${scrollModifier}+Home/End${RESET} ${theme.dim}jump${RESET}`,
+        `${theme.primary}${scrollModifier}+Home/End${RST} ${theme.dim}jump${RST}`,
         // Accent + uppercase while active so the row reads as a badge. Both
         // states are the same visible width, so toggling copy mode does not
         // reflow the neighbouring columns; the key stays in the label because
         // the same key is the way back out.
         copyMode
-          ? `${theme.accent}Alt+C COPY MODE${RESET}`
-          : `${theme.primary}Alt+C${RESET} ${theme.dim}copy mode${RESET}`,
+          ? `${theme.accent}Alt+C COPY MODE${RST}`
+          : `${theme.primary}Alt+C${RST} ${theme.dim}copy mode${RST}`,
       ],
     },
     {
-      header: `${theme.dim}USAGE${RESET}`,
+      header: `${theme.dim}USAGE${RST}`,
       rows: usageRowsBuilt,
     },
   ];
@@ -128,7 +126,7 @@ export function renderStatusPanel(theme: PianoTheme, width: number, graph?: Work
   const footer = layoutColumns([
     ...interactionColumns,
     {
-      header: `${theme.dim}WORKFLOW${RESET}`,
+      header: `${theme.dim}WORKFLOW${RST}`,
       rows: statusRows,
     },
   ], theme, renderWidth, [3, 1, 0, 2]);

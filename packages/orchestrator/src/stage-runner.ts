@@ -34,6 +34,8 @@ import { WORKER_LOG, WORKER_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import {
   actorLane,
   actorSessionDirectory,
+  loopFrames,
+  mapFrames,
   runtimeInstanceId,
   runtimeInvocationId,
   validationResultPath,
@@ -58,7 +60,7 @@ import {
   workflowProgressPlan,
   ensureResultDirectory,
   projectionString,
-  projectionValue,
+  resultProjectionValue,
   scheduleStageRetry,
   trajectoryAgentObservation,
   validateStageResult,
@@ -206,9 +208,7 @@ export function executeStage(
   // A per-lane model list resolves to this lane's entry. The lane is the
   // innermost fan-out frame, which is the same region compile validated the
   // list against, so the index is always in range.
-  const laneSlot = frames
-    .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-    .at(-1)?.slot;
+  const laneSlot = mapFrames(frames).at(-1)?.slot;
   const stageModel = stageModelForSlot(node.stage.model, laneSlot);
   const actorKey = workflowActorKey(invocation, node.stage.harness, node.stage.worker);
   const memoryEnabled = node.stage.memory !== false;
@@ -218,12 +218,8 @@ export function executeStage(
     attempt: number,
     worker?: { readonly sessionId: string; readonly transcriptPath: string },
   ): TrajectoryRecordContext => {
-    const loopFrame = frames
-      .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop")
-      .at(-1);
-    const mapFrame = frames
-      .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-      .at(-1);
+    const loopFrame = loopFrames(frames).at(-1);
+    const mapFrame = mapFrames(frames).at(-1);
     return {
       version: 1,
       timestamp: new Date().toISOString(),
@@ -600,12 +596,8 @@ export function executeStage(
     });
     while (true) {
       const attemptObservations: WorkflowObservation[] = [];
-      const loopFrame = frames
-        .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop")
-        .at(-1);
-      const mapFrame = frames
-        .filter((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "map" }> => frame.kind === "map")
-        .at(-1);
+      const loopFrame = loopFrames(frames).at(-1);
+      const mapFrame = mapFrames(frames).at(-1);
       const mapRegion = mapFrame === undefined
         ? undefined
         : compiled.regions.find((region) => region.id === mapFrame.regionId);
@@ -1092,7 +1084,7 @@ export function executeStage(
         worker: result.worker,
         ...(result.instanceId === undefined ? {} : { instanceId: result.instanceId }),
         ...(() => {
-          const loop = frames.find((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop");
+          const loop = loopFrames(frames)[0];
           return loop === undefined ? {} : { iteration: loop.iteration };
         })(),
         attempt: result.attempts,
@@ -1117,7 +1109,7 @@ export function executeStage(
       return { progress, progressPath };
     }));
     const { progress, progressPath } = persistedProgress;
-    const loopFrame = frames.find((frame): frame is Extract<WorkflowRuntimeFrame, { kind: "loop" }> => frame.kind === "loop");
+    const loopFrame = loopFrames(frames)[0];
     yield* stageLog.info("stage.progress.recorded", {
       outcome: "success",
       data: {
@@ -1128,9 +1120,9 @@ export function executeStage(
         ...(projectionString(result, "round.decision") === undefined
           ? {}
           : { decision: projectionString(result, "round.decision") }),
-        ...(projectionValue(result, "benchmark.evidence") === undefined
+        ...(resultProjectionValue(result, "benchmark.evidence") === undefined
           ? {}
-          : { benchmark: projectionValue(result, "benchmark.evidence") }),
+          : { benchmark: resultProjectionValue(result, "benchmark.evidence") }),
         progress,
       },
     });

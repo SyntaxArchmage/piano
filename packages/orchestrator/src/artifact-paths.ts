@@ -49,7 +49,7 @@ export function workspaceArtifactPath(
   return Effect.succeed(candidate);
 }
 
-export interface PreflightPath {
+interface PreflightPath {
   readonly path: string;
   /** Canonical identity used for alias rejection. For an absent target this
    * is the canonicalized nearest-existing-parent plus the remaining suffix. */

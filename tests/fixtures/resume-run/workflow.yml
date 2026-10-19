@@ -1,0 +1,57 @@
+version: 3
+
+# Tuning-loop fixture for the resume e2e guards
+# (tests/cli/tuning-continue-real-workers.test.ts and
+# tests/tui/tuning-resume-continue.pty.test.ts). Same shape as the tournament
+# region-exit guards — a loop whose body races two strategies and consolidates
+# the winner — but with `harness: codex` on every stage and two iterations.
+#
+# codex is the harness whose resume handle is explicit on argv
+# (`codex exec resume <thread-id>`, built by harness-argv.ts from the
+# continuation the engine persisted), and its protocol needs no stdin bridge,
+# so the deterministic stand-in (fake-codex.mjs) can keep a real per-thread
+# session store and prove from the worker side that each turn reopened the
+# same conversation. The engine-side resume machinery under test
+# (continuation → actor-turn rows → continueJob cursor) is harness-agnostic.
+#
+# The guards wedge the run at iteration 1's propose, so at the pause the whole
+# of iteration 0 is accepted evidence: after `/continue`, iteration 0 must not
+# spend a single worker turn, and iteration 1 must pick up from the wedged
+# propose — the "continues from the breaking point, not from the start" claim.
+workflow:
+  name: resume-tuning
+  nodes:
+    - loop:
+        name: tune
+        from: []
+        entry: propose
+        exit: race
+        feedback: race
+        iterations: 2
+        nodes:
+          - stage:
+              name: propose
+              worker: basic
+              harness: codex
+              validate: optimization-proposal
+              from: []
+          - tournament:
+              name: race
+              from: [propose]
+              over: propose.strategies
+              count: 2
+              entry: implement
+              exit: bench
+              nodes:
+                - stage:
+                    name: implement
+                    worker: basic
+                    harness: codex
+                    handoff: strategy.json
+                    from: []
+                - stage:
+                    name: bench
+                    worker: triton-benchmark-store
+                    harness: codex
+                    validate: true
+                    from: [implement]

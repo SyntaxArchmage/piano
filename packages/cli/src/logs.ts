@@ -18,13 +18,14 @@ import {
   formatStaticObservabilityReport,
   inspectStaticObservability,
 } from "@piano/logging";
-import { foldJobSpans, jobs, parseProgressStreamRecord, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, type JobView } from "@piano/orchestrator";
+import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, workflowProgressPath, type JobView } from "@piano/orchestrator";
 import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
-import { formatRunId, oneLine } from "./session-resume.js";
+import { listRunIds } from "./runs.js";
+import { formatRunId, oneLine, summarizeRun } from "./session-resume.js";
+import { RST } from "./theme.js";
 
 const usage = `usage: ${programName()} logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`;
-const RST = "\x1b[0m";
 const COLORS = {
   accent: "\x1b[38;2;192;57;43m",
   blue: "\x1b[38;2;129;162;190m",
@@ -180,27 +181,23 @@ function selectTheme(): SelectListTheme {
   };
 }
 
-function runIds(runsRoot: string): Effect.Effect<string[], LogsStorageError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = runsRoot;
-    const entries = yield* fileSystem.readDirectory(path).pipe(
-      Effect.catchAll((cause) => cause._tag === "SystemError" && cause.reason === "NotFound"
-        ? Effect.succeed([])
-        : Effect.fail(new LogsStorageError({
-          operation: "list-runs",
-          path,
-          message: cause.message,
-        }))),
-    );
-    const directories = yield* Effect.forEach(entries, (entry) =>
-      fileSystem.stat(join(path, entry)).pipe(
-        Effect.map((info) => info.type === "Directory" ? entry : undefined),
-        Effect.catchAll(() => Effect.succeed(undefined)),
-      ),
-    );
-    return directories.filter((entry): entry is string => entry !== undefined).sort().reverse();
-  });
+/** Resolve a run id to its directory, refusing any path that would escape the
+ * runs root. The one guard every run-id-taking subcommand shares. */
+function resolveRunDir(
+  runsRoot: string,
+  run: string,
+  operation: string,
+): Effect.Effect<string, LogsStorageError> {
+  const resolvedRunsRoot = resolve(runsRoot);
+  const runDir = resolve(resolvedRunsRoot, run);
+  if (dirname(runDir) !== resolvedRunsRoot) {
+    return Effect.fail(new LogsStorageError({
+      operation,
+      path: runDir,
+      message: "run id must name a direct child of the runs root",
+    }));
+  }
+  return Effect.succeed(runDir);
 }
 
 interface RunRowMetadata {
@@ -210,26 +207,24 @@ interface RunRowMetadata {
 }
 
 /** The row the run's state document carries: the workflow it ran, how it
- * ended, and the first prompt it was given. */
+ * ended, and the first prompt it was given. The interpretation is the resume
+ * picker's `summarizeRun`, so both pickers read one document one way — the
+ * prompt shows the user's own text, without appended stage context. */
 function readStatusRow(runDir: string): RunRowMetadata | undefined {
-  let parsed: unknown;
+  let raw: string;
   try {
-    parsed = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
+    raw = readFileSync(runStatusPath(runDir), "utf8");
   } catch {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
-  const status = parsed as { workflowPath?: unknown; status?: unknown; turns?: unknown };
-  const row: { workflow?: string; status?: string; prompt?: string } = {};
-  if (typeof status.workflowPath === "string") {
-    row.workflow = basename(status.workflowPath).replace(/\.ya?ml$/i, "");
-  }
-  if (typeof status.status === "string") row.status = status.status;
-  if (Array.isArray(status.turns)) {
-    const first = status.turns[0] as { prompt?: unknown } | undefined;
-    if (typeof first?.prompt === "string") row.prompt = first.prompt;
-  }
-  return row;
+  const status = parseRunStatus(raw);
+  if (status === undefined) return undefined;
+  const { workflow, status: runState, prompt } = summarizeRun(basename(runDir), status);
+  return {
+    ...(workflow === undefined ? {} : { workflow }),
+    ...(runState === undefined ? {} : { status: runState }),
+    ...(prompt === undefined ? {} : { prompt }),
+  };
 }
 
 /** Exported for testing; the picker calls it once per listed run.
@@ -256,7 +251,7 @@ function pickRun(
   trace: boolean,
 ): Effect.Effect<string | undefined, TuiError | LogsStorageError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const runs = yield* runIds(runsRoot);
+    const runs = yield* listRunIds(runsRoot);
     if (runs.length === 0) {
       yield* Effect.fail(new LogsStorageError({
         operation: "list-runs",
@@ -477,29 +472,22 @@ function printStaticObservability(
   runsRoot: string,
   run: string,
 ): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  const resolvedRunsRoot = resolve(runsRoot);
-  const runDir = resolve(resolvedRunsRoot, run);
-  if (dirname(runDir) !== resolvedRunsRoot) {
-    return Effect.fail(new LogsStorageError({
-      operation: "check",
-      path: runDir,
-      message: "run id must name a direct child of the runs root",
-    }));
-  }
-  return inspectStaticObservability(runDir, progressRecordDeclaredFields).pipe(
-    Effect.mapError((cause) => new LogsStorageError({
-      operation: "check",
-      path: runDir,
-      message: cause.message,
-    })),
-    Effect.flatMap((report) => Effect.sync(() => console.log(formatStaticObservabilityReport(report))).pipe(
-      Effect.andThen(report.valid
-        ? Effect.void
-        : Effect.fail(new LogsStorageError({
-          operation: "check",
-          path: runDir,
-          message: `static observability check found ${report.issues.length} issue(s)`,
-        }))),
+  return resolveRunDir(runsRoot, run, "check").pipe(Effect.flatMap((runDir) =>
+    inspectStaticObservability(runDir, progressRecordDeclaredFields).pipe(
+      Effect.mapError((cause) => new LogsStorageError({
+        operation: "check",
+        path: runDir,
+        message: cause.message,
+      })),
+      Effect.flatMap((report) => Effect.sync(() => console.log(formatStaticObservabilityReport(report))).pipe(
+        Effect.andThen(report.valid
+          ? Effect.void
+          : Effect.fail(new LogsStorageError({
+            operation: "check",
+            path: runDir,
+            message: `static observability check found ${report.issues.length} issue(s)`,
+          }))),
+      )),
     )),
   );
 }
@@ -526,16 +514,7 @@ function printRebuild(
   run: string,
   force: boolean,
 ): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  const resolvedRunsRoot = resolve(runsRoot);
-  const runDir = resolve(resolvedRunsRoot, run);
-  if (dirname(runDir) !== resolvedRunsRoot) {
-    return Effect.fail(new LogsStorageError({
-      operation: "rebuild",
-      path: runDir,
-      message: "run id must name a direct child of the runs root",
-    }));
-  }
-  return Effect.gen(function* () {
+  return resolveRunDir(runsRoot, run, "rebuild").pipe(Effect.flatMap((runDir) => Effect.gen(function* () {
     const status = yield* rebuildRunStatus(runDir, { force }).pipe(
       Effect.mapError((error) => new LogsStorageError({
         operation: "rebuild",
@@ -556,7 +535,7 @@ function printRebuild(
         ...(latest === undefined ? [] : [paint(COLORS.dim, `latest=#${latest.jobOrdinal} ${latest.state}`)]),
       ].join("  "));
     });
-  });
+  })));
 }
 
 function printJobs(
@@ -564,26 +543,16 @@ function printJobs(
   run: string,
   jobOrdinal: number | undefined,
 ): Effect.Effect<void, LogsStorageError, FileSystem.FileSystem> {
-  const resolvedRunsRoot = resolve(runsRoot);
-  const runDir = resolve(resolvedRunsRoot, run);
-  if (dirname(runDir) !== resolvedRunsRoot) {
-    return Effect.fail(new LogsStorageError({
-      operation: "jobs",
-      path: runDir,
-      message: "run id must name a direct child of the runs root",
-    }));
-  }
-  const ledgerPath = join(runDir, "progress.jsonl");
+  return resolveRunDir(runsRoot, run, "jobs").pipe(Effect.flatMap((runDir) => {
+  const ledgerPath = workflowProgressPath(runDir);
   return Effect.gen(function* () {
-    const lines = yield* Effect.try({
-      try: () => readFileSync(ledgerPath, "utf8").split("\n"),
+    const ledger = yield* Effect.try({
+      try: () => readFileSync(ledgerPath, "utf8"),
       catch: (cause) => new LogsStorageError({ operation: "read", path: ledgerPath, message: String(cause) }),
     });
-    const records = lines
-      .map((line) => parseProgressStreamRecord(line))
-      .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+    const records = parseProgressLines(ledger);
     if (records.length === 0) {
-      if (lines.every((line) => line.trim() === "")) {
+      if (ledger.trim() === "") {
         return yield* Effect.fail(new LogsStorageError({
           operation: "jobs",
           path: ledgerPath,
@@ -667,6 +636,7 @@ function printJobs(
       }
     });
   });
+  }));
 }
 
 export function logsCommand(

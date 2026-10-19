@@ -1,7 +1,8 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
+import { appendJsonlLine } from "./jsonl.js";
 
 /** One accepted prompt in a run, recorded so `resume` can replay the piano
  * conversation turn by turn instead of as one flat event stream. */
@@ -89,8 +90,8 @@ export function trajectoryStreamPath(runDir: string): string {
 
 /** Append one record to the trajectory stream beside a document path.
  *
- * The stream's single writer seam: both writes go through it, so the file has
- * one place that knows its line format. */
+ * The stream's single place that knows its line format; the bytes land
+ * through the shared JSONL writer mechanism in jsonl.ts. */
 function appendTrajectoryRecord(
   fileSystem: FileSystem.FileSystem,
   path: string,
@@ -101,12 +102,13 @@ function appendTrajectoryRecord(
       try: () => `${stringifyTrajectory(record)}\n`,
       catch: (cause) => new TrajectoryWriteError({ operation: "serialize", path, message: errorMessage(cause) }),
     });
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => new TrajectoryWriteError({ operation: "mkdir", path, message: errorMessage(cause) })),
-    );
-    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError((cause) => new TrajectoryWriteError({ operation: "write", path, message: errorMessage(cause) })),
-    );
+    // The append step is this stream's "write" operation — the label predates
+    // the shared mechanism and its error text stays byte-identical.
+    yield* appendJsonlLine(fileSystem, path, line, (step, cause) => new TrajectoryWriteError({
+      operation: step === "append" ? "write" : step,
+      path,
+      message: errorMessage(cause),
+    }));
   });
 }
 
@@ -439,25 +441,11 @@ function compactTrajectoryEvent(event: unknown): unknown | undefined {
         },
       });
     }
-    case "resource":
-    case "spawn":
-    case "done":
-    case "error":
-    case "agent_start":
-    case "agent_settled":
-    case "turn_start":
-    case "queue_update":
-    case "compaction_start":
-    case "compaction_end":
-    case "auto_retry_start":
-    case "auto_retry_end":
-    case "summarization_retry_scheduled":
-    case "summarization_retry_attempt_start":
-    case "summarization_retry_finished":
-    case "session_info_changed":
-    case "thinking_level_changed":
-      return envelope(compactTrajectoryExtras(source, ["type", "workflow"]));
     default:
+      // Every remaining known event type (resource, spawn, done, error, the
+      // agent/turn/queue/compaction/retry/summarization lifecycle, session
+      // info, thinking level) passes through with its extras compacted, the
+      // same as anything unknown.
       return envelope(compactTrajectoryExtras(source, ["type", "workflow"]));
   }
 }
@@ -478,28 +466,14 @@ function usageSlotKey(compact: unknown): string | undefined {
 
 function compactTrajectoryEvents(events: readonly unknown[]): readonly unknown[] {
   const compacted: unknown[] = [];
-  const usageSlots = new Map<string, number>();
   for (const event of events) {
     const compact = compactTrajectoryEvent(event);
-    if (compact === undefined) continue;
-    const key = usageSlotKey(compact);
-    if (key === undefined) {
-      compacted.push(compact);
-      continue;
-    }
-    const prior = usageSlots.get(key);
-    if (prior === undefined) {
-      usageSlots.set(key, compacted.length);
-      compacted.push(compact);
-    } else {
-      // Keep the latest snapshot for each stage/actor; metrics use the
-      // maximum, and transcripts retain every raw update for forensic
-      // inspection. The slot keeps its first position, so the ledger's order
-      // is the order events first appeared.
-      compacted[prior] = compact;
-    }
+    if (compact !== undefined) compacted.push(compact);
   }
-  return compacted;
+  // The usage-slot rule lives in mergeTrajectoryLedgers alone: merging this
+  // batch as one ledger applies it exactly as the fold applies it across
+  // records — the slot keeps its first position and the latest snapshot.
+  return mergeTrajectoryLedgers([compacted]);
 }
 
 /** Parse a run's trajectory from whichever of its two on-disk forms is there.

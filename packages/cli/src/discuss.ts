@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { WorkflowError, type WorkflowDiscussDecision, type WorkflowDiscussRequest } from "@piano/orchestrator";
 import { type AskQuestionAnswer, type AskQuestionSpec } from "./ask-question.js";
 
-export function discussSpec(request: WorkflowDiscussRequest): AskQuestionSpec {
+function discussSpec(request: WorkflowDiscussRequest): AskQuestionSpec {
   return {
     title: `Discuss with ${request.worker} (${request.stageId})`,
     message: request.question,

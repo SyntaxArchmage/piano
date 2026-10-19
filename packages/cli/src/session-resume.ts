@@ -18,8 +18,8 @@ import { Effect } from "effect";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
-import { parseTrajectory, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
-import { runStatusPath, type RunStatus } from "@piano/orchestrator";
+import { parseTrajectory, trajectoryStreamPath, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
+import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrator";
 import { LogsStorageError } from "./errors.js";
 
 /** One replayable prompt and the events it produced. */
@@ -52,8 +52,6 @@ export interface RunSummary {
   readonly updatedAt?: string;
 }
 
-const STREAM_FILE = "trajectory.jsonl";
-
 /** One picker row for a run, or `undefined` when the run recorded no trajectory
  * at all — a directory left by a session that was opened and closed without a
  * prompt. The picker resumes runs, so a run it could not replay is clutter,
@@ -73,7 +71,7 @@ export async function readRunRow(runDir: string): Promise<RunSummary | undefined
  * not there at all counts against it — one that cannot be read is not evidence
  * of absence, so the run stays listed. */
 async function hasTrajectory(runDir: string): Promise<boolean> {
-  return readFile(join(runDir, STREAM_FILE), "utf8").then(
+  return readFile(trajectoryStreamPath(runDir), "utf8").then(
     () => true,
     (cause: unknown) => (cause as NodeJS.ErrnoException).code !== "ENOENT",
   );
@@ -84,10 +82,7 @@ async function hasTrajectory(runDir: string): Promise<boolean> {
  * one that does not is no row — not a reason to refuse the run. */
 async function readRunState(runDir: string): Promise<Partial<RunStatus> | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Partial<RunStatus>
-      : undefined;
+    return parseRunStatus(await readFile(runStatusPath(runDir), "utf8"));
   } catch {
     return undefined;
   }
@@ -168,7 +163,7 @@ function readTrajectory(
   runsRoot: string,
   runId: string,
 ): Effect.Effect<Partial<TrajectoryDocument>, LogsStorageError, FileSystem.FileSystem> {
-  const path = join(runsRoot, runId, STREAM_FILE);
+  const path = trajectoryStreamPath(join(runsRoot, runId));
   const storageError = (message: string): LogsStorageError =>
     new LogsStorageError({ operation: "read-trajectory", path, message });
   return Effect.gen(function* () {

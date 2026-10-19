@@ -2,7 +2,9 @@ import { FileSystem } from "@effect/platform";
 import { Data, Effect } from "effect";
 import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
-import { parseTrajectory } from "./trajectory.js";
+import { logStreamPath } from "./log.js";
+import { traceStreamPath } from "./trace.js";
+import { parseTrajectory, trajectoryStreamPath } from "./trajectory.js";
 
 export type StaticObservabilityFileName =
   | "log"
@@ -675,9 +677,9 @@ export function analyzeStaticObservability(
   const runDir = resolve(input.runDir);
   const runId = basename(runDir);
   const issues: StaticObservabilityIssue[] = [];
-  const logPath = join(runDir, "log.jsonl");
-  const tracePath = join(runDir, "trace.jsonl");
-  const trajectoryPath = join(runDir, "trajectory.jsonl");
+  const logPath = logStreamPath(runDir);
+  const tracePath = traceStreamPath(runDir);
+  const trajectoryPath = trajectoryStreamPath(runDir);
   const progressPath = join(runDir, "progress.jsonl");
   const statusPath = join(runDir, "status.json");
   // A run's trajectory is recorded in two forms. The stream is the record and
@@ -773,9 +775,9 @@ export function inspectStaticObservability(
     const fileSystem = yield* FileSystem.FileSystem;
     const resolvedRunDir = resolve(runDir);
     const [log, trace, trajectoryStream, progress, status] = yield* Effect.all([
-      readOptional(fileSystem, join(resolvedRunDir, "log.jsonl")),
-      readOptional(fileSystem, join(resolvedRunDir, "trace.jsonl")),
-      readOptional(fileSystem, join(resolvedRunDir, "trajectory.jsonl")),
+      readOptional(fileSystem, logStreamPath(resolvedRunDir)),
+      readOptional(fileSystem, traceStreamPath(resolvedRunDir)),
+      readOptional(fileSystem, trajectoryStreamPath(resolvedRunDir)),
       readOptional(fileSystem, join(resolvedRunDir, "progress.jsonl")),
       readOptional(fileSystem, join(resolvedRunDir, "status.json")),
     ] as const, { concurrency: "unbounded" });

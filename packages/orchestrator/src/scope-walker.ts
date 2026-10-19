@@ -8,9 +8,7 @@
 import { Either, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { join } from "node:path";
-import type { AgentContinuation } from "@piano/harness";
 import type { Logging } from "@piano/logging";
-import type { WorkflowTrajectory } from "@piano/trajectory";
 import {
   allocateMapWorkspace,
   applyWinnerWorkspace,
@@ -48,20 +46,15 @@ import {
 import { appendWorkflowProgress, type WorkflowProgressRegionFinalizedRecord, type WorkflowRegionFinalizedPayload } from "./progress.js";
 import { actorTurnRow } from "./resume-state.js";
 import type {
-  CompiledWorkflow,
   WorkflowRegionPlan,
   WorkflowRuntimeNode,
 } from "./workflow.js";
-import type { LoadedWorkflow } from "./workflow-file.js";
 import type {
-  ActorExecutionContext,
-  ActorState,
   InternalStageResult,
 } from "./execution-types.js";
 import type {
   ConsolidateAndGateRequest,
   WorkflowExecutionError,
-  WorkflowExecutionRequest,
   WorkflowWorkspaceCandidate,
 } from "./workflow-execution.js";
 import type { ConsolidationCarrying } from "./consolidation-transaction.js";
@@ -71,24 +64,15 @@ export interface WalkerWorkspaceState {
   preserve: boolean;
 }
 
-/** Everything the scope walker reaches outside itself. */
-export interface ScopeWalkerContext {
+/** Everything the scope walker reaches outside itself. The run/actor/semaphore
+ * state it shares with the stage runner lives in `stageRunnerContext` alone —
+ * one copy, so the two can never disagree. */
+interface ScopeWalkerContext {
   readonly stageRunnerContext: StageRunnerContext;
-  readonly request: WorkflowExecutionRequest;
-  readonly loaded: LoadedWorkflow;
-  readonly compiled: CompiledWorkflow;
-  readonly runId: string;
-  readonly jobOrdinal: number;
-  readonly actors: Map<string, ActorState>;
-  readonly announcedContinuations: Map<string, AgentContinuation>;
-  readonly actorContexts: Map<string, ActorExecutionContext>;
-  readonly knownLoopIterations: Map<string, number>;
-  readonly progressSemaphore: Effect.Semaphore;
   /** Append one `region-finalized` line under the progress semaphore. The
    * composer owns identity (execution id, job ordinal); the walker owns the
    * moment a region exits. */
   readonly persistRegionFinalized: (payload: WorkflowRegionFinalizedPayload) => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
-  readonly workflowTrajectory: WorkflowTrajectory;
   readonly autoCommit: boolean;
   readonly preExistingDirty: ReadonlySet<string>;
   readonly workspaceState: WalkerWorkspaceState;
@@ -102,11 +86,11 @@ export interface ScopeWalkerContext {
   readonly consolidate: (args: ConsolidateAndGateRequest) => Effect.Effect<ConsolidationCarrying, never, FileSystem.FileSystem | Logging>;
 }
 
-export interface ResultGroup {
+interface ResultGroup {
   readonly results: readonly InternalStageResult[];
 }
 
-export interface NodeExecution {
+interface NodeExecution {
   readonly boundary: ResultGroup;
   readonly stages: readonly InternalStageResult[];
   /** A validated stage explicitly reported a terminal blocked outcome. */
@@ -116,7 +100,7 @@ export interface NodeExecution {
 /** The direct-child completion table is local to one runtime scope. A loop
  * uses it only to retrieve an explicitly named feedback child after an
  * iteration; it never turns an upstream actor continuation into feedback. */
-export interface ScopeExecution extends NodeExecution {
+interface ScopeExecution extends NodeExecution {
   readonly completed: ReadonlyMap<string, ResultGroup>;
 }
 
@@ -126,7 +110,7 @@ interface RuntimeTournamentCandidate extends WorkflowWorkspaceCandidate {
   readonly stopped?: boolean;
 }
 
-export function valueAtPath(value: unknown, path: readonly string[]): unknown {
+function valueAtPath(value: unknown, path: readonly string[]): unknown {
   let current = value;
   for (const segment of path) {
     if (typeof current !== "object" || current === null || Array.isArray(current)) return undefined;
@@ -150,7 +134,7 @@ function nodeFrom(node: WorkflowRuntimeNode): readonly string[] {
  * one ready node at a time and `completed` is inserted in that order, which is
  * the dependency order of the leaf DAG — not the declaration order the tree
  * carries. Consumers pick a run's final result from the tail of this list. */
-export function terminalGroups(
+function terminalGroups(
   nodes: readonly WorkflowRuntimeNode[],
   completed: ReadonlyMap<string, ResultGroup>,
 ): readonly InternalStageResult[] {
@@ -169,7 +153,7 @@ export function terminalGroups(
  * derived (metric-less report/fan-out is left inert) or when destinations are
  * ambiguous. A stopped candidate may still establish the shared metric
  * identity, but is never eligible to win. */
-export function automaticTournamentOutcome(
+function automaticTournamentOutcome(
   exitStageId: string,
   candidates: readonly RuntimeTournamentCandidate[],
 ): {
@@ -224,7 +208,7 @@ export function automaticTournamentOutcome(
  * child's explicit dependency order. A producer can be both inherited from a
  * parent scope and named as a direct dependency; keep the first occurrence so
  * its immutable handoff provenance is emitted exactly once. */
-export function mergeScopeInputs(
+function mergeScopeInputs(
   inherited: readonly InternalStageResult[],
   direct: readonly InternalStageResult[],
 ): readonly InternalStageResult[] {
@@ -237,7 +221,7 @@ export function mergeScopeInputs(
   });
 }
 
-export function isBlockedStageResult(result: InternalStageResult): boolean {
+function isBlockedStageResult(result: InternalStageResult): boolean {
   return resultProjectionValue(result, "workflow.status") === "blocked" ||
     resultProjectionValue(result, "round.decision") === "BLOCKED";
 }
@@ -245,7 +229,7 @@ export function isBlockedStageResult(result: InternalStageResult): boolean {
 /** A blocked loop round is terminal when its block is global-scoped (or
  * unlabeled, which defaults to global) or it fired on the loop's own entry
  * stage. A hypothesis-scoped block is absorbed and the loop continues. */
-export function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string | undefined): boolean {
+function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string | undefined): boolean {
   const blocked = child.boundary.results.filter(isBlockedStageResult);
   if (blocked.length === 0) return true;
   return blocked.some((result) =>
@@ -256,13 +240,21 @@ export function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string 
 
 /** Only a worker-contract projection may end a successful loop. Payload fields
  * with similar names remain ordinary domain data and cannot control scheduling. */
-export function loopStopRequested(results: readonly InternalStageResult[]): boolean {
+function loopStopRequested(results: readonly InternalStageResult[]): boolean {
   return results.some((result) => resultProjectionValue(result, "workflow.loop-control") === "stop");
 }
 
 export function createScopeWalker(context: ScopeWalkerContext) {
   const {
     stageRunnerContext,
+    persistRegionFinalized,
+    autoCommit,
+    preExistingDirty,
+    workspaceState,
+    commitRoundWinner,
+    consolidate,
+  } = context;
+  const {
     request,
     loaded,
     compiled,
@@ -272,14 +264,8 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     actorContexts,
     knownLoopIterations,
     progressSemaphore,
-    persistRegionFinalized,
     workflowTrajectory,
-    autoCommit,
-    preExistingDirty,
-    workspaceState,
-    commitRoundWinner,
-    consolidate,
-  } = context;
+  } = stageRunnerContext;
 
 const mapItems = (
   region: WorkflowRegionPlan,
@@ -795,7 +781,12 @@ const executeScope = (
         boundary = exitResults;
       }
     } else {
-      const lastIteration = `${instance}/iter-${(finalized.iterations ?? 1) - 1}`;
+      // Spelled through runtimeInstanceId, the one writer of instance ids:
+      // the last iteration's id is the frame chain plus its loop frame.
+      const lastIteration = runtimeInstanceId([
+        ...frames,
+        { kind: "loop", regionId: region.id, iteration: (finalized.iterations ?? 1) - 1 },
+      ]);
       boundary = exitResults.filter((result) => result.instanceId === lastIteration);
     }
     if (boundary.length === 0) return undefined;
@@ -1145,7 +1136,12 @@ const executeScope = (
           ...(finalization.incumbent === undefined ? {} : { incumbent: finalization.incumbent }),
           ...(finalization.winner === undefined ? {} : {
             ...(winnerItem === undefined ? {} : {
-              winnerInstanceId: `${runtimeRegionInstanceId(frames, region.id)}/slot-${winnerItem.index}`,
+              // The slot's own instanceId speller (see slotFrames): the winner
+              // key and the result it must match come from one function.
+              winnerInstanceId: runtimeInstanceId([
+                ...frames,
+                { kind: "map", regionId: region.id, slot: winnerItem.index },
+              ]),
             }),
           }),
         });

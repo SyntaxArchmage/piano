@@ -8,6 +8,7 @@ import {
   parseSgrMouse,
   rightColumns,
   stepSplitDrag,
+  wheelDelta,
 } from "../../packages/cli/src/split-drag.js";
 
 describe("emptySplitDrag", () => {
@@ -168,5 +169,17 @@ describe("stepSplitDrag", () => {
   it("does not treat wheel input as a drag motion", () => {
     const state = { ...emptySplitDrag(), dragging: true };
     expect(stepSplitDrag(state, { kind: "wheel", button: 64, col: 70, row: 5 }, 80)).toBe(state);
+  });
+});
+
+describe("wheelDelta", () => {
+  it("maps the SGR wheel buttons to scroll steps", () => {
+    expect(wheelDelta(64)).toBe(-1); // wheel up
+    expect(wheelDelta(65)).toBe(1);  // wheel down
+  });
+
+  it("ignores horizontal wheel input", () => {
+    expect(wheelDelta(66)).toBe(0);
+    expect(wheelDelta(67)).toBe(0);
   });
 });

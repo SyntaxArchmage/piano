@@ -1,6 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { appendJsonlLine } from "@piano/logging";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { refreshRunStatus } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
@@ -698,8 +699,9 @@ export function initializeWorkflowProgress(
 
 /** Append one record to the run's progress stream.
  *
- * The stream's single writer seam: every record type goes through it, so the
- * file has one place that knows its line format. */
+ * Every record type goes through here, so the file has one place that knows
+ * its line format; the bytes land through the shared JSONL writer mechanism
+ * in logging's jsonl.ts. */
 function appendProgressLine(
   fileSystem: FileSystem.FileSystem,
   path: string,
@@ -710,12 +712,7 @@ function appendProgressLine(
       try: () => `${JSON.stringify(record)}\n`,
       catch: (cause) => progressError(path, "serialize", cause),
     });
-    yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => progressError(path, "mkdir", cause)),
-    );
-    yield* fileSystem.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError((cause) => progressError(path, "append", cause)),
-    );
+    yield* appendJsonlLine(fileSystem, path, line, (step, cause) => progressError(path, step, cause));
   });
 }
 

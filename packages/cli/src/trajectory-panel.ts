@@ -6,6 +6,7 @@
 // this module renders that reduced state. It depends on pi-tui and the CLI theme.
 
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { formatCompactDuration } from "./duration.js";
 import { RST, type PianoTheme } from "./theme.js";
 import type { ScrollModifier } from "./shortcuts.js";
 import {
@@ -52,15 +53,6 @@ function formatTimestamp(tsMs: number): string {
   const ss = String(d.getSeconds()).padStart(2, "0");
   const mmm = String(d.getMilliseconds()).padStart(3, "0");
   return `${hh}:${mm}:${ss}.${mmm}`;
-}
-
-/** Compact duration: <1000ms → "123ms", else "1.2s", else "1m2s". */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.round((ms % 60_000) / 1000);
-  return `${m}m${s}s`;
 }
 
 /** Truncate a plain (ANSI-free) string to `width` visible columns, reserving
@@ -144,7 +136,7 @@ function entryRows(
   const color = theme[style.role];
   const prefix = `${theme.dim}${formatTimestamp(entry.tsMs)}${RST} ${color}${style.icon}${RST} ${theme.bold}${entry.label}:${RST}`;
   const detail = `${color}${entry.detail}${RST}`;
-  const tail = entry.durationMs === undefined ? detail : `${detail} ${color}+${formatDuration(entry.durationMs)}${RST}`;
+  const tail = entry.durationMs === undefined ? detail : `${detail} ${color}+${formatCompactDuration(entry.durationMs)}${RST}`;
 
   const max = Math.max(0, Math.floor(columns));
   const prefixW = visibleWidth(prefix);

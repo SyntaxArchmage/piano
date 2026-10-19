@@ -15,6 +15,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
+import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { RST, type PianoTheme } from "./theme.js";
 import { formatRunId, oneLine, readRunRow, type RunSummary } from "./session-resume.js";
 
@@ -30,34 +31,6 @@ export interface SessionPickerDeps {
 
 /** Visible rows. Kept small: each row costs one trajectory read on first sight. */
 const MAX_VISIBLE_ITEMS = 8;
-
-function fuzzyScore(value: string, query: string): number | undefined {
-  if (query === "") return 0;
-  const candidate = value.toLowerCase();
-  const needle = query.toLowerCase();
-  let cursor = 0;
-  let score = 0;
-  for (const character of needle) {
-    const index = candidate.indexOf(character, cursor);
-    if (index < 0) return undefined;
-    score += index === cursor ? 0 : index + 1;
-    cursor = index + 1;
-  }
-  return score;
-}
-
-function isPrintableInput(value: string): boolean {
-  return value.length > 0 && [...value].every((character) => {
-    const code = character.codePointAt(0) ?? 0;
-    return code >= 0x20 && code !== 0x7f;
-  });
-}
-
-function wrapBorder(rows: string[], width: number, theme: PianoTheme | undefined): string[] {
-  if (theme === undefined) return rows;
-  const line = theme.accent + "─".repeat(width) + RST;
-  return [line, ...rows, line];
-}
 
 /** Everything a query can match, joined so a single fuzzy pass covers all of it. */
 function haystack(runId: string, summary: RunSummary | undefined): string {

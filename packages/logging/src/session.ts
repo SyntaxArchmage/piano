@@ -10,11 +10,19 @@ import {
   TrajectoryWriteError,
   type TraceWriteError,
 } from "./errors.js";
-import { AsyncLogWriter, type ILogWriter, LogWriter } from "./log.js";
-import { AsyncTraceWriter, type ITraceWriter, TraceWriter } from "./trace.js";
+import { AsyncLogWriter, type ILogWriter, LogWriter, logStreamPath } from "./log.js";
+import { AsyncTraceWriter, type ITraceWriter, TraceWriter, traceStreamPath } from "./trace.js";
 import { AsyncTrajectoryWriter, trajectoryStreamPath, type ITrajectoryWriter, TrajectoryWriter } from "./trajectory.js";
 
 const SOURCE = { module: "logging", file: "session.ts", function: "createSession" } as const;
+
+/** Mint a run identity: the timestamp+random id (or the caller's, for a
+ * resume), its trace id, and the run directory the id names. One spelling
+ * shared by the immediate and the staging session. */
+function newRunIdentity(runsRoot: string, id?: string): { id: string; traceId: string; runDir: string } {
+  const runId = id ?? `${new Date().toISOString().slice(0, 19).replace(/[^0-9T]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
+  return { id: runId, traceId: randomBytes(16).toString("hex"), runDir: join(runsRoot, runId) };
+}
 
 export const defaultRoot = join(homedir(), ".piano");
 
@@ -59,10 +67,7 @@ export function createSession(
         const cwd = resolve(opts.cwd ?? process.cwd());
         const root = resolve(opts.root ?? defaultRoot);
         const runsRoot = resolve(opts.runsRoot ?? defaultRunsRoot());
-        const id = opts.id ?? `${new Date().toISOString().slice(0, 19).replace(/[^0-9T]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
-        const traceId = randomBytes(16).toString("hex");
-        const runDir = join(runsRoot, id);
-        return { root, id, traceId, cwd, runDir };
+        return { root, cwd, ...newRunIdentity(runsRoot, opts.id) };
       },
       catch: (cause) => new SessionCreateError({
         operation: "prepare",
@@ -78,18 +83,10 @@ export function createSession(
         message: errorMessage(cause),
       })),
     );
-    const log = new LogWriter(values.id, join(values.runDir, "log.jsonl"), values.traceId);
-    const trace = new TraceWriter(values.id, join(values.runDir, "trace.jsonl"), values.traceId);
+    const log = new LogWriter(values.id, logStreamPath(values.runDir), values.traceId);
+    const trace = new TraceWriter(values.id, traceStreamPath(values.runDir), values.traceId);
     const trajectory = new TrajectoryWriter(values.id, trajectoryStreamPath(values.runDir));
     const span = yield* trace.enter("createSession", undefined, SOURCE);
-    yield* log.append("function.enter", {
-      module: SOURCE.module,
-      file: SOURCE.file,
-      function: "createSession",
-      level: "trace",
-      namespace: "trace",
-      spanId: span.spanId,
-    });
     yield* log.append("run.created", {
       module: SOURCE.module,
       file: SOURCE.file,
@@ -98,15 +95,6 @@ export function createSession(
       namespace: "logging",
       message: "Run created",
       data: { runDir: values.runDir, ...(opts.prompt === undefined ? {} : { promptLength: opts.prompt.length }) },
-    });
-    yield* log.append("function.exit", {
-      module: SOURCE.module,
-      file: SOURCE.file,
-      function: "createSession",
-      level: "trace",
-      namespace: "trace",
-      spanId: span.spanId,
-      outcome: "success",
     });
     yield* trace.exit(span, { id: values.id, runDir: values.runDir });
     return { ...values, log, trace, trajectory };
@@ -130,9 +118,7 @@ export function createStagingSession(
   const cwd = resolve(opts.cwd ?? process.cwd());
   const root = resolve(opts.root ?? defaultRoot);
   const runsRoot = resolve(opts.runsRoot ?? defaultRunsRoot());
-  const id = `${new Date().toISOString().slice(0, 19).replace(/[^0-9T]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
-  const traceId = randomBytes(16).toString("hex");
-  const runDir = join(runsRoot, id);
+  const { id, traceId, runDir } = newRunIdentity(runsRoot);
 
   const log = new AsyncLogWriter(id, traceId);
   const trace = new AsyncTraceWriter(id, traceId);
@@ -156,8 +142,8 @@ export function createStagingSession(
           message: errorMessage(cause),
         })),
       );
-      yield* log.commit(join(runDir, "log.jsonl"));
-      yield* trace.commit(join(runDir, "trace.jsonl"));
+      yield* log.commit(logStreamPath(runDir));
+      yield* trace.commit(traceStreamPath(runDir));
       yield* trajectory.commit(trajectoryStreamPath(runDir));
     }),
   };

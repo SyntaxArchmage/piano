@@ -6,9 +6,9 @@ import { errorMessage, type WorkflowError } from "./errors.js";
 
 /** One step of an atomic write, named so a caller can keep its own error
  * wording per step rather than settling for one message for all three. */
-export type AtomicWriteStep = "mkdir" | "write" | "rename";
+type AtomicWriteStep = "mkdir" | "write" | "rename";
 
-export type AtomicWriteErrorMapper = (cause: unknown, step: AtomicWriteStep) => WorkflowError;
+type AtomicWriteErrorMapper = (cause: unknown, step: AtomicWriteStep) => WorkflowError;
 
 /** Whether a rename was refused because the destination is in the way rather
  * than because something else went wrong. */

@@ -4,7 +4,6 @@ import { RST, darkTheme, type PianoTheme } from "./theme.js";
 
 let th: PianoTheme = darkTheme;
 export function setTheme(t: PianoTheme): void { th = t; }
-export function getTheme(): PianoTheme { return th; }
 
 // ── Box drawing ───────────────────────────────────────────────────────────────
 
@@ -49,54 +48,6 @@ function centerLine(s: string): string {
   const innerW = BOX_W - 4;
   const pad = Math.max(0, Math.floor((innerW - visLen(s)) / 2));
   return " ".repeat(pad) + s;
-}
-
-/**
- * Word-wrap plain text (no ANSI) to `width` visible columns, preserving leading
- * indentation. Used for config panel rows that exceed the box inner width on
- * narrow terminals.
- */
-// Built via RegExp from an interpolated ESC to dodge eslint's
-// no-control-regex (the literal-visLen regex in the same file is
-// pre-existing). Matches ESC [ … m (ANSI SGR).
-const ANSI_SEQ = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-const ANSI_PREFIX = new RegExp(`^(?:${String.fromCharCode(27)}\\[[0-9;]*m)+`);
-
-export function wrapIndented(text: string, width: number): string[] {
-  // Clamp the budget to at least one column: the wrap loop and the ellipsis
-  // fallback below require a positive width, and zero/negative widths must
-  // never produce output wider than requested.
-  const budget = Math.max(1, width);
-  if (visLen(text) <= budget) return [text];
-  const indent = /^\s*/.exec(text)?.[0] ?? "";
-  // The wrap loop measures candidates without the indent, so shrink the budget
-  // by the indent width — otherwise an indent + width-long line overflows and
-  // gets hard-truncated by the ellipsis fallback below.
-  const limit = Math.max(1, budget - visLen(indent));
-  const words = text.slice(indent.length).split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let cur = "";
-  for (const word of words) {
-    const candidate = cur ? `${cur} ${word}` : word;
-    if (cur && visLen(candidate) > limit) {
-      lines.push(cur);
-      cur = word;
-    } else {
-      cur = candidate;
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines.map((line) => {
-    const indented = `${indent}${line}`;
-    if (visLen(indented) <= budget) return indented;
-    // Truncate by visible width, keeping leading ANSI sequence(s) intact and
-    // appending an ellipsis. Using raw .length here over-truncates colored
-    // rows and can eat the last token (e.g. the filename of the config path).
-    const ansiPrefix = ANSI_PREFIX.exec(indented)?.[0] ?? "";
-    const keep = Math.max(0, budget - 1 - visLen(ansiPrefix));
-    const body = indented.slice(ansiPrefix.length).replace(ANSI_SEQ, "");
-    return `${ansiPrefix}${[...body].slice(0, keep).join("")}…`;
-  });
 }
 
 // ── Brand art ─────────────────────────────────────────────────────────────────

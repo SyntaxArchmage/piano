@@ -6,7 +6,7 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect, Exit } from "effect";
 import { stderr, stdout } from "node:process";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   createSession,
   failureDetails,
@@ -29,16 +29,19 @@ import {
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
+  EXPLICIT_LOAD_SOURCE,
   foldJobSpans,
   latestJob,
+  LOAD_SOURCE,
   loadDefaultWorkflow,
   loadWorkflow,
-  parseProgressStreamRecord,
+  parseProgressLines,
   readWorkflowExecutionContinuation,
   readRunStatus,
   refreshRunStatus,
   runStatusPath,
   setWorkflowSelection,
+  workflowProgressPath,
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
@@ -166,9 +169,7 @@ function runSessionBody(
     : undefined;
   return Effect.gen(function* () {
     const initialWorkflow = yield* TRACE(
-      options.workflowPath === undefined
-        ? { module: "orchestrator", file: "workflow-file.ts", function: "loadDefaultWorkflow" }
-        : { module: "orchestrator", file: "workflow-file.ts", function: "loadWorkflow" },
+      options.workflowPath === undefined ? LOAD_SOURCE : EXPLICIT_LOAD_SOURCE,
       options.workflowPath === undefined
         ? loadDefaultWorkflow(session.root)
         : loadWorkflow(options.workflowPath, session.root),
@@ -234,12 +235,10 @@ function runSessionBody(
         import("@effect/platform").FileSystem.FileSystem
       > => Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
-        const ledger = yield* fileSystem.readFileString(join(runDir, "progress.jsonl")).pipe(
+        const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
           Effect.orElseSucceed(() => ""),
         );
-        const records = ledger.split("\n")
-          .map((line) => parseProgressStreamRecord(line))
-          .filter((record): record is NonNullable<ReturnType<typeof parseProgressStreamRecord>> => record !== undefined);
+        const records = parseProgressLines(ledger);
         return latestJob(foldJobSpans(records))?.regions;
       });
       const runPrompt = (

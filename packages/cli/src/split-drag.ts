@@ -11,7 +11,7 @@
 
 export const DEFAULT_SPLIT_RATIO = 0.3;
 export const MIN_RIGHT_COLUMNS = 20; // right pane never shrinks below this
-export const MIN_CHAT_COLUMNS = 30;        // left pane never shrinks below this
+const MIN_CHAT_COLUMNS = 30;        // left pane never shrinks below this
 export const SPLIT_CAPTURE_RANGE = 1;      // ±N columns around the border arm the grab
 
 export interface SgrMouseEvent {
@@ -47,6 +47,13 @@ export function parseSgrMouse(sequence: string): SgrMouseEvent | null {
   const kind: SgrMouseEvent["kind"] =
     m[4] === "m" ? "release" : button >= 64 ? "wheel" : button < 32 ? "press" : "motion";
   return { kind, button, col, row };
+}
+
+/** Scroll step of a wheel event's SGR button code: button 0 scrolls up (-1),
+ * button 1 scrolls down (+1), anything else (horizontal wheel) is ignored (0). */
+export function wheelDelta(button: number): number {
+  const wheelButton = button & 3;
+  return wheelButton === 0 ? -1 : wheelButton === 1 ? 1 : 0;
 }
 
 /** Return whether a 1-based mouse column is inside the visible right pane. */

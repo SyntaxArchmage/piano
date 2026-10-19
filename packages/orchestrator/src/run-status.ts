@@ -259,7 +259,10 @@ function asRunJob(job: JobView): RunJob {
   };
 }
 
-function parseRunStatus(raw: string): RunStatus | undefined {
+/** Parse a state document's raw bytes. `undefined` when missing, torn, or not
+ * an object — the same tolerance every reader of the document needs, so none
+ * of them hand-rolls its own. */
+export function parseRunStatus(raw: string): RunStatus | undefined {
   try {
     const parsed = JSON.parse(raw) as unknown;
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
@@ -271,7 +274,10 @@ function parseRunStatus(raw: string): RunStatus | undefined {
   }
 }
 
-function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {
+/** Parse a progress ledger's raw bytes into the records this build reads.
+ * Blank and unreadable lines drop; the line acceptance rule lives in
+ * `parseProgressStreamRecord`. */
+export function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {
   if (raw === undefined) return [];
   const records: WorkflowProgressStreamRecord[] = [];
   for (const line of raw.split("\n")) {

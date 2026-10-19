@@ -693,6 +693,31 @@ function nestedNodes(node: WorkflowNode): readonly WorkflowNode[] | undefined {
   return "loop" in node ? node.loop.nodes : "tournament" in node ? node.tournament.nodes : undefined;
 }
 
+/** The loop/tournament source union discriminates on `over`: only a tournament
+ * declares it. Narrowing through this guard keeps `lowerNodes` cast-free. */
+function isLoopSource(region: WorkflowLoop | WorkflowTournament): region is WorkflowLoop {
+  return !("over" in region);
+}
+
+/** Kind-specific plan fields, copied from the source node exactly as declared
+ * except that `parallel` resolves to a boolean so the executor never re-derives
+ * the default. */
+function regionControls(region: WorkflowLoop | WorkflowTournament):
+  Pick<WorkflowRegionPlan, "iterations" | "duration" | "feedback" | "over" | "count" | "parallel"> {
+  if (isLoopSource(region)) {
+    return {
+      ...(region.iterations === undefined ? {} : { iterations: region.iterations }),
+      ...(region.duration === undefined ? {} : { duration: region.duration }),
+      ...(region.feedback === undefined ? {} : { feedback: region.feedback }),
+    };
+  }
+  return {
+    over: region.over,
+    count: region.count,
+    parallel: region.parallel !== false,
+  };
+}
+
 function scopeError(path: string, message: string): WorkflowError {
   return workflowError("compile", path, message);
 }
@@ -717,6 +742,30 @@ function rewireDependsOn(leaf: CompiledStage, dependsOn: readonly string[]): voi
   (leaf as { dependsOn: readonly string[] }).dependsOn = dependsOn;
 }
 
+/** Region lookup by id — the one index over a compiled region table. */
+export function regionIndex(
+  regions: readonly WorkflowRegionPlan[],
+): ReadonlyMap<string, WorkflowRegionPlan> {
+  return new Map(regions.map((region) => [region.id, region]));
+}
+
+/** The chain of enclosing regions from `startId` outward, innermost first,
+ * following `parentId` pointers. The one walk of the region tree; it stops at
+ * an id the index does not hold. */
+export function regionAncestors(
+  index: ReadonlyMap<string, WorkflowRegionPlan>,
+  startId: string | undefined,
+): readonly WorkflowRegionPlan[] {
+  const chain: WorkflowRegionPlan[] = [];
+  for (let id = startId; id !== undefined; ) {
+    const region = index.get(id);
+    if (region === undefined) break;
+    chain.push(region);
+    id = region.parentId;
+  }
+  return chain;
+}
+
 /** The innermost fan-out region enclosing a leaf, with the lane count a
  * per-lane model list must match. `parentId` names the enclosing region, and a
  * region's `parentId` its own, so the innermost `map` ancestor is the one the
@@ -725,10 +774,8 @@ function innermostTournament(
   leaf: CompiledStage,
   regions: readonly WorkflowRegionPlan[],
 ): { readonly name: string; readonly count: number } | undefined {
-  const byId = new Map(regions.map((region) => [region.id, region]));
-  for (let id = leaf.parentId; id !== undefined; id = byId.get(id)?.parentId) {
-    const region = byId.get(id);
-    if (region?.kind === "map" && region.count !== undefined) return { name: region.name, count: region.count };
+  for (const region of regionAncestors(regionIndex(regions), leaf.parentId)) {
+    if (region.kind === "map" && region.count !== undefined) return { name: region.name, count: region.count };
   }
   return undefined;
 }
@@ -835,8 +882,8 @@ function lowerNodes(
       if (entryNode === undefined || exitNode === undefined) {
         throw scopeError(sourcePath, `${kind} "${region.name}" entry and exit must reference direct child nodes`);
       }
-      if (kind === "loop") {
-        const feedback = (region as WorkflowLoop).feedback;
+      if (isLoopSource(region)) {
+        const feedback = region.feedback;
         if (feedback !== undefined && !childrenByName.has(feedback)) {
           throw scopeError(sourcePath, `loop "${region.name}" feedback "${feedback}" must reference a direct child node`);
         }
@@ -883,8 +930,8 @@ function lowerNodes(
           throw scopeError(sourcePath, `${kind} "${region.name}" node "${childName}" must lie on a path from entry "${region.entry}" to exit "${region.exit}"`);
         }
       }
-      if (kind === "map") {
-        const overRoot = (region as WorkflowTournament).over.split(".", 1)[0]?.trim() ?? "";
+      if (!isLoopSource(region)) {
+        const overRoot = region.over.split(".", 1)[0]?.trim() ?? "";
         if (!region.from.includes(overRoot)) {
           throw scopeError(sourcePath, `tournament "${region.name}" over must select a field from one of its from nodes`);
         }
@@ -907,24 +954,7 @@ function lowerNodes(
         exitStageId: exitBoundary.exitStageId,
         ...(parentId === undefined ? {} : { parentId }),
         from: [...region.from],
-        ...(kind === "loop"
-          ? {
-            ...((region as WorkflowLoop).iterations === undefined
-              ? {}
-              : { iterations: (region as WorkflowLoop).iterations }),
-            ...((region as WorkflowLoop).duration === undefined
-              ? {}
-              : { duration: (region as WorkflowLoop).duration }),
-            ...((region as WorkflowLoop).feedback === undefined
-              ? {}
-              : { feedback: (region as WorkflowLoop).feedback }),
-          }
-          : {
-            over: (region as WorkflowTournament).over,
-            count: (region as WorkflowTournament).count,
-            // Resolved here so the executor never re-derives the default.
-            parallel: (region as WorkflowTournament).parallel !== false,
-          }),
+        ...regionControls(region),
         children: childLowered.nodes,
       };
       regions.push(plan);
