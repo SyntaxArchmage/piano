@@ -183,6 +183,13 @@ describe(" evidence and scorecard", () => {
     expect(compareBenchmark(10, 8, "lower")).toMatchObject({ absoluteImprovement: 2, relativeImprovement: 0.2 });
   });
 
+  it("counts the run's state document as progress evidence", () => {
+    // Current runs write status.json instead of the retired progress stream.
+    const current = { ...result(), progressPath: undefined, runStatusPath: "/tmp/run/status.json" };
+    const assessed = assessCaseEvidence(current);
+    expect(assessed.issues.map((issue) => issue.code)).not.toContain("progress-missing");
+  });
+
   it("separates task, execution, and durable evidence acceptance", () => {
     const complete = result();
     const accepted = assessCaseEvidence(complete, {

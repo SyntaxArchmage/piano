@@ -90,7 +90,6 @@ import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
-  workflowProgressPath,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
@@ -266,7 +265,8 @@ export interface WorkflowExecutionResult {
   /** The terminal root-node output(s). A single downstream join produces one
    * item; a terminal map deliberately exposes its ordered slot outputs. */
   readonly terminalStages: readonly WorkflowStageExecutionResult[];
-  /** Run-level append-only progress stream, including every loop iteration. */
+  /** Deprecated alias for `statusPath`, kept while the headless
+   * `progress_path` key retires. Current runs write no progress stream. */
   readonly progressPath: string;
   /** Where the run's one state document lives, for monitors. */
   readonly statusPath?: string;
@@ -1085,7 +1085,7 @@ export function executeWorkflow(
         ...(final.thinkingLevel === undefined ? {} : { thinkingLevel: final.thinkingLevel }),
         stages: completed.stages,
         terminalStages: terminal,
-        progressPath: workflowProgressPath(request.runDir),
+        progressPath: runStatusPath(request.runDir),
         statusPath: runStatusPath(request.runDir),
       };
     });

@@ -352,7 +352,7 @@ function evidenceAvailability(result: CaseResult) {
     log: pathExists(result.logPath),
     trace: pathExists(result.tracePath),
     transcript: pathExists(result.transcriptPath),
-    progress: pathExists(result.progressPath),
+    progress: pathExists(result.progressPath) || pathExists(result.runStatusPath),
   };
 }
 
