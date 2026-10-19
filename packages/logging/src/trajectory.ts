@@ -116,6 +116,9 @@ const MAX_TRAJECTORY_STRING = 8_192;
 const MAX_TRAJECTORY_ARRAY = 128;
 const MAX_TRAJECTORY_OBJECT_KEYS = 128;
 const MAX_TRAJECTORY_DEPTH = 8;
+/** The sentinel a field's value reads as when the provider's getter throws:
+ * one spelling so every summarizer reports unreadable values the same way. */
+const VALUE_UNAVAILABLE = "[Value unavailable]";
 
 /**
  * The Pi SDK emits very large, repeated `message_update` payloads.  A run
@@ -180,7 +183,7 @@ function compactTrajectoryValue(
         depth + 1,
       );
     } catch {
-      output[key] = "[Value unavailable]";
+      output[key] = VALUE_UNAVAILABLE;
     }
   }
   if (keyCount > MAX_TRAJECTORY_OBJECT_KEYS) {
@@ -229,7 +232,7 @@ function compactTrajectoryMessageField(source: Record<string, unknown>): unknown
   try {
     return compactTrajectoryMessage(source.message);
   } catch {
-    return "[Value unavailable]";
+    return VALUE_UNAVAILABLE;
   }
 }
 
@@ -248,7 +251,7 @@ function compactTrajectoryValueField(source: Record<string, unknown>, key: strin
   try {
     return compactTrajectoryValue(source[key]);
   } catch {
-    return "[Value unavailable]";
+    return VALUE_UNAVAILABLE;
   }
 }
 
@@ -282,7 +285,7 @@ function compactTrajectoryExtras(
           try {
             return [key, compactTrajectoryValue(source[key])] as const;
           } catch {
-            return [key, "[Value unavailable]"] as const;
+            return [key, VALUE_UNAVAILABLE] as const;
           }
         }),
     );

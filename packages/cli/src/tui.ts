@@ -23,7 +23,7 @@ import {
 } from "@piano/orchestrator";
 import { readWorkflowSnapshot } from "./progress-view.js";
 import { TranscriptView } from "./chat-render.js";
-import { TuiError } from "./errors.js";
+import { interactiveTerminalRequired, TuiError } from "./errors.js";
 import { AskQuestion, type AskQuestionAnswer, type AskQuestionSpec, type AskQuestionStyles } from "./ask-question.js";
 import { runSignoffDialog, signoffDecisionText } from "./signoff.js";
 import { runDiscussDialog } from "./discuss.js";
@@ -444,7 +444,7 @@ export function runTui(
   deps: TuiOptions = {},
 ): Effect.Effect<TuiResult, TuiError> {
   if (deps.terminal === undefined && (!stdin.isTTY || !stdout.isTTY)) {
-    return Effect.fail(new TuiError({ operation: "terminal", message: "an interactive terminal is required" }));
+    return Effect.fail(interactiveTerminalRequired());
   }
   return Effect.tryPromise({
     try: async () => {

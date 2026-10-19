@@ -1,6 +1,7 @@
 import { Effect } from "effect";
 import { Key, matchesKey, ProcessTerminal, TUI, type Component, type Terminal } from "@earendil-works/pi-tui";
-import { TuiError } from "./errors.js";
+import { interactiveTerminalRequired, TuiError } from "./errors.js";
+import { visibleWidth } from "./text.js";
 import { RST } from "./theme.js";
 
 export interface AskQuestionOption {
@@ -64,10 +65,6 @@ export interface AskQuestionDeps {
 const ESC = String.fromCharCode(27);
 const ANSI_SGR = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
 const MOUSE_SEQUENCE = new RegExp(`^${ESC}\\[<(\\d+);(\\d+);(\\d+)[Mm]$`);
-
-function visibleWidth(value: string): number {
-  return value.replace(ANSI_SGR, "").length;
-}
 
 function fit(value: string, width: number): string {
   const limit = Math.max(0, width);
@@ -201,7 +198,7 @@ export function askQuestion(
   deps: AskQuestionDeps = {},
 ): Effect.Effect<AskQuestionAnswer | undefined, TuiError> {
   if (deps.terminal === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
-    return Effect.fail(new TuiError({ operation: "terminal", message: "an interactive terminal is required" }));
+    return Effect.fail(interactiveTerminalRequired());
   }
   return Effect.try({
     try: () => {

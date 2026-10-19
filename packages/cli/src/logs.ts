@@ -20,7 +20,7 @@ import {
   parseJsonRecord,
 } from "@piano/logging";
 import { foldJobSpans, jobs, parseProgressLines, parseRunStatus, progressRecordDeclaredFields, rebuildRunStatus, runStatusPath, workflowProgressPath, type JobView } from "@piano/orchestrator";
-import { CliArgumentError, LogsStorageError, TuiError, type CliError } from "./errors.js";
+import { CliArgumentError, interactiveTerminalRequired, LogsStorageError, TuiError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { listRunIds } from "./runs.js";
 import { formatRunId, oneLine, summarizeRun } from "./session-resume.js";
@@ -261,7 +261,7 @@ function pickRun(
       }));
     }
     if (!stdin.isTTY || !stdout.isTTY) {
-      yield* Effect.fail(new TuiError({ operation: "terminal", message: "an interactive terminal is required" }));
+      yield* Effect.fail(interactiveTerminalRequired());
     }
     const filename = trace ? "trace.jsonl" : "log.jsonl";
     const fileSystem = yield* FileSystem.FileSystem;
