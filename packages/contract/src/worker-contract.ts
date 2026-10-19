@@ -431,12 +431,6 @@ export function projectContractProjections(
   return projections;
 }
 
-function assertionRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
@@ -452,7 +446,7 @@ function isAssertionPathExpression(value: object): value is { readonly path: str
 function parseAssertionExpression(value: unknown, location: string): AssertionExpression {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  const record = assertionRecord(value);
+  const record = schemaRecord(value);
   if (record === undefined) throw new Error(`${location} must be a JSON primitive, path, or operation`);
   const keys = Object.keys(record);
   const path = ownValue(record, "path");
@@ -484,7 +478,7 @@ function parseContractAssertions(value: unknown): readonly ContractAssertion[] {
   if (!Array.isArray(value)) throw new Error(`${ASSERTION_KEYWORD} must be an array`);
   return value.map((entry, index) => {
     const location = `${ASSERTION_KEYWORD}[${index}]`;
-    const record = assertionRecord(entry);
+    const record = schemaRecord(entry);
     if (record === undefined) throw new Error(`${location} must be an object`);
     const allowed = new Set(["path", "message", "when", "test"]);
     const unknown = Object.keys(record).filter((key) => !allowed.has(key));
@@ -643,6 +637,9 @@ function stripsUnknownProperties(manifest: WorkerContractManifest): boolean {
 
 type JsonSchema = Record<string, unknown>;
 
+/** The JSON Schema keywords whose values are arrays of subschemas. */
+const JSON_SCHEMA_COMBINATORS = ["allOf", "anyOf", "oneOf"] as const;
+
 function schemaRecord(value: unknown): JsonSchema | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as JsonSchema
@@ -727,7 +724,7 @@ function structuralPropertyPaths(schema: JsonSchema): ReadonlySet<string> {
         visit(child, childPath, nextAncestors);
       }
     }
-    for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {
+    for (const keyword of JSON_SCHEMA_COMBINATORS) {
       const branches = record[keyword];
       if (Array.isArray(branches)) for (const branch of branches) visit(branch, path, nextAncestors);
     }
@@ -964,7 +961,7 @@ function schemaFragments(
   if (typeof record.$ref === "string") {
     fragments.push(...schemaFragments(schemaPointer(root, record.$ref), root, nextSeen, includePredicates));
   }
-  for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {
+  for (const keyword of JSON_SCHEMA_COMBINATORS) {
     if (Array.isArray(record[keyword])) {
       for (const branch of record[keyword]) fragments.push(...schemaFragments(branch, root, nextSeen, includePredicates));
     }
