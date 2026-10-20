@@ -3236,6 +3236,14 @@ workflow:
       }
       const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log.match(/"event":"workspace.prepared"/g)).toHaveLength(3);
+      // Tournament baselines are workspace snapshots, filed under a name that
+      // says so — never under prompts/.
+      const snapshotRoot = join(session.runDir, "workspace-snapshots", "job-1");
+      const regionKeys = await readdir(snapshotRoot);
+      expect(regionKeys).toHaveLength(1);
+      await expect(readdir(join(snapshotRoot, regionKeys[0]!)))
+        .resolves.toEqual(expect.arrayContaining(["baseline", "slot-baselines"]));
+      await expect(readdir(join(session.runDir, "prompts", "1"))).resolves.not.toContain("tournaments");
       const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;

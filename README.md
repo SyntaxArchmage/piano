@@ -430,6 +430,9 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │       ├── handoff/record.json   # immutable producer record for that invocation
 │       ├── handoff-context/<file> # immutable context injected into a consumer
 │       └── attempts/<n>/result.json # validation result per attempt
+├── workspace-snapshots/<jobOrdinal>/<region>/   # frozen tournament workspaces
+│   ├── baseline/                  # the parent workspace at region entry
+│   └── slot-baselines/<key>/      # each lane's baseline at allocation
 ├── sessions/
 │   ├── trajectory-<harness>-<worker>-<lane>/
 │   │   └── session/<session>.jsonl # per-worker actor transcript
