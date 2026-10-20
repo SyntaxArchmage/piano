@@ -30,6 +30,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileS
 import { setTimeout } from "node:timers";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { validationResultPathFromPrompt } from "../../common/validation-path.mjs";
 
 const args = process.argv.slice(2);
 const prompt = args.find((arg) => arg.includes("## Workflow stage context")) ?? args.at(-1) ?? "";
@@ -118,9 +119,9 @@ if (pauseAt !== undefined && store !== undefined) {
 }
 
 /** The validator result path a `validate` stage writes to, from its standard
- * prompt line (same extraction the tournament guard's fake uses). */
+ * prompt line (the extraction every guard shares). */
 function writeValidation(payload) {
-  const path = prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line.trim()))?.trim();
+  const path = validationResultPathFromPrompt(prompt);
   if (path === undefined) {
     process.stderr.write(`missing validation result path for stage ${stage}\n`);
     process.exit(4);

@@ -79,6 +79,31 @@ export function runtimeInvocationId(invocation: WorkflowRuntimeInvocation): stri
   return `${invocation.stageId}@${runtimeInstanceId(invocation.frames) ?? "root"}`;
 }
 
+/** The identity a `stageId@instance` key carries — the inverse of
+ * {@link runtimeInvocationId}, kept beside the speller so the two cannot
+ * drift. `frames` and `iteration` are absent for a root invocation or a key
+ * this build cannot parse. */
+export function parseInvocationId(invocationId: string): {
+  readonly stageId: string;
+  readonly instance?: string;
+  readonly frames?: readonly WorkflowRuntimeFrame[];
+  readonly iteration?: number;
+} {
+  const at = invocationId.indexOf("@");
+  const stageId = at === -1 ? invocationId : invocationId.slice(0, at);
+  const instance = at === -1 || invocationId.slice(at + 1) === "root"
+    ? undefined
+    : invocationId.slice(at + 1);
+  const frames = instance === undefined ? undefined : runtimeFramesFromInstanceId(instance);
+  const iteration = iterationOfInvocationId(invocationId);
+  return {
+    stageId,
+    ...(instance === undefined ? {} : { instance }),
+    ...(frames === undefined ? {} : { frames }),
+    ...(iteration === undefined ? {} : { iteration }),
+  };
+}
+
 /** The runtime instance of one region: its frame chain plus the region id.
  * The single spelling `region-finalized` records are keyed by — written and
  * read through this function so the two can never disagree. A frame chain is

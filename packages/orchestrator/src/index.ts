@@ -126,10 +126,8 @@ export {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
-  progressRecordDeclaredFields,
   progressRecordKind,
   reconcileCrashedRun,
-  workflowProgressPath,
   type WorkflowProgressRecord,
   type WorkflowProgressStartRecord,
   type WorkflowProgressExecutionStartRecord,
@@ -152,7 +150,6 @@ export {
   type JobView,
 } from "./job-spans.js";
 export {
-  acceptedInvocationOf,
   parseProgressLines,
   parseRunStatus,
   readRunStatus,
@@ -166,10 +163,12 @@ export {
   type RunTurn,
 } from "./run-status.js";
 export {
+  acceptedInvocations,
   invocationContextDir,
   invocationResultPath,
   invocationStreamPath,
   parseInvocationRecords,
+  readInvocationRecords,
   recordInvocationStart,
   type InvocationAcceptedRecord,
   type InvocationRecord,

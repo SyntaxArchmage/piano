@@ -31,8 +31,7 @@ import {
 } from "./progress.js";
 import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
 import {
-  iterationOfInvocationId,
-  runtimeFramesFromInstanceId,
+  parseInvocationId,
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
 
@@ -56,13 +55,7 @@ export interface RunAcceptedInvocation {
 /** The state document's accepted entry for one invocation id: the key,
  * spelled back out as structure. */
 export function acceptedInvocationOf(invocationId: string): RunAcceptedInvocation {
-  const at = invocationId.indexOf("@");
-  const stageId = at === -1 ? invocationId : invocationId.slice(0, at);
-  const instance = at === -1 || invocationId.slice(at + 1) === "root"
-    ? undefined
-    : invocationId.slice(at + 1);
-  const frames = instance === undefined ? undefined : runtimeFramesFromInstanceId(instance);
-  const iteration = iterationOfInvocationId(invocationId);
+  const { stageId, frames, iteration } = parseInvocationId(invocationId);
   return {
     invocationId,
     stageId,

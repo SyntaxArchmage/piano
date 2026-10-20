@@ -20,6 +20,7 @@ import { Effect, Fiber } from "effect";
 import { Data } from "effect";
 import { FileSystem } from "@effect/platform";
 import {
+  acceptedInvocations,
   iterationOfInvocationId,
   invocationStreamPath,
   parseInvocationRecords,
@@ -826,8 +827,7 @@ interface HandoffRecord {
  * stage-evidence scan reads. Absent for runs written before the stream. */
 function readInvocationStreamRows(runDir: string): HandoffRecord[] {
   try {
-    return parseInvocationRecords(readFileSync(invocationStreamPath(runDir), "utf8"))
-      .filter((row) => row.kind === "invocation-accepted")
+    return acceptedInvocations(parseInvocationRecords(readFileSync(invocationStreamPath(runDir), "utf8")))
       .map((row) => ({ ...row, id: row.invocationId }));
   } catch {
     return [];

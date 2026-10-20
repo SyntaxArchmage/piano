@@ -73,8 +73,7 @@ import {
   type HandoffMapItem,
 } from "./handoff.js";
 import {
-  invocationStreamPath,
-  parseInvocationRecords,
+  readInvocationRecords,
 } from "./invocations.js";
 import {
   cleanupMapWorkspaces,
@@ -342,12 +341,9 @@ function readRunJobLedger(
   FileSystem.FileSystem
 > {
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
     const status = yield* readRunStatus(runDir);
-    const stream = yield* fileSystem.readFileString(invocationStreamPath(runDir)).pipe(
-      Effect.orElseSucceed(() => undefined),
-    );
-    const recordedOrdinals = parseInvocationRecords(stream).map((row) => row.jobOrdinal);
+    const rows = yield* readInvocationRecords(runDir);
+    const recordedOrdinals = rows.map((row) => row.jobOrdinal);
     const jobOrdinals = status?.jobs.map((job) => job.jobOrdinal) ?? [];
     return {
       nextOrdinal: Math.max(0, hint ?? 0, ...jobOrdinals, ...recordedOrdinals) + 1,

@@ -387,17 +387,14 @@ export function executeStage(
         },
       });
     }
-    // The flat name this invocation's evidence paths use: allocated once per
-    // (job, invocation) and recorded on the invocation stream, so every
-    // attempt and every rebuild publish under the same name. The progress
-    // semaphore serializes it — concurrent map slots may start together, and
-    // two names must never land on one serial.
-    const ref = yield* progressSemaphore.withPermits(1)(recordInvocationStart(request.runDir, {
+    // The flat name this invocation's evidence paths use; the allocator
+    // serializes its own read–compute–append.
+    const ref = yield* recordInvocationStart(request.runDir, {
       runId: invocation.runId,
       jobOrdinal: invocation.jobOrdinal,
       invocationId: runtimeInvocationId(invocation),
       stageId: node.id,
-    }));
+    });
     const handoffPath = node.stage.handoff === undefined
       ? undefined
       : yield* writeHandoffContext(

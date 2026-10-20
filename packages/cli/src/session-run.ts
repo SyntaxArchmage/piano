@@ -510,10 +510,8 @@ function runSessionBody(
           const next = runId === active.session.id
             ? active.session
             : yield* createSession({ cwd: session.cwd, runsRoot, id: runId });
-          // A run whose process died mid-flight is reopened here, and its state
-          // still says `running`. Nothing is running it now, so fold the end
-          // record the crash skipped: the job reads `paused` and the
-          // continue-or-restart question is the human's to answer.
+          // Fold the end record a crash skipped, so the reopened job reads
+          // `paused` instead of `alive`.
           if (yield* reconcileCrashedRun(next.runDir)) {
             yield* TUI_LOG.warn("run.crash-reconciled", { data: { runId } });
           }

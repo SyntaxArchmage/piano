@@ -42,6 +42,10 @@ import {
 import {
   projectLegacyContractProjections,
 } from "../../packages/orchestrator/src/legacy-contract-projections.js";
+import {
+  isInvocationResultPath,
+  validationResultPathFromPrompt,
+} from "../common/validation-path.mjs";
 
 const runFile = promisify(execFile);
 
@@ -582,7 +586,7 @@ function iterationOf(request: AgentRequest): number {
 }
 
 function validationPath(request: AgentRequest): string {
-  const path = request.prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line));
+  const path = validationResultPathFromPrompt(request.prompt);
   if (path === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return path;
 }
@@ -1829,7 +1833,7 @@ workflow:
       const failingFileSystem: FileSystem.FileSystem = {
         ...baseFileSystem,
         rename: (from, to) => {
-          if (/\/results\/inv-\d+-attempt-\d+\.json$/.test(to) && !acceptedResultRenameFailed) {
+          if (isInvocationResultPath(to) && !acceptedResultRenameFailed) {
             acceptedResultRenameFailed = true;
             return Effect.fail(new Error("injected accepted-result rename failure") as never);
           }

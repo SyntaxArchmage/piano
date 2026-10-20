@@ -1,6 +1,5 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { join } from "node:path";
 import type { WorkflowError } from "./errors.js";
 import {
   acceptedInvocationOf,
@@ -355,9 +354,9 @@ export function progressRecordKind(record: object | null | undefined):
  * table because the interfaces above are compile-time only. Kept in the same
  * file, beside the types it mirrors; the drift test in tests/workflow builds a
  * maximal record of every kind and pins the two directions against each other.
- * Consumers: `--check`'s `undeclared-field` report. The `extra` envelope the
- * contract allows for experiments is itself a declared field of no kind yet —
- * experimental fields go inside it, not beside the declared ones. */
+ * The `extra` envelope the contract allows for experiments is itself a
+ * declared field of no kind yet — experimental fields go inside it, not
+ * beside the declared ones. */
 export const progressRecordDeclaredFields: Readonly<Record<string, readonly string[]>> = {
   "stage-accepted": [
     "version", "timestamp", "runId", "invocationId", "stageId", "stage", "worker",
@@ -406,12 +405,6 @@ export interface WorkflowProgressSnapshot {
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   readonly current?: WorkflowProgressCurrent;
   readonly error?: string;
-}
-
-/** @deprecated Current runs write no progress stream; `status.json` is the
- * run's state. Kept for readers of runs that predate the retirement. */
-export function workflowProgressPath(runDir: string): string {
-  return join(runDir, "progress.jsonl");
 }
 
 function emptyStageCounts(plan: WorkflowProgressPlan): Readonly<Record<string, WorkflowProgressStageCount>> {

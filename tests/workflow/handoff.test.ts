@@ -16,6 +16,10 @@ import {
 } from "../../packages/orchestrator/src/invocations.js";
 import { sharedWorkspaceBinding } from "../../packages/orchestrator/src/workspace.js";
 import type { WorkflowRuntimeInvocation } from "../../packages/orchestrator/src/workflow-runtime.js";
+import {
+  isInvocationResultPath,
+  validationResultPathFromPrompt,
+} from "../common/validation-path.mjs";
 
 const invocation: WorkflowRuntimeInvocation = {
   runId: "exec-1",
@@ -157,14 +161,14 @@ describe("invocation stream", () => {
         invocationId: "first@root",
         stageId: "first",
       };
-      const start = (extra: { jobOrdinal?: number; attempt?: number } = {}) =>
+      const start = (extra: { jobOrdinal?: number } = {}) =>
         Effect.runPromise(
           recordInvocationStart(runDir, { ...identity, ...extra }).pipe(Effect.provide(NodeFileSystem.layer)),
         );
       expect(await start()).toBe("inv-0001");
       // A later attempt of the same invocation publishes under the name the
       // first start allocated.
-      expect(await start({ attempt: 2 })).toBe("inv-0001");
+      expect(await start()).toBe("inv-0001");
       // A `/restart`'s new job gets its own name instead of overwriting the
       // abandoned job's files.
       expect(await start({ jobOrdinal: 2 })).toBe("inv-0002");
@@ -176,6 +180,15 @@ describe("invocation stream", () => {
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
+  });
+
+  it("publishes result files the shared prompt matcher recognizes", async () => {
+    // The one place the production speller and the guards' recognizer meet:
+    // if the layout renames, this fails before any fake worker starts hunting
+    // for a path in its prompt.
+    const resultPath = invocationResultPath("/runs/20261020T000000-abcdef", "inv-0001", 2);
+    expect(isInvocationResultPath(resultPath)).toBe(true);
+    expect(validationResultPathFromPrompt(`write it to:\n${resultPath}\ndone`)).toBe(resultPath);
   });
 
   it("refuses to write a row carrying an undeclared top-level field", async () => {

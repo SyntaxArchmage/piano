@@ -12,7 +12,6 @@ import {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
-  progressRecordDeclaredFields,
   progressRecordKind,
   readRunStatus,
   reconcileCrashedRun,
@@ -23,13 +22,14 @@ import {
   type WorkflowProgressSnapshot,
   type WorkflowProgressStreamRecord,
 } from "../../packages/orchestrator/src/index.js";
-import type {
-  WorkflowProgressActorTurnRecord,
-  WorkflowProgressExecutionFinishRecord,
-  WorkflowProgressExecutionStartRecord,
-  WorkflowProgressJobClosedRecord,
-  WorkflowProgressRegionFinalizedRecord,
-  WorkflowProgressStartRecord,
+import {
+  progressRecordDeclaredFields,
+  type WorkflowProgressActorTurnRecord,
+  type WorkflowProgressExecutionFinishRecord,
+  type WorkflowProgressExecutionStartRecord,
+  type WorkflowProgressJobClosedRecord,
+  type WorkflowProgressRegionFinalizedRecord,
+  type WorkflowProgressStartRecord,
 } from "../../packages/orchestrator/src/progress.js";
 
 const roots: string[] = [];

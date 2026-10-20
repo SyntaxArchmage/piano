@@ -96,14 +96,14 @@ export type InvocationStartedRecord = z.infer<typeof invocationStartedObject>;
 export type InvocationRecord = InvocationStartedRecord | InvocationAcceptedRecord;
 
 /** Write side: no undeclared top-level field may reach the stream. */
-const invocationWriteSchema = z.union([
+const invocationWriteSchema = z.discriminatedUnion("kind", [
   invocationStartedObject.strict(),
   invocationAcceptedObject.strict(),
 ]);
 
 /** Read side: a row from a newer build keeps its extra fields instead of
  * being discarded — unknown kinds and shapes drop below, not whole runs. */
-const invocationReadSchema = z.union([
+const invocationReadSchema = z.discriminatedUnion("kind", [
   invocationStartedObject.passthrough(),
   invocationAcceptedObject.passthrough(),
 ]);
@@ -156,6 +156,31 @@ export function parseInvocationRecords(raw: string | undefined): readonly Invoca
   return rows;
 }
 
+/** Read the run's invocation stream — the one reader every caller uses. */
+export function readInvocationRecords(
+  runDir: string,
+): Effect.Effect<readonly InvocationRecord[], never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const raw = yield* fileSystem.readFileString(invocationStreamPath(runDir)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
+    return parseInvocationRecords(raw);
+  });
+}
+
+/** The rows that record acceptances — the kind the producer evidence uses. */
+export function acceptedInvocations(
+  rows: readonly InvocationRecord[],
+): readonly InvocationAcceptedRecord[] {
+  return rows.filter((row): row is InvocationAcceptedRecord => row.kind === "invocation-accepted");
+}
+
+/** Guards the read–compute–append below: concurrent map slots may start
+ * together, and two invocations must never land on one serial. One process
+ * per run, so an in-process lock is enough. */
+const allocationSemaphore = Effect.unsafeMakeSemaphore(1);
+
 /** The flat evidence name of one invocation: `inv-<serial>`, a run-wide
  * serial. The first start of a (job, invocation) pair allocates it and records
  * it on the stream, so every later attempt and every rebuild reuse the same
@@ -168,15 +193,10 @@ export function recordInvocationStart(
     readonly jobOrdinal: number;
     readonly invocationId: string;
     readonly stageId: string;
-    readonly attempt?: number;
   },
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(invocationStreamPath(runDir)).pipe(
-      Effect.orElseSucceed(() => undefined),
-    );
-    const rows = parseInvocationRecords(raw);
+  return allocationSemaphore.withPermits(1)(Effect.gen(function* () {
+    const rows = yield* readInvocationRecords(runDir);
     const prior = rows.find((row) =>
       row.jobOrdinal === identity.jobOrdinal && row.invocationId === identity.invocationId);
     if (prior !== undefined) return prior.ref;
@@ -190,10 +210,9 @@ export function recordInvocationStart(
       ref,
       invocationId: identity.invocationId,
       stageId: identity.stageId,
-      ...(identity.attempt === undefined ? {} : { attempt: identity.attempt }),
     });
     return ref;
-  });
+  }));
 }
 
 /** One past the highest serial the stream already names, as the next

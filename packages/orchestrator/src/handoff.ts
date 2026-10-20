@@ -5,11 +5,12 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
+  acceptedInvocations,
   appendInvocationRecord,
   invocationContextDir,
-  invocationStreamPath,
-  parseInvocationRecords,
+  readInvocationRecords,
   type InvocationAcceptedRecord,
+  type InvocationRecord,
 } from "./invocations.js";
 import {
   runtimeInstanceId,
@@ -165,26 +166,21 @@ export function readHandoffRecord(
   invocation: WorkflowRuntimeInvocation,
 ): Effect.Effect<HandoffProducer | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const stream = yield* fileSystem.readFileString(invocationStreamPath(runDir)).pipe(
-      Effect.orElseSucceed(() => undefined),
-    );
-    const row = findAcceptedRow(stream, invocation);
+    const rows = yield* readInvocationRecords(runDir);
+    const row = findAcceptedRow(rows, invocation);
     return row === undefined ? undefined : yield* producerFromRow(row);
   });
 }
 
-/** The newest stream row for this job's invocation, or `undefined`. */
+/** The newest acceptance row for this job's invocation, or `undefined`. */
 function findAcceptedRow(
-  raw: string | undefined,
+  rows: readonly InvocationRecord[],
   invocation: WorkflowRuntimeInvocation,
 ): InvocationAcceptedRecord | undefined {
   const invocationId = runtimeInvocationId(invocation);
-  const rows = parseInvocationRecords(raw).filter((row): row is InvocationAcceptedRecord =>
-    row.kind === "invocation-accepted"
-    && row.jobOrdinal === invocation.jobOrdinal
-    && row.invocationId === invocationId);
-  return rows.at(-1);
+  return acceptedInvocations(rows)
+    .filter((row) => row.jobOrdinal === invocation.jobOrdinal && row.invocationId === invocationId)
+    .at(-1);
 }
 
 /** A stream row as the producer it records. `undefined` when the acceptance

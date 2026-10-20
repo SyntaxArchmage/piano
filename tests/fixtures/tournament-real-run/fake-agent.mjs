@@ -14,6 +14,7 @@ import { spawn } from "node:child_process";
 import { setInterval } from "node:timers";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { validationResultPathFromPrompt } from "../../common/validation-path.mjs";
 
 const prompt = process.argv.slice(2).find((arg) => arg.includes("## Workflow stage context")) ?? process.argv.at(-1) ?? "";
 const stage = /executing workflow stage `([^`]+)`/.exec(prompt)?.[1] ?? "unknown";
@@ -57,9 +58,9 @@ if (process.env.PIANO_FAKE_MODE === "hang") {
 }
 
 /** The validator result path a `validate` stage writes to, from its standard
- * prompt line (same extraction the in-process guards use). */
+ * prompt line (the extraction every guard shares). */
 function writeValidation(payload) {
-  const path = prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line.trim()))?.trim();
+  const path = validationResultPathFromPrompt(prompt);
   if (path === undefined) {
     process.stderr.write(`missing validation result path for stage ${stage}\n`);
     process.exit(4);

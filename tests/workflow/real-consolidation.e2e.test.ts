@@ -19,6 +19,7 @@ import {
   type HarnessName,
 } from "../../packages/harness/src/index.js";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
+import { validationResultPathFromPrompt } from "../common/validation-path.mjs";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
 // The one real turn per acceptance goes to the LLM service the developer
@@ -108,7 +109,7 @@ function slotOf(request: AgentRequest): number {
 /** The validator result path a `validate: true` stage writes to, lifted from the
  * stage's standard prompt line. */
 function validationPath(request: AgentRequest): string {
-  const found = request.prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line));
+  const found = validationResultPathFromPrompt(request.prompt);
   if (found === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return found;
 }
