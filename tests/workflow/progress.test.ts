@@ -50,7 +50,6 @@ function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowP
     harness: "pi",
     sessionId: "session",
     transcriptPath: "/tmp/transcript.jsonl",
-    handoffRecordPath: "/tmp/handoff.json",
     ...overrides,
   };
 }
@@ -429,7 +428,6 @@ describe("workflow progress stream", () => {
         instanceId: "root", iteration: 0, attempt: 1, workspace,
         actorKey: "v2/run-1/pi/basic/root", harness: "pi",
         sessionId: "s", transcriptPath: "/t.jsonl", resultPath: "/r.json",
-        handoffRecordPath: "/h/record.json",
         requestedModel: "m", requestedThinkingLevel: "low", model: "m2", thinkingLevel: "high",
         progress: { status: "accepted", acceptedStages: 1, completedStages: 1, plannedStages: 1, remainingStages: 0, stageCounts: {}, hint: "respond 1/1" },
         resultPayload: {}, projections: [],

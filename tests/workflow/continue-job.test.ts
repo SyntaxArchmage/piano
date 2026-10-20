@@ -3,7 +3,7 @@
 // not run again. The span repeats the job's ordinal, re-runs follow the attempt
 // numbers already on disk, and a missing producer record falls back to a
 // re-run rather than inventing a result.
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -112,7 +112,6 @@ describe("a continue resumes a paused job from its cursor", () => {
         ["first@root", "first output"],
         ["second@root", "second output"],
       ]);
-      expect(second.stages[0]?.handoffRecordPath).toContain("first/root/handoff/record.json");
 
       // The rebuilt producer feeds the consumer's context like any other.
       const contextPath = calls[0]?.contextFilePaths?.find((path) => path.endsWith("/first-report.json"));
@@ -153,9 +152,9 @@ describe("a continue resumes a paused job from its cursor", () => {
     const { root, session, run } = await setup();
     try {
       await run("do the work", []);
-      // "Producer record gone" means both homes of the evidence: the legacy
-      // per-invocation document and the run's invocation stream row.
-      await unlink(join(session.runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json"));
+      // "Producer record gone" means its evidence is off the invocation
+      // stream: drop the accepted rows for the stage and the rebuild has
+      // nothing left to trust.
       const streamPath = join(session.runDir, "system-log", "invocations.jsonl");
       const rows = (await readFile(streamPath, "utf8")).split("\n")
         .filter((line) => line.trim() !== "")

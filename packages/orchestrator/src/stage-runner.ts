@@ -162,7 +162,6 @@ export function rebuildAcceptedStage(
       ...(producer.metrics === undefined ? {} : { metrics: producer.metrics }),
       ...(producer.projections === undefined ? {} : { projections: producer.projections }),
       ...(producer.contract === undefined ? {} : { contract: producer.contract }),
-      handoffRecordPath: producer.recordPath,
       handoff: producer,
     };
   });
@@ -1058,7 +1057,6 @@ export function executeStage(
       ...(acceptedMetrics.length === 0 ? {} : { metrics: acceptedMetrics }),
       ...(acceptedProjections.length === 0 ? {} : { projections: acceptedProjections }),
       ...(validation?.kind === "worker" ? { contract: validation.reference } : {}),
-      handoffRecordPath: handoff.recordPath,
       handoff,
       ...(reviewNote === undefined ? {} : { reviewNote }),
     };
@@ -1094,7 +1092,6 @@ export function executeStage(
         sessionId: result.sessionId,
         transcriptPath: result.transcriptPath,
         ...(result.resultPath === undefined ? {} : { resultPath: result.resultPath }),
-        handoffRecordPath: result.handoffRecordPath,
         ...(result.requestedModel === undefined ? {} : { requestedModel: result.requestedModel }),
         ...(result.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: result.requestedThinkingLevel }),
         ...(result.model === undefined ? {} : { model: result.model }),
@@ -1146,7 +1143,6 @@ export function executeStage(
         ...(result.thinkingLevel === undefined ? {} : { thinkingLevel: result.thinkingLevel }),
         workspace: result.workspace,
         attempts: result.attempts,
-        handoffRecordPath: result.handoffRecordPath,
         progressPath,
         textLength: result.text.length,
       },

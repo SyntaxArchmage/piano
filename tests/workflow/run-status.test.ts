@@ -34,7 +34,6 @@ describe("run status", () => {
           workspace: { key: "shared", cwd: "/work", kind: "shared" },
           sessionId: "session-1",
           transcriptPath: "/t.jsonl",
-          handoffRecordPath: "/h.json",
         },
         {
           version: 1,

@@ -68,7 +68,6 @@ export interface HandoffProducer {
   /** Named values declared by the producer contract for downstream use. */
   readonly projections?: readonly ContractProjection[];
   readonly contract?: WorkerContractReference;
-  readonly recordPath: string;
 }
 
 export interface HandoffMapItem {
@@ -107,6 +106,8 @@ function writeJsonAtomic(
   });
 }
 
+/** Where a pre-stream run kept its per-invocation record document. Only the
+ * legacy reader still spells it. */
 function handoffRecordPath(runDir: string, invocation: WorkflowRuntimeInvocation): string {
   return join(invocationDirectory(runDir, invocation), "handoff", "record.json");
 }
@@ -114,33 +115,31 @@ function handoffRecordPath(runDir: string, invocation: WorkflowRuntimeInvocation
 /** Persist a producer's accepted result as immutable orchestrator-owned
  * evidence. Agent code never chooses this path or writes this metadata.
  *
- * The acceptance lands twice on purpose: the per-invocation `record.json` (the
- * document readers have always recovered from) and one row on the run's
- * `system-log/invocations.jsonl` stream — the metadata home going forward. */
+ * The acceptance is one row on the run's `system-log/invocations.jsonl`
+ * stream — the metadata home. Runs written before the stream kept a
+ * per-invocation `record.json` document instead; the reader still accepts
+ * those, but nothing writes them anymore. */
 export function writeHandoffRecord(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
-  producer: Omit<HandoffProducer, "id" | "stageId" | "instanceId" | "recordPath">,
+  producer: Omit<HandoffProducer, "id" | "stageId" | "instanceId">,
 ): Effect.Effect<HandoffProducer, WorkflowError, FileSystem.FileSystem> {
-  const recordPath = handoffRecordPath(runDir, invocation);
   const instanceId = runtimeInstanceId(invocation.frames);
   const record: HandoffProducer = {
     id: runtimeInvocationId(invocation),
     stageId: invocation.stageId,
     ...(instanceId === undefined ? {} : { instanceId }),
     ...producer,
-    recordPath,
   };
-  return writeJsonAtomic(recordPath, { version: 1, producer: record }).pipe(
-    Effect.zipRight(appendInvocationRecord(runDir, invocationAcceptedRow(invocation, record))),
+  return appendInvocationRecord(runDir, invocationAcceptedRow(invocation, record)).pipe(
     Effect.as(record),
   );
 }
 
 /** The stream row for one acceptance: the producer's evidence in its stream
- * spelling. `resultPayload` and `recordPath` stay out — the payload lives in
- * its result file behind the `sha256` pin, and a stream has no path to
- * self-reference. */
+ * spelling. `resultPayload` stays out — it lives in its result file behind
+ * the `sha256` pin, so the stream never holds a second copy of a worker's
+ * JSON. */
 function invocationAcceptedRow(
   invocation: WorkflowRuntimeInvocation,
   record: HandoffProducer,
@@ -193,7 +192,7 @@ export function readHandoffRecord(
     );
     const row = findAcceptedRow(stream, invocation);
     if (row !== undefined) {
-      const producer = yield* producerFromRow(runDir, invocation, row);
+      const producer = yield* producerFromRow(row);
       if (producer !== undefined) return producer;
     }
     return yield* readHandoffRecordDocument(runDir, invocation);
@@ -215,8 +214,6 @@ function findAcceptedRow(
  * pinned a result file the reader can no longer load or verify — evidence that
  * drifted is not evidence, so the caller re-runs the stage instead. */
 function producerFromRow(
-  runDir: string,
-  invocation: WorkflowRuntimeInvocation,
   row: InvocationAcceptedRecord,
 ): Effect.Effect<HandoffProducer | undefined, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
@@ -255,7 +252,6 @@ function producerFromRow(
       ...(row.metrics === undefined ? {} : { metrics: row.metrics }),
       ...(row.projections === undefined ? {} : { projections: row.projections }),
       ...(row.contract === undefined ? {} : { contract: row.contract }),
-      recordPath: handoffRecordPath(runDir, invocation),
     };
   });
 }

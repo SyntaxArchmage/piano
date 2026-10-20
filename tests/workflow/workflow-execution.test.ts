@@ -20,8 +20,10 @@ import {
   executeWorkflow,
   loadAndExecuteWorkflow,
   loadWorkflow,
+  parseInvocationRecords,
   readWorkflowExecutionContinuation,
   WorkflowError,
+  type InvocationAcceptedRecord,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowSignoffRequest,
   type WorkflowExecutionContinuation,
@@ -725,6 +727,11 @@ async function readRunStatusFile(runDir: string): Promise<{
   return JSON.parse(await readFile(join(runDir, "status.json"), "utf8"));
 }
 
+/** The run's accepted rows, as the invocation stream records them. */
+async function acceptedRows(runDir: string): Promise<readonly InvocationAcceptedRecord[]> {
+  return parseInvocationRecords(await readFile(join(runDir, "system-log", "invocations.jsonl"), "utf8"));
+}
+
 describe(" workflow execution", () => {
   it("materializes a validated CUDA KEEP before progress and downstream reads", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-promotion-run-"));
@@ -789,10 +796,8 @@ describe(" workflow execution", () => {
       expect(accepted.promotion?.resulting_best).toMatchObject({ path: "state/current-best.py", digest: candidateDigest });
       // The orchestrator rewrote the accepted payload after validating the
       // worker's bytes, and the record says who wrote what it carries.
-      const promotedRecord = JSON.parse(await readFile(result.stages[0]!.handoffRecordPath, "utf8")) as {
-        producer: { result?: { trust?: string } };
-      };
-      expect(promotedRecord.producer.result?.trust).toBe("orchestrator-materialized");
+      const promoted = (await acceptedRows(session.runDir)).find((row) => row.invocationId === result.stages[0]!.id);
+      expect(promoted?.result?.trust).toBe("orchestrator-materialized");
       expect(result.stages[0]?.projections).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "round.materialization-v1", pointer: "" }),
         expect.objectContaining({ id: "round.decision", value: "KEEP" }),
@@ -2704,9 +2709,9 @@ workflow:
       expect(calls[1]?.systemPromptPath).toContain("recipes/smoke-test-agent/system-prompt.md");
       const handoffPath = calls[1]?.contextFilePaths?.find((path) => path.endsWith("/upstream.json"));
       expect(handoffPath).toBeDefined();
-      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ stage: string; text: string; recordPath: string }> };
+      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ id: string; stage: string; text: string }> };
       expect(handoff.inputs).toMatchObject([{ stage: "first", text: "first output" }]);
-      expect(handoff.inputs[0]?.recordPath).toContain("prompts/1/invocations/first/root/handoff/record.json");
+      expect(handoff.inputs[0]?.id).toBe("first@root");
       expect(events.map((event) => event.workflow)).toEqual([
         {
           stageId: "first",
@@ -2848,12 +2853,15 @@ workflow:
       expect(new Set(proposes.map((call) => call.sessionDir))).toHaveLength(1);
       expect(proposes[0]?.sessionDir).toContain("sessions/trajectory-pi-basic-root");
       expect(new Set(proposes.map(validationPath)).size).toBe(3);
-      const proposalStages = result.stages.filter((stage) => stage.stageId === "tune.propose");
-      expect(proposalStages.map((stage) => stage.handoffRecordPath)).toEqual(expect.arrayContaining([
-        expect.stringContaining("tune.propose/tune/iter-0/handoff/record.json"),
-        expect.stringContaining("tune.propose/tune/iter-1/handoff/record.json"),
-        expect.stringContaining("tune.propose/tune/iter-2/handoff/record.json"),
-      ]));
+      // Every iteration's acceptance landed as its own stream row, under its
+      // own runtime instance, matching the stages the run produced.
+      const proposalRows = (await acceptedRows(session.runDir)).filter((row) => row.stageId === "tune.propose");
+      expect(proposalRows.map((row) => row.instanceId).sort()).toEqual(["tune/iter-0", "tune/iter-1", "tune/iter-2"]);
+      expect(result.stages.filter((stage) => stage.stageId === "tune.propose").map((stage) => stage.id).sort()).toEqual([
+        "tune.propose@tune/iter-0",
+        "tune.propose@tune/iter-1",
+        "tune.propose@tune/iter-2",
+      ]);
       const handoffPaths = proposes.map((call) => call.contextFilePaths?.find((path) => path.endsWith("/seed.json")));
       expect(new Set(handoffPaths).size).toBe(3);
     } finally {
@@ -3935,10 +3943,8 @@ workflow:
       // verify the evidence still holds what was accepted — and who wrote it.
       const produceStage = result.stages.find((stage) => stage.stageId === "produce")!;
       const acceptedBytes = await readFile(produceStage.resultPath!);
-      const onDisk = JSON.parse(await readFile(produceStage.handoffRecordPath, "utf8")) as {
-        producer: { result?: { path: string; sha256: string; trust: string } };
-      };
-      expect(onDisk.producer.result).toEqual({
+      const acceptedRow = (await acceptedRows(session.runDir)).find((row) => row.invocationId === produceStage.id);
+      expect(acceptedRow?.result).toEqual({
         path: produceStage.resultPath,
         sha256: `sha256:${createHash("sha256").update(acceptedBytes).digest("hex")}`,
         trust: "worker",
@@ -4359,7 +4365,8 @@ workflow:
       expect(log).toContain('"event":"agentic.task.completed"');
       expect(log).toContain('"event":"agent.turn.started"');
       expect(log).toContain('"event":"agent.turn.completed"');
-      expect(log).toContain('"handoffRecordPath"');
+      // The acceptance evidence itself lands on the invocation stream.
+      expect((await acceptedRows(session.runDir)).map((row) => row.invocationId)).toEqual(["respond@root"]);
       expect(log).toContain('"key":"shared-root"');
       expect(trace).toContain('"fn":"loadWorkflow"');
       expect(trace).toContain('"fn":"compileWorkflow"');
@@ -4401,10 +4408,13 @@ workflow:
         model: "stage-model",
         thinkingLevel: "high",
       });
-      const handoffPath = result.stages[0]?.handoffRecordPath;
-      expect(handoffPath).toBeDefined();
-      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { producer: Record<string, unknown> };
-      expect(handoff.producer).toMatchObject({ requestedModel: "stage-model", requestedThinkingLevel: "high", model: "stage-model", thinkingLevel: "high" });
+      const acceptedRow = (await acceptedRows(session.runDir)).find((row) => row.invocationId === result.stages[0]!.id);
+      expect(acceptedRow).toMatchObject({
+        requestedModel: "stage-model",
+        requestedThinkingLevel: "high",
+        model: "stage-model",
+        thinkingLevel: "high",
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4976,8 +4986,9 @@ workflow:
 
       const status = await readRunStatusFile(session.runDir);
       expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1, 2, 3]);
-      // The trees follow the ordinals: three jobs, no job writing over another.
-      expect((await readdir(join(session.runDir, "prompts"))).sort()).toEqual(["1", "2", "3"]);
+      // The stream follows the ordinals: one acceptance per job, no job
+      // writing over another's evidence.
+      expect((await acceptedRows(session.runDir)).map((row) => row.jobOrdinal)).toEqual([1, 2, 3]);
       expect(calls).toHaveLength(3);
     } finally {
       await rm(root, { recursive: true, force: true });

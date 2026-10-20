@@ -44,7 +44,6 @@ function record(): Omit<WorkflowProgressRecord, "version" | "timestamp"> {
     harness: "pi",
     sessionId: "session",
     transcriptPath: "/tmp/transcript.jsonl",
-    handoffRecordPath: "/tmp/handoff.json",
     progress: {
       status: "accepted",
       acceptedStages: 1,

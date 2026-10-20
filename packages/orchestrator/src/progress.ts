@@ -113,7 +113,6 @@ export interface WorkflowProgressRecord {
   readonly sessionId: string;
   readonly transcriptPath: string;
   readonly resultPath?: string;
-  readonly handoffRecordPath: string;
   /** Configuration requested by the workflow before provider capability
    * resolution. Keep it separate from the effective harness values below. */
   readonly requestedModel?: string;
@@ -356,7 +355,7 @@ export const progressRecordDeclaredFields: Readonly<Record<string, readonly stri
   "stage-accepted": [
     "version", "timestamp", "runId", "invocationId", "stageId", "stage", "worker",
     "instanceId", "iteration", "attempt", "workspace", "actorKey", "harness",
-    "sessionId", "transcriptPath", "resultPath", "handoffRecordPath",
+    "sessionId", "transcriptPath", "resultPath",
     "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel",
     "progress", "resultPayload", "projections", "contract",
   ],

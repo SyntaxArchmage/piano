@@ -24,42 +24,7 @@ const invocation: WorkflowRuntimeInvocation = {
 };
 
 describe("handoff record", () => {
-  /** The record is evidence a later resume reads back, so its bytes are a
-   * contract: two-space JSON with a trailing newline, under the invocation
-   * directory. Pinned here ahead of the write path being shared with the other
-   * atomic writers. */
-  it("lands under the invocation directory as two-space JSON with a trailing newline", async () => {
-    const runDir = await mkdtemp(join(tmpdir(), "piano-handoff-bytes-"));
-    try {
-      const record = await Effect.runPromise(writeHandoffRecord(runDir, invocation, {
-        stage: "first",
-        worker: "tune",
-        text: "hello",
-        sessionId: "session-1",
-        transcriptPath: join(runDir, "transcript.jsonl"),
-        workspace: sharedWorkspaceBinding(runDir),
-      }).pipe(Effect.provide(NodeFileSystem.layer)));
-
-      expect(record.recordPath).toBe(join(runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json"));
-      const raw = await readFile(record.recordPath, "utf8");
-      expect(raw).toBe(`${JSON.stringify({ version: 1, producer: record }, null, 2)}\n`);
-      expect(JSON.parse(raw)).toMatchObject({
-        version: 1,
-        producer: {
-          id: "first@root",
-          stageId: "first",
-          stage: "first",
-          worker: "tune",
-          text: "hello",
-          recordPath: record.recordPath,
-        },
-      });
-    } finally {
-      await rm(runDir, { recursive: true, force: true });
-    }
-  });
-
-  it("mirrors the acceptance onto the run's invocation stream, payload-free", async () => {
+  it("records the acceptance on the run's invocation stream, payload-free", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-handoff-stream-"));
     try {
       const resultPath = join(runDir, "attempts", "2", "result.json");
@@ -93,15 +58,18 @@ describe("handoff record", () => {
         sessionId: "session-1",
         result: { path: resultPath, sha256: "sha256:abc", trust: "worker" },
       });
-      // The payload lives in its result file behind the sha256 pin, and a
-      // stream has no path back to the legacy record document: neither is
-      // copied into the row.
+      // The payload lives in its result file behind the sha256 pin, and the
+      // legacy per-invocation document is retired: the stream is the only
+      // home the acceptance gets.
       expect(rows[0]).not.toHaveProperty("resultPayload");
       expect(rows[0]).not.toHaveProperty("recordPath");
+      await expect(readFile(join(runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json"), "utf8"))
+        .rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
   });
+
   it("rebuilds a producer from its stream row alone, verifying the pinned result", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-handoff-rebuild-"));
     try {
@@ -121,9 +89,6 @@ describe("handoff record", () => {
         result: { path: resultPath, sha256, trust: "worker" },
         resultPayload: { answer: 42 },
       }).pipe(Effect.provide(NodeFileSystem.layer)));
-      // The stream is the record going forward: no document on disk at all.
-      const recordPath = join(runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json");
-      await rm(recordPath, { force: true });
 
       const rebuilt = await Effect.runPromise(
         readHandoffRecord(runDir, invocation).pipe(Effect.provide(NodeFileSystem.layer)),
