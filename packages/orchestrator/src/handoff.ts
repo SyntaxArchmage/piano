@@ -5,6 +5,10 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
+  appendInvocationRecord,
+  type InvocationAcceptedRecord,
+} from "./invocations.js";
+import {
   invocationDirectory,
   runtimeInstanceId,
   runtimeInvocationId,
@@ -106,7 +110,11 @@ function handoffRecordPath(runDir: string, invocation: WorkflowRuntimeInvocation
 }
 
 /** Persist a producer's accepted result as immutable orchestrator-owned
- * evidence. Agent code never chooses this path or writes this metadata. */
+ * evidence. Agent code never chooses this path or writes this metadata.
+ *
+ * The acceptance lands twice on purpose: the per-invocation `record.json` (the
+ * document readers have always recovered from) and one row on the run's
+ * `system-log/invocations.jsonl` stream — the metadata home going forward. */
 export function writeHandoffRecord(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
@@ -122,8 +130,46 @@ export function writeHandoffRecord(
     recordPath,
   };
   return writeJsonAtomic(recordPath, { version: 1, producer: record }).pipe(
+    Effect.zipRight(appendInvocationRecord(runDir, invocationAcceptedRow(invocation, record))),
     Effect.as(record),
   );
+}
+
+/** The stream row for one acceptance: the producer's evidence in its stream
+ * spelling. `resultPayload` and `recordPath` stay out — the payload lives in
+ * its result file behind the `sha256` pin, and a stream has no path to
+ * self-reference. */
+function invocationAcceptedRow(
+  invocation: WorkflowRuntimeInvocation,
+  record: HandoffProducer,
+): InvocationAcceptedRecord {
+  return {
+    version: 1,
+    kind: "invocation-accepted",
+    timestamp: new Date().toISOString(),
+    runId: invocation.runId,
+    jobOrdinal: invocation.jobOrdinal,
+    invocationId: record.id,
+    stageId: record.stageId,
+    stage: record.stage,
+    worker: record.worker,
+    ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
+    ...(record.attempt === undefined ? {} : { attempt: record.attempt }),
+    ...(record.actorKey === undefined ? {} : { actorKey: record.actorKey }),
+    sessionId: record.sessionId,
+    transcriptPath: record.transcriptPath,
+    text: record.text,
+    workspace: record.workspace,
+    ...(record.resultPath === undefined ? {} : { resultPath: record.resultPath }),
+    ...(record.result === undefined ? {} : { result: record.result }),
+    ...(record.metrics === undefined ? {} : { metrics: record.metrics }),
+    ...(record.projections === undefined ? {} : { projections: record.projections }),
+    ...(record.contract === undefined ? {} : { contract: record.contract }),
+    ...(record.requestedModel === undefined ? {} : { requestedModel: record.requestedModel }),
+    ...(record.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: record.requestedThinkingLevel }),
+    ...(record.model === undefined ? {} : { model: record.model }),
+    ...(record.thinkingLevel === undefined ? {} : { thinkingLevel: record.thinkingLevel }),
+  };
 }
 
 /** Read a producer's persisted record back, or `undefined` when it is missing
