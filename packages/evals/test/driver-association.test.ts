@@ -34,6 +34,19 @@ describe("eval run-directory association", () => {
     expect(result.candidates).toEqual(["run-a", "run-b"]);
   });
 
+  it("matches the workspace from the system-log evidence layout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-eval-association-"));
+    roots.push(root);
+    await mkdir(join(root, "run-a"));
+    await mkdir(join(root, "run-b"));
+    await mkdir(join(root, "run-b", "system-log"));
+    await writeFile(join(root, "run-b", "system-log", "log.jsonl"), JSON.stringify({ workspace: "/tmp/workspace-b" }));
+
+    const result = await Effect.runPromise(findNewRunDir(root, new Set(), "/tmp/workspace-b", Date.now() - 1_000));
+    expect(result.path).toBe(join(root, "run-b"));
+    expect(result.candidates).toEqual(["run-a", "run-b"]);
+  });
+
   it("does not attach a lone run that explicitly belongs to another workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-eval-association-"));
     roots.push(root);

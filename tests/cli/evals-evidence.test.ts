@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findTranscriptPath, readHandoffRecords } from "../../packages/evals/src/driver.js";
+import { findTranscriptPath, evidencePaths, readHandoffRecords } from "../../packages/evals/src/driver.js";
 
 async function tempRunDir(prefix: string): Promise<string> {
   return await mkdtemp(join(tmpdir(), prefix));
@@ -41,6 +41,41 @@ describe("evals evidence discovery across run layouts", () => {
       await writeFile(top, '{"role":"user","content":"go"}\n');
       await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", transcriptPath: top }));
       expect(findTranscriptPath(runDir)).toBe(top);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves the run's evidence streams through system-log/ and the legacy root", async () => {
+    // The audience-split layout moved the streams under system-log/: a reader
+    // that still named the root spellings reported every new run as evidence-
+    // missing while the files sat one directory below.
+    const runDir = await tempRunDir("piano-evals-evidence-paths-");
+    try {
+      await mkdir(join(runDir, "system-log"), { recursive: true });
+      for (const name of ["log.jsonl", "trace.jsonl", "trajectory.jsonl"]) {
+        await writeFile(join(runDir, "system-log", name), "{}\n");
+      }
+      expect(evidencePaths(runDir)).toMatchObject({
+        logPath: join(runDir, "system-log", "log.jsonl"),
+        tracePath: join(runDir, "system-log", "trace.jsonl"),
+        trajectoryPath: join(runDir, "system-log", "trajectory.jsonl"),
+      });
+
+      // A run that predates the split stays evaluable through its root files.
+      const legacy = await tempRunDir("piano-evals-evidence-legacy-");
+      try {
+        for (const name of ["log.jsonl", "trace.jsonl", "trajectory.jsonl"]) {
+          await writeFile(join(legacy, name), "{}\n");
+        }
+        expect(evidencePaths(legacy)).toMatchObject({
+          logPath: join(legacy, "log.jsonl"),
+          tracePath: join(legacy, "trace.jsonl"),
+          trajectoryPath: join(legacy, "trajectory.jsonl"),
+        });
+      } finally {
+        await rm(legacy, { recursive: true, force: true });
+      }
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }

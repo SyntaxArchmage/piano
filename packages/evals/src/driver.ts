@@ -47,7 +47,12 @@ import type {
   TrajectoryMetrics,
 } from "./types.js";
 import type { AgentEvent } from "@piano/harness";
-import { parseTrajectory } from "@piano/logging";
+import {
+  logStreamPathCandidates,
+  parseTrajectory,
+  traceStreamPathCandidates,
+  trajectoryStreamPathCandidates,
+} from "@piano/logging";
 import {
   workflowEvaluator,
   type WorkflowTrajectoryEvaluation,
@@ -719,16 +724,35 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function evidencePaths(runDir: string): Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript"> {
+/** The first present path of a run's evidence stream — current `system-log/`
+ * layout first, the legacy root spelling second. Falls back to the primary
+ * spelling so a missing stream is reported against where it would be. */
+function resolveEvidencePath(candidates: readonly string[]): string {
+  return candidates.find((path) => existsSync(path)) ?? candidates[0]!;
+}
+
+/** Read the first present candidate of a run's evidence stream. */
+function readEvidenceStream(runDir: string, candidates: readonly string[]): string | undefined {
+  for (const path of candidates) {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      // The candidate is simply the wrong layout for this run.
+    }
+  }
+  return undefined;
+}
+
+export function evidencePaths(runDir: string): Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript"> {
   // The stream is the run's trajectory record; the document it used to be
   // folded into is gone, so the path names the stream.
-  const trajectoryPath = join(runDir, "trajectory.jsonl");
+  const trajectoryPath = resolveEvidencePath(trajectoryStreamPathCandidates(runDir));
   const transcriptPath = findTranscriptPath(runDir);
   return {
     runDir,
     ...(existsSync(trajectoryPath) ? { trajectoryPath } : {}),
-    logPath: join(runDir, "log.jsonl"),
-    tracePath: join(runDir, "trace.jsonl"),
+    logPath: resolveEvidencePath(logStreamPathCandidates(runDir)),
+    tracePath: resolveEvidencePath(traceStreamPathCandidates(runDir)),
     ...(transcriptPath === undefined ? {} : { transcriptPath, transcript: analyzeTranscript(transcriptPath) }),
   };
 }
@@ -824,12 +848,7 @@ export function readHandoffRecords(runDir: string): HandoffRecord[] {
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
-  let stream: string | undefined;
-  try {
-    stream = readFileSync(join(runDir, "trajectory.jsonl"), "utf8");
-  } catch {
-    stream = undefined;
-  }
+  const stream = readEvidenceStream(runDir, trajectoryStreamPathCandidates(runDir));
   // The stream is the record; every consumer answers "what happened" from it.
   const trajectory = stream === undefined ? undefined : parseTrajectory(stream);
   const events: readonly unknown[] = trajectory?.events ?? [];
@@ -870,7 +889,7 @@ function stageLogEvidence(runDir: string): StageLogEvidence[] {
     byId.set(id, { ...previous, ...patch });
   };
   try {
-    const lines = readFileSync(join(runDir, "log.jsonl"), "utf8").split("\n");
+    const lines = (readEvidenceStream(runDir, logStreamPathCandidates(runDir)) ?? "").split("\n");
     for (const line of lines) {
       if (line.trim() === "") continue;
       let value: Record<string, unknown>;
@@ -1239,8 +1258,16 @@ function referencesWorkspace(raw: string, workspaceDir: string): boolean {
   return false;
 }
 
-/** The evidence streams that carry a run's workspace reference. */
-const RUN_EVIDENCE_FILES = ["log.jsonl", "progress.jsonl", "trace.jsonl"] as const;
+/** The evidence streams that carry a run's workspace reference: the current
+ * `system-log/` spelling first, then the legacy root files (including the
+ * retired progress ledger, which old runs still carry). */
+const RUN_EVIDENCE_FILES = [
+  "system-log/log.jsonl",
+  "system-log/trace.jsonl",
+  "log.jsonl",
+  "progress.jsonl",
+  "trace.jsonl",
+] as const;
 
 interface RunWorkspaceEvidence {
   readonly observed: boolean;
@@ -1373,7 +1400,7 @@ function resolveTrajectory(
   return Effect.try({
     try: () => evaluateTrajectory(trajectoryEvents(runDir) as unknown as Parameters<typeof evaluateTrajectory>[0]),
     catch: (cause) => new TrajectoryEvalError({
-      path: join(runDir, "trajectory.jsonl"),
+      path: resolveEvidencePath(trajectoryStreamPathCandidates(runDir)),
       message: cause instanceof Error ? cause.message : String(cause),
     }),
   });
