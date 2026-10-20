@@ -34,6 +34,7 @@ import {
   loadWorkflow,
   readWorkflowExecutionContinuation,
   readRunStatus,
+  reconcileCrashedRun,
   refreshRunStatus,
   runStatusPath,
   setWorkflowSelection,
@@ -509,6 +510,13 @@ function runSessionBody(
           const next = runId === active.session.id
             ? active.session
             : yield* createSession({ cwd: session.cwd, runsRoot, id: runId });
+          // A run whose process died mid-flight is reopened here, and its state
+          // still says `running`. Nothing is running it now, so fold the end
+          // record the crash skipped: the job reads `paused` and the
+          // continue-or-restart question is the human's to answer.
+          if (yield* reconcileCrashedRun(next.runDir)) {
+            yield* TUI_LOG.warn("run.crash-reconciled", { data: { runId } });
+          }
           // A run records the workflow it executed. Reload it so the resumed
           // prompt runs the same stages; keep the current one when the run
           // predates the field or the file has since moved or broken, and say so

@@ -14,6 +14,8 @@ import {
   markWorkflowStageStarted,
   progressRecordDeclaredFields,
   progressRecordKind,
+  readRunStatus,
+  reconcileCrashedRun,
   runStatusPath,
   type WorkflowError,
   type WorkflowProgressPlan,
@@ -468,5 +470,32 @@ describe("workflow progress stream", () => {
       expect(keys.filter((key) => !declared.includes(key))).toEqual([]);
       expect(declared.filter((field) => !keys.includes(field))).toEqual([]);
     }
+  });
+});
+
+describe("crash reconcile", () => {
+  it("folds the end record a crashed run never wrote, and only that", async () => {
+    const runDir = await newRunDir();
+    await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
+    await run(markWorkflowStageStarted(runDir, "execution", {
+      invocationId: "tune@tune/iter-0",
+      stageId: "tune",
+      stage: "tune",
+      worker: "worker",
+      attempt: 1,
+      instanceId: "tune/iter-0",
+    }));
+
+    // The process died here: the state still says `running` and its job
+    // `alive`. A reopen folds the missing `execution-finished`, so the job
+    // reads `paused` and the continue-or-restart question is the human's.
+    expect(await run(reconcileCrashedRun(runDir))).toBe(true);
+    const status = await run(readRunStatus(runDir));
+    expect(status?.status).toBe("paused");
+    expect(status?.jobs.map((job) => job.state)).toEqual(["paused"]);
+
+    // A run already at rest is left alone: reconcile is not a rewrite.
+    expect(await run(reconcileCrashedRun(runDir))).toBe(false);
+    expect((await run(readRunStatus(runDir)))?.status).toBe("paused");
   });
 });

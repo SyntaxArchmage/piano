@@ -946,6 +946,23 @@ export function finalizeWorkflowProgress(
   });
 }
 
+/** A crashed run reopened: its process died before it could record the end of
+ * its execution, so the state still says `running` and its job `alive`.
+ * Nothing is running it now — one process per run — so fold the missing
+ * `execution-finished` and the job reads `paused`, which is the
+ * continue-or-restart question a human answers. Returns whether anything was
+ * reconciled; a run already at rest is left alone. */
+export function reconcileCrashedRun(
+  runDir: string,
+): Effect.Effect<boolean, WorkflowError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const status = yield* readRunStatus(runDir);
+    if (status === undefined || status.status !== "running") return false;
+    yield* finalizeWorkflowProgress(runDir, status.runId, "paused");
+    return true;
+  });
+}
+
 /** Close one job by the human's own action, so its paused spans read as
  * finished with that outcome. Appends the marker and folds it like every
  * other record; the job's own spans keep saying how they stopped. */

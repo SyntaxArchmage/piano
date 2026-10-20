@@ -128,6 +128,7 @@ export {
   markWorkflowStageStarted,
   progressRecordDeclaredFields,
   progressRecordKind,
+  reconcileCrashedRun,
   workflowProgressPath,
   type WorkflowProgressRecord,
   type WorkflowProgressStartRecord,

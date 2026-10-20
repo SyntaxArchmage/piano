@@ -34,6 +34,7 @@ vi.mock("@piano/orchestrator", () => ({
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
   refreshRunStatus: vi.fn(() => Effect.void),
+  reconcileCrashedRun: vi.fn(() => Effect.succeed(false)),
   runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
