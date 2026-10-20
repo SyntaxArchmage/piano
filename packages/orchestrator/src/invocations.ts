@@ -84,28 +84,18 @@ export function invocationStreamPath(runDir: string): string {
   return join(runDir, "system-log", "invocations.jsonl");
 }
 
-/** Append one record to the run's invocation stream, after its schema has
- * passed. A row that does not match is a writer bug and fails the write —
- * evidence that does not fit its contract must not land half-understood. */
+/** Append one record to the run's invocation stream. A row its schema refuses
+ * is a writer bug and fails the write — evidence that does not fit its
+ * contract must not land half-understood. */
 export function appendInvocationRecord(
   runDir: string,
   record: InvocationAcceptedRecord,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   const path = invocationStreamPath(runDir);
   return Effect.gen(function* () {
-    const parsed = invocationWriteSchema.safeParse(record);
-    if (!parsed.success) {
-      return yield* Effect.fail(workflowError(
-        "schedule",
-        path,
-        `invocation record does not match its schema: ${parsed.error.issues
-          .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
-          .join("; ")}`,
-      ));
-    }
     const line = yield* Effect.try({
-      try: () => `${JSON.stringify(parsed.data)}\n`,
-      catch: (cause) => workflowError("schedule", path, `serialize: ${errorMessage(cause)}`),
+      try: () => `${JSON.stringify(invocationWriteSchema.parse(record))}\n`,
+      catch: (cause) => workflowError("schedule", path, `invocation record rejected: ${errorMessage(cause)}`),
     });
     const fileSystem = yield* FileSystem.FileSystem;
     yield* appendJsonlLine(fileSystem, path, line, (step, cause) =>

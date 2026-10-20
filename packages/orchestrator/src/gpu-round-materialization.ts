@@ -7,7 +7,7 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect, Either } from "effect";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import {
   projectContractProjections,
@@ -25,6 +25,7 @@ import {
 import { installStagingFile, writeFileAtomic } from "./atomic-write.js";
 import { gpuRoundMaterializationProtocol, replaceProjectedValue } from "./gpu-round-protocol.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
+import { sha256Bytes } from "./handoff.js";
 import { validateStagePayload } from "./stage-validation.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { ResolvedStageValidation } from "./execution-types.js";
@@ -34,10 +35,6 @@ import {
   normalizeDurableMetricCompatibility,
   parseBenchmarkIdentity,
 } from "./stage-metrics.js";
-function sha256Bytes(value: Uint8Array): string {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
 function writeJsonAtomicWorkflow(
   path: string,
   value: unknown,

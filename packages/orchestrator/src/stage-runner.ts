@@ -7,7 +7,6 @@
 // module forward, so the dependency stays one-way.
 
 import { FileSystem } from "@effect/platform";
-import { createHash } from "node:crypto";
 import { Duration, Either, Effect } from "effect";
 import { TRACE, failureDetails, isCancellation, type Logging } from "@piano/logging";
 import {
@@ -22,6 +21,7 @@ import {
   handoffContextPath,
   mapItemContextPath,
   readHandoffRecord,
+  sha256Bytes,
   writeHandoffContext,
   writeHandoffRecord,
   writeMapItemContext,
@@ -1006,7 +1006,7 @@ export function executeStage(
         Effect.flatMap((fileSystem) => fileSystem.readFile(acceptedResultPath)),
         Effect.map((bytes) => ({
           path: acceptedResultPath,
-          sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          sha256: sha256Bytes(bytes),
           trust: materializedPayload ? "orchestrator-materialized" as const : "worker" as const,
         })),
         Effect.mapError((cause) => workflowError(

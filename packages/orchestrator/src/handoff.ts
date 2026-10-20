@@ -2,6 +2,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { asRecord, parseJsonRecord } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
@@ -112,6 +113,12 @@ function handoffRecordPath(runDir: string, invocation: WorkflowRuntimeInvocation
   return join(invocationDirectory(runDir, invocation), "handoff", "record.json");
 }
 
+/** The content pin of a result file — the one `sha256:<hex>` spelling a
+ * record's `result.sha256` carries and its verifier recomputes. */
+export function sha256Bytes(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
 /** Persist a producer's accepted result as immutable orchestrator-owned
  * evidence. Agent code never chooses this path or writes this metadata.
  *
@@ -136,40 +143,23 @@ export function writeHandoffRecord(
   );
 }
 
-/** The stream row for one acceptance: the producer's evidence in its stream
- * spelling. `resultPayload` stays out — it lives in its result file behind
- * the `sha256` pin, so the stream never holds a second copy of a worker's
- * JSON. */
+/** The stream row for one acceptance: the producer's evidence under the
+ * stream's envelope. `resultPayload` stays out — it lives in its result file
+ * behind the `sha256` pin, so the stream never holds a second copy of a
+ * worker's JSON. */
 function invocationAcceptedRow(
   invocation: WorkflowRuntimeInvocation,
   record: HandoffProducer,
 ): InvocationAcceptedRecord {
+  const { id, resultPayload: _resultPayload, ...evidence } = record;
   return {
     version: 1,
     kind: "invocation-accepted",
     timestamp: new Date().toISOString(),
     runId: invocation.runId,
     jobOrdinal: invocation.jobOrdinal,
-    invocationId: record.id,
-    stageId: record.stageId,
-    stage: record.stage,
-    worker: record.worker,
-    ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
-    ...(record.attempt === undefined ? {} : { attempt: record.attempt }),
-    ...(record.actorKey === undefined ? {} : { actorKey: record.actorKey }),
-    sessionId: record.sessionId,
-    transcriptPath: record.transcriptPath,
-    text: record.text,
-    workspace: record.workspace,
-    ...(record.resultPath === undefined ? {} : { resultPath: record.resultPath }),
-    ...(record.result === undefined ? {} : { result: record.result }),
-    ...(record.metrics === undefined ? {} : { metrics: record.metrics }),
-    ...(record.projections === undefined ? {} : { projections: record.projections }),
-    ...(record.contract === undefined ? {} : { contract: record.contract }),
-    ...(record.requestedModel === undefined ? {} : { requestedModel: record.requestedModel }),
-    ...(record.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: record.requestedThinkingLevel }),
-    ...(record.model === undefined ? {} : { model: record.model }),
-    ...(record.thinkingLevel === undefined ? {} : { thinkingLevel: record.thinkingLevel }),
+    invocationId: id,
+    ...evidence,
   };
 }
 
@@ -222,36 +212,18 @@ function producerFromRow(
       const fileSystem = yield* FileSystem.FileSystem;
       const bytes = yield* fileSystem.readFile(row.result.path).pipe(Effect.orElseSucceed(() => undefined));
       if (bytes === undefined) return undefined;
-      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-      if (digest !== row.result.sha256) return undefined;
+      if (sha256Bytes(bytes) !== row.result.sha256) return undefined;
       try {
         resultPayload = JSON.parse(new TextDecoder().decode(bytes));
       } catch {
         return undefined;
       }
     }
+    const { version: _version, kind: _kind, timestamp: _timestamp, runId: _runId, jobOrdinal: _jobOrdinal, invocationId, ...evidence } = row;
     return {
-      id: row.invocationId,
-      stageId: row.stageId,
-      stage: row.stage,
-      worker: row.worker,
-      ...(row.instanceId === undefined ? {} : { instanceId: row.instanceId }),
-      text: row.text,
-      sessionId: row.sessionId,
-      transcriptPath: row.transcriptPath,
-      ...(row.attempt === undefined ? {} : { attempt: row.attempt }),
-      ...(row.actorKey === undefined ? {} : { actorKey: row.actorKey }),
-      ...(row.requestedModel === undefined ? {} : { requestedModel: row.requestedModel }),
-      ...(row.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: row.requestedThinkingLevel }),
-      ...(row.model === undefined ? {} : { model: row.model }),
-      ...(row.thinkingLevel === undefined ? {} : { thinkingLevel: row.thinkingLevel }),
-      workspace: row.workspace,
-      ...(row.resultPath === undefined ? {} : { resultPath: row.resultPath }),
-      ...(row.result === undefined ? {} : { result: row.result }),
+      ...evidence,
+      id: invocationId,
       ...(resultPayload === undefined ? {} : { resultPayload }),
-      ...(row.metrics === undefined ? {} : { metrics: row.metrics }),
-      ...(row.projections === undefined ? {} : { projections: row.projections }),
-      ...(row.contract === undefined ? {} : { contract: row.contract }),
     };
   });
 }
@@ -266,19 +238,12 @@ function readHandoffRecordDocument(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const raw = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    if (raw === undefined) return undefined;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return undefined;
-    }
-    if (typeof parsed !== "object" || parsed === null) return undefined;
-    const document = parsed as { version?: unknown; producer?: unknown };
-    if (document.version !== 1 || typeof document.producer !== "object" || document.producer === null) {
-      return undefined;
-    }
-    return document.producer as HandoffProducer;
+    const document = raw === undefined ? undefined : parseJsonRecord(raw);
+    const producer = document === undefined ? undefined : asRecord(document.producer);
+    if (document?.version !== 1 || producer === undefined) return undefined;
+    // Legacy evidence, trusted as written: the document's own shape is the
+    // contract, and malformed fields surface where they are consumed.
+    return producer as unknown as HandoffProducer;
   });
 }
 

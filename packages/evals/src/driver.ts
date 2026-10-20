@@ -733,11 +733,11 @@ export function shellQuote(value: string): string {
  * layout first, the legacy root spelling second. Falls back to the primary
  * spelling so a missing stream is reported against where it would be. */
 function resolveEvidencePath(candidates: readonly string[]): string {
-  return candidates.find((path) => existsSync(path)) ?? candidates[0]!;
+  return candidates.find((path) => pathExists(path)) ?? candidates[0]!;
 }
 
 /** Read the first present candidate of a run's evidence stream. */
-function readEvidenceStream(runDir: string, candidates: readonly string[]): string | undefined {
+function readEvidenceStream(candidates: readonly string[]): string | undefined {
   for (const path of candidates) {
     try {
       return readFileSync(path, "utf8");
@@ -826,19 +826,8 @@ interface HandoffRecord {
  * stage-evidence scan reads. Absent for runs written before the stream. */
 function readInvocationStreamRows(runDir: string): HandoffRecord[] {
   try {
-    return parseInvocationRecords(readFileSync(invocationStreamPath(runDir), "utf8")).map((row) => ({
-      id: row.invocationId,
-      stageId: row.stageId,
-      stage: row.stage,
-      worker: row.worker,
-      sessionId: row.sessionId,
-      transcriptPath: row.transcriptPath,
-      ...(row.requestedModel === undefined ? {} : { requestedModel: row.requestedModel }),
-      ...(row.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: row.requestedThinkingLevel }),
-      ...(row.model === undefined ? {} : { model: row.model }),
-      ...(row.thinkingLevel === undefined ? {} : { thinkingLevel: row.thinkingLevel }),
-      workspace: { cwd: row.workspace.cwd },
-    }));
+    return parseInvocationRecords(readFileSync(invocationStreamPath(runDir), "utf8"))
+      .map((row) => ({ ...row, id: row.invocationId }));
   } catch {
     return [];
   }
@@ -869,17 +858,17 @@ export function readHandoffRecords(runDir: string): HandoffRecord[] {
       // The run may have failed before creating handoff records.
     }
   };
-  // `executions/` is the historical run layout; the current orchestrator
-  // writes invocation directories (and their handoff records) under
-  // `prompts/<n>/invocations/`. Scan both so evidence is complete for
-  // either layout.
+  // Legacy layouts only: runs written before the invocation stream kept their
+  // producer records as per-invocation documents under `executions/` and
+  // `prompts/<n>/invocations/`. Both spellings are scanned so old runs stay
+  // evaluable; current runs arrive as stream rows instead.
   visit(join(runDir, "executions"));
   visit(join(runDir, "prompts"));
   return records.sort((left, right) => String(left.id ?? "").localeCompare(String(right.id ?? "")));
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {
-  const stream = readEvidenceStream(runDir, trajectoryStreamPathCandidates(runDir));
+  const stream = readEvidenceStream(trajectoryStreamPathCandidates(runDir));
   // The stream is the record; every consumer answers "what happened" from it.
   const trajectory = stream === undefined ? undefined : parseTrajectory(stream);
   const events: readonly unknown[] = trajectory?.events ?? [];
@@ -920,7 +909,7 @@ function stageLogEvidence(runDir: string): StageLogEvidence[] {
     byId.set(id, { ...previous, ...patch });
   };
   try {
-    const lines = (readEvidenceStream(runDir, logStreamPathCandidates(runDir)) ?? "").split("\n");
+    const lines = (readEvidenceStream(logStreamPathCandidates(runDir)) ?? "").split("\n");
     for (const line of lines) {
       if (line.trim() === "") continue;
       let value: Record<string, unknown>;
@@ -1289,16 +1278,16 @@ function referencesWorkspace(raw: string, workspaceDir: string): boolean {
   return false;
 }
 
-/** The evidence streams that carry a run's workspace reference: the current
- * `system-log/` spelling first, then the legacy root files (including the
- * retired progress ledger, which old runs still carry). */
-const RUN_EVIDENCE_FILES = [
-  "system-log/log.jsonl",
-  "system-log/trace.jsonl",
-  "log.jsonl",
-  "progress.jsonl",
-  "trace.jsonl",
-] as const;
+/** The evidence streams that carry a run's workspace reference: the logging
+ * seam's current `system-log/` spellings first, then the legacy root files
+ * (including the retired progress ledger old runs still carry). */
+function runEvidencePaths(runDir: string): readonly string[] {
+  return [
+    ...logStreamPathCandidates(runDir),
+    ...traceStreamPathCandidates(runDir),
+    join(runDir, "progress.jsonl"),
+  ];
+}
 
 interface RunWorkspaceEvidence {
   readonly observed: boolean;
@@ -1311,9 +1300,9 @@ interface RunWorkspaceEvidence {
 function inspectRunWorkspace(runsRoot: string, id: string, workspaceDir: string): RunWorkspaceEvidence {
   let observed = false;
   try {
-    for (const file of RUN_EVIDENCE_FILES) {
+    for (const path of runEvidencePaths(join(runsRoot, id))) {
       try {
-        const content = readFileSync(join(runsRoot, id, file), "utf8");
+        const content = readFileSync(path, "utf8");
         observed = true;
         if (referencesWorkspace(content, workspaceDir)) return { observed, matches: true };
       } catch {

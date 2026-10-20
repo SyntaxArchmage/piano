@@ -996,8 +996,6 @@ const executeScope = (
         ));
       }
       const items = yield* mapItems(region, source.results);
-      // The tournament's frozen parent/slot baselines live under a name that
-      // says what they are: workspace snapshots, not prompts.
       const tournamentSnapshotRoot = join(
         request.runDir,
         "workspace-snapshots",

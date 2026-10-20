@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 import {
   executeWorkflow,
+  invocationStreamPath,
   loadWorkflow,
   readWorkflowExecutionContinuation,
 } from "../../packages/orchestrator/src/index.js";
@@ -155,7 +156,7 @@ describe("a continue resumes a paused job from its cursor", () => {
       // "Producer record gone" means its evidence is off the invocation
       // stream: drop the accepted rows for the stage and the rebuild has
       // nothing left to trust.
-      const streamPath = join(session.runDir, "system-log", "invocations.jsonl");
+      const streamPath = invocationStreamPath(session.runDir);
       const rows = (await readFile(streamPath, "utf8")).split("\n")
         .filter((line) => line.trim() !== "")
         .filter((line) => !((JSON.parse(line) as { invocationId?: string }).invocationId ?? "").startsWith("first@"));

@@ -416,7 +416,8 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 ├── system-log/
 │   ├── log.jsonl                 # run + stage lifecycle events (machine-readable)
 │   ├── trace.jsonl               # function-level span traces
-│   └── trajectory.jsonl          # append-only record of each write
+│   ├── trajectory.jsonl          # append-only record of each write
+│   └── invocations.jsonl         # accepted-attempt metadata (producer evidence)
 ├── status.json                   # the run's single state document
 ├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
 ├── eval-metrics/
@@ -427,10 +428,9 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │   └── selection.jsonl           # tournament/selection decisions
 ├── prompts/<jobOrdinal>/
 │   └── invocations/<stageId>/<instance>/
-│       ├── handoff/record.json   # immutable producer record for that invocation
 │       ├── handoff-context/<file> # immutable context injected into a consumer
 │       └── attempts/<n>/result.json # validation result per attempt
-├── workspace-snapshots/<jobOrdinal>/<region>/   # frozen tournament workspaces
+├── workspace-snapshots/job-<n>/<region>/   # frozen tournament workspaces
 │   ├── baseline/                  # the parent workspace at region entry
 │   └── slot-baselines/<key>/      # each lane's baseline at allocation
 ├── sessions/
@@ -474,6 +474,10 @@ Key files:
   appends: one line carrying that write's prompt and events, or the single
   field a rename touched. The state document's narrative fields are refreshed
   from it after every trajectory write.
+- **`system-log/invocations.jsonl`** — one row per accepted attempt: the
+  producer evidence (stage, worker, session, text, result pin). A continue
+  rebuilds skipped stages from these rows; the payload itself stays in its
+  result file behind the `sha256` pin.
 - **`eval-metrics/`** — the recorder streams (`benchmark.jsonl`,
   `duration.jsonl`, `token-usage.jsonl`, `tool-calls.jsonl`,
   `selection.jsonl`). Each is the evidence for its own metric; there is no

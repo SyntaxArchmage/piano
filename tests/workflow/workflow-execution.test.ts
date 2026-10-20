@@ -19,6 +19,7 @@ import {
   closeWorkflowJob,
   executeWorkflow,
   loadAndExecuteWorkflow,
+  invocationStreamPath,
   loadWorkflow,
   parseInvocationRecords,
   readWorkflowExecutionContinuation,
@@ -729,7 +730,7 @@ async function readRunStatusFile(runDir: string): Promise<{
 
 /** The run's accepted rows, as the invocation stream records them. */
 async function acceptedRows(runDir: string): Promise<readonly InvocationAcceptedRecord[]> {
-  return parseInvocationRecords(await readFile(join(runDir, "system-log", "invocations.jsonl"), "utf8"));
+  return parseInvocationRecords(await readFile(invocationStreamPath(runDir), "utf8"));
 }
 
 describe(" workflow execution", () => {
