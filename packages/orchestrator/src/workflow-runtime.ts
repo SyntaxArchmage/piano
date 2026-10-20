@@ -122,35 +122,6 @@ export function runtimeFramesFromInstanceId(
   return frames;
 }
 
-/** Path segments shared by all per-invocation evidence. Static names and frame
- * values originate from the validated workflow or generated integers. */
-function runtimeInvocationPathSegments(
-  invocation: WorkflowRuntimeInvocation,
-): readonly string[] {
-  return [
-    invocation.stageId,
-    runtimeInstanceId(invocation.frames) ?? "root",
-  ];
-}
-
-export function invocationDirectory(runDir: string, invocation: WorkflowRuntimeInvocation): string {
-  return join(
-    runDir,
-    "prompts",
-    String(invocation.jobOrdinal),
-    "invocations",
-    ...runtimeInvocationPathSegments(invocation),
-  );
-}
-
-export function validationResultPath(
-  runDir: string,
-  invocation: WorkflowRuntimeInvocation,
-  attempt: number,
-): string {
-  return join(invocationDirectory(runDir, invocation), "attempts", String(attempt), "result.json");
-}
-
 /** The actor key's version marker. Keys written before actors were keyed by
  * worker carried the logical stage id as their third segment; the marker is
  * what lets a reader tell the two formats apart without guessing. */

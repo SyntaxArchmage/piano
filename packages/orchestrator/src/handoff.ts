@@ -2,17 +2,16 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { asRecord, parseJsonRecord } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
   appendInvocationRecord,
+  invocationContextDir,
   invocationStreamPath,
   parseInvocationRecords,
   type InvocationAcceptedRecord,
 } from "./invocations.js";
 import {
-  invocationDirectory,
   runtimeInstanceId,
   runtimeInvocationId,
   type WorkflowRuntimeInvocation,
@@ -26,6 +25,9 @@ import type { ContractMetric, ContractProjection } from "@piano/contract";
 export interface HandoffProducer {
   readonly id: string;
   readonly stageId: string;
+  /** The flat evidence name (`inv-<serial>`) this acceptance's result file
+   * and context directory were published under. */
+  readonly ref: string;
   readonly stage: string;
   readonly worker: string;
   readonly instanceId?: string;
@@ -50,9 +52,9 @@ export interface HandoffProducer {
   readonly workspace: WorkflowWorkspaceBinding;
   readonly resultPath?: string;
   /** The published result file this acceptance vouches for, pinned by content.
-   * `path` is the worker's `attempts/<k>/result.json` — a published contract
-   * whose path never moves — and `trust` says who last wrote what the record
-   * carries: the worker itself, or the orchestrator's GPU-round
+   * `path` is the worker's `results/<ref>-attempt-<k>.json` — a published
+   * contract whose path never moves — and `trust` says who last wrote what the
+   * record carries: the worker itself, or the orchestrator's GPU-round
    * materialization, which rewrites the accepted payload after the worker's
    * bytes were validated. A reader can therefore tell evidence that still
    * holds exactly the worker's file from evidence the orchestrator
@@ -107,12 +109,6 @@ function writeJsonAtomic(
   });
 }
 
-/** Where a pre-stream run kept its per-invocation record document. Only the
- * legacy reader still spells it. */
-function handoffRecordPath(runDir: string, invocation: WorkflowRuntimeInvocation): string {
-  return join(invocationDirectory(runDir, invocation), "handoff", "record.json");
-}
-
 /** The content pin of a result file — the one `sha256:<hex>` spelling a
  * record's `result.sha256` carries and its verifier recomputes. */
 export function sha256Bytes(bytes: Uint8Array): string {
@@ -123,9 +119,7 @@ export function sha256Bytes(bytes: Uint8Array): string {
  * evidence. Agent code never chooses this path or writes this metadata.
  *
  * The acceptance is one row on the run's `system-log/invocations.jsonl`
- * stream — the metadata home. Runs written before the stream kept a
- * per-invocation `record.json` document instead; the reader still accepts
- * those, but nothing writes them anymore. */
+ * stream — the metadata home. */
 export function writeHandoffRecord(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
@@ -165,12 +159,7 @@ function invocationAcceptedRow(
 
 /** Read a producer's persisted record back, or `undefined` when it is missing
  * or unreadable. A continue rebuilds a skipped invocation's result from this
- * record; absence makes the caller re-run the stage instead.
- *
- * The run's `system-log/invocations.jsonl` row is the record going forward;
- * the per-invocation `record.json` document is what runs written before the
- * stream keep, and what a row whose pinned result file has drifted falls back
- * to. Either source alone is a complete record. */
+ * record; absence makes the caller re-run the stage instead. */
 export function readHandoffRecord(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
@@ -181,11 +170,7 @@ export function readHandoffRecord(
       Effect.orElseSucceed(() => undefined),
     );
     const row = findAcceptedRow(stream, invocation);
-    if (row !== undefined) {
-      const producer = yield* producerFromRow(row);
-      if (producer !== undefined) return producer;
-    }
-    return yield* readHandoffRecordDocument(runDir, invocation);
+    return row === undefined ? undefined : yield* producerFromRow(row);
   });
 }
 
@@ -195,8 +180,10 @@ function findAcceptedRow(
   invocation: WorkflowRuntimeInvocation,
 ): InvocationAcceptedRecord | undefined {
   const invocationId = runtimeInvocationId(invocation);
-  const rows = parseInvocationRecords(raw).filter((row) =>
-    row.jobOrdinal === invocation.jobOrdinal && row.invocationId === invocationId);
+  const rows = parseInvocationRecords(raw).filter((row): row is InvocationAcceptedRecord =>
+    row.kind === "invocation-accepted"
+    && row.jobOrdinal === invocation.jobOrdinal
+    && row.invocationId === invocationId);
   return rows.at(-1);
 }
 
@@ -228,25 +215,6 @@ function producerFromRow(
   });
 }
 
-/** The legacy per-invocation document, the record of runs written before the
- * stream existed. */
-function readHandoffRecordDocument(
-  runDir: string,
-  invocation: WorkflowRuntimeInvocation,
-): Effect.Effect<HandoffProducer | undefined, WorkflowError, FileSystem.FileSystem> {
-  const path = handoffRecordPath(runDir, invocation);
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const raw = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const document = raw === undefined ? undefined : parseJsonRecord(raw);
-    const producer = document === undefined ? undefined : asRecord(document.producer);
-    if (document?.version !== 1 || producer === undefined) return undefined;
-    // Legacy evidence, trusted as written: the document's own shape is the
-    // contract, and malformed fields surface where they are consumed.
-    return producer as unknown as HandoffProducer;
-  });
-}
-
 /** Materialize a consumer's ordered workflow context. A configured handoff
  * file is always scoped below this exact invocation, so loop/map expansion
  * cannot overwrite a sibling's input even when they use the same DSL path. */
@@ -254,22 +222,23 @@ function readHandoffRecordDocument(
  * exposed so a rebuilt invocation can list the file without rewriting it. */
 export function handoffContextPath(
   runDir: string,
-  consumer: WorkflowRuntimeInvocation,
+  ref: string,
   configuredPath: string,
   sourcePath: string,
 ): Effect.Effect<string, WorkflowError> {
-  return safeRelativePath(join(invocationDirectory(runDir, consumer), "handoff-context"), configuredPath, sourcePath);
+  return safeRelativePath(invocationContextDir(runDir, ref), configuredPath, sourcePath);
 }
 
 export function writeHandoffContext(
   runDir: string,
   consumer: WorkflowRuntimeInvocation,
+  ref: string,
   configuredPath: string,
   producers: readonly HandoffProducer[],
   workspace: WorkflowWorkspaceBinding,
   sourcePath: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  return handoffContextPath(runDir, consumer, configuredPath, sourcePath).pipe(
+  return handoffContextPath(runDir, ref, configuredPath, sourcePath).pipe(
     Effect.flatMap((contextPath) => writeJsonAtomic(contextPath, {
       version: 1,
       consumer: {
@@ -288,8 +257,8 @@ export function writeHandoffContext(
 
 /** Where a consumer's map item context lives — the writer's own rule, exposed
  * so a rebuilt invocation can list the file without rewriting it. */
-export function mapItemContextPath(runDir: string, consumer: WorkflowRuntimeInvocation): string {
-  return join(invocationDirectory(runDir, consumer), "map-item.json");
+export function mapItemContextPath(runDir: string, ref: string): string {
+  return join(invocationContextDir(runDir, ref), "map-item.json");
 }
 
 /** Map item values are also orchestrator-owned context. They are injected only
@@ -298,10 +267,11 @@ export function mapItemContextPath(runDir: string, consumer: WorkflowRuntimeInvo
 export function writeMapItemContext(
   runDir: string,
   consumer: WorkflowRuntimeInvocation,
+  ref: string,
   item: HandoffMapItem,
   workspace: WorkflowWorkspaceBinding,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = mapItemContextPath(runDir, consumer);
+  const path = mapItemContextPath(runDir, ref);
   return writeJsonAtomic(path, {
     version: 1,
     consumer: {

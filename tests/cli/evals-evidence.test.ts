@@ -1,8 +1,9 @@
-// Evidence discovery guards for the two run layouts: the historical
-// `executions/` tree and the current orchestrator's `prompts/<n>/invocations`
-// + `actors/` tree. Both helpers are fallback paths used when a run failed
-// before (or, for multi-stage runs, never writes) the top-level
-// `transcriptPath`, so a stale scan silently degrades eval evidence.
+// Evidence discovery guards for the run's audience-split layout: transcripts
+// under `actors/` (with the historical `executions/` tree as a fallback),
+// streams under `system-log/`, and handoff records on the invocation stream.
+// The helpers are fallback paths used when a run failed before (or, for
+// multi-stage runs, never writes) the top-level `transcriptPath`, so a stale
+// scan silently degrades eval evidence.
 import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -93,6 +94,7 @@ describe("evals evidence discovery across run layouts", () => {
         timestamp: "2026-01-01T00:00:00.000Z",
         runId: "r",
         jobOrdinal: 1,
+        ref: "inv-0001",
         invocationId: "race.implement@race/slot-0",
         stageId: "race.implement",
         stage: "race",
@@ -104,20 +106,7 @@ describe("evals evidence discovery across run layouts", () => {
       })}\n`, "utf8");
       const records = readHandoffRecords(runDir);
       expect(records.map((record) => record.id)).toEqual(["race.implement@race/slot-0"]);
-      expect(records[0]).toMatchObject({ stageId: "race.implement", worker: "tune" });
-    } finally {
-      await rm(runDir, { recursive: true, force: true });
-    }
-  });
-
-  it("collects handoff records from the prompts/invocations layout", async () => {
-    const runDir = await tempRunDir("piano-evals-handoff-");
-    try {
-      const recordPath = join(runDir, "prompts", "1", "invocations", "handoff", "record.json");
-      await mkdir(join(recordPath, ".."), { recursive: true });
-      await writeFile(recordPath, JSON.stringify({ producer: { id: "race.implement", stageId: "race.implement" } }));
-      const records = readHandoffRecords(runDir);
-      expect(records.map((record) => record.id)).toEqual(["race.implement"]);
+      expect(records[0]).toMatchObject({ stageId: "race.implement", worker: "tune", ref: "inv-0001" });
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }

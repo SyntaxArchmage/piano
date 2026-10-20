@@ -38,11 +38,11 @@ import {
   mapFrames,
   runtimeInstanceId,
   runtimeInvocationId,
-  validationResultPath,
   workflowActorKey,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeInvocation,
 } from "./workflow-runtime.js";
+import { invocationResultPath, recordInvocationStart } from "./invocations.js";
 import {
   resolveWorkerResources,
   workerResourcesKey,
@@ -292,8 +292,8 @@ export function executeStage(
         : []),
       ...(node.stage.handoff === undefined
         ? []
-        : [yield* handoffContextPath(request.runDir, invocation, node.stage.handoff, loaded.workflowPath)]),
-      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, invocation)]),
+        : [yield* handoffContextPath(request.runDir, rebuilt.handoff.ref, node.stage.handoff, loaded.workflowPath)]),
+      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, rebuilt.handoff.ref)]),
     ];
     const fileSystem = yield* FileSystem.FileSystem;
     const contextFilePaths: string[] = [];
@@ -387,11 +387,23 @@ export function executeStage(
         },
       });
     }
+    // The flat name this invocation's evidence paths use: allocated once per
+    // (job, invocation) and recorded on the invocation stream, so every
+    // attempt and every rebuild publish under the same name. The progress
+    // semaphore serializes it — concurrent map slots may start together, and
+    // two names must never land on one serial.
+    const ref = yield* progressSemaphore.withPermits(1)(recordInvocationStart(request.runDir, {
+      runId: invocation.runId,
+      jobOrdinal: invocation.jobOrdinal,
+      invocationId: runtimeInvocationId(invocation),
+      stageId: node.id,
+    }));
     const handoffPath = node.stage.handoff === undefined
       ? undefined
       : yield* writeHandoffContext(
         request.runDir,
         invocation,
+        ref,
         node.stage.handoff,
         inputs.map((input) => input.handoff),
         workspace,
@@ -399,7 +411,7 @@ export function executeStage(
       );
     const mapItemPath = mapItem === undefined
       ? undefined
-      : yield* writeMapItemContext(request.runDir, invocation, mapItem, workspace);
+      : yield* writeMapItemContext(request.runDir, invocation, ref, mapItem, workspace);
     const contextFilePaths = [
       ...resources.contextFilePaths,
       ...(validation?.kind === "worker" ? [validation.reference.snapshotPath] : []),
@@ -438,7 +450,7 @@ export function executeStage(
     });
 
     // A continue's re-run follows the attempts this job already recorded;
-    // starting from one again would overwrite attempts/<n>/result.json.
+    // starting from one again would overwrite the first attempt's result file.
     let attempt = request.continueJob === undefined
       ? 1
       : (request.continueJob.attempts.get(invocationId) ?? 0) + 1;
@@ -623,7 +635,7 @@ export function executeStage(
       })).pipe(Effect.catchAll(() => Effect.void));
       const resultPath = validation === undefined
         ? undefined
-        : validationResultPath(request.runDir, invocation, attempt);
+        : invocationResultPath(request.runDir, ref, attempt);
       if (resultPath !== undefined) yield* ensureResultDirectory(resultPath);
       yield* workflowTrajectory.observe({
         type: "stage_attempt_started",
@@ -926,7 +938,7 @@ export function executeStage(
       // into the matched path.
       repairError = acceptCheck.left.message.replaceAll(
         resultPath!,
-        () => validationResultPath(request.runDir, invocation, attempt + 1),
+        () => invocationResultPath(request.runDir, ref, attempt + 1),
       );
       yield* stageLog.error("stage.validation.failed", {
         outcome: "failure",
@@ -1018,6 +1030,7 @@ export function executeStage(
     const requestedModel = request.model ?? stageModel;
     const requestedThinkingLevel = request.thinkingLevel ?? node.stage.thinkingLevel;
     const handoff = yield* writeHandoffRecord(request.runDir, invocation, {
+      ref,
       stage: node.stage.name,
       worker: node.stage.worker,
       text: acceptedWorker.text,

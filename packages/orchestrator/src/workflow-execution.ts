@@ -1,6 +1,5 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
-import { join } from "node:path";
 import {
   failureDetails,
   isCancellation,
@@ -73,6 +72,10 @@ import {
 import {
   type HandoffMapItem,
 } from "./handoff.js";
+import {
+  invocationStreamPath,
+  parseInvocationRecords,
+} from "./invocations.js";
 import {
   cleanupMapWorkspaces,
   sharedWorkspaceBinding,
@@ -326,9 +329,10 @@ function createExecutionDirectory(
 
 /** What the run's own ledger says about its jobs before a new one starts: the
  * ordinal it must not reuse, and the jobs a close already abandoned. Both come
- * from one fold of the evidence — the ledger's spans and the `prompts/<n>`
- * trees, with the resume state's index as a floor only. A hint that lags
- * behind cannot reopen an ordinal another job's evidence already holds. */
+ * from one fold of the evidence — the ledger's spans and the invocation
+ * stream's job ordinals — with the resume state's index as a floor only. A
+ * hint that lags behind cannot reopen an ordinal another job's evidence
+ * already holds. */
 function readRunJobLedger(
   runDir: string,
   hint: number | undefined,
@@ -340,12 +344,10 @@ function readRunJobLedger(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const status = yield* readRunStatus(runDir);
-    const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
-      Effect.orElseSucceed(() => [] as readonly string[]),
+    const stream = yield* fileSystem.readFileString(invocationStreamPath(runDir)).pipe(
+      Effect.orElseSucceed(() => undefined),
     );
-    const recordedOrdinals = entries
-      .map((entry) => Number(entry))
-      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    const recordedOrdinals = parseInvocationRecords(stream).map((row) => row.jobOrdinal);
     const jobOrdinals = status?.jobs.map((job) => job.jobOrdinal) ?? [];
     return {
       nextOrdinal: Math.max(0, hint ?? 0, ...jobOrdinals, ...recordedOrdinals) + 1,
@@ -701,9 +703,9 @@ export function executeWorkflow(
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
     // A continue repeats its job's ordinal: the span belongs to the same job,
-    // so its evidence lands in the same prompts/<i>/ tree and the stream
-    // groups the spans together. A fresh job takes the next ordinal the run's
-    // own evidence leaves — the resume state's index is only a floor there.
+    // so its evidence lands under the same job's stream rows and result files.
+    // A fresh job takes the next ordinal the run's own evidence leaves — the
+    // resume state's index is only a floor there.
     const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.jobOrdinal);
     yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
     const jobOrdinal = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;

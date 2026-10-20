@@ -188,18 +188,6 @@ export function latestJob(spans: readonly JobSpan[]): JobView | undefined {
   return jobs(spans).at(-1);
 }
 
-/** One past the highest job ordinal the run's own evidence already records:
- * the ledger's spans and the `prompts/<n>` trees, with a caller's hint (the
- * resume state) as a floor only. A stale or missing hint therefore cannot
- * reopen an ordinal that has already been written. */
-export function nextJobOrdinal(
-  spans: readonly JobSpan[],
-  promptOrdinals: readonly number[],
-  hint?: number,
-): number {
-  return Math.max(0, hint ?? 0, ...spans.map((span) => span.jobOrdinal), ...promptOrdinals) + 1;
-}
-
 function jobView(jobOrdinal: number, jobSpans: readonly JobSpan[]): JobView {
   const accepted = new Set<string>();
   const attempts = new Map<string, number>();

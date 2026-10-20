@@ -147,7 +147,7 @@ describe("a continue resumes a paused job from its cursor", () => {
       });
 
       // The re-run follows the attempts this job recorded instead of
-      // overwriting attempts/1/result.json.
+      // overwriting the first attempt's result file.
       const status = await readStatusFile(session.runDir);
       expect(status.jobs[0]?.attempts["first@root"]).toBe(2);
       expect(status.jobs[0]?.attempts["second@root"]).toBe(2);

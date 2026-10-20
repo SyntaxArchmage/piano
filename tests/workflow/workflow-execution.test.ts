@@ -582,7 +582,7 @@ function iterationOf(request: AgentRequest): number {
 }
 
 function validationPath(request: AgentRequest): string {
-  const path = request.prompt.split("\n").find((line) => line.endsWith("/result.json"));
+  const path = request.prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line));
   if (path === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return path;
 }
@@ -731,7 +731,8 @@ async function readRunStatusFile(runDir: string): Promise<{
 
 /** The run's accepted rows, as the invocation stream records them. */
 async function acceptedRows(runDir: string): Promise<readonly InvocationAcceptedRecord[]> {
-  return parseInvocationRecords(await readFile(invocationStreamPath(runDir), "utf8"));
+  return parseInvocationRecords(await readFile(invocationStreamPath(runDir), "utf8"))
+    .filter((row): row is InvocationAcceptedRecord => row.kind === "invocation-accepted");
 }
 
 describe(" workflow execution", () => {
@@ -1828,7 +1829,7 @@ workflow:
       const failingFileSystem: FileSystem.FileSystem = {
         ...baseFileSystem,
         rename: (from, to) => {
-          if (to.endsWith("/result.json") && !acceptedResultRenameFailed) {
+          if (/\/results\/inv-\d+-attempt-\d+\.json$/.test(to) && !acceptedResultRenameFailed) {
             acceptedResultRenameFailed = true;
             return Effect.fail(new Error("injected accepted-result rename failure") as never);
           }
@@ -3253,7 +3254,7 @@ workflow:
       expect(regionKeys).toHaveLength(1);
       await expect(readdir(join(snapshotRoot, regionKeys[0]!)))
         .resolves.toEqual(expect.arrayContaining(["baseline", "slot-baselines"]));
-      await expect(readdir(join(session.runDir, "prompts", "1"))).resolves.not.toContain("tournaments");
+      await expect(readdir(session.runDir)).resolves.not.toContain("prompts");
       const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
@@ -4018,8 +4019,8 @@ workflow:
           const number = calls.filter((call) => stageId(call) === "produce").length;
           if (stage === "produce" && number > 1) {
             // Attempt 1 deliberately never writes its result: the validator's
-            // `expected "<path>"` message then embeds the attempts/1 path into
-            // attempt 2's repair prompt.
+            // `expected "<path>"` message then embeds the attempt-1 result
+            // path into attempt 2's repair prompt.
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({ text: "accepted" }));
@@ -4034,7 +4035,7 @@ workflow:
       }));
       const produces = calls.filter((call) => stageId(call) === "produce");
       expect(produces).toHaveLength(2);
-      expect(validationPath(produces[0]!)).toContain("attempts/1/result.json");
+      expect(validationPath(produces[0]!)).toContain("-attempt-1.json");
       const repairPrompt = produces[1]!.prompt;
       expect(repairPrompt).toContain("Validation repair required");
       expect(repairPrompt).toContain(validationPath(produces[1]!));
@@ -4281,16 +4282,9 @@ workflow:
       ));
       expect(Exit.isFailure(exit)).toBe(true);
       expect(calls).toHaveLength(1);
-      await expect(stat(join(
-        session.runDir,
-        "prompts",
-        "1",
-        "invocations",
-        "respond",
-        "root",
-        "handoff",
-        "record.json",
-      ))).rejects.toMatchObject({ code: "ENOENT" });
+      // A stage that never published a result publishes no acceptance either:
+      // the stream stays empty of its rows.
+      expect((await acceptedRows(session.runDir)).map((row) => row.invocationId)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

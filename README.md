@@ -417,7 +417,7 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │   ├── log.jsonl                 # run + stage lifecycle events (machine-readable)
 │   ├── trace.jsonl               # function-level span traces
 │   ├── trajectory.jsonl          # append-only record of each write
-│   └── invocations.jsonl         # accepted-attempt metadata (producer evidence)
+│   └── invocations.jsonl         # invocation-started/accepted rows (producer evidence)
 ├── status.json                   # the run's single state document
 ├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
 ├── eval-metrics/
@@ -426,10 +426,8 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │   ├── token-usage.jsonl         # token reports: cumulative plus per-attempt deltas
 │   ├── tool-calls.jsonl          # tool outcomes and durations
 │   └── selection.jsonl           # tournament/selection decisions
-├── prompts/<jobOrdinal>/
-│   └── invocations/<stageId>/<instance>/
-│       ├── handoff-context/<file> # immutable context injected into a consumer
-│       └── attempts/<n>/result.json # validation result per attempt
+├── results/inv-<ref>-attempt-<k>.json  # agent-written validation result per attempt
+├── context/inv-<ref>/<file>            # immutable context injected into a consumer
 ├── workspace-snapshots/job-<n>/<region>/   # frozen tournament workspaces
 │   ├── baseline/                  # the parent workspace at region entry
 │   └── slot-baselines/<key>/      # each lane's baseline at allocation
@@ -441,14 +439,16 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 └── workspaces/slots/<key>/               # temporary map/tournament workspace copy
 ```
 
-`<instance>` is `root` for a top-level stage, `<region>/iter-<n>` inside a
-loop, and `<region>/slot-<n>` (or nested paths) for tournament lanes. A run
-may hold several prompts: each prompt's invocations live under its own
-`prompts/<jobOrdinal>/` tree — the ordinal is a job's identity, taken from the
-highest the run's state document and trees already record — while the actors
-continue under `sessions/` across prompts, and a loop iteration or a map slot
-does not start a new one: `<lane>` carries only the map frames, so one worker
-keeps one conversation across stages, iterations, and prompts. A map slot's workspace
+Each invocation's evidence name is `inv-<ref>` — a run-wide serial its
+`invocation-started` row records on `system-log/invocations.jsonl`, so one `jq`
+names the stage, instance, and attempt behind any `results/` or `context/` path
+and no directory spells a dotted stage id or a slash-joined instance. A run may
+hold several prompts: each prompt opens a job — the ordinal is a job's identity,
+taken from the highest the run's state document and stream already record —
+while the actors continue under `sessions/` across prompts, and a loop iteration
+or a map slot does not start a new one: `<lane>` carries only the map frames, so
+one worker keeps one conversation across stages, iterations, and prompts. A map
+slot's workspace
 `<key>` is `job-<n>/<instance>` so that two jobs' slots can never rebind
 each other; `record.json` carries the slot's `allocation` provenance (`fresh`,
 `rebound`, or `recreated-after-sweep`). `contracts/`, validated result files,
@@ -475,10 +475,11 @@ Key files:
   appends: one line carrying that write's prompt and events, or the single
   field a rename touched. The state document's narrative fields are refreshed
   from it after every trajectory write.
-- **`system-log/invocations.jsonl`** — one row per accepted attempt: the
-  producer evidence (stage, worker, session, text, result pin). A continue
-  rebuilds skipped stages from these rows; the payload itself stays in its
-  result file behind the `sha256` pin.
+- **`system-log/invocations.jsonl`** — one row per invocation event: an
+  `invocation-started` allocation of the invocation's `inv-<ref>` evidence
+  name, and an accepted attempt's producer evidence (stage, worker, session,
+  text, result pin). A continue rebuilds skipped stages from these rows; the
+  payload itself stays in its result file behind the `sha256` pin.
 - **`eval-metrics/`** — the recorder streams (`benchmark.jsonl`,
   `duration.jsonl`, `token-usage.jsonl`, `tool-calls.jsonl`,
   `selection.jsonl`). Each is the evidence for its own metric; there is no

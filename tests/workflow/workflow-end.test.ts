@@ -147,7 +147,7 @@ function invocationId(request: AgentRequest): string {
 }
 
 function validationPath(request: AgentRequest): string {
-  const path = request.prompt.split("\n").find((line) => line.endsWith("/result.json"));
+  const path = request.prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line));
   if (path === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return path;
 }

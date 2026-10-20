@@ -827,6 +827,7 @@ interface HandoffRecord {
 function readInvocationStreamRows(runDir: string): HandoffRecord[] {
   try {
     return parseInvocationRecords(readFileSync(invocationStreamPath(runDir), "utf8"))
+      .filter((row) => row.kind === "invocation-accepted")
       .map((row) => ({ ...row, id: row.invocationId }));
   } catch {
     return [];
@@ -834,37 +835,8 @@ function readInvocationStreamRows(runDir: string): HandoffRecord[] {
 }
 
 export function readHandoffRecords(runDir: string): HandoffRecord[] {
-  // The run's invocation stream is the metadata home going forward; runs
-  // written before it keep their per-invocation documents below.
-  const rows = readInvocationStreamRows(runDir);
-  if (rows.length > 0) return rows;
-  const records: HandoffRecord[] = [];
-  const visit = (directory: string): void => {
-    try {
-      for (const entry of readdirSync(directory, { withFileTypes: true, encoding: "utf8" })) {
-        const path = join(directory, entry.name);
-        if (entry.isDirectory()) visit(path);
-        else if (entry.name === "record.json") {
-          try {
-            const value = JSON.parse(readFileSync(path, "utf8")) as { producer?: unknown };
-            if (typeof value.producer === "object" && value.producer !== null) records.push(value.producer as HandoffRecord);
-          } catch {
-            // A malformed record remains visible through the run logs; it is
-            // excluded from derived metrics rather than guessed.
-          }
-        }
-      }
-    } catch {
-      // The run may have failed before creating handoff records.
-    }
-  };
-  // Legacy layouts only: runs written before the invocation stream kept their
-  // producer records as per-invocation documents under `executions/` and
-  // `prompts/<n>/invocations/`. Both spellings are scanned so old runs stay
-  // evaluable; current runs arrive as stream rows instead.
-  visit(join(runDir, "executions"));
-  visit(join(runDir, "prompts"));
-  return records.sort((left, right) => String(left.id ?? "").localeCompare(String(right.id ?? "")));
+  return readInvocationStreamRows(runDir)
+    .sort((left, right) => String(left.id ?? "").localeCompare(String(right.id ?? "")));
 }
 
 function trajectoryEvents(runDir: string): Array<Record<string, unknown>> {

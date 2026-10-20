@@ -108,7 +108,7 @@ function slotOf(request: AgentRequest): number {
 /** The validator result path a `validate: true` stage writes to, lifted from the
  * stage's standard prompt line. */
 function validationPath(request: AgentRequest): string {
-  const found = request.prompt.split("\n").find((line) => line.endsWith("/result.json"));
+  const found = request.prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line));
   if (found === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return found;
 }

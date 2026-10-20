@@ -120,7 +120,7 @@ if (pauseAt !== undefined && store !== undefined) {
 /** The validator result path a `validate` stage writes to, from its standard
  * prompt line (same extraction the tournament guard's fake uses). */
 function writeValidation(payload) {
-  const path = prompt.split("\n").find((line) => line.trim().endsWith("/result.json"))?.trim();
+  const path = prompt.split("\n").find((line) => /\/results\/inv-\d+-attempt-\d+\.json$/.test(line.trim()))?.trim();
   if (path === undefined) {
     process.stderr.write(`missing validation result path for stage ${stage}\n`);
     process.exit(4);
