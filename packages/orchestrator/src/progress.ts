@@ -2,7 +2,14 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
 import type { WorkflowError } from "./errors.js";
-import { readRunStatus, runStatusPath, writeRunStatus, type RunJob, type RunStatus } from "./run-status.js";
+import {
+  acceptedInvocationOf,
+  readRunStatus,
+  runStatusPath,
+  writeRunStatus,
+  type RunJob,
+  type RunStatus,
+} from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { WorkerContractReference } from "./contract-snapshot.js";
@@ -761,12 +768,15 @@ export function applyRunStatusRecord(
   }
   if (kind === "stage-accepted") {
     const accepted = record as WorkflowProgressRecord;
+    const entry = acceptedInvocationOf(accepted.invocationId);
     return {
       ...next,
       jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({
         ...job,
         state: "alive",
-        accepted: job.accepted.includes(accepted.invocationId) ? job.accepted : [...job.accepted, accepted.invocationId],
+        accepted: job.accepted.some((item) => item.invocationId === entry.invocationId)
+          ? job.accepted
+          : [...job.accepted, entry],
         attempts: bumpAttempt(job.attempts, accepted.invocationId, accepted.attempt),
       })),
     };

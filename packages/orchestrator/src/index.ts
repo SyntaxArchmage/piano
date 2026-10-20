@@ -151,6 +151,7 @@ export {
   type JobView,
 } from "./job-spans.js";
 export {
+  acceptedInvocationOf,
   parseProgressLines,
   parseRunStatus,
   readRunStatus,
@@ -158,6 +159,7 @@ export {
   runStatusFromParts,
   runStatusPath,
   writeRunStatus,
+  type RunAcceptedInvocation,
   type RunJob,
   type RunStatus,
   type RunTurn,

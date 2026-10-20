@@ -40,7 +40,7 @@ export function resolveContinueCommand(
     command: {
       input: paused.input,
       jobOrdinal: paused.jobOrdinal,
-      accepted: new Set(paused.accepted),
+      accepted: new Set(paused.accepted.map((item) => item.invocationId)),
       attempts: new Map(Object.entries(paused.attempts)),
     },
   };

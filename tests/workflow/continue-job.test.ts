@@ -15,6 +15,7 @@ import {
   invocationStreamPath,
   loadWorkflow,
   readWorkflowExecutionContinuation,
+  type RunAcceptedInvocation,
 } from "../../packages/orchestrator/src/index.js";
 import type { AgentRequest, AgentResult, AgentRunner } from "../../packages/harness/src/index.js";
 
@@ -89,7 +90,7 @@ async function setup() {
 }
 
 const readStatusFile = async (runDir: string): Promise<{
-  jobs: Array<{ jobOrdinal: number; state: string; accepted: string[]; attempts: Record<string, number> }>;
+  jobs: Array<{ jobOrdinal: number; state: string; accepted: readonly RunAcceptedInvocation[]; attempts: Record<string, number> }>;
 }> => JSON.parse(await readFile(join(runDir, "status.json"), "utf8"));
 
 describe("a continue resumes a paused job from its cursor", () => {
@@ -123,7 +124,13 @@ describe("a continue resumes a paused job from its cursor", () => {
       // and the skipped stage is not started again.
       const status = await readStatusFile(session.runDir);
       expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1]);
-      expect(status.jobs[0]?.accepted).toContain("first@root");
+      // The cursor spells each key's identity out as structure: a reader of
+      // the document never parses `first@root`. `first` was rebuilt from its
+      // evidence and `second` was accepted fresh in the same job.
+      expect(status.jobs[0]?.accepted).toEqual([
+        { invocationId: "first@root", stageId: "first" },
+        { invocationId: "second@root", stageId: "second" },
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -46,7 +46,10 @@ vi.mock("@piano/harness", async (importOriginal) => ({
  * waits, and every step here is driven by real subprocess turns. */
 const wait = (label: string, check: () => boolean) => waitFor(label, check, 120_000);
 
-function statusOf(runDir: string): { status?: string; jobs?: Array<{ accepted?: string[] }> } | undefined {
+function statusOf(runDir: string): {
+  status?: string;
+  jobs?: Array<{ accepted?: Array<{ invocationId: string; stageId: string; iteration?: number; frames?: unknown }> }>;
+} | undefined {
   try {
     return JSON.parse(readFileSync(join(runDir, "status.json"), "utf8")) as ReturnType<typeof statusOf>;
   } catch {
@@ -148,13 +151,21 @@ describe("a tuning run paused half-way continues from its cursor with real subpr
     // The paused job's cursor: iteration 0 accepted in full, the wedged
     // propose not accepted — this is what /continue will rebuild from.
     const accepted = statusOf(runDir)?.jobs?.[0]?.accepted ?? [];
-    expect([...accepted].sort()).toEqual([
+    expect(accepted.map((entry) => entry.invocationId).sort()).toEqual([
       "tune.propose@tune/iter-0",
       "tune.race.bench@tune/iter-0/tune.race/slot-0",
       "tune.race.bench@tune/iter-0/tune.race/slot-1",
       "tune.race.implement@tune/iter-0/tune.race/slot-0",
       "tune.race.implement@tune/iter-0/tune.race/slot-1",
     ]);
+    // The cursor spells the key's identity out as structure: the loop
+    // iteration and its frames are fields, not something to parse out of
+    // `tune.propose@tune/iter-0`.
+    expect(accepted.find((entry) => entry.invocationId === "tune.propose@tune/iter-0")).toMatchObject({
+      stageId: "tune.propose",
+      iteration: 0,
+      frames: [{ kind: "loop", regionId: "tune", iteration: 0 }],
+    });
     terminalA.onInput?.("/exit");
     terminalA.onInput?.("\r");
     await sessionA;

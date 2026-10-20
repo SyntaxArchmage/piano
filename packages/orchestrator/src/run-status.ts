@@ -30,6 +30,46 @@ import {
   type WorkflowProgressStreamRecord,
 } from "./progress.js";
 import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
+import {
+  iterationOfInvocationId,
+  runtimeFramesFromInstanceId,
+  type WorkflowRuntimeFrame,
+} from "./workflow-runtime.js";
+
+/** One accepted invocation of a job, as the state document holds it.
+ *
+ * `invocationId` is the key a continue matches on — the workflow's
+ * persistence contract. The fields beside it restate that key's identity as
+ * structure (`tune.propose@tune/iter-2` → stage, frames, iteration) so a
+ * reader of this document never has to parse it. */
+export interface RunAcceptedInvocation {
+  readonly invocationId: string;
+  /** Static dotted stage identity from the compiled workflow. */
+  readonly stageId: string;
+  /** The runtime frames the key carries (`[{regionId, iteration}, …]`), or
+   * absent for a root invocation or a key this build cannot parse. */
+  readonly frames?: readonly WorkflowRuntimeFrame[];
+  /** Innermost loop iteration, when the invocation ran inside a loop. */
+  readonly iteration?: number;
+}
+
+/** The state document's accepted entry for one invocation id: the key,
+ * spelled back out as structure. */
+export function acceptedInvocationOf(invocationId: string): RunAcceptedInvocation {
+  const at = invocationId.indexOf("@");
+  const stageId = at === -1 ? invocationId : invocationId.slice(0, at);
+  const instance = at === -1 || invocationId.slice(at + 1) === "root"
+    ? undefined
+    : invocationId.slice(at + 1);
+  const frames = instance === undefined ? undefined : runtimeFramesFromInstanceId(instance);
+  const iteration = iterationOfInvocationId(invocationId);
+  return {
+    invocationId,
+    stageId,
+    ...(frames === undefined ? {} : { frames }),
+    ...(iteration === undefined ? {} : { iteration }),
+  };
+}
 
 /** One job, as the state document holds it.
  *
@@ -42,9 +82,9 @@ export interface RunJob {
   readonly state: "alive" | "paused" | "finished";
   /** Present only when `state` is `finished`. */
   readonly outcome?: "completed" | "failed" | "restarted";
-  /** Invocation ids accepted across every span of this job — what a continue
-   * of this job skips. */
-  readonly accepted: readonly string[];
+  /** Invocations accepted across every span of this job — what a continue of
+   * this job skips. */
+  readonly accepted: readonly RunAcceptedInvocation[];
   /** Highest attempt number recorded per invocation across the job's spans, so
    * a continue's re-run follows the attempts already on disk. */
   readonly attempts: Readonly<Record<string, number>>;
@@ -252,7 +292,7 @@ function asRunJob(job: JobView): RunJob {
     jobOrdinal: job.jobOrdinal,
     state: job.state,
     ...(job.outcome === undefined ? {} : { outcome: job.outcome }),
-    accepted: [...job.accepted],
+    accepted: [...job.accepted].map(acceptedInvocationOf),
     attempts: Object.fromEntries(job.attempts),
     ...(job.input === undefined ? {} : { input: job.input }),
   };

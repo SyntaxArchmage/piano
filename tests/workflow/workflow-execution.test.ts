@@ -25,6 +25,7 @@ import {
   readWorkflowExecutionContinuation,
   WorkflowError,
   type InvocationAcceptedRecord,
+  type RunAcceptedInvocation,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowSignoffRequest,
   type WorkflowExecutionContinuation,
@@ -719,7 +720,7 @@ async function readRunStatusFile(runDir: string): Promise<{
   jobs: Array<{
     jobOrdinal: number;
     state: string;
-    accepted: string[];
+    accepted: readonly RunAcceptedInvocation[];
     attempts: Record<string, number>;
     regions?: Record<string, WorkflowProgressRegionFinalizedRecord>;
   }>;
@@ -3004,7 +3005,7 @@ workflow:
       // document's job cursor; the payloads themselves are asserted in memory
       // and in the handoff records above.
       const status = await readRunStatusFile(session.runDir);
-      const acceptedIds = status.jobs.at(-1)?.accepted ?? [];
+      const acceptedIds = (status.jobs.at(-1)?.accepted ?? []).map((entry) => entry.invocationId);
       expect(acceptedIds).toHaveLength(7);
       expect(acceptedIds.filter((id) => id.startsWith("tune.profile@"))).toEqual([
         "tune.profile@tune/iter-0",
@@ -4674,7 +4675,7 @@ workflow:
         agentRunner: runner(secondCalls),
         continueJob: {
           jobOrdinal: cursor.jobOrdinal,
-          accepted: new Set(cursor.accepted),
+          accepted: new Set(cursor.accepted.map((entry) => entry.invocationId)),
           attempts: new Map(Object.entries(cursor.attempts)),
           regions: new Map(Object.entries(cursor.regions ?? {})),
         },
@@ -4791,7 +4792,7 @@ workflow:
       // The loop exited before the pause: its exit evidence is in the state
       // document and is what a continue rebuilds from.
       expect(Object.keys(cursorJob.regions ?? {})).toHaveLength(1);
-      expect(cursorJob.accepted).toContain("tune.report@tune/iter-1");
+      expect(cursorJob.accepted.map((entry) => entry.invocationId)).toContain("tune.report@tune/iter-1");
 
       run = 1;
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
@@ -4799,7 +4800,7 @@ workflow:
         agentRunner,
         continueJob: {
           jobOrdinal: cursorJob.jobOrdinal,
-          accepted: new Set(cursorJob.accepted),
+          accepted: new Set(cursorJob.accepted.map((entry) => entry.invocationId)),
           attempts: new Map(Object.entries(cursorJob.attempts)),
           regions: new Map(Object.entries(cursorJob.regions ?? {})),
         },
@@ -5350,10 +5351,10 @@ workflow:
 
       const latestJobState = async () => (await readRunStatusFile(session.runDir)).jobs.at(-1);
       const deadline = Date.now() + 20_000;
-      while (!(await latestJobState())?.accepted.includes("race.bench@race/slot-1") && Date.now() < deadline) {
+      while (!(await latestJobState())?.accepted.some((entry) => entry.invocationId === "race.bench@race/slot-1") && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
-      expect((await latestJobState())?.accepted).toContain("race.bench@race/slot-1");
+      expect((await latestJobState())?.accepted.map((entry) => entry.invocationId)).toContain("race.bench@race/slot-1");
 
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
@@ -5375,7 +5376,7 @@ workflow:
         agentRunner,
         continueJob: {
           jobOrdinal: cursorJob.jobOrdinal,
-          accepted: new Set(cursorJob.accepted),
+          accepted: new Set(cursorJob.accepted.map((entry) => entry.invocationId)),
           attempts: new Map(Object.entries(cursorJob.attempts)),
           regions: new Map(Object.entries(cursorJob.regions ?? {})),
         },

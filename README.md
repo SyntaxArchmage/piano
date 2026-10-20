@@ -464,7 +464,8 @@ Key files:
   `paused` | `cancelled`), the per-prompt `turns`, planned/completed/accepted
   stage counts, the currently running or last accepted invocation (loop
   iteration, tournament slot, validation attempt), the job list with each job's
-  accepted invocations, attempts and finalized regions, and the actor table —
+  accepted invocations (structured entries: `invocationId`, `stageId`, `frames`,
+  `iteration`), attempts and finalized regions, and the actor table —
   the session id and transcript path per conversation, plus
   `runId`/`workflowPath`/`workspaceCwd` and a `name` once you `/rename` the
   run. Every reader — the TUI graph, the pickers, the logs picker, the headless
