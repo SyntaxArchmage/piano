@@ -81,6 +81,35 @@ describe("evals evidence discovery across run layouts", () => {
     }
   });
 
+  it("collects handoff records from the invocation stream", async () => {
+    // The stream is the metadata home going forward: a run whose record
+    // documents are gone still contributes its stage evidence.
+    const runDir = await tempRunDir("piano-evals-invocations-stream-");
+    try {
+      await mkdir(join(runDir, "system-log"), { recursive: true });
+      await writeFile(join(runDir, "system-log", "invocations.jsonl"), `${JSON.stringify({
+        version: 1,
+        kind: "invocation-accepted",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        runId: "r",
+        jobOrdinal: 1,
+        invocationId: "race.implement@race/slot-0",
+        stageId: "race.implement",
+        stage: "race",
+        worker: "tune",
+        sessionId: "session-1",
+        transcriptPath: "/tmp/transcript.jsonl",
+        text: "done",
+        workspace: { key: "shared", cwd: "/tmp/workspace", kind: "shared" },
+      })}\n`, "utf8");
+      const records = readHandoffRecords(runDir);
+      expect(records.map((record) => record.id)).toEqual(["race.implement@race/slot-0"]);
+      expect(records[0]).toMatchObject({ stageId: "race.implement", worker: "tune" });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
   it("collects handoff records from the prompts/invocations layout", async () => {
     const runDir = await tempRunDir("piano-evals-handoff-");
     try {

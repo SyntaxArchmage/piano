@@ -163,6 +163,11 @@ export {
   type RunTurn,
 } from "./run-status.js";
 export {
+  invocationStreamPath,
+  parseInvocationRecords,
+  type InvocationAcceptedRecord,
+} from "./invocations.js";
+export {
   snapshotWorkerContract,
   type WorkerContractReference,
 } from "./contract-snapshot.js";

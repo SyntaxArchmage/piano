@@ -153,7 +153,14 @@ describe("a continue resumes a paused job from its cursor", () => {
     const { root, session, run } = await setup();
     try {
       await run("do the work", []);
+      // "Producer record gone" means both homes of the evidence: the legacy
+      // per-invocation document and the run's invocation stream row.
       await unlink(join(session.runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json"));
+      const streamPath = join(session.runDir, "system-log", "invocations.jsonl");
+      const rows = (await readFile(streamPath, "utf8")).split("\n")
+        .filter((line) => line.trim() !== "")
+        .filter((line) => !((JSON.parse(line) as { invocationId?: string }).invocationId ?? "").startsWith("first@"));
+      await writeFile(streamPath, rows.length === 0 ? "" : `${rows.join("\n")}\n`);
 
       const calls: AgentRequest[] = [];
       await run("keep going", calls, {

@@ -19,7 +19,12 @@
 import { Effect, Fiber } from "effect";
 import { Data } from "effect";
 import { FileSystem } from "@effect/platform";
-import { iterationOfInvocationId, runStatusPath } from "@piano/orchestrator";
+import {
+  iterationOfInvocationId,
+  invocationStreamPath,
+  parseInvocationRecords,
+  runStatusPath,
+} from "@piano/orchestrator";
 import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -817,7 +822,33 @@ interface HandoffRecord {
   workspace?: { cwd?: unknown };
 }
 
+/** The acceptance rows on the run's invocation stream, in the loose shape the
+ * stage-evidence scan reads. Absent for runs written before the stream. */
+function readInvocationStreamRows(runDir: string): HandoffRecord[] {
+  try {
+    return parseInvocationRecords(readFileSync(invocationStreamPath(runDir), "utf8")).map((row) => ({
+      id: row.invocationId,
+      stageId: row.stageId,
+      stage: row.stage,
+      worker: row.worker,
+      sessionId: row.sessionId,
+      transcriptPath: row.transcriptPath,
+      ...(row.requestedModel === undefined ? {} : { requestedModel: row.requestedModel }),
+      ...(row.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: row.requestedThinkingLevel }),
+      ...(row.model === undefined ? {} : { model: row.model }),
+      ...(row.thinkingLevel === undefined ? {} : { thinkingLevel: row.thinkingLevel }),
+      workspace: { cwd: row.workspace.cwd },
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export function readHandoffRecords(runDir: string): HandoffRecord[] {
+  // The run's invocation stream is the metadata home going forward; runs
+  // written before it keep their per-invocation documents below.
+  const rows = readInvocationStreamRows(runDir);
+  if (rows.length > 0) return rows;
   const records: HandoffRecord[] = [];
   const visit = (directory: string): void => {
     try {

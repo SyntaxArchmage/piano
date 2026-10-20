@@ -1,11 +1,13 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { writeFileAtomic } from "./atomic-write.js";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
   appendInvocationRecord,
+  invocationStreamPath,
+  parseInvocationRecords,
   type InvocationAcceptedRecord,
 } from "./invocations.js";
 import {
@@ -174,8 +176,93 @@ function invocationAcceptedRow(
 
 /** Read a producer's persisted record back, or `undefined` when it is missing
  * or unreadable. A continue rebuilds a skipped invocation's result from this
- * record; absence makes the caller re-run the stage instead. */
+ * record; absence makes the caller re-run the stage instead.
+ *
+ * The run's `system-log/invocations.jsonl` row is the record going forward;
+ * the per-invocation `record.json` document is what runs written before the
+ * stream keep, and what a row whose pinned result file has drifted falls back
+ * to. Either source alone is a complete record. */
 export function readHandoffRecord(
+  runDir: string,
+  invocation: WorkflowRuntimeInvocation,
+): Effect.Effect<HandoffProducer | undefined, WorkflowError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const stream = yield* fileSystem.readFileString(invocationStreamPath(runDir)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
+    const row = findAcceptedRow(stream, invocation);
+    if (row !== undefined) {
+      const producer = yield* producerFromRow(runDir, invocation, row);
+      if (producer !== undefined) return producer;
+    }
+    return yield* readHandoffRecordDocument(runDir, invocation);
+  });
+}
+
+/** The newest stream row for this job's invocation, or `undefined`. */
+function findAcceptedRow(
+  raw: string | undefined,
+  invocation: WorkflowRuntimeInvocation,
+): InvocationAcceptedRecord | undefined {
+  const invocationId = runtimeInvocationId(invocation);
+  const rows = parseInvocationRecords(raw).filter((row) =>
+    row.jobOrdinal === invocation.jobOrdinal && row.invocationId === invocationId);
+  return rows.at(-1);
+}
+
+/** A stream row as the producer it records. `undefined` when the acceptance
+ * pinned a result file the reader can no longer load or verify — evidence that
+ * drifted is not evidence, so the caller re-runs the stage instead. */
+function producerFromRow(
+  runDir: string,
+  invocation: WorkflowRuntimeInvocation,
+  row: InvocationAcceptedRecord,
+): Effect.Effect<HandoffProducer | undefined, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    let resultPayload: unknown;
+    if (row.result !== undefined) {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const bytes = yield* fileSystem.readFile(row.result.path).pipe(Effect.orElseSucceed(() => undefined));
+      if (bytes === undefined) return undefined;
+      const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+      if (digest !== row.result.sha256) return undefined;
+      try {
+        resultPayload = JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        return undefined;
+      }
+    }
+    return {
+      id: row.invocationId,
+      stageId: row.stageId,
+      stage: row.stage,
+      worker: row.worker,
+      ...(row.instanceId === undefined ? {} : { instanceId: row.instanceId }),
+      text: row.text,
+      sessionId: row.sessionId,
+      transcriptPath: row.transcriptPath,
+      ...(row.attempt === undefined ? {} : { attempt: row.attempt }),
+      ...(row.actorKey === undefined ? {} : { actorKey: row.actorKey }),
+      ...(row.requestedModel === undefined ? {} : { requestedModel: row.requestedModel }),
+      ...(row.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: row.requestedThinkingLevel }),
+      ...(row.model === undefined ? {} : { model: row.model }),
+      ...(row.thinkingLevel === undefined ? {} : { thinkingLevel: row.thinkingLevel }),
+      workspace: row.workspace,
+      ...(row.resultPath === undefined ? {} : { resultPath: row.resultPath }),
+      ...(row.result === undefined ? {} : { result: row.result }),
+      ...(resultPayload === undefined ? {} : { resultPayload }),
+      ...(row.metrics === undefined ? {} : { metrics: row.metrics }),
+      ...(row.projections === undefined ? {} : { projections: row.projections }),
+      ...(row.contract === undefined ? {} : { contract: row.contract }),
+      recordPath: handoffRecordPath(runDir, invocation),
+    };
+  });
+}
+
+/** The legacy per-invocation document, the record of runs written before the
+ * stream existed. */
+function readHandoffRecordDocument(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
 ): Effect.Effect<HandoffProducer | undefined, WorkflowError, FileSystem.FileSystem> {

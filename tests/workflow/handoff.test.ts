@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { writeHandoffRecord } from "../../packages/orchestrator/src/handoff.js";
+import { writeHandoffRecord, readHandoffRecord } from "../../packages/orchestrator/src/handoff.js";
 import {
   appendInvocationRecord,
   invocationStreamPath,
@@ -97,6 +98,50 @@ describe("handoff record", () => {
       // copied into the row.
       expect(rows[0]).not.toHaveProperty("resultPayload");
       expect(rows[0]).not.toHaveProperty("recordPath");
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+  it("rebuilds a producer from its stream row alone, verifying the pinned result", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-handoff-rebuild-"));
+    try {
+      const resultPath = join(runDir, "attempts", "2", "result.json");
+      await mkdir(join(resultPath, ".."), { recursive: true });
+      await writeFile(resultPath, `{"answer":42}\n`);
+      const sha256 = `sha256:${createHash("sha256").update(`{"answer":42}\n`).digest("hex")}`;
+      await Effect.runPromise(writeHandoffRecord(runDir, invocation, {
+        stage: "first",
+        worker: "tune",
+        text: "hello",
+        sessionId: "session-1",
+        transcriptPath: join(runDir, "transcript.jsonl"),
+        attempt: 2,
+        workspace: sharedWorkspaceBinding(runDir),
+        resultPath,
+        result: { path: resultPath, sha256, trust: "worker" },
+        resultPayload: { answer: 42 },
+      }).pipe(Effect.provide(NodeFileSystem.layer)));
+      // The stream is the record going forward: no document on disk at all.
+      const recordPath = join(runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json");
+      await rm(recordPath, { force: true });
+
+      const rebuilt = await Effect.runPromise(
+        readHandoffRecord(runDir, invocation).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      expect(rebuilt).toMatchObject({
+        id: "first@root",
+        stageId: "first",
+        attempt: 2,
+        result: { path: resultPath, sha256, trust: "worker" },
+        resultPayload: { answer: 42 },
+      });
+
+      // Evidence that drifted from its pin is not evidence: the rebuild
+      // declines and the caller re-runs the stage.
+      await writeFile(resultPath, `{"answer":7}\n`);
+      await expect(Effect.runPromise(
+        readHandoffRecord(runDir, invocation).pipe(Effect.provide(NodeFileSystem.layer)),
+      )).resolves.toBeUndefined();
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
