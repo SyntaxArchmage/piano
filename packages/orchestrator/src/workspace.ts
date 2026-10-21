@@ -1,4 +1,4 @@
-import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, realpath, rename, rm, rmdir, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
@@ -381,6 +381,9 @@ async function removeWorkspaceRecord(recordPath: string, runRoot: CanonicalRunRo
   const moved = join(trash, `${basename(recordDir)}.${randomUUID()}`);
   await rename(recordDir, moved);
   await rm(moved, { recursive: true, force: true });
+  // Best-effort: a concurrent sweep may still own the trash directory, and an
+  // earlier record in this sweep may already have removed it.
+  await rmdir(trash).catch(() => undefined);
 }
 
 async function readWorkspaceRecord(
