@@ -58,6 +58,7 @@ export { WorkflowError, type WorkflowPhase } from "./errors.js";
 export { iterationOfInvocationId, runtimeRegionInstanceId } from "./workflow-runtime.js";
 export {
   allocateMapWorkspace,
+  applyWinnerWorkspace,
   cleanupMapWorkspaces,
   freezeWorkspaceBaseline,
   mnemonicNamespace,
@@ -77,17 +78,6 @@ export {
   type WorkflowWorkspacePhase,
   type WorkflowWorkspaceStatus,
   type WorkflowWorkspaceStrategy,
-} from "./workspace.js";
-/**
- * @deprecated Direct winner application and whole-tree comparison are retained
- * for callers of the pre-tournament workspace API. Automatic tournament
- * execution goes through `consolidateAndGate` and the shared consolidation
- * transaction instead.
- */
-export {
-  applyWinnerWorkspace,
-  diffWorkspaceContent,
-  type WorkspaceContentDiff,
 } from "./workspace.js";
 export {
   consolidateAndGate,

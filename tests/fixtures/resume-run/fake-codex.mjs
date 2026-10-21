@@ -155,14 +155,10 @@ if (stage.endsWith("propose")) {
     records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
   });
 } else if (stage.startsWith("$consolidate/")) {
-  const wholeTree = /shared source at `([^`]+)` content-equal to your winning slot content at `([^`]+)`/.exec(prompt);
   const delta = /Apply your winning change from `([^`]+)` to the tournament parent at `([^`]+)`/.exec(prompt);
-  if (wholeTree?.[1] !== undefined && wholeTree[2] !== undefined) {
-    process.stderr.write("whole-tree consolidation is deprecated\n");
-    process.exit(5);
-  } else if (delta?.[1] !== undefined && delta[2] !== undefined) {
-    // Current protocol: apply only the baseline-relative winner delta so
-    // unrelated files already present in the parent remain untouched.
+  if (delta?.[1] !== undefined && delta[2] !== undefined) {
+    // Apply only the baseline-relative winner delta so unrelated files
+    // already present in the parent remain untouched.
     const winner = delta[1];
     const parent = delta[2];
     const changes = [...prompt.matchAll(/^- (added|modified|deleted): (.+)$/gm)];

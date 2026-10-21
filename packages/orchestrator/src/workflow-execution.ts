@@ -81,7 +81,7 @@ import {
   mnemonicNamespace,
   sharedWorkspaceBinding,
   type WorkspaceBaseline,
-  type WorkspaceChangeSet,
+  type WorkspaceContentChange,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
 import {
@@ -485,21 +485,18 @@ function validateTournamentExitMetricArity(
 export interface ConsolidateAndGateRequest {
   readonly request: WorkflowExecutionRequest;
   readonly winnerKey: string;
-  /** Frozen winner tree for legacy callers, or the frozen changed-file tree
-   * paired with changeSet for runtime tournament calls. */
+  /** The winner's live content, re-materialized against the baseline. */
   readonly winnerContentDir: string;
   readonly winnerWorker: string;
   readonly winnerHarness: string;
   readonly sourceCwd: string;
   readonly excludeUnder: readonly string[];
-  /** Runtime callers provide the declared baseline-relative delta. The
-   * transaction re-materialises its canonical copy outside source/runDir. */
-  readonly changeSet?: WorkspaceChangeSet;
+  /** The declared baseline-relative delta (paths and kinds). The transaction
+   * re-materialises the canonical frozen files outside source/runDir. */
+  readonly changes: readonly WorkspaceContentChange[];
   /** The baseline the winner delta is measured against, so the transaction
    * can re-derive and verify the declared change list. */
-  readonly winnerBaseline?: WorkspaceBaseline;
-  /** Deprecated compatibility input. It is never trusted as canonical evidence. */
-  readonly targetBeforeDir?: string;
+  readonly winnerBaseline: WorkspaceBaseline;
   readonly winnerActor?: ActorExecutionContext & {
     readonly continuation?: AgentContinuation;
     readonly onTurn: (worker: {
@@ -614,8 +611,8 @@ export function consolidateAndGate(
       sourceCwd: args.sourceCwd,
       runDir: args.request.runDir,
       winnerContentDir: args.winnerContentDir,
-      ...(args.winnerBaseline === undefined ? {} : { baseline: args.winnerBaseline }),
-      ...(args.changeSet === undefined ? {} : { changeSet: args.changeSet }),
+      baseline: args.winnerBaseline,
+      changes: args.changes,
       excludeUnder: args.excludeUnder,
     }),
     catch: (cause) => cause instanceof ConsolidationEvidencePreparationError

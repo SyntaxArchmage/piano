@@ -342,52 +342,38 @@ function parseWorkspaceRecord(
 async function writeWorkspaceRecord(
   recordPath: string,
   record: WorkflowWorkspaceRecord,
-  runRoot?: CanonicalRunRoot,
+  runRoot: CanonicalRunRoot,
 ): Promise<void> {
-  if (runRoot !== undefined) {
+  const recordDir = dirname(recordPath);
+  const assertRecordPathSafe = async (): Promise<void> => {
     await assertCanonicalRunRoot(runRoot);
-    await assertSafeWorkspacePathAncestors(runRoot.canonical, dirname(recordPath));
-  }
+    await assertSafeWorkspacePathAncestors(runRoot.canonical, recordDir);
+  };
+  await assertRecordPathSafe();
   const temporary = `${recordPath}.${randomUUID()}.tmp`;
-  await mkdir(dirname(recordPath), { recursive: true });
+  await mkdir(recordDir, { recursive: true });
   let operationFailure: unknown;
   try {
-    if (runRoot !== undefined) {
-      await assertCanonicalRunRoot(runRoot);
-      await assertSafeWorkspacePathAncestors(runRoot.canonical, dirname(recordPath));
-    }
+    await assertRecordPathSafe();
     await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-    if (runRoot !== undefined) {
-      await assertCanonicalRunRoot(runRoot);
-      await assertSafeWorkspacePathAncestors(runRoot.canonical, dirname(recordPath));
-    }
+    await assertRecordPathSafe();
     await rename(temporary, recordPath);
+    return;
   } catch (error) {
     operationFailure = error;
   }
-  let cleanupFailure: unknown;
+  // Only a failed write/rename can leave the temporary behind. If the run root
+  // was substituted, do not follow it merely to remove the residue.
   try {
-    if (runRoot === undefined) {
-      await rm(temporary, { force: true });
-    } else {
-      await assertCanonicalRunRoot(runRoot);
-      await assertSafeWorkspacePathAncestors(runRoot.canonical, dirname(recordPath));
-      await rm(temporary, { force: true });
-    }
+    await assertRecordPathSafe();
+    await rm(temporary, { force: true });
   } catch (error) {
-    // Never follow a substituted run root merely to remove a temp file;
-    // surface the residue so recovery can inspect it.
-    cleanupFailure = workflowError("schedule", temporary, `workspace record temporary cleanup failed: ${errorMessage(error)}`);
+    throw new AggregateError(
+      [operationFailure, workflowError("schedule", temporary, `workspace record temporary cleanup failed: ${errorMessage(error)}`)],
+      "workspace record write and cleanup both failed",
+    );
   }
-  if (operationFailure !== undefined && cleanupFailure !== undefined) {
-    throw new AggregateError([operationFailure, cleanupFailure], "workspace record write and cleanup both failed");
-  }
-  if (operationFailure !== undefined) {
-    throw operationFailure;
-  }
-  if (cleanupFailure !== undefined) {
-    throw cleanupFailure;
-  }
+  throw operationFailure;
 }
 
 /** Delete one slot's record directory crash-atomically: rename it out of the
@@ -903,7 +889,7 @@ export interface WorkflowWorkspaceCleanupOptions {
   /** The source workspace is checked against every record before mutation. */
   readonly sourceCwd?: string;
   /** Limit finalization to these exact run-owned workspace keys. Omitted
-   * retains the legacy execution-wide cleanup behaviour. */
+   * sweeps every record of the execution. */
   readonly keys?: readonly string[];
   /** Limit finalization to run-owned keys with this prefix (e.g. `job-2/`).
    * The run-end backstop passes the current job's prefix so one job's
@@ -1284,15 +1270,8 @@ export interface WorkflowCarrying {
   readonly reason?: string;
 }
 
-/**
- * @deprecated Read-only whole-tree compatibility gate: decide whether two
- * materialised directories hold identical application content. Infra entries
- * that belong to the shared source — `.git`, `.piano-run.lock` and, when it lives
- * under a side, that side's execution run-directory subtree — are excluded from
- * the comparison, mirroring how `applyWorkspaceContents` protects them. The
- * canonical tournament path uses the baseline-relative change-set gate in
- * `consolidation-transaction.ts`. This helper never mutates either tree. */
-export interface WorkspaceContentDiff {
+/** Two content trees' comparison result. */
+interface WorkspaceContentDiff {
   readonly equal: boolean;
   /** Relative paths (sorted) that differ or exist only on one side. */
   readonly differing: readonly string[];
@@ -1609,7 +1588,7 @@ function workspacePathDepth(path: string): number {
 }
 
 /** Restore a tolerant lstat diff without traversing symlink ancestors. This
- * exists for rollback only; it does not weaken `diffWorkspaceContent()` or the
+ * exists for rollback only; it does not weaken `diffWorkspaceChangeSet()` or the
  * normal strict gate. */
 export async function restoreWorkspaceLstat(
   targetRoot: string,
@@ -1713,27 +1692,6 @@ async function collectContentPaths(
   };
   await visit(root);
   return paths.sort();
-}
-
-export async function diffWorkspaceContent(
-  targetContentDir: string,
-  winnerContentDir: string,
-  excludeUnder: readonly string[] = [],
-): Promise<WorkspaceContentDiff> {
-  const targetSet = new Set(await collectContentPaths(targetContentDir, excludeUnder));
-  const winnerSet = new Set(await collectContentPaths(winnerContentDir, excludeUnder));
-  const all = new Set([...targetSet, ...winnerSet]);
-  const differing: string[] = [];
-  for (const path of [...all].sort()) {
-    const inTarget = targetSet.has(path);
-    const inWinner = winnerSet.has(path);
-    if (inTarget !== inWinner) {
-      differing.push(path);
-      continue;
-    }
-    if (!(await sameFile(join(targetContentDir, path), join(winnerContentDir, path)))) differing.push(path);
-  }
-  return { equal: differing.length === 0, differing };
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -2032,45 +1990,6 @@ export async function diffWorkspaceChangeSet(
     }
   }
   return { equal: differing.length === 0, differing };
-}
-
-/** Restore a failed consolidation to its exact pre-turn file state. Only paths
- * observed as changed are touched; unrelated pre-existing edits survive. */
-export async function restoreWorkspaceChanges(
-  targetContentDir: string,
-  beforeContentDir: string,
-  changes: readonly WorkspaceContentChange[],
-): Promise<void> {
-  // Validate every caller-supplied path before mutating either tree. The
-  // legacy API accepts a change list directly, so joining an unchecked path
-  // here would turn traversal or a symlink ancestor into an escape hatch.
-  for (const change of changes) {
-    safeWorkspaceNodePath(targetContentDir, change.path);
-    await assertSafeWorkspaceAncestors(targetContentDir, change.path).catch((error: unknown) => {
-      if (!isMissingPathError(error)) throw error;
-    });
-    if (change.kind !== "added") {
-      safeWorkspaceNodePath(beforeContentDir, change.path);
-      await assertSafeWorkspaceAncestors(beforeContentDir, change.path).catch((error: unknown) => {
-        if (!isMissingPathError(error)) throw error;
-      });
-    }
-  }
-  // Remove the mutated side first, then restore the frozen side. Keeping the
-  // phases separate also handles a file changing into a directory (or vice
-  // versa) without a child path colliding with a just-restored parent file.
-  const ordered = [...changes].sort((left, right) =>
-    workspacePathDepth(left.path) - workspacePathDepth(right.path) || left.path.localeCompare(right.path));
-  for (const change of ordered) {
-    await rm(join(targetContentDir, change.path), { recursive: true, force: true });
-  }
-  for (const change of ordered) {
-    if (change.kind === "added") continue;
-    const target = join(targetContentDir, change.path);
-    const source = join(beforeContentDir, change.path);
-    await mkdir(dirname(target), { recursive: true });
-    await copyContentNode(source, target);
-  }
 }
 
 /** Commit the lane's remaining edits onto its branch and fast-forward the

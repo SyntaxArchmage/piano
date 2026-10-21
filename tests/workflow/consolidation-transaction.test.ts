@@ -21,6 +21,11 @@ import {
   type GitMetadataTransaction,
 } from "../../packages/orchestrator/src/git-metadata-transaction.js";
 import { consolidateAndGate } from "../../packages/orchestrator/src/workflow-execution.js";
+import {
+  freezeWorkspaceBaseline,
+  workspaceRefName,
+  type WorkspaceContentChange,
+} from "../../packages/orchestrator/src/workspace.js";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 
 const execFileAsync = promisify(execFile);
@@ -50,11 +55,25 @@ async function cleanup(fixtureRoot: string): Promise<void> {
   await rm(fixtureRoot, { recursive: true, force: true });
 }
 
+/** The fixture's declared winner delta: only kernel.py changes. */
+function declaredChanges(): readonly WorkspaceContentChange[] {
+  return [
+    { path: "kernel.py", kind: "modified" },
+    { path: "untouched.txt", kind: "deleted" },
+  ];
+}
+
+function frozenBaseline(source: string, runDir: string, ref: string) {
+  return freezeWorkspaceBaseline(source, { runDir, refName: workspaceRefName("test", ref) });
+}
+
 async function evidenceInput(fixture: Fixture, overrides: Partial<ConsolidationEvidenceInput> = {}) {
   return prepareConsolidationEvidence({
     sourceCwd: fixture.source,
     runDir: fixture.runDir,
     winnerContentDir: fixture.winner,
+    baseline: await frozenBaseline(fixture.source, fixture.runDir, "evidence-target"),
+    changes: declaredChanges(),
     excludeUnder: [],
     ...overrides,
   });
@@ -108,7 +127,7 @@ describe("external consolidation transaction", () => {
     })).toMatchObject({ sourceState: "unknown" });
   });
 
-  it("keeps canonical snapshots outside source/run and cleans them after a successful legacy-shaped carry", async () => {
+  it("keeps canonical snapshots outside source/run and cleans them after a successful carry", async () => {
     const testFixture = await fixture();
     try {
       const evidence = await evidenceInput(testFixture);
@@ -636,7 +655,18 @@ describe("external consolidation transaction", () => {
     }
   });
 
-  it("routes the legacy consolidateAndGate adapter through the same external core", async () => {
+  it("rejects a declared change set that disagrees with the winner tree", async () => {
+    const testFixture = await fixture();
+    try {
+      await expect(evidenceInput(testFixture, {
+        changes: [...declaredChanges(), { path: "phantom.txt", kind: "modified" }],
+      })).rejects.toThrow(/winner tree does not match its declared change set/u);
+    } finally {
+      await cleanup(testFixture.root);
+    }
+  });
+
+  it("runs consolidateAndGate through the same external evidence core", async () => {
     const testFixture = await fixture();
     try {
       const session = await Effect.runPromise(
@@ -656,14 +686,16 @@ describe("external consolidation transaction", () => {
               await writeFile(join(agentRequest.cwd, "kernel.py"), "winner\n");
               await rm(join(agentRequest.cwd, "untouched.txt"), { force: true });
               return {
-                sessionId: "legacy-consolidation",
-                transcriptPath: join(session.runDir, "legacy.jsonl"),
+                sessionId: "consolidation",
+                transcriptPath: join(session.runDir, "consolidation.jsonl"),
                 text: "done",
               };
             }),
           },
-          winnerKey: "legacy-slot",
+          winnerKey: "race-slot-1",
           winnerContentDir: testFixture.winner,
+          winnerBaseline: await frozenBaseline(testFixture.source, session.runDir, "gate-target"),
+          changes: declaredChanges(),
           winnerWorker: "basic",
           winnerHarness: "pi",
           sourceCwd: testFixture.source,
@@ -677,7 +709,7 @@ describe("external consolidation transaction", () => {
       await expect(readFile(join(testFixture.source, "kernel.py"), "utf8")).resolves.toBe("winner\n");
       await expect(lstat(join(testFixture.source, "untouched.txt"))).rejects.toMatchObject({ code: "ENOENT" });
       const runEntries = await readdir(session.runDir);
-      expect(runEntries.some((entry) => entry === "legacy-consolidations")).toBe(false);
+      expect(runEntries.some((entry) => entry === "consolidations")).toBe(false);
       expect(runEntries.some((entry) => entry === "prompts")).toBe(false);
     } finally {
       await cleanup(testFixture.root);

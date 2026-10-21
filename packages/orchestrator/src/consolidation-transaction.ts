@@ -87,10 +87,11 @@ export interface ConsolidationEvidenceInput {
   readonly winnerContentDir: string;
   /** The baseline the winner delta is measured against, so the transaction
    * can re-derive and verify the declared change list. */
-  readonly baseline?: WorkspaceBaseline;
-  /** Runtime callers provide the already frozen delta. Legacy callers omit it
-   * and derive the equivalent whole-tree delta from target-before. */
-  readonly changeSet?: WorkspaceChangeSet;
+  readonly baseline: WorkspaceBaseline;
+  /** The declared winner delta (paths and kinds). The transaction derives the
+   * canonical frozen files from the baseline and rejects a winner tree that
+   * disagrees. */
+  readonly changes: readonly WorkspaceContentChange[];
   readonly excludeUnder: readonly string[];
 }
 
@@ -495,36 +496,14 @@ export async function prepareConsolidationEvidence(
       refName: workspaceRefName("tx", `${transactionId}/target-before`),
       excludeUnder: excluded,
     });
-    let changeSet: WorkspaceChangeSet;
-    if (input.changeSet !== undefined) {
-      if (input.baseline !== undefined) {
-        const materialized = await captureWorkspaceBaselineChanges(
-          input.baseline,
-          input.winnerContentDir,
-          winnerChangeDir,
-          excluded,
-        );
-        if (!changesEqual(materialized.changes, input.changeSet.changes)) {
-          throw workflowError("schedule", input.winnerContentDir, "winner tree does not match its declared change set");
-        }
-        changeSet = materialized;
-      } else {
-        await snapshotWorkspaceContent(input.changeSet.winnerContentDir, winnerChangeDir);
-        const winnerEntries = await captureInventory(winnerChangeDir);
-        const actualPaths = winnerEntries.filter((entry) => entry.kind !== "directory").map((entry) => entry.path).sort();
-        const expectedPaths = input.changeSet.changes.filter((change) => change.kind !== "deleted").map((change) => change.path).sort();
-        if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
-          throw workflowError("schedule", input.winnerContentDir, "frozen winner change does not match its declared change set");
-        }
-        changeSet = { winnerContentDir: winnerChangeDir, changes: input.changeSet.changes };
-      }
-    } else {
-      changeSet = await captureWorkspaceBaselineChanges(
-        targetBeforeBaseline,
-        input.winnerContentDir,
-        winnerChangeDir,
-        excluded,
-      );
+    const changeSet = await captureWorkspaceBaselineChanges(
+      input.baseline,
+      input.winnerContentDir,
+      winnerChangeDir,
+      excluded,
+    );
+    if (!changesEqual(changeSet.changes, input.changes)) {
+      throw workflowError("schedule", input.winnerContentDir, "winner tree does not match its declared change set");
     }
     await assertDirectoryIdentity(sourceIdentity, "source workspace");
     await assertDirectoryIdentity(runDirIdentity, "run directory");
@@ -784,8 +763,8 @@ async function rollbackPrepared(
   });
 }
 
-/** Run the one canonical consolidation lifecycle for both runtime and legacy
- * callers. The core owns only evidence, gate, rollback, and Git metadata; the
+/** Run the one canonical consolidation lifecycle for every consolidation
+ * caller. The core owns only evidence, gate, rollback, and Git metadata; the
  * caller owns worker prompts, actor continuation, and workflow-specific state. */
 export function runConsolidationTransaction<R>(
   input: ConsolidationTransactionInput<R>,

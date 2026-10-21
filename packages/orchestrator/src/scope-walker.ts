@@ -576,25 +576,18 @@ const finalizeTournament = (
           Effect.succeed({ kind: "carry-failed", reason: errorMessage(error) })),
       );
       consolidating = applied;
+    } else if (winnerCandidate.workspace.baseCommit === undefined) {
+      consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no forked base commit to measure against` };
     } else {
       // The lane record carries what it forked from; a store lane's fork is
       // also the region's drift reference (every sibling shares it).
-      const laneBaseline: WorkspaceBaseline | undefined = winnerCandidate.workspace.baseCommit === undefined
-        ? undefined
-        : {
-          runDir: request.runDir,
-          refName: `lane/${winnerKey}`,
-          commit: winnerCandidate.workspace.baseCommit,
-        };
+      const laneBaseline: WorkspaceBaseline = {
+        runDir: request.runDir,
+        refName: `lane/${winnerKey}`,
+        commit: winnerCandidate.workspace.baseCommit,
+      };
       const frozen = yield* Effect.tryPromise({
         try: async () => {
-          if (laneBaseline === undefined) {
-            throw workflowError(
-              "schedule",
-              sourceCwd,
-              `winner "${winnerKey}" has no forked base commit to measure against`,
-            );
-          }
           const [changes, parentChanges] = await Promise.all([
             workspaceBaselineChanges(
             laneBaseline,
@@ -646,7 +639,7 @@ const finalizeTournament = (
               winnerWorker,
               winnerHarness,
               excludeUnder,
-              changeSet,
+              changes: changeSet.changes,
               winnerBaseline: laneBaseline,
               winnerActor: {
                 ...actorContext,
