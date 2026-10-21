@@ -1166,7 +1166,6 @@ describe("workspace baselines as commits", () => {
       const first = await freezeWorkspaceBaseline(source, { runDir, refName, excludeUnder: [runDir] });
       const again = await freezeWorkspaceBaseline(source, { runDir, refName, excludeUnder: [runDir] });
       expect(again.commit).toBe(first.commit);
-      expect(again.refName).toBe(refName);
 
       await writeFile(join(source, "edited.txt"), "after\n");
       await rm(join(source, "gone.txt"));

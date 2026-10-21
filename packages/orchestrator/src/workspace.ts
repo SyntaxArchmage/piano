@@ -37,7 +37,6 @@ export interface WorkflowWorkspaceBinding {
 export interface WorkflowWorkspaceRecord {
   readonly version: 3;
   readonly key: string;
-  readonly kind: "map-slot";
   readonly cwd: string;
   readonly sourceCwd: string;
   readonly strategy: WorkflowWorkspaceStrategy;
@@ -316,7 +315,6 @@ function parseWorkspaceRecord(
   return {
     version: 3,
     key: value.key,
-    kind: "map-slot",
     cwd: value.cwd,
     sourceCwd: value.sourceCwd,
     strategy,
@@ -555,9 +553,6 @@ export interface MapLaneFork {
   readonly commonRoot: string;
   readonly commit: string;
   readonly sourceBranch?: string;
-  /** Store path only: the ref holding the fork commit, used as the winner
-   * delta base. */
-  readonly baselineRef?: string;
 }
 
 /** Write the workspace content as one commit into the source repository,
@@ -634,7 +629,6 @@ export async function prepareMapLaneFork(
       gitRoot: storeDir,
       commonRoot: storeDir,
       commit: baseline.commit,
-      baselineRef: baseline.refName,
     };
   }
   if (options.parent?.kind === "map-slot" && facts.dirty) {
@@ -853,7 +847,6 @@ export function allocateMapWorkspace(
       const record: WorkflowWorkspaceRecord = {
         version: 3,
         key,
-        kind: "map-slot",
         cwd,
         sourceCwd: source,
         strategy: fork.strategy,
@@ -1747,14 +1740,12 @@ export async function snapshotWorkspaceContent(
 }
 
 /** A frozen workspace content baseline: one git commit in the run's own
- * baseline store, named by its ref. The commit shares blobs across lanes and
- * iterations instead of copying the tree once per lane, and the ref is the
- * resume token that re-entry reuses. */
+ * baseline store. The commit shares blobs across lanes and iterations instead
+ * of copying the tree once per lane. */
 export interface WorkspaceBaseline {
   /** The run whose store holds the commit. */
   readonly runDir: string;
-  /** `refs/piano/<runId>/…` — the durable name, and the completion marker. */
-  readonly refName: string;
+  /** The commit every lane delta and target-before comparison reads. */
   readonly commit: string;
 }
 
@@ -1856,7 +1847,7 @@ export async function freezeWorkspaceBaseline(
 ): Promise<WorkspaceBaseline> {
   const storeDir = await workspaceBaselineStore(options.runDir);
   const prior = await readBaselineCommit(storeDir, options.refName);
-  if (prior !== undefined) return { runDir: options.runDir, refName: options.refName, commit: prior };
+  if (prior !== undefined) return { runDir: options.runDir, commit: prior };
   const tree = await writeWorkspaceTree(storeDir, sourceContentDir, options.excludeUnder ?? []);
   const result = await execFileAsync("git", [
     "--git-dir", storeDir,
@@ -1867,7 +1858,7 @@ export async function freezeWorkspaceBaseline(
   ], { encoding: "utf8" });
   const commit = result.stdout.trim();
   await execFileAsync("git", ["--git-dir", storeDir, "update-ref", options.refName, commit, ""]);
-  return { runDir: options.runDir, refName: options.refName, commit };
+  return { runDir: options.runDir, commit };
 }
 
 /** The concrete file delta from a frozen baseline to live content. Content is

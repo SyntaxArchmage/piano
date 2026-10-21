@@ -586,7 +586,6 @@ const finalizeTournament = (
       // also the region's drift reference (every sibling shares it).
       const laneBaseline: WorkspaceBaseline = {
         runDir: request.runDir,
-        refName: `lane/${winnerKey}`,
         commit: winnerCandidate.workspace.baseCommit,
       };
       const frozen = yield* Effect.tryPromise({
