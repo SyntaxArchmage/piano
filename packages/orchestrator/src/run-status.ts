@@ -95,11 +95,8 @@ export interface RunTurn {
   readonly status: "completed" | "failed" | "cancelled";
 }
 
-/** The run's state.
- *
- * One of each thing a run used to say once per file: `runId` (which the
- * progress and resume documents called `runId`), one `status`, one
- * `error`, one `updatedAt`. Everything else is what a reader asks for. */
+/** The run's state: identity, lifecycle status, error, and the job/actor
+ * tables — everything a reader asks for, in one document. */
 export interface RunStatus {
   readonly version: 1;
   readonly runId: string;

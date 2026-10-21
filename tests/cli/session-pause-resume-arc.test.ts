@@ -200,7 +200,7 @@ describe("one run across finish → exit → resume → Escape → exit → resu
       expect(finalActor?.sessionId).toBe("sess-arc");
       expect(finalActor?.turns).toBe(2);
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(join(runsRoot, runId), runId).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(join(runsRoot, runId)).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(execution?.jobOrdinal).toBe(3);
     } finally {

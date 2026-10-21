@@ -52,7 +52,7 @@ describe("basic workflow as a coding agent", () => {
       const runner: AgentRunner = (request, options) => executeAgent(request, { ...options, sdk });
       const runPrompt = (prompt: string, onEvent: (event: never) => void, signoff?: (r: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError>) =>
         loadWorkflow(join(root, "workflow.yml"), root).pipe(
-          Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+          Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
             Effect.flatMap((execution) => executeWorkflow(loaded, {
               runDir: session.runDir,
               cwd: root,
@@ -122,7 +122,7 @@ describe("basic workflow as a coding agent", () => {
       const runner: AgentRunner = (request, options) => executeAgent(request, { ...options, sdk });
       const runPrompt = (prompt: string, onEvent: (event: never) => void, signoff?: (r: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError>) =>
         loadWorkflow(join(root, "workflow.yml"), root).pipe(
-          Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+          Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
             Effect.flatMap((execution) => executeWorkflow(loaded, {
               runDir: session.runDir,
               cwd: root,

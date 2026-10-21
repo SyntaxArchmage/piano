@@ -32,13 +32,13 @@ import {
   freezeWorkspaceBaseline,
   inventoryWorkspaceLstat,
   restoreWorkspaceLstat,
-  snapshotWorkspaceContent,
+  snapshotWorkspaceLstat,
   workspaceBaselineChanges,
-  workspaceRefName,
   type WorkflowCarrying,
   type WorkspaceBaseline,
   type WorkspaceChangeSet,
   type WorkspaceContentChange,
+  type WorkspaceLstatEntry,
 } from "./workspace.js";
 
 const EXTERNAL_SCHEMA = "piano.consolidation.evidence/v1";
@@ -51,17 +51,9 @@ export interface ConsolidationDirectoryIdentity {
   readonly ino: number;
 }
 
-interface SnapshotEntry {
-  readonly path: string;
-  readonly kind: "file" | "directory" | "symlink" | "fifo" | "other";
-  readonly mode: number;
-  readonly contentHash?: string;
-  readonly symlinkTarget?: string;
-}
-
 interface SnapshotManifest {
   readonly root: typeof ROOT_KIND;
-  readonly entries: readonly SnapshotEntry[];
+  readonly entries: readonly WorkspaceLstatEntry[];
   readonly digest: string;
 }
 
@@ -250,28 +242,19 @@ async function createExternalRoot(
   );
 }
 
-async function captureInventory(root: string, excluded: readonly string[] = []): Promise<readonly SnapshotEntry[]> {
-  const entries = await inventoryWorkspaceLstat(root, excluded);
-  return entries.map((entry) => ({
-    path: entry.path,
-    kind: entry.kind,
-    mode: entry.mode,
-    ...(entry.contentHash === undefined ? {} : { contentHash: entry.contentHash }),
-    ...(entry.symlinkTarget === undefined ? {} : { symlinkTarget: entry.symlinkTarget }),
-  }));
-}
-
-function snapshotManifest(entries: readonly SnapshotEntry[]): SnapshotManifest {
+function snapshotManifest(entries: readonly WorkspaceLstatEntry[]): SnapshotManifest {
   const content = { root: ROOT_KIND, entries };
   return { ...content, digest: digest(content) };
 }
 
 function changesEqual(left: readonly WorkspaceContentChange[], right: readonly WorkspaceContentChange[]): boolean {
   if (left.length !== right.length) return false;
-  const normalize = (changes: readonly WorkspaceContentChange[]) => changes
+  const normalize = (changes: readonly WorkspaceContentChange[]): readonly string[] => changes
     .map((change) => `${change.kind}:${change.path}`)
     .sort();
-  return normalize(left).every((change, index) => change === normalize(right)[index]);
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return normalizedLeft.every((change, index) => change === normalizedRight[index]);
 }
 
 async function writeExclusiveJson(path: string, value: unknown): Promise<string> {
@@ -315,7 +298,7 @@ async function verifyCanonicalEvidence(evidence: CanonicalEvidenceReference): Pr
     if (typeof expected !== "object" || expected === null || Array.isArray(expected)) {
       throw workflowError("schedule", evidence.manifestPath, `canonical ${name} manifest is missing`);
     }
-    const entries = await captureInventory(directory);
+    const entries = await inventoryWorkspaceLstat(directory);
     const actual = snapshotManifest(entries);
     if (digest(expected) !== digest(actual)) {
       throw workflowError("schedule", directory, `canonical ${name} snapshot inventory/hash changed`);
@@ -366,8 +349,8 @@ async function verifySourceMatchesTargetBefore(
   phase: "before first worker turn" | "before first worker turn after Git metadata transaction creation" | "after rollback",
 ): Promise<void> {
   await assertDirectoryIdentity(evidence.sourceIdentity, "source workspace");
-  const sourceEntries = await captureInventory(evidence.sourceCwd, evidence.excluded);
-  const beforeEntries = await captureInventory(evidence.targetBeforeDir);
+  const sourceEntries = await inventoryWorkspaceLstat(evidence.sourceCwd, evidence.excluded);
+  const beforeEntries = await inventoryWorkspaceLstat(evidence.targetBeforeDir);
   const before = snapshotManifest(beforeEntries);
   const source = snapshotManifest(sourceEntries);
   if (before.digest !== source.digest || JSON.stringify(before.entries) !== JSON.stringify(source.entries)) {
@@ -490,10 +473,9 @@ export async function prepareConsolidationEvidence(
   ])];
   let canonicalEvidence: CanonicalEvidenceReference | undefined;
   try {
-    await snapshotWorkspaceContent(sourceIdentity.lexicalPath, targetBeforeDir, excluded);
+    await snapshotWorkspaceLstat(sourceIdentity.lexicalPath, targetBeforeDir, excluded);
     const targetBeforeBaseline = await freezeWorkspaceBaseline(sourceIdentity.lexicalPath, {
       runDir: input.runDir,
-      refName: workspaceRefName("tx", `${transactionId}/target-before`),
       excludeUnder: excluded,
     });
     const changeSet = await captureWorkspaceBaselineChanges(
@@ -514,8 +496,8 @@ export async function prepareConsolidationEvidence(
       runDir: runDirIdentity.realPath,
       excluded,
       snapshots: {
-        targetBefore: snapshotManifest(await captureInventory(targetBeforeDir)),
-        winnerChange: snapshotManifest(await captureInventory(winnerChangeDir)),
+        targetBefore: snapshotManifest(await inventoryWorkspaceLstat(targetBeforeDir)),
+        winnerChange: snapshotManifest(await inventoryWorkspaceLstat(winnerChangeDir)),
       },
       changeSet: { changes: changeSet.changes },
     } satisfies Omit<ExternalEvidenceManifest, "manifestDigest">;

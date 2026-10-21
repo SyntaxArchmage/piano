@@ -136,14 +136,11 @@ export interface WorkflowProgressRecord {
   readonly contract?: WorkerContractReference;
 }
 
-/** Append-only record of one invocation *starting*.
+/** One invocation starting.
  *
- * The stream records starts as well as acceptances because "which invocation is
- * in flight, and since when" is not derivable from acceptance records alone.
- * Without a start record that fact lived only in the snapshot, which made the
- * snapshot the sole authority for information no log held — and forced its
- * accumulated stage time to be carried forward from the snapshot's own
- * previous value instead of from evidence. */
+ * The document records starts as well as acceptances because "which invocation
+ * is in flight, and since when" is not derivable from acceptance records
+ * alone. */
 export interface WorkflowProgressStartRecord {
   readonly version: 1;
   readonly kind: "stage-started";
@@ -166,15 +163,13 @@ export interface WorkflowProgressStartRecord {
   readonly error?: string;
 }
 
-/** Append-only record of one workflow execution beginning.
+/** One workflow execution beginning.
  *
  * Marks where this execution's progress starts — and, once one session hosts
  * more than one execution, where one execution ends and the next begins.
  *
  * It carries the plan because planned stage counts come from the compiled
- * workflow, not from anything a stage could report: without this record a
- * reader rebuilding the snapshot from the stream would still have to be handed
- * the plan from outside. */
+ * workflow, not from anything a stage could report. */
 export interface WorkflowProgressExecutionStartRecord {
   readonly version: 1;
   readonly kind: "execution-started";
@@ -350,47 +345,6 @@ export function progressRecordKind(record: object | null | undefined):
   return undefined;
 }
 
-/** The declared top-level fields of every record kind, keyed the way
- * `progressRecordKind` spells kinds (`"stage-accepted"` for the kind-less
- * historical line). The writer-side half of the reader contract — undeclared
- * fields are ignored on read and forbidden on write — lives here as a runtime
- * table because the interfaces above are compile-time only. Kept in the same
- * file, beside the types it mirrors; the drift test in tests/workflow builds a
- * maximal record of every kind and pins the two directions against each other.
- * The `extra` envelope the contract allows for experiments is itself a
- * declared field of no kind yet — experimental fields go inside it, not
- * beside the declared ones. */
-export const progressRecordDeclaredFields: Readonly<Record<string, readonly string[]>> = {
-  "stage-accepted": [
-    "version", "timestamp", "runId", "invocationId", "stageId", "stage", "worker",
-    "instanceId", "iteration", "attempt", "workspace", "actorKey", "harness",
-    "sessionId", "transcriptPath", "resultPath",
-    "requestedModel", "requestedThinkingLevel", "model", "thinkingLevel",
-    "progress", "resultPayload", "projections", "contract",
-  ],
-  "stage-started": [
-    "version", "kind", "timestamp", "runId", "invocationId", "stageId", "stage",
-    "worker", "attempt", "instanceId", "iteration", "mapSlot", "mapSlots", "scope", "error",
-  ],
-  "execution-started": [
-    "version", "kind", "timestamp", "runId", "jobOrdinal", "prompt", "resumed", "mnemonic", "plan",
-  ],
-  "execution-finished": [
-    "version", "kind", "timestamp", "runId", "status", "error",
-  ],
-  "job-closed": [
-    "version", "kind", "timestamp", "runId", "jobOrdinal", "outcome",
-  ],
-  "region-finalized": [
-    "version", "kind", "timestamp", "runId", "jobOrdinal", "instance", "regionId",
-    "regionKind", "outcome", "notCarriedReason", "winnerInstanceId", "incumbent", "iterations",
-  ],
-  "actor-turn": [
-    "version", "kind", "timestamp", "runId", "jobOrdinal", "invocationId", "attempt",
-    "actorKey", "harness", "worker", "lane", "sessionId", "transcriptPath", "turn", "continuation",
-  ],
-};
-
 export interface WorkflowProgressSnapshot {
   readonly version: 1;
   readonly updatedAt: string;
@@ -404,7 +358,7 @@ export interface WorkflowProgressSnapshot {
   readonly remainingStages: number;
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
   /** Invocation id -> cumulative worker time, so the footer can show a stage's
-   * accumulated duration without replaying the append-only stream. */
+   * accumulated duration without replaying the trajectory. */
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   readonly current?: WorkflowProgressCurrent;
   readonly error?: string;

@@ -73,7 +73,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const prompt = (text: string) =>
         Effect.runPromise(
           loadWorkflow(join(root, "workflow.yml"), root).pipe(
-            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
               Effect.flatMap((execution) => executeWorkflow(loaded, {
                 runDir: session.runDir,
                 cwd: root,
@@ -90,7 +90,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
         );
       const first = await prompt("first prompt");
       const continued = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(continued).toBeDefined();
       const second = await prompt("second prompt");
@@ -98,7 +98,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       // Same run = same execution; the actor was resumed, not re-created.
       expect(second.runId).toBe(first.runId);
       const after = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(after?.jobOrdinal).toBe(2);
       const firstActor = continued?.actors.values().next().value;
@@ -153,7 +153,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
         );
       const readBack = () =>
         Effect.runPromise(
-          readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+          readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
         );
 
       await prompt("first prompt");
@@ -190,7 +190,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const prompt = (workflowPath: string, text: string) =>
         Effect.runPromise(
           loadWorkflow(workflowPath, root).pipe(
-            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
               Effect.flatMap((execution) => executeWorkflow(loaded, {
                 runDir: session.runDir,
                 cwd: root,
@@ -207,7 +207,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
         );
       const readBack = () =>
         Effect.runPromise(
-          readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+          readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
         );
 
       await prompt(FIRST_STAGE, "first prompt");
@@ -250,7 +250,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const prompt = (workflowPath: string, text: string) =>
         Effect.runPromise(
           loadWorkflow(workflowPath, root).pipe(
-            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+            Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
               Effect.flatMap((execution) => executeWorkflow(loaded, {
                 runDir: session.runDir,
                 cwd: root,
@@ -269,7 +269,7 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       await prompt(FIRST_STAGE, "first prompt");
       await prompt(SECOND_STAGE, "second prompt");
       const actors = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       // ONE actor under the worker key: the reviewer stage continued the
       // agent stage's conversation instead of opening its own.

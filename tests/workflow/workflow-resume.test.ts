@@ -74,9 +74,9 @@ async function runDirWith(rows: readonly object[]): Promise<string> {
   return runDir;
 }
 
-function read(runDir: string, runId: string) {
+function read(runDir: string) {
   return Effect.runPromise(
-    readWorkflowExecutionContinuation(runDir, runId).pipe(Effect.provide(NodeFileSystem.layer)),
+    readWorkflowExecutionContinuation(runDir).pipe(Effect.provide(NodeFileSystem.layer)),
   );
 }
 
@@ -102,7 +102,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
 
     expect(continuation?.id).toBe("run-1");
     expect(continuation?.actors.size).toBe(2);
@@ -140,7 +140,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
     const resumed = continuation?.actors.get("run-1/claude/coding/root");
 
     expect(resumed).toMatchObject({
@@ -165,7 +165,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
 
     expect([...(continuation?.actors.keys() ?? [])]).toEqual(["run-1/pi/plan"]);
   });
@@ -188,7 +188,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
 
     expect(continuation?.actors.get("run-1/pi/tune/0")?.continuation.sessionId).toBe("sess-0");
     expect(continuation?.actors.get("run-1/pi/tune/1")?.continuation.sessionId).toBe("sess-1");
@@ -204,10 +204,10 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    expect(await read(runDir, "run-1")).toBeUndefined();
+    expect(await read(runDir)).toBeUndefined();
   });
 
   it("returns undefined when the ledger holds no actor rows", async () => {
-    expect(await read(await runDirWith([]), "run-1")).toBeUndefined();
+    expect(await read(await runDirWith([]))).toBeUndefined();
   });
 });

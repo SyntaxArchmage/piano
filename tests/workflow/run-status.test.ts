@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
-import { refreshRunStatus, runStatusFromTrajectory } from "../../packages/orchestrator/src/index.js";
+import { refreshRunStatus } from "../../packages/orchestrator/src/index.js";
+import { runStatusFromTrajectory } from "../../packages/orchestrator/src/run-status.js";
 import { foldStatus } from "../common/status-fold.js";
 
 const timestamp = "2026-01-01T00:00:00.000Z";

@@ -272,7 +272,7 @@ function identifier(
   path: string,
 ): Effect.Effect<string, WorkflowError> {
   return requiredString(value, field, path).pipe(
-    Effect.flatMap((name) => NODE_IDENTIFIER.test(name)
+    Effect.flatMap((name) => isWorkflowIdentifier(name)
       ? Effect.succeed(name)
       : fail("parse", path, `${field} must be a simple workflow identifier`)),
   );
@@ -286,7 +286,7 @@ function identifierPath(
   return requiredString(value, field, path).pipe(
     Effect.flatMap((name) => {
       const segments = name.split(".");
-      return segments.every((segment) => NODE_IDENTIFIER.test(segment))
+      return segments.every((segment) => isWorkflowIdentifier(segment))
         ? Effect.succeed(name)
         : fail("parse", path, `${field} must be a dotted identifier path`);
     }),

@@ -21,7 +21,7 @@ import {
   diffWorkspaceLstat,
   inventoryWorkspaceLstat,
   restoreWorkspaceLstat,
-  snapshotWorkspaceContent,
+  snapshotWorkspaceLstat,
 } from "../../packages/orchestrator/src/workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -62,7 +62,7 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
         { mnemonic: "test" },));
-      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as { strategy: string; status: string };
+      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as { strategy: string; phase: string };
       expect(record).toMatchObject({ strategy: "git-worktree", phase: "allocated" });
       await expect(readFile(join(binding.cwd, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
 
@@ -846,7 +846,7 @@ describe("workspace snapshot and rollback", () => {
       await chmod(join(root, "target.txt"), 0o755);
       await symlink("target.txt", join(root, "link.txt"));
 
-      await snapshotWorkspaceContent(root, before);
+      await snapshotWorkspaceLstat(root, before);
       expect((await lstat(join(before, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(before, "link.txt"))).resolves.toBe("target.txt");
       expect((await lstat(join(before, "target.txt"))).mode & 0o111).toBe(0o111);
@@ -884,7 +884,7 @@ describe("workspace snapshot and rollback", () => {
       await writeFile(join(outside, "secret.txt"), "outside\n");
       await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
 
-      await expect(snapshotWorkspaceContent(root, snapshot)).rejects.toThrow(/external content/);
+      await expect(snapshotWorkspaceLstat(root, snapshot)).rejects.toThrow(/external content/);
       await expect(stat(snapshot)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -901,7 +901,7 @@ describe("workspace snapshot and rollback", () => {
       await writeFile(join(root, "target.txt"), "live source\n");
       await symlink(join(root, "target.txt"), join(root, "link.txt"));
 
-      await expect(snapshotWorkspaceContent(root, snapshot)).rejects.toThrow(/absolute symlink targets/);
+      await expect(snapshotWorkspaceLstat(root, snapshot)).rejects.toThrow(/absolute symlink targets/);
       await expect(lstat(join(snapshot, "link.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -916,7 +916,7 @@ describe("workspace snapshot and rollback", () => {
     try {
       await execFileAsync("mkfifo", [join(root, "worker.pipe")]);
 
-      await expect(snapshotWorkspaceContent(root, snapshot)).rejects.toThrow(/unsupported filesystem node/u);
+      await expect(snapshotWorkspaceLstat(root, snapshot)).rejects.toThrow(/unsupported filesystem node/u);
       await expect(stat(snapshot)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -934,7 +934,7 @@ describe("workspace snapshot and rollback", () => {
       await mkdir(join(baseline, "nested"), { recursive: true });
       await writeFile(join(baseline, "nested", "keep.txt"), "nested baseline\n");
       await rm(candidate, { recursive: true, force: true });
-      await snapshotWorkspaceContent(baseline, candidate);
+      await snapshotWorkspaceLstat(baseline, candidate);
       await writeFile(join(outside, "secret.txt"), "must remain outside\n");
       await mkdir(join(outside, "directory"), { recursive: true });
       await writeFile(join(outside, "directory", "secret.txt"), "must remain outside\n");
@@ -945,7 +945,7 @@ describe("workspace snapshot and rollback", () => {
       const fifo = join(candidate, "worker.pipe");
       await execFileAsync("mkfifo", [fifo]);
 
-      await expect(snapshotWorkspaceContent(candidate, strictSnapshot)).rejects.toThrow();
+      await expect(snapshotWorkspaceLstat(candidate, strictSnapshot)).rejects.toThrow();
 
       const inventory = await inventoryWorkspaceLstat(candidate);
       expect(inventory).toEqual(expect.arrayContaining([
@@ -991,7 +991,7 @@ describe("workspace snapshot and rollback", () => {
       await mkdir(join(outside, "directory"), { recursive: true });
       await writeFile(join(outside, "directory", "must-remain.txt"), "outside\n");
       await rm(candidate, { recursive: true, force: true });
-      await snapshotWorkspaceContent(baseline, candidate);
+      await snapshotWorkspaceLstat(baseline, candidate);
 
       await rm(join(candidate, "nested"), { recursive: true, force: true });
       await replace(join(candidate, "nested"), outside);
@@ -1022,7 +1022,7 @@ describe("workspace snapshot and rollback", () => {
       await mkdir(join(runDir, "evidence"), { recursive: true });
       await writeFile(join(runDir, "evidence", "trace.ndjson"), "run-owned evidence\n");
       await rm(baseline, { recursive: true, force: true });
-      await snapshotWorkspaceContent(source, baseline, [runDir]);
+      await snapshotWorkspaceLstat(source, baseline, [runDir]);
 
       await writeFile(join(source, "app.txt"), "candidate\n");
       await expect(diffWorkspaceLstat(baseline, source, [runDir])).resolves.toEqual([
@@ -1049,7 +1049,7 @@ describe("workspace snapshot and rollback", () => {
       await chmod(join(source, "empty"), 0o1750);
       await mkdir(join(source, "mode-dir"));
       await chmod(join(source, "mode-dir"), 0o1730);
-      await snapshotWorkspaceContent(source, baseline);
+      await snapshotWorkspaceLstat(source, baseline);
 
       await rm(join(source, "empty"), { recursive: true, force: true });
       await chmod(join(source, "mode-dir"), 0o700);
@@ -1084,7 +1084,7 @@ describe("workspace snapshot and rollback", () => {
       await writeFile(join(root, "target.txt"), "target\n");
       await writeFile(join(root, "entry.txt"), "file\n");
       await chmod(join(root, "entry.txt"), 0o755);
-      await snapshotWorkspaceContent(root, beforeFile);
+      await snapshotWorkspaceLstat(root, beforeFile);
       const fileBaseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/as-file") });
 
       await rm(join(root, "entry.txt"));
@@ -1096,7 +1096,7 @@ describe("workspace snapshot and rollback", () => {
 
       await rm(join(root, "entry.txt"));
       await symlink("target.txt", join(root, "entry.txt"));
-      await snapshotWorkspaceContent(root, beforeLink);
+      await snapshotWorkspaceLstat(root, beforeLink);
       const linkBaseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/as-link") });
       await rm(join(root, "entry.txt"));
       await writeFile(join(root, "entry.txt"), "replacement\n");

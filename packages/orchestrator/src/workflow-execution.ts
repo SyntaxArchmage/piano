@@ -338,12 +338,11 @@ function createExecutionDirectory(
   );
 }
 
-/** What the run's own ledger says about its jobs before a new one starts: the
- * ordinal it must not reuse, and the jobs a close already abandoned. Both come
- * from one fold of the evidence — the ledger's spans and the invocation
- * stream's job ordinals — with the resume state's index as a floor only. A
- * hint that lags behind cannot reopen an ordinal another job's evidence
- * already holds. */
+/** What the run's own evidence says about its jobs before a new one starts:
+ * the ordinal it must not reuse, and the jobs a close already abandoned. Both
+ * come from the state document's jobs and the invocation records, with the
+ * continuation's ordinal as a floor only. A hint that lags behind cannot
+ * reopen an ordinal another job's evidence already holds. */
 function readRunJobLedger(
   runDir: string,
   hint: number | undefined,
@@ -1135,8 +1134,8 @@ export function executeWorkflow(
         const cancelled = isCancellation(exit.cause);
         pausedExit = cancelled;
         const details = failureDetails(exit.cause);
-        // An execution that failed before it had an identity never opened a
-        // stream or a snapshot, so it has no outcome of its own to record.
+        // An execution that failed before it had an identity never started a
+        // schedule, so it has no outcome of its own to record.
         if (runId !== undefined) {
           yield* finalizeWorkflowProgress(
             request.runDir,

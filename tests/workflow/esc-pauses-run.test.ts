@@ -150,7 +150,7 @@ describe("Escape pauses a run instead of failing it", () => {
       // Prompt 2 on the same run: the next-prompt path (identical to /resume)
       // hands the harness the exact session the interrupted turn opened.
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(execution).toBeDefined();
       const continued = await Effect.runPromise(prompt("continue", execution));
@@ -163,7 +163,7 @@ describe("Escape pauses a run instead of failing it", () => {
       // Paused -> running -> completed: one execution across the pause.
       expect((await readJson(join(session.runDir, "status.json"))).status).toBe("completed");
       const after = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(after?.id).toBe(continued.runId);
       expect(after?.jobOrdinal).toBe(2);
@@ -272,7 +272,7 @@ describe("Escape pauses a run instead of failing it", () => {
 
       // The next prompt (identical to /resume) reopens it rather than starting over.
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(execution?.actors.size).toBe(1);
       expect([...(execution?.actors.values() ?? [])][0]?.continuation.sessionId).toBe(announced.sessionId);

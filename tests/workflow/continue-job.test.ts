@@ -71,7 +71,7 @@ async function setup() {
   const run = (prompt: string, calls: AgentRequest[], continueJob?: ContinueJob) =>
     Effect.runPromise(
       loadWorkflow(join(root, "workflow.yml"), root).pipe(
-        Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+        Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
           Effect.flatMap((execution) => executeWorkflow(loaded, {
             runDir: session.runDir,
             cwd: root,

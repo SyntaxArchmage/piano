@@ -38,7 +38,6 @@ export interface WorkflowExecutionContinuation {
  * none, allowing callers to start workers fresh. */
 export function readWorkflowExecutionContinuation(
   runDir: string,
-  _runId: string,
 ): Effect.Effect<WorkflowExecutionContinuation | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const status = yield* readRunStatus(runDir);

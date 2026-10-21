@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { promisify } from "node:util";
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
-import { TRACE, type Logging, type Source } from "@piano/logging";
+import { isRecord, TRACE, type Logging, type Source } from "@piano/logging";
 import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import { isWorkflowIdentifier } from "./workflow.js";
@@ -236,10 +236,6 @@ async function assertSafeWorkspacePathAncestors(root: string, candidate: string)
   }
 }
 
-function pathFromRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function workspacePath(runDir: string, key: string): string {
   return join(runDir, "workspaces", `worktree-${encodeURIComponent(key)}`);
 }
@@ -288,7 +284,7 @@ function parseWorkspaceRecord(
   expected: { readonly key: string; readonly cwd: string; readonly sourceCwd?: string },
   recordPath: string,
 ): WorkflowWorkspaceRecord {
-  if (!pathFromRecord(value)) {
+  if (!isRecord(value)) {
     throw workflowError("schedule", recordPath, "workspace record must be an object");
   }
   const strategy = value.strategy === "git-worktree" || value.strategy === "store-worktree"
@@ -497,10 +493,13 @@ interface GitRepositoryIdentity {
 /** The repository's common git directory: the admin parent for every linked
  * worktree. `rev-parse --git-common-dir` names it for a working tree and for a
  * bare store alike. */
+async function resolveGitCommonDir(cwd: string, path: string): Promise<string> {
+  return realpath(isAbsolute(path) ? path : resolve(cwd, path));
+}
+
 async function gitCommonDir(cwd: string): Promise<string> {
   const result = await execFileAsync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
-  const path = result.stdout.trim();
-  return realpath(isAbsolute(path) ? path : resolve(cwd, path));
+  return resolveGitCommonDir(cwd, result.stdout.trim());
 }
 
 async function gitRepositoryIdentity(cwd: string): Promise<GitRepositoryIdentity> {
@@ -513,7 +512,7 @@ async function gitRepositoryIdentity(cwd: string): Promise<GitRepositoryIdentity
   const commonPath = (commonLine ?? "").trim();
   return {
     worktreeRoot: await realpath((rootLine ?? "").trim()),
-    commonRoot: await realpath(isAbsolute(commonPath) ? commonPath : resolve(cwd, commonPath)),
+    commonRoot: await resolveGitCommonDir(cwd, commonPath),
   };
 }
 
@@ -580,22 +579,26 @@ async function commitWorkspaceContent(
   ], { encoding: "utf8" })).stdout.trim();
 }
 
-/** Stage and commit a worktree's edits, one place for the piano identity and
- * the change check. Returns the tip and whether anything was committed. */
+/** Stage and commit a worktree's edits when it has any. */
+async function stageAndCommitWorktree(cwd: string, message: string): Promise<boolean> {
+  const status = await execFileAsync("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" });
+  if (status.stdout.trim() === "") return false;
+  await execFileAsync("git", ["-C", cwd, "add", "-A", "--", "."], { encoding: "utf8" });
+  await execFileAsync("git", [
+    "-C", cwd,
+    ...PIANO_GIT_IDENTITY_ARGS,
+    "commit", "-q", "-m", message,
+  ], { encoding: "utf8" });
+  return true;
+}
+
+/** Stage and commit a worktree's edits, returning the tip and whether anything
+ * was committed. One place for the piano identity and the change check. */
 async function commitWorktreeChanges(
   cwd: string,
   message: string,
 ): Promise<{ readonly commit: string; readonly changed: boolean }> {
-  const status = await execFileAsync("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" });
-  const changed = status.stdout.trim() !== "";
-  if (changed) {
-    await execFileAsync("git", ["-C", cwd, "add", "-A", "--", "."], { encoding: "utf8" });
-    await execFileAsync("git", [
-      "-C", cwd,
-      ...PIANO_GIT_IDENTITY_ARGS,
-      "commit", "-q", "-m", message,
-    ], { encoding: "utf8" });
-  }
+  const changed = await stageAndCommitWorktree(cwd, message);
   const commit = (await execFileAsync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
   return { commit, changed };
 }
@@ -775,14 +778,13 @@ export function allocateMapWorkspace(
           );
         }
         try {
-          await assertSafeWorkspaceDirectory(workspaceRoot, existing.cwd);
+          await assertOwnedWorkspace(workspaceRoot, existing);
         } catch (error) {
           if (isMissingPathError(error)) {
             throw workflowError("schedule", recordPath, `workspace slot "${key}" is missing at ${existing.cwd}`);
           }
           throw error;
         }
-        await assertOwnedWorkspace(workspaceRoot, existing);
         return bindingFromRecord(existing, recordPath);
       }
 
@@ -924,7 +926,7 @@ async function readWorkspaceRecords(
     if (entry.isSymbolicLink()) {
       throw workflowError("schedule", join(recordsRoot, entry.name), "workspace record directory cannot be a symlink");
     }
-    // `.removing` is the crash-safe trash a completed sweep leaves behind.
+    // `.removing` is the crash-safe trash an interrupted sweep leaves behind.
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     let key: string;
     try {
@@ -964,7 +966,7 @@ async function readWorkspaceRecords(
  * removed. Every lane keeps its history — the branch is the lane version — so
  * a losing lane's work must not vanish with its working copy. */
 async function checkpointLane(record: WorkflowWorkspaceRecord): Promise<void> {
-  await commitWorktreeChanges(record.cwd, `piano: lane ${record.laneBranch} final state`);
+  await stageAndCommitWorktree(record.cwd, `piano: lane ${record.laneBranch} final state`);
 }
 
 async function removeWorkspaceDirectory(
@@ -1011,15 +1013,15 @@ export function cleanupMapWorkspaces(
       const runRoot = await canonicalRunRoot(runDir, false);
       const all = await readWorkspaceRecords(runRoot, options.sourceCwd, options.keys);
       const prefix = options.keyPrefix;
+      const selected = prefix === undefined
+        ? all
+        : all.filter(({ record }) => record.key.startsWith(prefix));
+      const depth = new Map(selected.map(({ record }) => [record.key, record.key.split("/").length]));
       // Deepest key first: a nested lane's repository root is its parent lane,
       // so the child worktree must be removed while the parent still exists.
-      const records = (prefix === undefined
-        ? all
-        : all.filter(({ record }) => record.key.startsWith(prefix)))
-        .slice()
-        .sort((left, right) =>
-          right.record.key.split("/").length - left.record.key.split("/").length
-          || right.record.key.localeCompare(left.record.key));
+      const records = selected.slice().sort((left, right) =>
+        (depth.get(right.record.key) ?? 0) - (depth.get(left.record.key) ?? 0)
+        || right.record.key.localeCompare(left.record.key));
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
         const now = new Date().toISOString();
@@ -1282,7 +1284,7 @@ function safeWorkspaceNodePath(root: string, path: string): string {
     path.trim() === "" ||
     isAbsolute(path) ||
     (sep === "\\" && /^[A-Za-z]:/u.test(path)) ||
-    segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment === ".git" || segment === ".piano-run.lock")
+    segments.some((segment) => segment === "" || segment === "." || segment === ".." || protectedWorkspaceNames.has(segment))
   ) {
     throw workflowError("schedule", root, `unsafe workspace rollback path: ${path}`);
   }
@@ -1694,7 +1696,7 @@ async function copyContentNode(source: string, destination: string): Promise<voi
  * special nodes are rejected before anything is copied. The extra directory
  * metadata is ignored by the content gate but lets rollback restore empty
  * directories and permission modes exactly. */
-async function snapshotWorkspaceLstat(
+export async function snapshotWorkspaceLstat(
   sourceContentDir: string,
   snapshotDir: string,
   excludeUnder: readonly string[] = [],
@@ -1731,13 +1733,6 @@ async function snapshotWorkspaceLstat(
 /** Freeze application content as a directory tree with the exact rollback
  * metadata `restoreWorkspaceLstat` consumes. Only consolidation evidence and
  * rollback use this: baselines themselves are git commits below. */
-export async function snapshotWorkspaceContent(
-  sourceContentDir: string,
-  snapshotDir: string,
-  excludeUnder: readonly string[] = [],
-): Promise<void> {
-  await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
-}
 
 /** A frozen workspace content baseline: one git commit in the run's own
  * baseline store. The commit shares blobs across lanes and iterations instead
@@ -1777,12 +1772,6 @@ async function readBaselineCommit(storeDir: string, refName: string): Promise<st
   }
 }
 
-/** Index the workspace's content into one git tree. The content walk is the
- * same fail-closed validation and exclusion the directory snapshots used —
- * external or directory symlinks and special nodes are refused — and
- * `--pathspec-from-file` feeds that exact path set to git, so the tree cannot
- * pick up what the walk would have refused (or drop what it accepted, e.g.
- * ignored files). */
 /** Index a workspace's content into one git tree, fail-closed: the walk is
  * the same validation and exclusion the directory snapshots used, and the
  * NUL pathspec feeds git exactly the paths it accepted. `gitArgs`/`env` pick
@@ -1840,24 +1829,26 @@ export async function freezeWorkspaceBaseline(
   sourceContentDir: string,
   options: {
     readonly runDir: string;
-    readonly refName: string;
-    readonly parent?: WorkspaceBaseline;
+    /** The ref that names the commit and doubles as the freeze-once token.
+     * Omitted when the caller keeps the commit in memory only. */
+    readonly refName?: string;
     readonly excludeUnder?: readonly string[];
   },
 ): Promise<WorkspaceBaseline> {
   const storeDir = await workspaceBaselineStore(options.runDir);
-  const prior = await readBaselineCommit(storeDir, options.refName);
+  const prior = options.refName === undefined ? undefined : await readBaselineCommit(storeDir, options.refName);
   if (prior !== undefined) return { runDir: options.runDir, commit: prior };
   const tree = await writeWorkspaceTree(storeDir, sourceContentDir, options.excludeUnder ?? []);
   const result = await execFileAsync("git", [
     "--git-dir", storeDir,
     ...PIANO_GIT_IDENTITY_ARGS,
     "commit-tree", tree,
-    ...(options.parent === undefined ? [] : ["-p", options.parent.commit]),
-    "-m", `piano: workspace baseline ${options.refName}`,
+    "-m", `piano: workspace baseline ${options.refName ?? "in-memory"}`,
   ], { encoding: "utf8" });
   const commit = result.stdout.trim();
-  await execFileAsync("git", ["--git-dir", storeDir, "update-ref", options.refName, commit, ""]);
+  if (options.refName !== undefined) {
+    await execFileAsync("git", ["--git-dir", storeDir, "update-ref", options.refName, commit, ""]);
+  }
   return { runDir: options.runDir, commit };
 }
 
@@ -1925,7 +1916,6 @@ export async function diffWorkspaceChangeSet(
   targetContentDir: string,
   changeSet: WorkspaceChangeSet,
 ): Promise<WorkspaceContentDiff> {
-  await collectContentPaths(targetContentDir);
   const differing: string[] = [];
   for (const change of changeSet.changes) {
     const target = join(targetContentDir, change.path);

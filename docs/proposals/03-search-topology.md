@@ -138,7 +138,7 @@ CUDA-L1 的"乘性优化"结论说明：这不是浪费，被丢掉的很可能�
 `tournaments/<region>/target-before/**`（父 workspace 全量）与
 `winner-change/**`（只冻结 winner 的 delta）。**把它从"只冻结 winner"扩成"冻结所有 lane 的
 delta"** 是改动量最小、收益最直接的一步——因为 delta 已经是现成的概念
-（`workspaceContentChanges` 已在用）。
+（`workspaceBaselineChanges` 已在用）。
 
 #### 证据
 
@@ -412,7 +412,7 @@ DSL 侧：`count` 从字面量扩展为可引用的表达式**会破坏"样式�
 |---|---|---|---|
 | 1 | **思路族多样性进契约**（M5 第 1 维，最便宜） | 无 | 契约能拒掉 `bottleneck` 重复的 strategy 集 |
 | 2 | **`mutation_scope` 标注 + 本轮节奏**（M4 第 1 件） | 无 | 一轮 run 里能看到 local/structural 两种轮次 |
-| 3 | **lane delta 冻结扩到全部 lane**（M1 的 L2） | 无（`workspaceContentChanges` 已有） | 败者 delta 在 run 目录里可读 |
+| 3 | **lane delta 冻结扩到全部 lane**（M1 的 L2） | 无（`workspaceBaselineChanges` 已有） | 败者 delta 在 run 目录里可读 |
 | 4 | **组合轮**（M2） | 步 3 | 组合候选与普通候选同场竞技、同裁判 |
 | 5 | **行为维度保种**（M3） | `02`-M1 | 保种只影响下一轮输入，不影响裁决 |
 | 6 | **抽象层异构**（M5 第 2 维） | `stage.model` 机制可借鉴 | 需新 DSL 概念，先写设计 |

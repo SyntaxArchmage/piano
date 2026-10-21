@@ -18,7 +18,6 @@ import {
   workspaceBaselineChanges,
   type MapLaneFork,
   type WorkspaceBaseline,
-  type WorkspaceChangeSet,
   type WorkspaceContentChange,
   type WorkflowCarrying,
   type WorkflowWorkspaceBinding,
@@ -599,9 +598,9 @@ const finalizeTournament = (
             workspaceBaselineChanges(laneBaseline, sourceCwd, excludeUnder),
           ]);
           return {
-            changeSet: { winnerContentDir, changes },
+            changes,
             parentChanges,
-          } satisfies { readonly changeSet: WorkspaceChangeSet; readonly parentChanges: readonly WorkspaceContentChange[] };
+          } satisfies { readonly changes: readonly WorkspaceContentChange[]; readonly parentChanges: readonly WorkspaceContentChange[] };
         },
         catch: (cause) => workflowError("schedule", sourceCwd, `cannot inspect tournament winner delta: ${errorMessage(cause)}`),
       }).pipe(Effect.either);
@@ -611,15 +610,15 @@ const finalizeTournament = (
           reason: errorMessage(frozen.left),
         };
       } else {
-        const { changeSet, parentChanges } = frozen.right;
-        const winnerPaths = new Set(changeSet.changes.map((change) => change.path));
+        const { changes, parentChanges } = frozen.right;
+        const winnerPaths = new Set(changes.map((change) => change.path));
         const conflicts = parentChanges.filter((change) => winnerPaths.has(change.path));
         if (conflicts.length > 0) {
           consolidating = {
             kind: "carry-failed",
             reason: `the tournament parent changed after branch allocation at: ${conflicts.map((change) => change.path).join(", ")}`,
           };
-        } else if (changeSet.changes.length === 0) {
+        } else if (changes.length === 0) {
           consolidating = { kind: "worker-consolidated" };
         } else {
           const actorContext = winnerExitResult === undefined
@@ -641,7 +640,7 @@ const finalizeTournament = (
               winnerWorker,
               winnerHarness,
               excludeUnder,
-              changes: changeSet.changes,
+              changes,
               winnerBaseline: laneBaseline,
               winnerActor: {
                 ...actorContext,
@@ -1155,7 +1154,7 @@ const executeScope = (
       }
       // A scope has one mutable workspace binding. The DSL does not carry
       // read-only/write ownership, so stable-order execution avoids races
-      // and makes map snapshots deterministic. Run one ready node at a
+      // and makes map lane allocation deterministic. Run one ready node at a
       // time so a validated blocked result can stop the scope before later
       // independent nodes consume more model turns. Map slots receive
       // distinct bindings below and remain the intentional parallel

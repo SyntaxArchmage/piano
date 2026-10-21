@@ -17,17 +17,11 @@ import { doctorCommand } from "./doctor.js";
 import { ensureSystemCaTrust } from "./ca-certs.js";
 import { CliArgumentError, type CliError } from "./errors.js";
 import { programName } from "./program-name.js";
-import { runSession } from "./session-run.js";
+import { runSession, type SessionRunOptions } from "./session-run.js";
 
 export type MainError = CliError | LoggingError | WorkflowExecutionError | HarnessHomeError;
 
-interface MainOptions {
-  readonly workflowPath?: string;
-  readonly prompt?: string;
-  readonly json?: boolean;
-  /** Task namespace for lane branches; skips the preflight summary. */
-  readonly mnemonic?: string;
-}
+type MainOptions = Pick<SessionRunOptions, "workflowPath" | "prompt" | "json" | "mnemonic">;
 
 function parseMainArgs(args: readonly string[]): Effect.Effect<MainOptions, CliArgumentError> {
   const usage = `usage: ${programName()} [--workflow <path>] [--mnemonic <name>] [-p] [--prompt <text>] [--json] [<prompt>]`;

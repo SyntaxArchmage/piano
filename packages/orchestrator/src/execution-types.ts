@@ -49,7 +49,6 @@ export interface WorkflowStageExecutionResult {
   /** Contract-declared values available to downstream workflow consumers. */
   readonly projections?: readonly ContractProjection[];
   readonly contract?: WorkerContractReference;
-  readonly progressRecordPath?: string;
 }
 
 export interface InternalStageResult extends WorkflowStageExecutionResult {

@@ -4884,7 +4884,7 @@ workflow:
 
       const status = await readRunStatusFile(session.runDir);
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       // The state document's actor table is the table the continue path reads:
       // one write, one reader, no second copy.
@@ -4982,7 +4982,7 @@ workflow:
       // Rebuilt from the run's own append-only evidence, which is exactly what
       // `/resume` and the next prompt of a live run both do.
       const carried = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(carried?.actors.size).toBe(1);
       await turn(2, carried);
@@ -5063,7 +5063,7 @@ workflow:
       // The ledger's `actor-turn` row is the only record of the table — the
       // resume stream is retired — and it must carry the whole of it.
       const carried = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(carried?.actors.size).toBe(1);
       await turn("second", carried);
@@ -5407,7 +5407,7 @@ workflow:
       expect(Object.keys(cursorJob.regions ?? {})).toHaveLength(0);
       // The carried conversations come from the run's own resume evidence.
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(execution?.actors.size).toBeGreaterThan(0);
 

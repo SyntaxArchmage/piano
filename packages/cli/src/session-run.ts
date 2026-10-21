@@ -304,7 +304,7 @@ function runSessionBody(
               // each prompt continues the actors the previous prompts left
               // behind — `/continue` takes the identical path, only carrying
               // the paused job's cursor.
-              const execution = yield* readWorkflowExecutionContinuation(current.session.runDir, current.session.id);
+              const execution = yield* readWorkflowExecutionContinuation(current.session.runDir);
               // The lane namespace is the task's identity. A resumed run keeps
               // the one the orchestrator recorded; a new run takes --mnemonic,
               // else a preflight summary of this prompt, else the workflow's

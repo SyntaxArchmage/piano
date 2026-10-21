@@ -1074,7 +1074,7 @@ export function executeStage(
     };
     const persistedProgress = yield* progressSemaphore.withPermits(1)(Effect.gen(function* () {
       // Keep the counter update and append under the same lock. Map slots
-      // may finish concurrently; JSONL order and snapshot counts must not
+      // may finish concurrently; accepted counts must not
       // jump backwards or include an unappended sibling.
       counters.acceptedStageCount += 1;
       counters.completedByStage.set(node.id, (counters.completedByStage.get(node.id) ?? 0) + 1);
@@ -1135,7 +1135,7 @@ export function executeStage(
         progress,
       },
     });
-    const persistedResult: InternalStageResult = { ...result, progressRecordPath: progressPath };
+    const persistedResult: InternalStageResult = { ...result };
     yield* workflowTrajectory.observe({
       type: "stage_accepted",
       context: trajectoryContext(result.attempts, result),
