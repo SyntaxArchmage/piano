@@ -68,7 +68,6 @@ import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import {
   actorSessionDirectory,
   runId as normalizeExecutionId,
-  migrateLegacyActorKey,
 } from "./workflow-runtime.js";
 import {
   type HandoffMapItem,
@@ -773,20 +772,6 @@ export function executeWorkflow(
     // worker request, so the harness reopens exactly the transcripts this prompt
     // touches and nothing else.
     const actors = new Map<string, ActorState>(request.execution?.actors);
-    // Actors written before they were keyed by worker carry the stage id in
-    // their key. Rekey them once here: the compiled workflow is the only place
-    // the stage→worker mapping exists, so this is the one moment the rewrite
-    // is possible. An actor whose stage the current workflow does not hold
-    // keeps its old key and is simply not looked up.
-    if (request.execution !== undefined) {
-      const stageToWorker = new Map(compiled.stages.map((stage) => [stage.id, stage.stage.worker]));
-      for (const [key, state] of [...actors]) {
-        const migratedKey = migrateLegacyActorKey(key, stageToWorker);
-        if (migratedKey === undefined || actors.has(migratedKey)) continue;
-        actors.delete(key);
-        actors.set(migratedKey, state);
-      }
-    }
     const workflowAgentOptions: AgentHarnessOptions = {
       ...(request.agentOptions ?? {}),
       // Codex's workspace-write sandbox only grants the task cwd by default;

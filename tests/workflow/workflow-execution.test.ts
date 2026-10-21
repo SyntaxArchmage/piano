@@ -15,6 +15,7 @@ import {
   loggingService,
 } from "../../packages/logging/src/index.js";
 import {
+  ACTOR_KEY_VERSION,
   allocateMapWorkspace,
   closeWorkflowJob,
   executeWorkflow,
@@ -5091,12 +5092,12 @@ workflow:
         execution: {
           id: session.id,
           jobOrdinal: 1,
-          // `<runId>/<harness>/<stageId>/<lane>`, per `workflowActorKey`.
+          // The current actor key, deliberately missing its continuation.
           // The cast is the point: `WorkflowActorContinuation` requires
           // `continuation`, and the reader always sets it, so this shape can only
           // arrive from a caller that built the table some other way — a JSON
           // round-trip, or JS with no type checking. The guard is what stops it.
-          actors: new Map([[`${session.id}/pi/respond/root`, { turns: 1 }]]) as unknown as WorkflowExecutionContinuation["actors"],
+          actors: new Map([[`${ACTOR_KEY_VERSION}/${session.id}/pi/basic/root`, { turns: 1 }]]) as unknown as WorkflowExecutionContinuation["actors"],
         },
         agentRunner: () => Effect.succeed({
           sessionId: "respond-session",

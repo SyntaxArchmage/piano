@@ -37,7 +37,6 @@ export {
 export {
   ACTOR_KEY_VERSION,
   actorSessionDirectory,
-  migrateLegacyActorKey,
   workflowActorKey,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeInvocation,

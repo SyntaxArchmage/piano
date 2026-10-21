@@ -147,9 +147,8 @@ export function runtimeFramesFromInstanceId(
   return frames;
 }
 
-/** The actor key's version marker. Keys written before actors were keyed by
- * worker carried the logical stage id as their third segment; the marker is
- * what lets a reader tell the two formats apart without guessing. */
+/** The actor key's on-disk format version: every persisted actor entry
+ * carries it, so a future format change can be told apart without guessing. */
 export const ACTOR_KEY_VERSION = "v2";
 
 /** Fan-out lane segments of an invocation: every active map slot is an
@@ -161,13 +160,6 @@ function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly st
     .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
 }
 
-/** The actor identity: session × harness × worker × lane, under a versioned
- * prefix. Worker — the recipe's role — rather than logical stage: one worker
- * continues a single conversation across stages, loop iterations, workflow
- * switches, and prompts of a session, which is what lets "run a workflow,
- * then keep working on it" resume the same chat. Keys written before this
- * format used the stage id on the opposite reading (that two stages sharing a
- * worker must not share a chat); {@link migrateLegacyActorKey} rewrites them. */
 /** The actor's lane as path segments: `["root"]` for an actor with no map
  * frame, the map frame pairs otherwise. The one spelling the actor key, the
  * session directory, and the ledger's `actor-turn` row share. */
@@ -176,29 +168,17 @@ export function actorLane(frames: readonly WorkflowRuntimeFrame[]): readonly str
   return lane.length === 0 ? ["root"] : lane;
 }
 
+/** The actor identity: session × harness × worker × lane, under a versioned
+ * prefix. Worker — the recipe's role — rather than logical stage: one worker
+ * continues a single conversation across stages, loop iterations, workflow
+ * switches, and prompts of a session, which is what lets "run a workflow,
+ * then keep working on it" resume the same chat. */
 export function workflowActorKey(
   invocation: WorkflowRuntimeInvocation,
   harness: string,
   worker: string,
 ): string {
   return [ACTOR_KEY_VERSION, invocation.runId, harness, worker, ...actorLane(invocation.frames)].join("/");
-}
-
-/** Rewrite one legacy stage-keyed actor key into the worker-keyed form, or
- * `undefined` when the key is not legacy or names a stage the current
- * workflow does not hold. Migration is best-effort by design: an actor whose
- * stage is gone keeps its old key and is simply not looked up. */
-export function migrateLegacyActorKey(
-  key: string,
-  stageToWorker: ReadonlyMap<string, string>,
-): string | undefined {
-  if (key.startsWith(`${ACTOR_KEY_VERSION}/`)) return undefined;
-  const parts = key.split("/");
-  const [runId, harness, stageId] = parts;
-  if (runId === undefined || harness === undefined || stageId === undefined || parts.length < 4) return undefined;
-  const worker = stageToWorker.get(stageId);
-  if (worker === undefined) return undefined;
-  return [ACTOR_KEY_VERSION, runId, harness, worker, ...parts.slice(3)].join("/");
 }
 
 export function actorSessionDirectory(
