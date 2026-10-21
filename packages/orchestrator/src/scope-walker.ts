@@ -342,7 +342,7 @@ const failTournamentWithPreservedSlots = (
   reason: string,
 ): Effect.Effect<never, WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
   workspaceState.preserve = true;
-  const preservation = yield* cleanupMapWorkspaces(request.runDir, runId, {
+  const preservation = yield* cleanupMapWorkspaces(request.runDir, {
     sourceCwd,
     keys,
     preserve: true,
@@ -420,7 +420,7 @@ const finalizeTournament = (
       outcome: "no-winner",
       skipped: `tournament contains terminal blocked result(s): ${blockedIds.join(", ")}`,
     }).pipe(Effect.catchAll(() => Effect.void));
-    yield* cleanupMapWorkspaces(request.runDir, runId, {
+    yield* cleanupMapWorkspaces(request.runDir, {
       sourceCwd,
       keys: candidates.map((candidate) => candidate.key),
       preserve: options?.preserve === true,
@@ -514,7 +514,7 @@ const finalizeTournament = (
         winnerKey,
         carrying,
       }).pipe(Effect.catchAll(() => Effect.void));
-      yield* cleanupMapWorkspaces(request.runDir, runId, {
+      yield* cleanupMapWorkspaces(request.runDir, {
         sourceCwd,
         keys: cleanupKeys,
         preserve: options?.preserve === true,
@@ -541,7 +541,7 @@ const finalizeTournament = (
         winnerKey,
         carrying,
       }).pipe(Effect.catchAll(() => Effect.void));
-      yield* cleanupMapWorkspaces(request.runDir, runId, {
+      yield* cleanupMapWorkspaces(request.runDir, {
         sourceCwd,
         keys: cleanupKeys,
         preserve: options?.preserve === true,
@@ -714,7 +714,7 @@ const finalizeTournament = (
       tournamentIncumbents.set(incumbentKey, admission.winner);
     }
   }
-  yield* cleanupMapWorkspaces(request.runDir, runId, {
+  yield* cleanupMapWorkspaces(request.runDir, {
     sourceCwd,
     keys: cleanupKeys,
     preserve: options?.preserve === true,
@@ -1040,9 +1040,6 @@ const executeScope = (
             {
               mnemonic,
               fork,
-              // Only an explicit continue may re-create a slot whose record was
-              // already swept; every other re-entry must stay loud.
-              ...(request.continueJob === undefined ? {} : { recreateWhenSwept: true }),
             },
           );
           slotBindings.push({ item, frames: slotFrames, workspace: slotWorkspace });

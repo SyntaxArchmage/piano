@@ -3579,7 +3579,7 @@ workflow:
       expect(result.stages.some((stage) => stage.workspace.kind === "map-slot")).toBe(true);
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("winner\n");
       for (const stage of result.stages.filter((candidate) => candidate.workspace.kind === "map-slot")) {
-        expect(JSON.parse(await readFile(stage.workspace.recordPath!, "utf8"))).toMatchObject({ status: "cleaned", phase: "cleaned" });
+        await expect(stat(stage.workspace.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(stat(stage.workspace.cwd)).rejects.toMatchObject({ code: "ENOENT" });
       }
     } finally {
@@ -4622,7 +4622,9 @@ workflow:
       expect(Exit.isFailure(exit)).toBe(true);
 
       const recordsDir = join(session.runDir, "workspace-records");
-      const readRecords = async () => Promise.all((await readdir(recordsDir)).map(async (entry) =>
+      const readRecords = async () => Promise.all((await readdir(recordsDir))
+        .filter((entry) => !entry.startsWith("."))
+        .map(async (entry) =>
         JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
           key: string;
           cwd: string;
@@ -4637,24 +4639,23 @@ workflow:
       // the next job's start is what reclaims the directories it left behind.
       await runWorkflow(session, closeWorkflowJob(session.runDir, session.id, 1, "restarted"));
       run = 2;
-      await runWorkflow(session, loadAndExecuteWorkflow({
+      const second = await runWorkflow(session, loadAndExecuteWorkflow({
         root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "map candidates again",
         agentRunner: runner,
       }));
+      // The new job allocated its own lanes under its own key.
+      expect(new Set(second.stages
+        .filter((stage) => stage.workspace.kind === "map-slot")
+        .map((stage) => stage.workspace.key)))
+        .toEqual(new Set(["job-2/tournament/slot-0", "job-2/tournament/slot-1"]));
 
+      // Cleanup leaves no tombstone: the reclaimed job-1 slots and job-2's
+      // own slots are all gone, and every worktree with them.
       const after = await readRecords();
+      expect(after).toEqual([]);
       for (const record of preserved) {
-        const settled = after.find((candidate) => candidate.key === record.key);
-        expect(settled?.status).toBe("cleaned");
         await expect(stat(record.cwd)).rejects.toThrow();
       }
-      // The new job's slots are its own, under its own key.
-      expect(after.map((candidate) => candidate.key).sort()).toEqual(expect.arrayContaining([
-        "job-1/tournament/slot-0",
-        "job-1/tournament/slot-1",
-        "job-2/tournament/slot-0",
-        "job-2/tournament/slot-1",
-      ]));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -6634,7 +6635,7 @@ workflow:
       // Every iteration's slots were cleaned at their region exit, not left for
       // run end.
       for (const stage of outcome.value.stages.filter((candidate) => candidate.workspace.kind === "map-slot")) {
-        expect(JSON.parse(await readFile(stage.workspace.recordPath!, "utf8"))).toMatchObject({ status: "cleaned", phase: "cleaned" });
+        await expect(stat(stage.workspace.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(stat(stage.workspace.cwd)).rejects.toMatchObject({ code: "ENOENT" });
       }
     } finally {
@@ -6819,7 +6820,7 @@ workflow:
         .filter((stage) => stage.workspace.recordPath !== undefined)
         .map((stage) => [stage.workspace.recordPath!, stage.workspace.cwd]));
       for (const [recordPath, cwd] of records) {
-        expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({ status: "cleaned", phase: "cleaned" });
+        await expect(stat(recordPath)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
       }
     } finally {

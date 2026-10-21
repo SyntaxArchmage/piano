@@ -428,15 +428,13 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │   └── selection.jsonl           # tournament/selection decisions
 ├── results/inv-<ref>-attempt-<k>.json  # agent-written validation result per attempt
 ├── context/inv-<ref>/<file>            # immutable context injected into a consumer
-├── workspace-snapshots/job-<n>/<region>/   # frozen tournament workspaces
-│   ├── baseline/                  # the parent workspace at region entry
-│   └── slot-baselines/<key>/      # each lane's baseline at allocation
+├── git/workspaces.git             # bare store: non-Git lane baselines and transaction commits
 ├── sessions/
 │   ├── trajectory-<harness>-<worker>-<lane>/
 │   │   └── session/<session>.jsonl # per-worker actor transcript
 │   └── side-agent/                # `/btw` side-agent harness session files
-├── workspace-records/<key>/record.json   # durable map/tournament workspace evidence
-└── workspaces/slots/<key>/               # temporary map/tournament workspace copy
+├── workspace-records/<key>/record.json   # live lane record: branch, base commit, source branch
+└── workspaces/worktree-<key>/            # lane worktree checked out on tuna/<mnemonic>/lane-<n>
 ```
 
 Each invocation's evidence name is `inv-<ref>` — a run-wide serial its
@@ -450,12 +448,14 @@ or a map slot does not start a new one: `<lane>` carries only the map frames, so
 one worker keeps one conversation across stages, iterations, and prompts. A map
 slot's workspace
 `<key>` is `job-<n>/<instance>` so that two jobs' slots can never rebind
-each other; `record.json` carries the slot's `allocation` provenance (`fresh`,
-`rebound`, or `recreated-after-sweep`). `contracts/`, validated result files,
-handoff files, and workspace directories appear only when the workflow uses
-those features; completed runs normally clean up `workspaces/` while retaining
-`workspace-records/`, and a run's `/restart`ed job hands its preserved slots to
-the next job, which reclaims them.
+each other; `record.json` carries the lane branch, its base commit, and the
+source branch it forked from while the slot lives. `contracts/`, validated
+result files, handoff files, and workspace directories appear only when the
+workflow uses those features; completed runs clean up `workspaces/` and
+`workspace-records/` alike — the lane branch under
+`tuna/<task-mnemonic>-<runId>/lane-<n>` is the durable record — and a run's
+`/restart`ed job hands its preserved slots to the next job, which reclaims
+them.
 
 Key files:
 

@@ -69,10 +69,9 @@ describe(" workspace lifecycle", () => {
       expect(record).toMatchObject({ strategy: "git-worktree", status: "active" });
       await expect(readFile(join(binding.cwd, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
 
-      const finalized = await runEffect(session, cleanupMapWorkspaces(session.runDir, "git-clean", { sourceCwd: root }));
-      expect(finalized[0]).toMatchObject({ key: "job-1/tournament/slot-0", status: "cleaned", phase: "cleaned" });
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ status: "cleaned" });
+      await expect(stat(binding.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
@@ -95,11 +94,11 @@ describe(" workspace lifecycle", () => {
       await rm(join(binding.cwd, "kernel.py"));
       await writeFile(join(binding.cwd, "winner.py"), "selected\n");
 
-      const recovered = await runEffect(session, recoverMapWorkspaces(session.runDir, "snapshot", root));
+      const recovered = await runEffect(session, recoverMapWorkspaces(session.runDir, root));
       expect(recovered).toHaveLength(1);
       expect(recovered[0]).toMatchObject({ key: "job-1/tournament/slot-0", cwd: binding.cwd });
       await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "snapshot", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(readFile(join(root, "winner.py"), "utf8")).resolves.toBe("selected\n");
       await expect(stat(join(root, "kernel.py"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
@@ -110,10 +109,10 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 1 }],
         root,
         { mnemonic: "test" },));
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve", { sourceCwd: root, preserve: true }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root, preserve: true }));
       expect(JSON.parse(await readFile(preserved.recordPath!, "utf8"))).toMatchObject({ status: "preserved", phase: "preserved" });
       expect((await stat(preserved.cwd)).isDirectory()).toBe(true);
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(stat(preserved.cwd)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -190,7 +189,7 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
         { mnemonic: "test" },))).rejects.toThrow(/symlink|substitution|realpath/u);
-      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, "slot-substitution", root)))
+      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, root)))
         .rejects.toThrow(/symlink|substitution|realpath/u);
       await expect(runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root)))
         .rejects.toThrow(/symlink|substitution|realpath/u);
@@ -249,7 +248,7 @@ describe(" workspace lifecycle", () => {
       await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
       expect((await lstat(join(root, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(root, "link.txt"))).resolves.toBe("target.txt");
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "internal-link", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
@@ -303,9 +302,9 @@ describe(" workspace lifecycle", () => {
       await replace(session.runDir, outside);
 
       const options = { sourceCwd: root };
-      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, "run-root-replacement", root)))
+      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, root)))
         .rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "run-root-replacement", options)))
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, options)))
         .rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
       await expect(runEffect(session, allocateMapWorkspace(
         session.runDir,
@@ -344,15 +343,15 @@ describe(" workspace lifecycle", () => {
         secondRoot,
         { mnemonic: "test" },));
 
-      const cleaned = await runEffect(session, cleanupMapWorkspaces(session.runDir, "scoped-cleanup", {
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: firstRoot,
         keys: [first.key],
       }));
-      expect(cleaned.map((record) => record.key)).toEqual([first.key]);
       await expect(stat(first.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(first.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
       expect((await stat(second.cwd)).isDirectory()).toBe(true);
 
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "scoped-cleanup", {
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: secondRoot,
         keys: [second.key],
       }));
@@ -382,14 +381,14 @@ describe(" workspace lifecycle", () => {
         root,
         { mnemonic: "test" },));
 
-      const cleaned = await runEffect(session, cleanupMapWorkspaces(session.runDir, "job-scoped-cleanup", {
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         keyPrefix: "job-1/",
       }));
-      expect(cleaned.map((record) => record.key)).toEqual([first.key]);
       await expect(stat(first.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(first.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
       // The other job's slot stays active: a paused job keeps it so its
-      // continue can rebind instead of finding a swept tombstone.
+      // continue can rebind instead of finding it deleted.
       expect(JSON.parse(await readFile(second.recordPath!, "utf8"))).toMatchObject({ key: second.key, status: "active" });
       expect((await stat(second.cwd)).isDirectory()).toBe(true);
     } finally {
@@ -427,7 +426,7 @@ describe(" workspace lifecycle", () => {
 
       const applied = await runEffect(session, applyWinnerWorkspace(session.runDir, slotB.key, root));
       expect(applied.method).toBe("git-ff");
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "git-winner-run", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
 
       // The source HEAD advanced by ONE fast-forward and now holds the winner.
       expect(applied.commit).toBeDefined();
@@ -477,7 +476,7 @@ describe(" workspace lifecycle", () => {
       // stay recoverable rather than being half-deleted.
       await rm(join(root, ".git", "worktrees", basename(binding.cwd)), { recursive: true, force: true });
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "git-cleanup-failure", { sourceCwd: root })))
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root })))
         .rejects.toThrow(/not checked out on its lane branch|git worktree cleanup failed/u);
       await expect(stat(binding.cwd)).resolves.toMatchObject({});
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({
@@ -517,7 +516,7 @@ describe(" workspace lifecycle", () => {
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
       await writeFile(binding.recordPath!, `${JSON.stringify({ ...record, gitRoot: foreign }, null, 2)}\n`);
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "git-root-binding", { sourceCwd: root })))
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root })))
         .rejects.toThrow(/not checked out on its lane branch|does not match source Git common root/u);
       await expect(stat(binding.cwd)).resolves.toMatchObject({});
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ phase: "cleaning" });
@@ -545,7 +544,7 @@ describe(" workspace lifecycle", () => {
       await rm(binding.cwd, { recursive: true, force: true });
       await symlink(outside, binding.cwd);
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-slot-substitution", {
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         preserve: true,
       }))).rejects.toThrow(/symlink|substitution|realpath/u);
@@ -573,7 +572,7 @@ describe(" workspace lifecycle", () => {
       await mkdir(binding.cwd);
       await writeFile(join(binding.cwd, "attacker.txt"), "not run-owned\n");
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-ordinary-slot-substitution", {
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         preserve: true,
       }))).rejects.toThrow(/run-owned|allocated directory|identity marker/u);
@@ -602,7 +601,7 @@ describe(" workspace lifecycle", () => {
       await writeFile(join(binding.cwd, "attacker.txt"), "not run-owned\n");
       await writeFile(join(binding.cwd, ".git"), `gitdir: ${outside}\n`);
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-marker-substitution", {
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         preserve: true,
       }))).rejects.toThrow(/does not belong/u);
@@ -674,7 +673,7 @@ describe(" workspace lifecycle", () => {
       expect((await execFileAsync("git", ["-C", root, "rev-parse", "tuna/test/lane-0"], { encoding: "utf8" })).stdout.trim())
         .toBe(applied.commit);
       await expect(readFile(join(root, "source.txt"), "utf8")).resolves.toBe("source\n");
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "git-nonfastforward", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
       // Cleanup removes the worktree but keeps the lane branch.
       expect((await execFileAsync("git", ["-C", root, "rev-parse", "tuna/test/lane-0"], { encoding: "utf8" })).stdout.trim())
@@ -762,7 +761,7 @@ describe(" workspace lifecycle", () => {
 
           { mnemonic: "test" },));
         branches.push((JSON.parse(await readFile(binding.recordPath!, "utf8")) as { laneBranch: string }).laneBranch);
-        await runEffect(session, cleanupMapWorkspaces(session.runDir, "lane-numbers", { sourceCwd: root, keys: [binding.key] }));
+        await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root, keys: [binding.key] }));
       }
       expect(branches).toEqual(["tuna/test/lane-0", "tuna/test/lane-1", "tuna/test/lane-2"]);
       // Cleanup removed every worktree but kept every branch.

@@ -2,7 +2,7 @@ import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, re
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
@@ -18,8 +18,8 @@ import {
 const execFileAsync = promisify(execFile);
 
 export type WorkflowWorkspaceStrategy = "git-worktree" | "store-worktree";
-export type WorkflowWorkspaceStatus = "active" | "preserved" | "cleaned";
-export type WorkflowWorkspacePhase = "allocated" | "applying" | "cleaning" | "preserved" | "cleaned";
+export type WorkflowWorkspaceStatus = "active" | "preserved";
+export type WorkflowWorkspacePhase = "allocated" | "applying" | "cleaning" | "preserved";
 
 /** A workspace is independent from an actor/session: one map-slot workspace
  * is shared by all of that slot's stages, while actor continuation remains
@@ -298,10 +298,10 @@ function parseWorkspaceRecord(
   const strategy = value.strategy === "git-worktree" || value.strategy === "store-worktree"
     ? value.strategy
     : undefined;
-  const status = value.status === "active" || value.status === "preserved" || value.status === "cleaned"
+  const status = value.status === "active" || value.status === "preserved"
     ? value.status
     : "active";
-  const phase = value.phase === "allocated" || value.phase === "applying" || value.phase === "cleaning" || value.phase === "preserved" || value.phase === "cleaned"
+  const phase = value.phase === "allocated" || value.phase === "applying" || value.phase === "cleaning" || value.phase === "preserved"
     ? value.phase
     : "allocated";
   if (value.version !== 3 || value.key !== expected.key || value.cwd !== expected.cwd || typeof value.sourceCwd !== "string" ||
@@ -390,6 +390,21 @@ async function writeWorkspaceRecord(
   }
 }
 
+/** Delete one slot's record directory crash-atomically: rename it out of the
+ * records tree first, so a crash leaves an ignorable trash entry instead of a
+ * half-deleted record that every later read would reject. */
+async function removeWorkspaceRecord(recordPath: string, runRoot: CanonicalRunRoot): Promise<void> {
+  const recordDir = dirname(recordPath);
+  const recordsRoot = dirname(recordDir);
+  await assertCanonicalRunRoot(runRoot);
+  await assertSafeWorkspacePathAncestors(runRoot.canonical, recordsRoot);
+  const trash = join(recordsRoot, ".removing");
+  await mkdir(trash, { recursive: true });
+  const moved = join(trash, `${basename(recordDir)}.${randomUUID()}`);
+  await rename(recordDir, moved);
+  await rm(moved, { recursive: true, force: true });
+}
+
 async function readWorkspaceRecord(
   recordPath: string,
   expected: { readonly key: string; readonly cwd: string; readonly sourceCwd?: string },
@@ -423,9 +438,9 @@ async function readWorkspaceRecord(
 
 /** The map lane's workspace key. The job ordinal is part of the slot's
  * identity, not decoration: every job re-enters the same loop frames from
- * iteration zero, so a key without it collides with the previous job's
- * cleaned tombstone — or silently rebinds a leftover directory — the moment a
- * second prompt or a continue re-allocates the same slot. */
+ * iteration zero, so a key without it collides with a previous job's
+ * preserved slot record — or silently rebinds a leftover directory — the
+ * moment a second prompt or a continue re-allocates the same slot. */
 function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[]): string {
   if (!frames.some((frame) => frame.kind === "map")) {
     throw new WorkflowError({
@@ -447,6 +462,7 @@ function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[])
 
 interface GitSourceFacts {
   readonly root: string;
+  readonly commonRoot: string;
   readonly dirty: boolean;
   readonly head: string;
   readonly branch: string;
@@ -491,7 +507,7 @@ async function inspectGitSource(source: string, run: string): Promise<GitSourceF
     .split(/\r?\n/u)
     .map((line) => line.slice(3).trim())
     .some((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive));
-  return { root, dirty, head, branch };
+  return { root, commonRoot: repository.commonRoot, dirty, head, branch };
 }
 
 interface GitRepositoryIdentity {
@@ -553,6 +569,9 @@ export function sharedWorkspaceBinding(cwd: string): WorkflowWorkspaceBinding {
 export interface MapLaneFork {
   readonly strategy: WorkflowWorkspaceStrategy;
   readonly gitRoot: string;
+  /** The repository's common git dir: every sibling and nested lane shares
+   * it, so it keys the lane-number allocation. */
+  readonly commonRoot: string;
   readonly commit: string;
   readonly sourceBranch?: string;
   /** Store path only: the ref holding the fork commit, used as the winner
@@ -628,9 +647,11 @@ export async function prepareMapLaneFork(
       ),
       excludeUnder: [run],
     });
+    const storeDir = await workspaceBaselineStore(run);
     return {
       strategy: "store-worktree",
-      gitRoot: await workspaceBaselineStore(run),
+      gitRoot: storeDir,
+      commonRoot: storeDir,
       commit: baseline.commit,
       baselineRef: baseline.refName,
     };
@@ -642,7 +663,7 @@ export async function prepareMapLaneFork(
       source,
       `piano: checkpoint lane ${facts.branch} before nested lanes`,
     );
-    return { strategy: "git-worktree", gitRoot: source, commit, sourceBranch: facts.branch };
+    return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit, sourceBranch: facts.branch };
   }
   if (facts.dirty) {
     const commit = await commitWorkspaceContent(source, {
@@ -650,9 +671,9 @@ export async function prepareMapLaneFork(
       parent: facts.head,
       message: `piano: seed unsaved workspace content for ${facts.branch}`,
     });
-    return { strategy: "git-worktree", gitRoot: source, commit, sourceBranch: facts.branch };
+    return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit, sourceBranch: facts.branch };
   }
-  return { strategy: "git-worktree", gitRoot: source, commit: facts.head, sourceBranch: facts.branch };
+  return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit: facts.head, sourceBranch: facts.branch };
 }
 
 /** The lane numbers already taken in this namespace, so allocation never
@@ -668,6 +689,48 @@ async function laneNumbers(gitRoot: string, mnemonic: string): Promise<readonly 
     if (parsed?.mnemonic === mnemonic) numbers.push(parsed.laneNumber);
   }
   return numbers;
+}
+
+/** Next free lane number per (common git dir, namespace). Lane branches are
+ * never deleted, so the hint only grows and is safe for the process lifetime.
+ * Concurrent cold callers share one scan and take consecutive numbers; a
+ * collision means another process took one and just advances the hint. */
+const laneNumberHints = new Map<string, number>();
+const laneNumberScans = new Map<string, Promise<void>>();
+
+function laneHintKey(commonRoot: string, mnemonic: string): string {
+  return `${commonRoot}\0${mnemonic}`;
+}
+
+/** Store a hint, evicting one oldest entry past the cap. The cache is an
+ * optimization, not state. */
+function rememberLaneHint(key: string, next: number): void {
+  if (laneNumberHints.size > 512 && !laneNumberHints.has(key)) {
+    const oldest = laneNumberHints.keys().next().value;
+    if (oldest !== undefined) laneNumberHints.delete(oldest);
+  }
+  laneNumberHints.set(key, next);
+}
+
+async function nextLaneNumber(scanRoot: string, commonRoot: string, mnemonic: string): Promise<number> {
+  const key = laneHintKey(commonRoot, mnemonic);
+  if (!laneNumberHints.has(key)) {
+    let scan = laneNumberScans.get(key);
+    if (scan === undefined) {
+      scan = laneNumbers(scanRoot, mnemonic).then((taken) => {
+        rememberLaneHint(key, taken.length === 0 ? 0 : Math.max(...taken) + 1);
+      });
+      laneNumberScans.set(key, scan);
+      void scan.finally(() => laneNumberScans.delete(key)).catch(() => undefined);
+    }
+    await scan;
+  }
+  const next = laneNumberHints.get(key);
+  if (next === undefined) {
+    throw workflowError("schedule", scanRoot, "lane number scan did not complete");
+  }
+  rememberLaneHint(key, next + 1);
+  return next;
 }
 
 async function addLaneWorktree(gitRoot: string, branch: string, cwd: string, commit: string): Promise<void> {
@@ -689,7 +752,6 @@ export function allocateMapWorkspace(
      * memoized thunk so a resume whose slots all exist never pays for a seed
      * commit the allocation will not use. */
     readonly fork?: MapLaneFork | (() => Promise<MapLaneFork>);
-    readonly recreateWhenSwept?: boolean;
   },
 ): Effect.Effect<WorkflowWorkspaceBinding, WorkflowError, FileSystem.FileSystem | Logging> {
   return TRACE(WORKSPACE_SOURCE, Effect.tryPromise({
@@ -718,16 +780,15 @@ export function allocateMapWorkspace(
       const recordPath = workspaceRecordPath(run, key);
       await assertCanonicalRunRoot(runRoot);
       await assertSafeWorkspacePathAncestors(run, dirname(recordPath));
-      const existing = await readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
-      const recreatedAfterSweep = existing !== undefined && existing.status === "cleaned";
-      if (recreatedAfterSweep) {
-        // A swept slot inside the SAME job: only an explicit continue intent
-        // may recreate it at the same path — re-entering the same job without
-        // that intent is a bug and must stay loud.
-        if (options.recreateWhenSwept !== true) {
-          throw workflowError("schedule", recordPath, `workspace slot "${key}" was already cleaned`);
-        }
-      } else if (existing !== undefined) {
+      let existing = await readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
+      // A sweep interrupted between removing the worktree and deleting the
+      // record leaves a "cleaning" record whose lane is already gone: finish
+      // the sweep instead of reporting a missing slot.
+      if (existing?.phase === "cleaning" && !await pathExists(existing.cwd)) {
+        await removeWorkspaceRecord(recordPath, runRoot);
+        existing = undefined;
+      }
+      if (existing !== undefined) {
         if (existing.mnemonic !== options.mnemonic) {
           throw workflowError(
             "schedule",
@@ -780,8 +841,7 @@ export function allocateMapWorkspace(
         await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
         await assertCanonicalRunRoot(runRoot);
         for (let attempt = 0; attempt < 8; attempt += 1) {
-          const taken = await laneNumbers(gitRoot, options.mnemonic);
-          const next = taken.length === 0 ? 0 : Math.max(...taken) + 1;
+          const next = await nextLaneNumber(gitRoot, fork.commonRoot, options.mnemonic);
           const branch = laneBranchName(options.mnemonic, next);
           try {
             await addLaneWorktree(gitRoot, branch, cwd, fork.commit);
@@ -790,8 +850,8 @@ export function allocateMapWorkspace(
             break;
           } catch (error) {
             addFailure = error;
-            // A concurrent allocation may have taken the number between the
-            // scan and the add; anything else is a real failure.
+            // A concurrent allocation may have taken the number; the hint is
+            // already advanced past it, so just try the next one.
             if (!errorMessage(error).includes("already exists")) break;
           }
         }
@@ -883,7 +943,8 @@ async function readWorkspaceRecords(
     if (entry.isSymbolicLink()) {
       throw workflowError("schedule", join(recordsRoot, entry.name), "workspace record directory cannot be a symlink");
     }
-    if (!entry.isDirectory()) continue;
+    // `.removing` is the crash-safe trash a completed sweep leaves behind.
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     let key: string;
     try {
       key = decodeURIComponent(entry.name);
@@ -962,7 +1023,6 @@ async function removeWorkspaceDirectory(
  * directory so a recovery action cannot sweep another run. */
 export function recoverMapWorkspaces(
   runDir: string,
-  runId: string,
   sourceCwd?: string,
 ): Effect.Effect<readonly WorkflowWorkspaceBinding[], WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.tryPromise({
@@ -971,8 +1031,15 @@ export function recoverMapWorkspaces(
       const records = await readWorkspaceRecords(runRoot, sourceCwd);
       const bindings: WorkflowWorkspaceBinding[] = [];
       for (const { path, record } of records) {
-        if (record.status === "cleaned") continue;
         await assertCanonicalRunRoot(runRoot);
+        if (!await pathExists(record.cwd)) {
+          // A sweep interrupted after removing the worktree: finish it.
+          if (record.phase === "cleaning") {
+            await removeWorkspaceRecord(path, runRoot);
+            continue;
+          }
+          throw workflowError("schedule", path, `recoverable workspace is missing at ${record.cwd}`);
+        }
         try {
           await assertOwnedWorkspace(runRoot.canonical, record);
         } catch (error) {
@@ -993,12 +1060,11 @@ export function recoverMapWorkspaces(
     : workflowError("schedule", runDir, errorMessage(cause))));
 }
 
-/** Finalize every slot in one execution. The operation is idempotent and
- * persists a cleaning phase before removal, allowing a later recovery to
- * finish an interrupted cleanup. */
+/** Sweep every slot in one execution: a preserved slot keeps its record and
+ * worktree, every other slot loses both. Idempotent, and interrupted sweeps
+ * are finished by the next cleanup or recovery. */
 export function cleanupMapWorkspaces(
   runDir: string,
-  runId: string,
   options: WorkflowWorkspaceCleanupOptions = {},
 ): Effect.Effect<readonly WorkflowWorkspaceRecord[], WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.tryPromise({
@@ -1017,10 +1083,6 @@ export function cleanupMapWorkspaces(
           || right.record.key.localeCompare(left.record.key));
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
-        if (record.status === "cleaned") {
-          finalized.push(record);
-          continue;
-        }
         const now = new Date().toISOString();
         if (options.preserve === true) {
           // A preserved slot is advertised as recoverable. Validate the
@@ -1041,16 +1103,9 @@ export function cleanupMapWorkspaces(
         const cleaning: WorkflowWorkspaceRecord = { ...record, phase: "cleaning", updatedAt: now };
         await writeWorkspaceRecord(path, cleaning, runRoot);
         await removeWorkspaceDirectory(cleaning, runRoot, runRoot.canonical);
-        const cleanedAt = new Date().toISOString();
-        const cleaned: WorkflowWorkspaceRecord = {
-          ...cleaning,
-          status: "cleaned",
-          phase: "cleaned",
-          updatedAt: cleanedAt,
-          finalizedAt: cleanedAt,
-        };
-        await writeWorkspaceRecord(path, cleaned, runRoot);
-        finalized.push(cleaned);
+        // The lane branch is the durable record now: cleanup leaves no
+        // tombstone, so a later sweep finds nothing to re-read.
+        await removeWorkspaceRecord(path, runRoot);
       }
       return finalized;
     },
@@ -2097,9 +2152,6 @@ export function applyWinnerWorkspace(
       });
       if (record === undefined) {
         throw workflowError("schedule", run, `winner workspace "${winnerKey}" is not owned by this execution`);
-      }
-      if (record.status === "cleaned") {
-        throw workflowError("schedule", recordPath, `winner workspace "${winnerKey}" was already cleaned`);
       }
       let gitRoot: string;
       try {
