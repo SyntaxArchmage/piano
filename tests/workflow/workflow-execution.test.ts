@@ -6746,11 +6746,15 @@ workflow:
       const outerStages = result.stages.filter((stage) => stage.stageId === "outer.seed-a");
       expect(outerStages).toHaveLength(2);
       const outerCwds = new Set(outerStages.map((stage) => stage.workspace.cwd));
+      // Inner winners are clean worktrees of the run's store: git fast-forwards
+      // each one into its direct parent slot, so no `$consolidate` worker turn
+      // runs for them. Only the outer winner — a store worktree of the non-Git
+      // root — consolidates through a worker, and into the root.
       const innerCarries = consolidationTargets.filter(({ stage }) =>
         stage.includes("/outer.race-a/") || stage.includes("/outer.race-b/"));
-      expect(innerCarries).toHaveLength(4);
-      for (const carry of innerCarries) expect(outerCwds.has(carry.cwd)).toBe(true);
+      expect(innerCarries).toHaveLength(0);
       expect(consolidationTargets).toContainEqual({ stage: "$consolidate/job-1/outer/slot-1", cwd: root });
+      expect(outerCwds.size).toBe(2);
 
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("outer-1-race-b-1\n");
       expect(result.terminalStages).toHaveLength(1);
@@ -6760,8 +6764,21 @@ workflow:
       });
 
       const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as { winnerKey?: string });
-      expect(selections).toContainEqual(expect.objectContaining({ winnerKey: "job-1/outer/slot-1" }));
+        .trim().split("\n").map((line) => JSON.parse(line) as {
+          winnerKey?: string;
+          carrying?: { kind?: string };
+        });
+      expect(selections).toContainEqual(expect.objectContaining({
+        winnerKey: "job-1/outer/slot-1",
+        carrying: expect.objectContaining({ kind: "worker-consolidated" }),
+      }));
+      const innerMerges = selections.filter((selection) =>
+        selection.winnerKey?.includes("/outer.race-a/") === true
+        || selection.winnerKey?.includes("/outer.race-b/") === true);
+      expect(innerMerges).toHaveLength(4);
+      for (const selection of innerMerges) {
+        expect(selection.carrying).toMatchObject({ kind: "git-merged" });
+      }
       const records = new Map(result.stages
         .filter((stage) => stage.workspace.recordPath !== undefined)
         .map((stage) => [stage.workspace.recordPath!, stage.workspace.cwd]));

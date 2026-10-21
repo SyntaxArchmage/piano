@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -78,7 +78,7 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("applies a selected dirty/non-Git snapshot back to the source and supports explicit recovery preservation", async () => {
+  it("applies a selected dirty/non-Git lane back to the source and supports explicit recovery preservation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-snapshot-workspace-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-snapshot-run-"));
     try {
@@ -90,7 +90,7 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
-      expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ strategy: "directory-snapshot" });
+      expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ strategy: "store-worktree" });
       await rm(join(binding.cwd, "kernel.py"));
       await writeFile(join(binding.cwd, "winner.py"), "selected\n");
 
@@ -226,7 +226,7 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("preserves an internal file symlink when allocating a directory snapshot", async () => {
+  it("preserves an internal file symlink when allocating a store worktree", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-internal-link-source-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-internal-link-run-"));
     try {
@@ -240,7 +240,7 @@ describe(" workspace lifecycle", () => {
         root,
       ));
 
-      expect(binding.strategy).toBe("directory-snapshot");
+      expect(binding.strategy).toBe("store-worktree");
       expect((await lstat(join(binding.cwd, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(binding.cwd, "link.txt"))).resolves.toMatch(/target\.txt$/u);
       await expect(readFile(join(binding.cwd, "target.txt"), "utf8")).resolves.toBe("target\n");
@@ -255,7 +255,7 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("rejects a FIFO during directory-snapshot allocation without opening or blocking on it", async () => {
+  it("rejects a FIFO during store-worktree allocation without opening or blocking on it", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-fifo-source-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-fifo-run-"));
     try {
@@ -465,8 +465,10 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
-      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
-      await writeFile(binding.recordPath!, `${JSON.stringify({ ...record, gitRoot: join(root, "missing-git-root") }, null, 2)}\n`);
+      // Drop the repository's admin entry for the worktree while leaving the
+      // lane and its pointer intact: removal then fails, but the slot must
+      // stay recoverable rather than being half-deleted.
+      await rm(join(root, ".git", "worktrees", basename(binding.cwd)), { recursive: true, force: true });
 
       await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "git-cleanup-failure", { sourceCwd: root })))
         .rejects.toThrow(/git worktree cleanup failed/u);
@@ -501,6 +503,10 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
+      // Rewrite both the pointer and the record so ownership still holds, but
+      // the named repository is no longer the source's common root.
+      await mkdir(join(foreign, ".git", "worktrees"), { recursive: true });
+      await writeFile(join(binding.cwd, ".git"), `gitdir: ${join(foreign, ".git", "worktrees", "forged")}\n`);
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
       await writeFile(binding.recordPath!, `${JSON.stringify({ ...record, gitRoot: foreign }, null, 2)}\n`);
 
@@ -571,9 +577,10 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("rejects a replacement whose record identity matches but durable marker is missing", async () => {
+  it("rejects a replacement whose forged worktree pointer is outside the owning repository", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-preserve-marker-slot-source-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-preserve-marker-slot-run-"));
+    const outside = await mkdtemp(join(tmpdir(), "piano-preserve-marker-outside-"));
     try {
       await writeFile(join(root, "source.txt"), "source\n");
       const session = await sessionFor(root, runRoot);
@@ -583,29 +590,20 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
       ));
-      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as {
-        slotIdentity: { dev: number; ino: number; birthtimeMs: number; marker: string };
-      };
       await rm(binding.cwd, { recursive: true, force: true });
       await mkdir(binding.cwd);
       await writeFile(join(binding.cwd, "attacker.txt"), "not run-owned\n");
-      const replacement = await lstat(binding.cwd);
-      record.slotIdentity = {
-        ...record.slotIdentity,
-        dev: replacement.dev,
-        ino: replacement.ino,
-        birthtimeMs: replacement.birthtimeMs,
-      };
-      await writeFile(binding.recordPath!, `${JSON.stringify(record, null, 2)}\n`);
+      await writeFile(join(binding.cwd, ".git"), `gitdir: ${outside}\n`);
 
       await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-marker-substitution", {
         sourceCwd: root,
         preserve: true,
-      }))).rejects.toThrow(/identity marker is missing or invalid/u);
+      }))).rejects.toThrow(/does not belong/u);
       await expect(readFile(join(binding.cwd, "attacker.txt"), "utf8")).resolves.toBe("not run-owned\n");
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 

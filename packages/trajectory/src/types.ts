@@ -95,7 +95,7 @@ export type WorkflowObservation =
     readonly skipped?: string;
     /** Provenance of how the winner reached the parent scope: a git-worktree
      * winner is merged (`git-merged`, the engine fast-forwards git), a
-     * directory-snapshot winner is consolidated by its own worker
+     * store-worktree winner is consolidated by its own worker
      * (`worker-consolidated`). Either kind makes the `carried` outcome. */
     readonly carrying?: {
       readonly kind: "git-merged" | "worker-consolidated" | "admitted-not-carried" | "carry-failed";

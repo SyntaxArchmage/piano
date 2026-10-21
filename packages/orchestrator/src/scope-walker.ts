@@ -14,6 +14,7 @@ import {
   carryLanded,
   cleanupMapWorkspaces,
   freezeWorkspaceBaseline,
+  laneBaselineRefName,
   workspaceBaselineChanges,
   workspaceRefName,
   type WorkspaceBaseline,
@@ -1038,7 +1039,7 @@ const executeScope = (
           const baseline = yield* Effect.tryPromise({
             try: () => freezeWorkspaceBaseline(slotWorkspace.cwd, {
               runDir: request.runDir,
-              refName: workspaceRefName(runId, `lanes/${encodeURIComponent(slotWorkspace.key)}`),
+              refName: laneBaselineRefName(runId, slotWorkspace.key),
               parent: frozen,
               excludeUnder: [request.runDir],
             }),

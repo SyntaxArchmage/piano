@@ -155,8 +155,8 @@ export async function assertRegionExitEvidence(input: {
   // survives: cleanup ran per exit, not deferred to the run-end backstop.
   const log = await readFile(join(input.runDir, "system-log", "log.jsonl"), "utf8");
   expect((log.match(/workspace\.winner\.consolidated/g) ?? []).length).toBe(2);
-  const slotRoot = join(input.runDir, "workspaces", "slots");
-  const lanes = await readdir(slotRoot).catch((error: NodeJS.ErrnoException) => {
+  const workspacesRoot = join(input.runDir, "workspaces");
+  const lanes = await readdir(workspacesRoot).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[];
     throw error;
   });
