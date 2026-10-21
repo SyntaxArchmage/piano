@@ -11,7 +11,6 @@ import {
   cleanupMapWorkspaces,
   freezeWorkspaceBaseline,
   prepareMapLaneFork,
-  recoverMapWorkspaces,
   workspaceBaselineChanges,
   workspaceRefName,
   captureWorkspaceBaselineChanges,
@@ -64,7 +63,7 @@ describe(" workspace lifecycle", () => {
         root,
         { mnemonic: "test" },));
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as { strategy: string; status: string };
-      expect(record).toMatchObject({ strategy: "git-worktree", status: "active" });
+      expect(record).toMatchObject({ strategy: "git-worktree", phase: "allocated" });
       await expect(readFile(join(binding.cwd, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
 
       await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
@@ -92,9 +91,14 @@ describe(" workspace lifecycle", () => {
       await rm(join(binding.cwd, "kernel.py"));
       await writeFile(join(binding.cwd, "winner.py"), "selected\n");
 
-      const recovered = await runEffect(session, recoverMapWorkspaces(session.runDir, root));
-      expect(recovered).toHaveLength(1);
-      expect(recovered[0]).toMatchObject({ key: "job-1/tournament/slot-0", cwd: binding.cwd });
+      // Reallocation is the recovery path: it rebinds the same lane.
+      const rebound = await runEffect(session, allocateMapWorkspace(
+        session.runDir,
+        "snapshot",
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
+        root,
+        { mnemonic: "test" },));
+      expect(rebound.cwd).toBe(binding.cwd);
       await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
       await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(readFile(join(root, "winner.py"), "utf8")).resolves.toBe("selected\n");
@@ -108,7 +112,7 @@ describe(" workspace lifecycle", () => {
         root,
         { mnemonic: "test" },));
       await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root, preserve: true }));
-      expect(JSON.parse(await readFile(preserved.recordPath!, "utf8"))).toMatchObject({ status: "preserved", phase: "preserved" });
+      expect(JSON.parse(await readFile(preserved.recordPath!, "utf8"))).toMatchObject({ phase: "preserved" });
       expect((await stat(preserved.cwd)).isDirectory()).toBe(true);
       await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(stat(preserved.cwd)).rejects.toMatchObject({ code: "ENOENT" });
@@ -187,8 +191,6 @@ describe(" workspace lifecycle", () => {
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
         { mnemonic: "test" },))).rejects.toThrow(/symlink|substitution|realpath/u);
-      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, root)))
-        .rejects.toThrow(/symlink|substitution|realpath/u);
       await expect(runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root)))
         .rejects.toThrow(/symlink|substitution|realpath/u);
       await expect(readFile(join(root, "source.txt"), "utf8")).resolves.toBe("source\n");
@@ -300,8 +302,6 @@ describe(" workspace lifecycle", () => {
       await replace(session.runDir, outside);
 
       const options = { sourceCwd: root };
-      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, root)))
-        .rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
       await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, options)))
         .rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
       await expect(runEffect(session, allocateMapWorkspace(
@@ -387,7 +387,7 @@ describe(" workspace lifecycle", () => {
       await expect(stat(first.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
       // The other job's slot stays active: a paused job keeps it so its
       // continue can rebind instead of finding it deleted.
-      expect(JSON.parse(await readFile(second.recordPath!, "utf8"))).toMatchObject({ key: second.key, status: "active" });
+      expect(JSON.parse(await readFile(second.recordPath!, "utf8"))).toMatchObject({ key: second.key, phase: "allocated" });
       expect((await stat(second.cwd)).isDirectory()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -478,7 +478,6 @@ describe(" workspace lifecycle", () => {
         .rejects.toThrow(/not checked out on its lane branch|git worktree cleanup failed/u);
       await expect(stat(binding.cwd)).resolves.toMatchObject({});
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({
-        status: "active",
         phase: "cleaning",
       });
     } finally {

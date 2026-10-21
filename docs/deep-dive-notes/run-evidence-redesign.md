@@ -196,7 +196,7 @@ root 级（无 loop）tournament 同样报 `race/slot-0 was already cleaned` →
 **独立真缺陷（默认不在 scope）**：
 - **dsh 证据链静默死亡**：装机 dsh 写 `session.v3.jsonl.zstd`，`subprocess.ts` 只认 `["session.jsonl.zstd","session.jsonl"]` → `readDshSessionEvidence` 返回 undefined → canonical transcript 退化成 raw stdout markdown → `piano logs --check` 报 26 条 `transcript-invalid`。（**已修**，H1 `ae4037e`。）
 - `ARCHITECTURE.txt` 与 `docs/workflow-trajectory-evaluation-prd.md` 的 `executions/<exec>/` 布局与磁盘完全不符。（**已标记**，`e5370c7`。）
-- `workspace.recoverMapWorkspaces` 导出无运行时调用点（`applyWinnerWorkspace` 由 tournament carry 调用）。
+- `workspace.recoverMapWorkspaces` 导出无运行时调用点。（**已修**，导出删除；recovery 由 `allocateMapWorkspace` 的 existing-record 路径承担；`applyWinnerWorkspace` 由 tournament carry 调用。）
 - `piano logs` picker 在 pretty-printed `trajectory.json` 上静默退化成 id-only 行。（**已修**，H3 `7793a7e`。）
 
 ### D2. 测试面盲区审计（2026-10-15，对照真实装机工具逐项核验）

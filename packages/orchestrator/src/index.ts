@@ -63,7 +63,6 @@ export {
   freezeWorkspaceBaseline,
   mnemonicNamespace,
   prepareMapLaneFork,
-  recoverMapWorkspaces,
   sharedWorkspaceBinding,
   workspaceBaselineChanges,
   workspaceRefName,
@@ -76,7 +75,6 @@ export {
   type WorkflowWorkspaceCleanupOptions,
   type WorkflowWorkspaceRecord,
   type WorkflowWorkspacePhase,
-  type WorkflowWorkspaceStatus,
   type WorkflowWorkspaceStrategy,
 } from "./workspace.js";
 export {

@@ -4555,10 +4555,10 @@ workflow:
         const record = JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
           key: string;
           cwd: string;
-          status: string;
+          phase: string;
         };
         expect(record.key).toMatch(/^job-1\/tournament\/slot-[01]$/u);
-        expect(record.status).toBe("preserved");
+        expect(record.phase).toBe("preserved");
         expect((await stat(record.cwd)).isDirectory()).toBe(true);
       }
     } finally {
@@ -4628,12 +4628,12 @@ workflow:
         JSON.parse(await readFile(join(recordsDir, entry, "record.json"), "utf8")) as {
           key: string;
           cwd: string;
-          status: string;
+          phase: string;
         }));
       const preserved = await readRecords();
       expect(preserved.map((record) => record.key).sort())
         .toEqual(["job-1/tournament/slot-0", "job-1/tournament/slot-1"]);
-      expect(preserved.every((record) => record.status === "preserved")).toBe(true);
+      expect(preserved.every((record) => record.phase === "preserved")).toBe(true);
 
       // The human abandons the paused job: the ledger records the close, and
       // the next job's start is what reclaims the directories it left behind.
@@ -6325,10 +6325,10 @@ workflow:
 
       const recordRoot = join(session.runDir, "workspace-records");
       const records = await Promise.all((await readdir(recordRoot)).map(async (entry) =>
-        JSON.parse(await readFile(join(recordRoot, entry, "record.json"), "utf8")) as { status: string; cwd: string }));
+        JSON.parse(await readFile(join(recordRoot, entry, "record.json"), "utf8")) as { phase: string; cwd: string }));
       expect(records).toHaveLength(2);
       for (const record of records) {
-        expect(record.status).toBe("preserved");
+        expect(record.phase).toBe("preserved");
         expect((await stat(record.cwd)).isDirectory()).toBe(true);
       }
       const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
@@ -6416,10 +6416,10 @@ workflow:
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
       const recordRoot = join(session.runDir, "workspace-records");
       const records = await Promise.all((await readdir(recordRoot)).map(async (entry) =>
-        JSON.parse(await readFile(join(recordRoot, entry, "record.json"), "utf8")) as { status: string; cwd: string }));
+        JSON.parse(await readFile(join(recordRoot, entry, "record.json"), "utf8")) as { phase: string; cwd: string }));
       expect(records).toHaveLength(2);
       for (const record of records) {
-        expect(record.status).toBe("preserved");
+        expect(record.phase).toBe("preserved");
         expect((await stat(record.cwd)).isDirectory()).toBe(true);
       }
       const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))

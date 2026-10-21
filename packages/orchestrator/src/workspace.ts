@@ -18,7 +18,6 @@ import {
 const execFileAsync = promisify(execFile);
 
 export type WorkflowWorkspaceStrategy = "git-worktree" | "store-worktree";
-export type WorkflowWorkspaceStatus = "active" | "preserved";
 export type WorkflowWorkspacePhase = "allocated" | "applying" | "cleaning" | "preserved";
 
 /** A workspace is independent from an actor/session: one map-slot workspace
@@ -42,7 +41,6 @@ export interface WorkflowWorkspaceRecord {
   readonly cwd: string;
   readonly sourceCwd: string;
   readonly strategy: WorkflowWorkspaceStrategy;
-  readonly status: WorkflowWorkspaceStatus;
   readonly phase: WorkflowWorkspacePhase;
   /** Task namespace (`<task-slug>-<runId>`) shared by every lane of one run. */
   readonly mnemonic: string;
@@ -56,7 +54,6 @@ export interface WorkflowWorkspaceRecord {
   readonly sourceBranch?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
-  readonly finalizedAt?: string;
   /** The repository the lane's worktree belongs to: the source's own git root
    * (`git-worktree`) or the run's baseline store (`store-worktree`). */
   readonly gitRoot: string;
@@ -298,9 +295,6 @@ function parseWorkspaceRecord(
   const strategy = value.strategy === "git-worktree" || value.strategy === "store-worktree"
     ? value.strategy
     : undefined;
-  const status = value.status === "active" || value.status === "preserved"
-    ? value.status
-    : "active";
   const phase = value.phase === "allocated" || value.phase === "applying" || value.phase === "cleaning" || value.phase === "preserved"
     ? value.phase
     : "allocated";
@@ -326,7 +320,6 @@ function parseWorkspaceRecord(
     cwd: value.cwd,
     sourceCwd: value.sourceCwd,
     strategy,
-    status,
     phase,
     mnemonic: value.mnemonic,
     laneBranch: value.laneBranch,
@@ -334,7 +327,6 @@ function parseWorkspaceRecord(
     ...(typeof value.sourceBranch === "string" ? { sourceBranch: value.sourceBranch } : {}),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
-    ...(typeof value.finalizedAt === "string" ? { finalizedAt: value.finalizedAt } : {}),
     gitRoot: value.gitRoot,
   };
 }
@@ -854,7 +846,6 @@ export function allocateMapWorkspace(
         cwd,
         sourceCwd: source,
         strategy: fork.strategy,
-        status: "active",
         phase: "allocated",
         mnemonic: options.mnemonic,
         laneBranch,
@@ -1004,51 +995,9 @@ async function removeWorkspaceDirectory(
   }
 }
 
-/** Recover the run-owned slot bindings without allocating a second copy. This
- * is intentionally scoped to one execution id, source workspace, and metadata
- * directory so a recovery action cannot sweep another run. */
-export function recoverMapWorkspaces(
-  runDir: string,
-  sourceCwd?: string,
-): Effect.Effect<readonly WorkflowWorkspaceBinding[], WorkflowError, FileSystem.FileSystem | Logging> {
-  return Effect.tryPromise({
-    try: async () => {
-      const runRoot = await canonicalRunRoot(runDir, false);
-      const records = await readWorkspaceRecords(runRoot, sourceCwd);
-      const bindings: WorkflowWorkspaceBinding[] = [];
-      for (const { path, record } of records) {
-        await assertCanonicalRunRoot(runRoot);
-        if (!await pathExists(record.cwd)) {
-          // A sweep interrupted after removing the worktree: finish it.
-          if (record.phase === "cleaning") {
-            await removeWorkspaceRecord(path, runRoot);
-            continue;
-          }
-          throw workflowError("schedule", path, `recoverable workspace is missing at ${record.cwd}`);
-        }
-        try {
-          await assertOwnedWorkspace(runRoot.canonical, record);
-        } catch (error) {
-          if (isMissingPathError(error)) {
-            throw workflowError("schedule", path, `recoverable workspace is missing at ${record.cwd}`);
-          }
-          throw error;
-        }
-        bindings.push(bindingFromRecord(record, path));
-      }
-      return bindings;
-    },
-    catch: (cause) => cause instanceof WorkflowError
-      ? cause
-      : workflowError("schedule", runDir, errorMessage(cause)),
-  }).pipe(Effect.mapError((cause) => cause instanceof WorkflowError
-    ? cause
-    : workflowError("schedule", runDir, errorMessage(cause))));
-}
-
 /** Sweep every slot in one execution: a preserved slot keeps its record and
  * worktree, every other slot loses both. Idempotent, and interrupted sweeps
- * are finished by the next cleanup or recovery. */
+ * are finished by the next cleanup or allocation. */
 export function cleanupMapWorkspaces(
   runDir: string,
   options: WorkflowWorkspaceCleanupOptions = {},
@@ -1077,10 +1026,8 @@ export function cleanupMapWorkspaces(
           await assertOwnedWorkspace(runRoot.canonical, record);
           const preserved: WorkflowWorkspaceRecord = {
             ...record,
-            status: "preserved",
             phase: "preserved",
             updatedAt: now,
-            finalizedAt: now,
           };
           await writeWorkspaceRecord(path, preserved, runRoot);
           finalized.push(preserved);
@@ -1144,11 +1091,11 @@ async function rewriteWorkspaceSymlinks(
 
 async function applyWorkspaceContents(
   candidate: string,
-  source: string,
-  run: string,
-  runRoot?: CanonicalRunRoot,
-  sourceIdentity?: WorkspaceDirectoryIdentity,
+  runRoot: CanonicalRunRoot,
+  sourceIdentity: WorkspaceDirectoryIdentity,
 ): Promise<void> {
+  const source = sourceIdentity.canonical;
+  const run = runRoot.canonical;
   const stagingDirectory = await mkdtemp(join(dirname(source), ".piano-apply-"));
   const staged = join(stagingDirectory, "workspace");
   const before = join(stagingDirectory, "before");
@@ -1157,7 +1104,7 @@ async function applyWorkspaceContents(
   let rollbackFailure: unknown;
   let cleanupFailure: unknown;
   try {
-    if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
     const candidateCaseInsensitive = await isCaseInsensitiveFileSystem(candidate);
     const skipCandidateEntry = (entry: string): boolean =>
       isProtectedWorkspacePath(candidate, entry, candidateCaseInsensitive);
@@ -1187,23 +1134,23 @@ async function applyWorkspaceContents(
     // Freeze the source before the first destructive operation. If any later
     // copy/rewrite step fails, this snapshot restores the complete application
     // tree while the protected Git/run entries remain untouched.
-    if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
     await snapshotWorkspaceLstat(source, before, excludedSourceSubtrees);
     beforeSnapshotCreated = true;
     // These checks intentionally precede each destructive/use boundary. They
     // do not eliminate a same-UID check-then-use race; such callers require a
     // sandbox or descriptor/openat2-based implementation.
-    if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
     const sourceEntries = await readdir(source);
     for (const entry of sourceEntries) {
-      if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-      if (runRoot !== undefined) await assertCanonicalRunRoot(runRoot);
+      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+      await assertCanonicalRunRoot(runRoot);
       if (!protectedEntry(join(source, entry))) await rm(join(source, entry), { recursive: true, force: true });
     }
     const stagedEntries = await readdir(staged);
     for (const entry of stagedEntries) {
-      if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-      if (runRoot !== undefined) await assertCanonicalRunRoot(runRoot);
+      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+      await assertCanonicalRunRoot(runRoot);
       if (protectedEntry(join(source, entry))) continue;
       await cp(join(staged, entry), join(source, entry), { recursive: true, force: true, dereference: false });
     }
@@ -1211,18 +1158,18 @@ async function applyWorkspaceContents(
       const path = relative(staged, entry);
       return path === "" ? false : protectedEntry(join(source, path));
     };
-    if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
     await rewriteWorkspaceSymlinks(staged, source, skipStagedEntry);
-    if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
   } catch (error) {
     operationFailure = error;
     if (beforeSnapshotCreated) {
       try {
-        if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before rollback");
+        await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before rollback");
         const sourceContainsRunDirectory = pathWithin(source, run);
         const excludedSourceSubtrees = sourceContainsRunDirectory && resolve(run) !== resolve(source) ? [run] : [];
         await restoreWorkspaceLstat(source, before, undefined, excludedSourceSubtrees);
-        if (sourceIdentity !== undefined) await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after rollback");
+        await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after rollback");
       } catch (error) {
         rollbackFailure = error;
       }
@@ -2099,7 +2046,7 @@ export function applyWinnerWorkspace(
         };
         return result;
       }
-      await applyWorkspaceContents(applying.cwd, source, run, runRoot, sourceIdentity);
+      await applyWorkspaceContents(applying.cwd, runRoot, sourceIdentity);
       return { key: applying.key, method: "content-copy" as const };
     },
     catch: (cause) => cause instanceof WorkflowError
