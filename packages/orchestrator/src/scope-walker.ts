@@ -13,6 +13,7 @@ import {
   applyWinnerWorkspace,
   carryLanded,
   cleanupMapWorkspaces,
+  createLaneNumberAllocator,
   prepareMapLaneFork,
   workspaceBaselineChanges,
   type MapLaneFork,
@@ -254,6 +255,8 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     commitRoundWinner,
     consolidate,
   } = context;
+  /** One lane counter per execution: sibling and nested lanes share it. */
+  const laneAllocator = createLaneNumberAllocator();
   const {
     request,
     loaded,
@@ -1033,6 +1036,7 @@ const executeScope = (
             {
               mnemonic,
               fork,
+              laneAllocator,
             },
           );
           slotBindings.push({ item, frames: slotFrames, workspace: slotWorkspace });

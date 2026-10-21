@@ -656,7 +656,7 @@ export async function prepareMapLaneFork(
 
 /** The lane numbers already taken in this namespace, so allocation never
  * reuses one even though every branch survives cleanup. */
-async function laneNumbers(gitRoot: string, mnemonic: string): Promise<readonly number[]> {
+async function scanLaneNumbers(gitRoot: string, mnemonic: string): Promise<readonly number[]> {
   const result = await execFileAsync("git", [
     "-C", gitRoot,
     "for-each-ref", "--format=%(refname:short)", `refs/heads/tuna/${mnemonic}/`,
@@ -669,46 +669,46 @@ async function laneNumbers(gitRoot: string, mnemonic: string): Promise<readonly 
   return numbers;
 }
 
-/** Next free lane number per (common git dir, namespace). Lane branches are
- * never deleted, so the hint only grows and is safe for the process lifetime.
- * Concurrent cold callers share one scan and take consecutive numbers; a
- * collision means another process took one and just advances the hint. */
-const laneNumberHints = new Map<string, number>();
-const laneNumberScans = new Map<string, Promise<void>>();
-
-function laneHintKey(commonRoot: string, mnemonic: string): string {
-  return `${commonRoot}\0${mnemonic}`;
+/** Allocates lane numbers for one execution: every `allocateMapWorkspace`
+ * call of that execution must share the instance. Lane branches are never
+ * deleted, so the next free number only grows; concurrent cold callers share
+ * one scan and take consecutive numbers, and a collision just advances the
+ * hint. */
+export interface LaneNumberAllocator {
+  next(input: { readonly scanRoot: string; readonly commonRoot: string; readonly mnemonic: string }): Promise<number>;
 }
 
-/** Store a hint, evicting one oldest entry past the cap. The cache is an
- * optimization, not state. */
-function rememberLaneHint(key: string, next: number): void {
-  if (laneNumberHints.size > 512 && !laneNumberHints.has(key)) {
-    const oldest = laneNumberHints.keys().next().value;
-    if (oldest !== undefined) laneNumberHints.delete(oldest);
-  }
-  laneNumberHints.set(key, next);
-}
-
-async function nextLaneNumber(scanRoot: string, commonRoot: string, mnemonic: string): Promise<number> {
-  const key = laneHintKey(commonRoot, mnemonic);
-  if (!laneNumberHints.has(key)) {
-    let scan = laneNumberScans.get(key);
-    if (scan === undefined) {
-      scan = laneNumbers(scanRoot, mnemonic).then((taken) => {
-        rememberLaneHint(key, taken.length === 0 ? 0 : Math.max(...taken) + 1);
-      });
-      laneNumberScans.set(key, scan);
-      void scan.finally(() => laneNumberScans.delete(key)).catch(() => undefined);
-    }
-    await scan;
-  }
-  const next = laneNumberHints.get(key);
-  if (next === undefined) {
-    throw workflowError("schedule", scanRoot, "lane number scan did not complete");
-  }
-  rememberLaneHint(key, next + 1);
-  return next;
+export function createLaneNumberAllocator(): LaneNumberAllocator {
+  const hints = new Map<string, number>();
+  const scans = new Map<string, Promise<number>>();
+  const keyOf = (commonRoot: string, mnemonic: string): string => `${commonRoot}\0${mnemonic}`;
+  return {
+    async next({ scanRoot, commonRoot, mnemonic }) {
+      const key = keyOf(commonRoot, mnemonic);
+      const hinted = hints.get(key);
+      if (hinted !== undefined) {
+        hints.set(key, hinted + 1);
+        return hinted;
+      }
+      let scan = scans.get(key);
+      if (scan === undefined) {
+        scan = scanLaneNumbers(scanRoot, mnemonic).then((taken) => {
+          const next = taken.length === 0 ? 0 : Math.max(...taken) + 1;
+          hints.set(key, next + 1);
+          return next;
+        });
+        scans.set(key, scan);
+        void scan.finally(() => scans.delete(key)).catch(() => undefined);
+        return scan;
+      }
+      // A concurrent cold caller started the scan and reserved its result;
+      // take the next hint once it resolves.
+      const first = await scan;
+      const next = hints.get(key) ?? first + 1;
+      hints.set(key, next + 1);
+      return next;
+    },
+  };
 }
 
 async function addLaneWorktree(gitRoot: string, branch: string, cwd: string, commit: string): Promise<void> {
@@ -730,6 +730,9 @@ export function allocateMapWorkspace(
      * memoized thunk so a resume whose slots all exist never pays for a seed
      * commit the allocation will not use. */
     readonly fork?: MapLaneFork | (() => Promise<MapLaneFork>);
+    /** The execution's lane counter; omitted callers get a fresh allocator
+     * (one scan per allocation). */
+    readonly laneAllocator?: LaneNumberAllocator;
   },
 ): Effect.Effect<WorkflowWorkspaceBinding, WorkflowError, FileSystem.FileSystem | Logging> {
   return TRACE(WORKSPACE_SOURCE, Effect.tryPromise({
@@ -813,13 +816,18 @@ export function allocateMapWorkspace(
           throw workflowError("schedule", cwd, `allocated workspace cleanup failed: ${errorMessage(error)}`);
         }
       };
+      const laneAllocator = options.laneAllocator ?? createLaneNumberAllocator();
       let laneBranch = "";
       let addFailure: unknown;
       try {
         await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
         await assertCanonicalRunRoot(runRoot);
         for (let attempt = 0; attempt < 8; attempt += 1) {
-          const next = await nextLaneNumber(gitRoot, fork.commonRoot, options.mnemonic);
+          const next = await laneAllocator.next({
+            scanRoot: gitRoot,
+            commonRoot: fork.commonRoot,
+            mnemonic: options.mnemonic,
+          });
           const branch = laneBranchName(options.mnemonic, next);
           try {
             await addLaneWorktree(gitRoot, branch, cwd, fork.commit);
