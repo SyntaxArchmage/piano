@@ -442,7 +442,7 @@ describe("workflow progress stream", () => {
       } satisfies WorkflowProgressStartRecord,
       "execution-started": {
         ...envelope, kind: "execution-started", jobOrdinal: 1, prompt: "p", resumed: false,
-        plan: { plannedStages: 1, stageCounts: {} },
+        mnemonic: "gemm-run-1", plan: { plannedStages: 1, stageCounts: {} },
       } satisfies WorkflowProgressExecutionStartRecord,
       "execution-finished": {
         ...envelope, kind: "execution-finished", status: "completed", error: "e",

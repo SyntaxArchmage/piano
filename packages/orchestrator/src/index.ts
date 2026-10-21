@@ -19,6 +19,7 @@ export {
 } from "./execution-logs.js";
 export {
   compileWorkflow,
+  isWorkflowIdentifier,
   PI_WORKFLOW_HARNESS,
   parseWorkflow,
   stageModelForSlot,
@@ -59,11 +60,14 @@ export {
   allocateMapWorkspace,
   cleanupMapWorkspaces,
   freezeWorkspaceBaseline,
+  mnemonicNamespace,
+  prepareMapLaneFork,
   recoverMapWorkspaces,
   sharedWorkspaceBinding,
   workspaceBaselineChanges,
   workspaceRefName,
   captureWorkspaceBaselineChanges,
+  type MapLaneFork,
   type WorkspaceBaseline,
   type WorkflowCarrying,
   type WorkflowCarryKind,

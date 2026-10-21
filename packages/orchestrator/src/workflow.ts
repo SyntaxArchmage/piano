@@ -144,6 +144,10 @@ export interface WorkflowDocument {
   readonly version: 3;
   readonly workflow: {
     readonly name: string;
+    /** Default task namespace for lane branches (`tuna/<mnemonic>-<run>/lane-<n>`).
+     * Overridable per run with `--mnemonic`; also the fallback when the
+     * preflight task summary is unavailable. */
+    readonly mnemonic?: string;
     /** Orchestrator-owned winner auto-commit (ISSUE-017): when true, the loop
      * executor commits each KEEP round's `changed_files` to the caller
      * workspace using the winner-commit template (no push). Default false —
@@ -199,6 +203,8 @@ export type WorkflowRuntimeNode = CompiledStage | WorkflowRegionPlan;
 
 export interface CompiledWorkflow {
   readonly name: string;
+  /** Default lane namespace; see WorkflowDocument.workflow.mnemonic. */
+  readonly mnemonic?: string;
   readonly sourcePath: string;
   /** Leaf stages ordered by dependency (regions flattened into leaves). */
   readonly stages: readonly CompiledStage[];
@@ -211,7 +217,7 @@ export interface CompiledWorkflow {
 }
 
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
-const WORKFLOW_KEYS = new Set(["name", "nodes", "autoCommit"]);
+const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes", "autoCommit"]);
 const STAGE_KEYS = new Set([
   "name",
   "worker",
@@ -234,6 +240,12 @@ const LOOP_KEYS = new Set(["name", "from", "entry", "exit", "feedback", "iterati
 const RETRY_KEYS = new Set(["attempts", "backoff", "backoffMax"]);
 const TOURNAMENT_KEYS = new Set(["name", "from", "over", "count", "parallel", "entry", "exit", "nodes"]);
 const NODE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
+/** Whether a value is usable as a workflow identifier (region, stage, or lane
+ * namespace). The same rule the parser applies to every declared name. */
+export function isWorkflowIdentifier(value: string): boolean {
+  return NODE_IDENTIFIER.test(value);
+}
 
 function fail(
   phase: "parse" | "compile" | "schedule",
@@ -663,11 +675,14 @@ export function parseWorkflow(
         if (document.version !== 3) return yield* fail("parse", sourcePath, "workflow version must be 3");
         yield* rejectUnknown(workflow, WORKFLOW_KEYS, "workflow", sourcePath);
         const name = yield* identifier(workflow.name, "workflow.name", sourcePath);
+        const mnemonic = workflow.mnemonic === undefined
+          ? undefined
+          : yield* identifier(workflow.mnemonic, "workflow.mnemonic", sourcePath);
         const autoCommit = workflow.autoCommit === undefined
           ? false
           : yield* optionalBoolean(workflow, "autoCommit", sourcePath);
         const nodes = yield* parseNodes(workflow.nodes, sourcePath);
-        return { version: 3 as const, workflow: { name, autoCommit, nodes } };
+        return { version: 3 as const, workflow: { name, ...(mnemonic === undefined ? {} : { mnemonic }), autoCommit, nodes } };
       });
     }),
   );
@@ -1070,6 +1085,7 @@ export function compileWorkflow(
       }
       return {
         name: document.workflow.name,
+        ...(document.workflow.mnemonic === undefined ? {} : { mnemonic: document.workflow.mnemonic }),
         sourcePath,
         stages: ordered,
         regions: lowered.regions,

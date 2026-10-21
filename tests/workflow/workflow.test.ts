@@ -1043,6 +1043,30 @@ describe("workflow autoCommit (ISSUE-017)", () => {
   });
 });
 
+describe("workflow mnemonic", () => {
+  it("parses workflow.mnemonic and threads it through compile", async () => {
+    const source = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  mnemonic: gemm\n");
+    const parsed = await run(parseWorkflow(source, SOURCE));
+    expect(Exit.isSuccess(parsed)).toBe(true);
+    if (!Exit.isSuccess(parsed)) return;
+    expect(parsed.value.workflow.mnemonic).toBe("gemm");
+    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
+    expect(Exit.isSuccess(compiled)).toBe(true);
+    if (Exit.isSuccess(compiled)) expect(compiled.value.mnemonic).toBe("gemm");
+  });
+
+  it("defaults mnemonic to undefined when omitted", async () => {
+    const parsed = await run(parseWorkflow(CODING_WORKFLOW, SOURCE));
+    expect(Exit.isSuccess(parsed)).toBe(true);
+    if (Exit.isSuccess(parsed)) expect(parsed.value.workflow.mnemonic).toBeUndefined();
+  });
+
+  it("rejects a mnemonic that is not a workflow identifier", async () => {
+    const source = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  mnemonic: gemm/relu\n");
+    expect(Exit.isFailure(await run(parseWorkflow(source, SOURCE)))).toBe(true);
+  });
+});
+
 const TOURNAMENT_WORKFLOW = `version: 3
 workflow:
   name: per-lane-models

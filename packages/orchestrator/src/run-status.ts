@@ -111,6 +111,9 @@ export interface RunStatus {
   readonly error?: unknown;
   /** Human-assigned run name (set via the TUI `/rename` command). */
   readonly name?: string;
+  /** The run's lane namespace (`<task-slug>-<runId>`), recorded so a continue
+   * reuses it instead of re-summarizing the prompt. */
+  readonly mnemonic?: string;
   /** Workflow this run executed, so `resume` reloads the same one. */
   readonly workflowPath?: string;
   /** TUI workspace at the time of the last turn, which may differ from the
@@ -179,6 +182,7 @@ export function runStatusFromParts(parts: {
     status,
     ...(error === undefined ? {} : { error }),
     ...(trajectory?.name === undefined ? {} : { name: trajectory.name }),
+    ...(progress?.mnemonic === undefined ? {} : { mnemonic: progress.mnemonic }),
     ...(trajectory?.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
     ...(trajectory?.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
     ...(trajectory?.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),

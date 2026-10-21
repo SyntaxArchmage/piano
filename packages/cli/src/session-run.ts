@@ -32,6 +32,7 @@ import {
   LOAD_SOURCE,
   loadDefaultWorkflow,
   loadWorkflow,
+  mnemonicNamespace,
   readWorkflowExecutionContinuation,
   readRunStatus,
   reconcileCrashedRun,
@@ -65,6 +66,7 @@ import { runTui, type TuiResumeResult, type TuiScreenKind } from "./tui.js";
 import { headlessSignoffChannel } from "./signoff.js";
 import { headlessDiscussChannel } from "./discuss.js";
 import { sideAgentRequest } from "./side-agent.js";
+import { summarizeTaskMnemonic } from "./task-mnemonic.js";
 import {
   agentEventLine,
   completedLine,
@@ -95,6 +97,8 @@ export interface SessionRunOptions {
   readonly workflowPath?: string;
   readonly prompt?: string;
   readonly json?: boolean;
+  /** Task namespace for lane branches; skips the preflight summary. */
+  readonly mnemonic?: string;
   /** Resume this run as soon as the TUI opens. When it is the session's own run,
    * the takeover reuses the open session instead of opening a second one. */
   readonly resumeRunId?: string;
@@ -302,10 +306,32 @@ function runSessionBody(
               // behind — `/continue` takes the identical path, only carrying
               // the paused job's cursor.
               const execution = yield* readWorkflowExecutionContinuation(current.session.runDir, current.session.id);
+              // The lane namespace is the task's identity. A resumed run keeps
+              // the one the orchestrator recorded; a new run takes --mnemonic,
+              // else a preflight summary of this prompt, else the workflow's
+              // own mnemonic. An injected runner owns the whole conversation,
+              // so it also owns naming: pass --mnemonic instead of relying on
+              // the summary.
+              const allowSummary = options.agentRunner === undefined;
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
                 runId: current.session.id,
+                ...(options.mnemonic === undefined
+                  ? {}
+                  : { mnemonic: mnemonicNamespace(options.mnemonic, current.session.id) }),
+                ...(allowSummary
+                  ? {
+                    summarizeMnemonic: () => summarizeTaskMnemonic({
+                      prompt,
+                      cwd: activeCwd,
+                      runDir: current.session.runDir,
+                      runAgent: executeAgent,
+                      ...(options.agentOptions === undefined ? {} : { options: options.agentOptions }),
+                      signal: controller.signal,
+                    }),
+                  }
+                  : {}),
                 ...(execution === undefined ? {} : { execution }),
                 signal: controller.signal,
                 steering,

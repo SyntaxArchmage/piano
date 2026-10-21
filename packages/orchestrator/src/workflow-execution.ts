@@ -27,6 +27,7 @@ import {
 } from "@piano/trajectory";
 import {
   compileWorkflow,
+  isWorkflowIdentifier,
   type CompiledWorkflow,
   type WorkflowHarness,
 } from "./workflow.js";
@@ -77,6 +78,7 @@ import {
 } from "./invocations.js";
 import {
   cleanupMapWorkspaces,
+  mnemonicNamespace,
   sharedWorkspaceBinding,
   type WorkspaceBaseline,
   type WorkspaceChangeSet,
@@ -136,6 +138,16 @@ export interface WorkflowExecutionRequest {
   };
   readonly cwd: string;
   readonly prompt: string;
+  /** Lane namespace (`<task-slug>-<runId>`) for this run's map/tournament
+   * branches. The caller resolves an explicit override; omitted runs get the
+   * recorded namespace on resume, else the preflight summary, else
+   * `<workflow.mnemonic|name>-<runId>`. A resumed run rejects a differing
+   * value. */
+  readonly mnemonic?: string;
+  /** One preflight agent turn naming the task; the CLI supplies it for
+   * workflows that declare lanes. Omitted (tests, lane-free workflows) means
+   * the workflow's own mnemonic is used without a model call. */
+  readonly summarizeMnemonic?: () => Effect.Effect<string | undefined, never, FileSystem.FileSystem | Logging>;
   readonly signal?: AbortSignal;
   /** Mid-turn steering channel for whichever stage worker is live. The engine
    * threads it exactly like `signal` — transport only, never interpreted. */
@@ -337,7 +349,7 @@ function readRunJobLedger(
   runDir: string,
   hint: number | undefined,
 ): Effect.Effect<
-  { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[] },
+  { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[]; readonly mnemonic?: string },
   WorkflowError,
   FileSystem.FileSystem
 > {
@@ -351,6 +363,7 @@ function readRunJobLedger(
       abandonedOrdinals: (status?.jobs ?? [])
         .filter((job) => job.state === "finished" && job.outcome === "restarted")
         .map((job) => job.jobOrdinal),
+      ...(status?.mnemonic === undefined ? {} : { mnemonic: status.mnemonic }),
     };
   });
 }
@@ -708,7 +721,35 @@ export function executeWorkflow(
     yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
     const jobOrdinal = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
     const knownLoopIterations = new Map<string, number>();
-    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, jobOrdinal, request.prompt, request.execution !== undefined);
+    // The lane namespace is the run's task identity. A resumed run keeps the
+    // one it recorded; a new run takes the caller's value, else a preflight
+    // summary when the workflow has lanes, else the workflow's own mnemonic.
+    // A conflicting caller value is a mistake: the user is resuming a
+    // different task under this run id.
+    const recordedMnemonic = jobLedger.mnemonic;
+    if (request.mnemonic !== undefined && recordedMnemonic !== undefined && request.mnemonic !== recordedMnemonic) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        `run already uses lane namespace "${recordedMnemonic}"; resume it or start a new run`,
+      ));
+    }
+    let mnemonic = request.mnemonic ?? recordedMnemonic;
+    if (mnemonic === undefined) {
+      const summary = request.summarizeMnemonic === undefined
+        || !compiled.regions.some((region) => region.kind === "map")
+        ? undefined
+        : yield* request.summarizeMnemonic();
+      mnemonic = mnemonicNamespace(summary ?? compiled.mnemonic ?? compiled.name, runId);
+    }
+    if (!isWorkflowIdentifier(mnemonic)) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        `lane namespace must be a simple workflow identifier: ${mnemonic}`,
+      ));
+    }
+    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, jobOrdinal, request.prompt, request.execution !== undefined, mnemonic);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {
@@ -823,6 +864,7 @@ export function executeWorkflow(
       loaded,
       compiled,
       runId,
+      mnemonic,
       jobOrdinal,
       actors,
       announcedContinuations,

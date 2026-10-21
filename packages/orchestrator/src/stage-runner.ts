@@ -104,6 +104,8 @@ export interface StageRunnerContext {
   readonly loaded: LoadedWorkflow;
   readonly compiled: CompiledWorkflow;
   readonly runId: string;
+  /** Lane namespace (`<task-slug>-<runId>`) for map/tournament branches. */
+  readonly mnemonic: string;
   readonly jobOrdinal: number;
   readonly actors: Map<string, ActorState>;
   readonly announcedContinuations: Map<string, AgentContinuation>;

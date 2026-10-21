@@ -3258,9 +3258,11 @@ workflow:
       const refs = await runFile("git", ["--git-dir", join(session.runDir, "git", "workspaces.git"), "for-each-ref", "--format=%(refname)", "refs/piano"]);
       const refNames = refs.stdout.split("\n").filter((line) => line !== "");
       expect(refNames.filter((ref) => ref.includes("/baselines/"))).toHaveLength(1);
-      expect(refNames.filter((ref) => ref.includes("/lanes/")).sort()).toEqual([
-        expect.stringMatching(/slot-0$/),
-        expect.stringMatching(/slot-1$/),
+      // Lanes are real branches of the run's store for a non-Git source.
+      const branches = await runFile("git", ["--git-dir", join(session.runDir, "git", "workspaces.git"), "for-each-ref", "--format=%(refname:short)", "refs/heads/tuna/"]);
+      expect(branches.stdout.split("\n").filter((line) => line !== "").sort()).toEqual([
+        "tuna/map-map/lane-0",
+        "tuna/map-map/lane-1",
       ]);
       const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
@@ -3769,6 +3771,43 @@ workflow:
     }
   });
 
+  it("rejects a new task that reuses a run's lane namespace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mnemonic-conflict-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      const agentRunner = () => Effect.promise(async () => ({
+        sessionId: "respond",
+        transcriptPath: "/tmp/respond.jsonl",
+        text: "respond",
+        continuation: continuation("respond"),
+      }));
+      const run = (prompt: string, mnemonic: string) => loadAndExecuteWorkflow({
+        root,
+        workflowPath: join(root, "basic.yml"),
+        runDir: session.runDir,
+        runId: "mnemonic-conflict",
+        mnemonic,
+        cwd: root,
+        prompt,
+        agentRunner,
+      });
+      await runWorkflow(session, run("first task", "alpha-mnemonic-conflict"));
+      const conflict = await Effect.runPromiseExit(run("second task", "beta-mnemonic-conflict").pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      if (!Exit.isFailure(conflict)) throw new Error("expected the namespace conflict to fail the run");
+      expect(Cause.pretty(conflict.cause)).toContain("already uses lane namespace");
+      // The recorded namespace is still accepted.
+      await runWorkflow(session, run("same task again", "alpha-mnemonic-conflict"));
+      const status = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as { mnemonic?: string };
+      expect(status.mnemonic).toBe("alpha-mnemonic-conflict");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("dereferences a symlinked source workspace before allocating map slots", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-symlink-map-run-"));
     const linkedRoot = `${root}-link`;
@@ -3896,7 +3935,7 @@ workflow:
             `excluded-link-${name}`,
             1, [{ kind: "map", regionId: "map", slot: 0 }],
             root,
-          ))).rejects.toThrow("symlink targets excluded or external content");
+            { mnemonic: "test" },))).rejects.toThrow("symlink targets excluded or external content");
         } finally {
           await rm(link, { force: true });
         }
@@ -5496,11 +5535,11 @@ workflow:
 
       // No consolidation turn: git carried the winner, and git is the record.
       expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
-      const winnerRef = `refs/piano/git-race/${"job-1/race/slot-1".replace(/[^A-Za-z0-9._/-]/g, "_")}`;
-      const refCommit = (await runFile("git", ["-C", repo, "rev-parse", winnerRef], { encoding: "utf8" })).stdout.trim();
+      const winnerBranch = "tuna/metric-tournament-git-race/lane-1";
+      const branchCommit = (await runFile("git", ["-C", repo, "rev-parse", winnerBranch], { encoding: "utf8" })).stdout.trim();
       // The winner's commit is an ancestor of the parent's HEAD — the merge is
       // verifiable with git alone.
-      await runFile("git", ["-C", repo, "merge-base", "--is-ancestor", refCommit, "HEAD"], { encoding: "utf8" });
+      await runFile("git", ["-C", repo, "merge-base", "--is-ancestor", branchCommit, "HEAD"], { encoding: "utf8" });
       expect((await readFile(join(repo, "kernel-1.py"), "utf8")).trim()).toBe("kernel-1");
 
       const selection = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
@@ -5510,7 +5549,7 @@ workflow:
       expect(selection).toHaveLength(1);
       expect(selection[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
       expect(selection[0]?.carrying?.kind).toBe("git-merged");
-      expect(selection[0]?.commit).toBe(refCommit);
+      expect(selection[0]?.commit).toBe(branchCommit);
       expect(result.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -5984,9 +6023,9 @@ workflow:
       // ignored artifact is untracked from git's point of view, so the merge
       // leaves it alone by construction — no delta needs to exclude it.
       await expect(readFile(join(root, "build", "cache.bin"), "utf8")).resolves.toBe("parent-only ignored artifact\n");
-      // Git is the record and the verification: the winner's commit is an
-      // ancestor of the parent's HEAD.
-      const winnerCommit = (await runFile("git", ["-C", root, "rev-parse", "refs/piano/git-delta-race/job-1/race/slot-1"], { encoding: "utf8" })).stdout.trim();
+      // Git is the record and the verification: the winner's lane branch is
+      // an ancestor of the parent's HEAD.
+      const winnerCommit = (await runFile("git", ["-C", root, "rev-parse", "tuna/metric-tournament-git-delta-race/lane-1"], { encoding: "utf8" })).stdout.trim();
       await runFile("git", ["-C", root, "merge-base", "--is-ancestor", winnerCommit, "HEAD"], { encoding: "utf8" });
       // A git lane is merged, not consolidated: no worker turn applies files.
       expect(consolidationPrompts).toHaveLength(0);
@@ -6002,21 +6041,21 @@ workflow:
     }
   });
 
-  it("preserves allocated slots and aborts before workers when a slot baseline cannot be frozen", async () => {
+  it("aborts before workers when the lane fork cannot be prepared", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-slot-baseline-failure-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-slot-baseline-runs-"));
     try {
       await writeFile(join(root, "race.yml"), METRIC_TOURNAMENT);
       await writeFile(join(root, ".gitignore"), "build/\nruns/\n");
       await writeFile(join(root, "kernel.py"), "baseline\n");
-      await symlink("build/cache.bin", join(root, "artifact-link"));
       await runFile("git", ["init", "-q", root]);
       await runFile("git", ["-C", root, "config", "user.email", "piano-tests@example.invalid"]);
       await runFile("git", ["-C", root, "config", "user.name", "Piano Tests"]);
       await runFile("git", ["-C", root, "add", "-A"]);
       await runFile("git", ["-C", root, "commit", "-q", "-m", "baseline"]);
-      await mkdir(join(root, "build"), { recursive: true });
-      await writeFile(join(root, "build", "cache.bin"), "available only in the parent\n");
+      // A dirty source with an external symlink: the seed commit refuses it.
+      await writeFile(join(root, "unsaved.txt"), "unsaved\n");
+      await symlink("/etc/hostname", join(root, "external-link"));
 
       const session = await Effect.runPromise(
         createSession({ root, cwd: root, runsRoot: runRoot }).pipe(Effect.provide(NodeFileSystem.layer)),
@@ -6032,7 +6071,7 @@ workflow:
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
-          if (stage !== "propose") throw new Error(`unexpected worker after baseline failure: ${stage}`);
+          if (stage !== "propose") throw new Error(`unexpected worker after fork failure: ${stage}`);
           const path = validationPath(request);
           await mkdir(dirname(path), { recursive: true });
           await writeFile(path, JSON.stringify({
@@ -6048,16 +6087,13 @@ workflow:
         Effect.provide(NodeFileSystem.layer),
       ));
 
-      if (Exit.isSuccess(exit)) throw new Error("expected slot baseline freeze to fail");
-      expect(Cause.pretty(exit.cause)).toContain("cannot freeze tournament slot");
+      if (Exit.isSuccess(exit)) throw new Error("expected lane fork preparation to fail");
+      expect(Cause.pretty(exit.cause)).toContain("symlink targets excluded or external content");
       expect(calls.map(stageId)).toEqual(["propose"]);
-      const recordRoot = join(session.runDir, "workspace-records");
-      const records = await Promise.all((await readdir(recordRoot)).map(async (entry) =>
-        JSON.parse(await readFile(join(recordRoot, entry, "record.json"), "utf8")) as { status: string; cwd: string; strategy: string }));
-      expect(records).toHaveLength(1);
-      expect(records[0]).toMatchObject({ status: "preserved", strategy: "git-worktree" });
-      expect((await stat(records[0]!.cwd)).isDirectory()).toBe(true);
-      await expect(readFile(join(root, "artifact-link"), "utf8")).resolves.toBe("available only in the parent\n");
+      // The source is untouched: no seed commit, no branch, no slot, and the
+      // external symlink was never followed or copied.
+      expect((await runFile("git", ["-C", root, "for-each-ref", "--format=%(refname:short)", "refs/heads/tuna/"], { encoding: "utf8" })).stdout.trim()).toBe("");
+      expect((await lstat(join(root, "external-link"))).isSymbolicLink()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });

@@ -9,6 +9,7 @@ import { FileSystem } from "@effect/platform";
 import { TRACE, type Logging, type Source } from "@piano/logging";
 import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
+import { isWorkflowIdentifier } from "./workflow.js";
 import {
   runtimeInstanceId,
   type WorkflowRuntimeFrame,
@@ -30,10 +31,12 @@ export interface WorkflowWorkspaceBinding {
   readonly sourceCwd?: string;
   readonly recordPath?: string;
   readonly strategy?: WorkflowWorkspaceStrategy;
+  /** The commit the lane forked from (map slots only). */
+  readonly baseCommit?: string;
 }
 
 export interface WorkflowWorkspaceRecord {
-  readonly version: 2;
+  readonly version: 3;
   readonly key: string;
   readonly kind: "map-slot";
   readonly cwd: string;
@@ -41,18 +44,22 @@ export interface WorkflowWorkspaceRecord {
   readonly strategy: WorkflowWorkspaceStrategy;
   readonly status: WorkflowWorkspaceStatus;
   readonly phase: WorkflowWorkspacePhase;
-  /** How this incarnation of the slot came to exist. `fresh` is a new lane
-   * forked at allocation time; `recreated-after-sweep` means an explicit
-   * continue re-created a slot whose record was already swept, so its baseline
-   * must not be treated as a pristine fork of the source. Older records predate
-   * the field. */
-  readonly allocation?: "fresh" | "recreated-after-sweep";
+  /** Task namespace (`<task-slug>-<runId>`) shared by every lane of one run. */
+  readonly mnemonic: string;
+  /** The branch this lane checks out: `tuna/<mnemonic>/lane-<n>`. */
+  readonly laneBranch: string;
+  /** The commit the lane forked from: source HEAD, a seed commit of unsaved
+   * content, a nested lane checkpoint, or the store's frozen baseline. */
+  readonly baseCommit: string;
+  /** The branch checked out in `sourceCwd` when the lane forked. A carry only
+   * fast-forwards when it is still the same branch. */
+  readonly sourceBranch?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly finalizedAt?: string;
   /** The repository the lane's worktree belongs to: the source's own git root
    * (`git-worktree`) or the run's baseline store (`store-worktree`). */
-  readonly gitRoot?: string;
+  readonly gitRoot: string;
 }
 
 const WORKSPACE_SOURCE: Source = {
@@ -245,11 +252,27 @@ function workspaceRecordPath(runDir: string, key: string): string {
   return join(runDir, "workspace-records", encodeURIComponent(key), "record.json");
 }
 
-/** The lane baseline ref: the resume token `addStoreWorktree`'s freeze-on-
- * allocate and the region's later lane freeze must both hit, so the second
- * call reuses the first commit instead of forking a second baseline. */
-export function laneBaselineRefName(runId: string, key: string): string {
-  return workspaceRefName(runId, `lanes/${encodeURIComponent(key)}`);
+/** The run's lane namespace: `<task-slug>-<runId>`. The run id carries the
+ * datetime and entropy, so two tasks that pick the same word never collide. */
+export function mnemonicNamespace(slug: string, runId: string): string {
+  return `${slug}-${runId}`;
+}
+
+/** The branch a lane checks out: `tuna/<mnemonic>/lane-<n>`. The mnemonic is
+ * the run's task namespace (`<task-slug>-<runId>`), so branches of different
+ * tasks and runs never collide. */
+function laneBranchName(mnemonic: string, laneNumber: number): string {
+  return `tuna/${mnemonic}/lane-${laneNumber}`;
+}
+
+const LANE_BRANCH_PATTERN = /^tuna\/([^/]+)\/lane-(\d+)$/u;
+
+/** Inverse of `laneBranchName`; also validates the mnemonic for callers that
+ * parse a branch name out of evidence. */
+function parseLaneBranch(branch: string): { readonly mnemonic: string; readonly laneNumber: number } | undefined {
+  const match = LANE_BRANCH_PATTERN.exec(branch);
+  if (match === null || !isWorkflowIdentifier(match[1]!)) return undefined;
+  return { mnemonic: match[1]!, laneNumber: Number(match[2]) };
 }
 
 function bindingFromRecord(record: WorkflowWorkspaceRecord, recordPath: string): WorkflowWorkspaceBinding {
@@ -260,6 +283,7 @@ function bindingFromRecord(record: WorkflowWorkspaceRecord, recordPath: string):
     sourceCwd: record.sourceCwd,
     recordPath,
     strategy: record.strategy,
+    baseCommit: record.baseCommit,
   };
 }
 
@@ -280,18 +304,23 @@ function parseWorkspaceRecord(
   const phase = value.phase === "allocated" || value.phase === "applying" || value.phase === "cleaning" || value.phase === "preserved" || value.phase === "cleaned"
     ? value.phase
     : "allocated";
-  if (value.version !== 2 || value.key !== expected.key || value.cwd !== expected.cwd || typeof value.sourceCwd !== "string" ||
-    strategy === undefined || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string") {
+  if (value.version !== 3 || value.key !== expected.key || value.cwd !== expected.cwd || typeof value.sourceCwd !== "string" ||
+    strategy === undefined || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string" ||
+    typeof value.gitRoot !== "string" || typeof value.mnemonic !== "string" ||
+    typeof value.laneBranch !== "string" || typeof value.baseCommit !== "string") {
     throw workflowError("schedule", recordPath, "workspace record has an unsupported or inconsistent format");
   }
   if (expected.sourceCwd !== undefined && resolve(value.sourceCwd) !== resolve(expected.sourceCwd)) {
     throw workflowError("schedule", recordPath, "workspace record belongs to a different source workspace");
   }
-  if (value.gitRoot !== undefined && typeof value.gitRoot !== "string") {
-    throw workflowError("schedule", recordPath, "workspace record gitRoot must be a string");
+  if (parseLaneBranch(value.laneBranch)?.mnemonic !== value.mnemonic) {
+    throw workflowError("schedule", recordPath, "workspace record has an unsupported or inconsistent lane identity");
+  }
+  if (value.sourceBranch !== undefined && typeof value.sourceBranch !== "string") {
+    throw workflowError("schedule", recordPath, "workspace record sourceBranch must be a string");
   }
   return {
-    version: 2,
+    version: 3,
     key: value.key,
     kind: "map-slot",
     cwd: value.cwd,
@@ -299,10 +328,14 @@ function parseWorkspaceRecord(
     strategy,
     status,
     phase,
+    mnemonic: value.mnemonic,
+    laneBranch: value.laneBranch,
+    baseCommit: value.baseCommit,
+    ...(typeof value.sourceBranch === "string" ? { sourceBranch: value.sourceBranch } : {}),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     ...(typeof value.finalizedAt === "string" ? { finalizedAt: value.finalizedAt } : {}),
-    ...(typeof value.gitRoot === "string" ? { gitRoot: value.gitRoot } : {}),
+    gitRoot: value.gitRoot,
   };
 }
 
@@ -412,28 +445,53 @@ function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[])
   return `job-${jobOrdinal}/${instanceId}`;
 }
 
-async function inspectGitSource(
-  source: string,
-  run: string,
-): Promise<{ readonly root: string; readonly commonRoot: string } | undefined> {
+interface GitSourceFacts {
+  readonly root: string;
+  readonly dirty: boolean;
+  readonly head: string;
+  readonly branch: string;
+}
+
+/** What a lane can fork from in this source. `undefined` means the source is
+ * not a Git workspace at all (or is a subdirectory/embeds the run), which
+ * sends lanes to the run's own store. A Git workspace with no commits or a
+ * detached HEAD is refused: there is no branch to name or fast-forward. */
+async function inspectGitSource(source: string, run: string): Promise<GitSourceFacts | undefined> {
+  let repository: GitRepositoryIdentity;
   try {
-    const repository = await gitRepositoryIdentity(source);
-    const root = repository.worktreeRoot;
-    // A workspace rooted below the repository root would make the worktree
-    // include files outside the caller's declared workspace, and a run
-    // embedded in the workspace is run management rather than application
-    // content. Both shapes take the store-worktree strategy instead.
-    if (root !== source || pathWithin(source, run)) return undefined;
-    const statusResult = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" });
-    const caseInsensitive = await isCaseInsensitiveFileSystem(root);
-    const meaningful = statusResult.stdout
-      .split(/\r?\n/u)
-      .map((line) => line.slice(3).trim())
-      .filter((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive));
-    return meaningful.length === 0 ? { root, commonRoot: repository.commonRoot } : undefined;
+    repository = await gitRepositoryIdentity(source);
   } catch {
     return undefined;
   }
+  const root = repository.worktreeRoot;
+  // A workspace rooted below the repository root would make the worktree
+  // include files outside the caller's declared workspace, and a run
+  // embedded in the workspace is run management rather than application
+  // content. Both shapes take the store-worktree strategy instead.
+  if (root !== source || pathWithin(source, run)) return undefined;
+  const [headResult, branchResult, statusResult] = await Promise.all([
+    execFileAsync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" })
+      .then((result) => result.stdout.trim())
+      .catch(() => ""),
+    execFileAsync("git", ["-C", root, "symbolic-ref", "--quiet", "--short", "HEAD"], { encoding: "utf8" })
+      .then((result) => result.stdout.trim())
+      .catch(() => ""),
+    execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" }),
+  ]);
+  const head = headResult;
+  if (head === "") {
+    throw workflowError("schedule", source, "workspace source repository has no commits to fork a lane from");
+  }
+  const branch = branchResult;
+  if (branch === "") {
+    throw workflowError("schedule", source, "workspace source HEAD is detached; check out a branch before running lanes");
+  }
+  const caseInsensitive = await isCaseInsensitiveFileSystem(root);
+  const dirty = statusResult.stdout
+    .split(/\r?\n/u)
+    .map((line) => line.slice(3).trim())
+    .some((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive));
+  return { root, dirty, head, branch };
 }
 
 interface GitRepositoryIdentity {
@@ -451,8 +509,17 @@ async function gitCommonDir(cwd: string): Promise<string> {
 }
 
 async function gitRepositoryIdentity(cwd: string): Promise<GitRepositoryIdentity> {
-  const rootResult = await execFileAsync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  return { worktreeRoot: await realpath(rootResult.stdout.trim()), commonRoot: await gitCommonDir(cwd) };
+  // One spawn: rev-parse prints each requested value on its own line, in order.
+  const result = await execFileAsync("git", [
+    "-C", cwd,
+    "rev-parse", "--show-toplevel", "--git-common-dir",
+  ], { encoding: "utf8" });
+  const [rootLine, commonLine] = result.stdout.split(/\r?\n/u);
+  const commonPath = (commonLine ?? "").trim();
+  return {
+    worktreeRoot: await realpath((rootLine ?? "").trim()),
+    commonRoot: await realpath(isAbsolute(commonPath) ? commonPath : resolve(cwd, commonPath)),
+  };
 }
 
 /** Linked-worktree admin entries live under the owning repository's
@@ -481,38 +548,149 @@ export function sharedWorkspaceBinding(cwd: string): WorkflowWorkspaceBinding {
   return { key: "shared-root", cwd: resolve(cwd), kind: "shared" };
 }
 
-/** A lane outside a clean source repository still gets a git worktree: the
- * run's own store checks out the lane's frozen baseline commit, so the lane
- * starts from exactly that tree (unsaved source changes included) without
- * copying it. The store keeps that commit under the ref a later freeze of the
- * lane reuses. */
-async function addStoreWorktree(
-  run: string,
-  runId: string,
-  key: string,
-  source: string,
-  cwd: string,
-): Promise<string> {
-  const storeDir = await workspaceBaselineStore(run);
-  const baseline = await freezeWorkspaceBaseline(source, {
-    runDir: run,
-    refName: laneBaselineRefName(runId, key),
-    excludeUnder: [run],
-  });
-  await execFileAsync("git", ["--git-dir", storeDir, "worktree", "add", "--detach", cwd, baseline.commit]);
-  return storeDir;
+/** Where one tournament's lanes fork from. `gitRoot` owns the branches: the
+ * source repository for Git workspaces, the run's store otherwise. */
+export interface MapLaneFork {
+  readonly strategy: WorkflowWorkspaceStrategy;
+  readonly gitRoot: string;
+  readonly commit: string;
+  readonly sourceBranch?: string;
+  /** Store path only: the ref holding the fork commit, used as the winner
+   * delta base. */
+  readonly baselineRef?: string;
 }
 
-/** Allocate one concrete map slot as a git worktree. A clean source
- * repository owns the worktree directly (so a winner can fast-forward onto
- * it); any other workspace gets a worktree of the run's own store. */
+/** Write the workspace content as one commit into the source repository,
+ * without touching its index or any ref. The commit is reachable only through
+ * the lane branches that fork from it. */
+async function commitWorkspaceContent(
+  source: string,
+  options: { readonly runDir: string; readonly parent?: string; readonly message: string },
+): Promise<string> {
+  const scratch = join(options.runDir, "git");
+  await mkdir(scratch, { recursive: true });
+  const tree = await writeContentTree({
+    contentDir: source,
+    excludeUnder: [options.runDir],
+    scratchDir: scratch,
+    gitArgs: ["-C", source],
+    env: process.env,
+  });
+  return (await execFileAsync("git", [
+    "-C", source,
+    ...PIANO_GIT_IDENTITY_ARGS,
+    "commit-tree", tree,
+    ...(options.parent === undefined ? [] : ["-p", options.parent]),
+    "-m", options.message,
+  ], { encoding: "utf8" })).stdout.trim();
+}
+
+/** Stage and commit a worktree's edits, one place for the piano identity and
+ * the change check. Returns the tip and whether anything was committed. */
+async function commitWorktreeChanges(
+  cwd: string,
+  message: string,
+): Promise<{ readonly commit: string; readonly changed: boolean }> {
+  const status = await execFileAsync("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" });
+  const changed = status.stdout.trim() !== "";
+  if (changed) {
+    await execFileAsync("git", ["-C", cwd, "add", "-A", "--", "."], { encoding: "utf8" });
+    await execFileAsync("git", [
+      "-C", cwd,
+      ...PIANO_GIT_IDENTITY_ARGS,
+      "commit", "-q", "-m", message,
+    ], { encoding: "utf8" });
+  }
+  const commit = (await execFileAsync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
+  return { commit, changed };
+}
+
+/** Resolve what this region's lanes fork from, once per entry. */
+export async function prepareMapLaneFork(
+  sourceCwd: string,
+  options: {
+    readonly runDir: string;
+    readonly runId: string;
+    readonly jobOrdinal: number;
+    readonly frames: readonly WorkflowRuntimeFrame[];
+    readonly parent?: WorkflowWorkspaceBinding;
+  },
+): Promise<MapLaneFork> {
+  const run = (await canonicalRunRoot(options.runDir, true)).canonical;
+  const source = await realpath(resolve(sourceCwd));
+  const facts = await inspectGitSource(source, run);
+  if (facts === undefined) {
+    const baseline = await freezeWorkspaceBaseline(source, {
+      runDir: run,
+      refName: workspaceRefName(
+        options.runId,
+        `baselines/job-${options.jobOrdinal}/${encodeURIComponent(`${runtimeInstanceId(options.frames) ?? "root"}/fork`)}`,
+      ),
+      excludeUnder: [run],
+    });
+    return {
+      strategy: "store-worktree",
+      gitRoot: await workspaceBaselineStore(run),
+      commit: baseline.commit,
+      baselineRef: baseline.refName,
+    };
+  }
+  if (options.parent?.kind === "map-slot" && facts.dirty) {
+    // A nested tournament inside a lane: checkpoint the parent lane onto its
+    // own branch so children fork from a commit that contains its edits.
+    const { commit } = await commitWorktreeChanges(
+      source,
+      `piano: checkpoint lane ${facts.branch} before nested lanes`,
+    );
+    return { strategy: "git-worktree", gitRoot: source, commit, sourceBranch: facts.branch };
+  }
+  if (facts.dirty) {
+    const commit = await commitWorkspaceContent(source, {
+      runDir: run,
+      parent: facts.head,
+      message: `piano: seed unsaved workspace content for ${facts.branch}`,
+    });
+    return { strategy: "git-worktree", gitRoot: source, commit, sourceBranch: facts.branch };
+  }
+  return { strategy: "git-worktree", gitRoot: source, commit: facts.head, sourceBranch: facts.branch };
+}
+
+/** The lane numbers already taken in this namespace, so allocation never
+ * reuses one even though every branch survives cleanup. */
+async function laneNumbers(gitRoot: string, mnemonic: string): Promise<readonly number[]> {
+  const result = await execFileAsync("git", [
+    "-C", gitRoot,
+    "for-each-ref", "--format=%(refname:short)", `refs/heads/tuna/${mnemonic}/`,
+  ], { encoding: "utf8" });
+  const numbers: number[] = [];
+  for (const line of result.stdout.split(/\r?\n/u)) {
+    const parsed = parseLaneBranch(line.trim());
+    if (parsed?.mnemonic === mnemonic) numbers.push(parsed.laneNumber);
+  }
+  return numbers;
+}
+
+async function addLaneWorktree(gitRoot: string, branch: string, cwd: string, commit: string): Promise<void> {
+  await execFileAsync("git", ["-C", gitRoot, "worktree", "add", "-b", branch, cwd, commit], { encoding: "utf8" });
+}
+
+/** Allocate one concrete map slot as a lane branch worktree. Git workspaces
+ * own the branch in place; any other workspace gets branches in the run's own
+ * store. Every lane is `tuna/<mnemonic>/lane-<n>` and survives cleanup. */
 export function allocateMapWorkspace(
   runDir: string,
   runId: string,
   jobOrdinal: number,
   frames: readonly WorkflowRuntimeFrame[],
   sourceCwd: string,
-  options: { readonly recreateWhenSwept?: boolean } = {},
+  options: {
+    readonly mnemonic: string;
+    /** The region's fork, or a thunk resolving it. The walker passes a
+     * memoized thunk so a resume whose slots all exist never pays for a seed
+     * commit the allocation will not use. */
+    readonly fork?: MapLaneFork | (() => Promise<MapLaneFork>);
+    readonly recreateWhenSwept?: boolean;
+  },
 ): Effect.Effect<WorkflowWorkspaceBinding, WorkflowError, FileSystem.FileSystem | Logging> {
   return TRACE(WORKSPACE_SOURCE, Effect.tryPromise({
     try: async () => {
@@ -550,6 +728,13 @@ export function allocateMapWorkspace(
           throw workflowError("schedule", recordPath, `workspace slot "${key}" was already cleaned`);
         }
       } else if (existing !== undefined) {
+        if (existing.mnemonic !== options.mnemonic) {
+          throw workflowError(
+            "schedule",
+            recordPath,
+            `workspace slot "${key}" belongs to lane namespace "${existing.mnemonic}"`,
+          );
+        }
         try {
           await assertSafeWorkspaceDirectory(workspaceRoot, existing.cwd);
         } catch (error) {
@@ -573,54 +758,62 @@ export function allocateMapWorkspace(
         if (!isMissingPathError(error)) throw error;
       }
 
-      const gitSource = await inspectGitSource(source, run);
-      let strategy: WorkflowWorkspaceStrategy = "git-worktree";
-      let gitRoot: string | undefined;
+      const supplied = options.fork;
+      const fork = typeof supplied === "function"
+        ? await supplied()
+        : supplied ?? await prepareMapLaneFork(source, { runDir: run, runId, jobOrdinal, frames });
+      const gitRoot = fork.gitRoot;
       const removeAllocatedWorkspace = async (): Promise<void> => {
         try {
           await assertCanonicalRunRoot(runRoot);
           await rm(cwd, { recursive: true, force: true });
-          if (gitRoot !== undefined) {
-            await execFileAsync("git", ["-C", gitRoot, "worktree", "prune"]).catch(() => undefined);
-          }
+          await execFileAsync("git", ["-C", gitRoot, "worktree", "prune"]).catch(() => undefined);
         } catch (error) {
           // If the run root changed, do not follow the replacement to clean
           // up; report the residue so recovery can inspect the original root.
           throw workflowError("schedule", cwd, `allocated workspace cleanup failed: ${errorMessage(error)}`);
         }
       };
+      let laneBranch = "";
+      let addFailure: unknown;
       try {
         await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
         await assertCanonicalRunRoot(runRoot);
-        if (gitSource !== undefined) {
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          const taken = await laneNumbers(gitRoot, options.mnemonic);
+          const next = taken.length === 0 ? 0 : Math.max(...taken) + 1;
+          const branch = laneBranchName(options.mnemonic, next);
           try {
-            await execFileAsync("git", ["-C", gitSource.root, "worktree", "add", "--detach", cwd, "HEAD"], { encoding: "utf8" });
-            gitRoot = gitSource.root;
-          } catch {
-            // A clean repository is the preferred owner, but a worktree
-            // failure must not make a valid non-Git-compatible run unusable.
-            await removeAllocatedWorkspace();
+            await addLaneWorktree(gitRoot, branch, cwd, fork.commit);
+            laneBranch = branch;
+            addFailure = undefined;
+            break;
+          } catch (error) {
+            addFailure = error;
+            // A concurrent allocation may have taken the number between the
+            // scan and the add; anything else is a real failure.
+            if (!errorMessage(error).includes("already exists")) break;
           }
         }
-        if (gitRoot === undefined) {
-          gitRoot = await addStoreWorktree(run, runId, key, source, cwd);
-          strategy = "store-worktree";
-        }
+        if (addFailure !== undefined) throw addFailure;
       } catch (error) {
         await removeAllocatedWorkspace();
         throw error;
       }
       const now = new Date().toISOString();
       const record: WorkflowWorkspaceRecord = {
-        version: 2,
+        version: 3,
         key,
         kind: "map-slot",
         cwd,
         sourceCwd: source,
-        strategy,
+        strategy: fork.strategy,
         status: "active",
         phase: "allocated",
-        allocation: recreatedAfterSweep ? "recreated-after-sweep" : "fresh",
+        mnemonic: options.mnemonic,
+        laneBranch,
+        baseCommit: fork.commit,
+        ...(fork.sourceBranch === undefined ? {} : { sourceBranch: fork.sourceBranch }),
         createdAt: now,
         updatedAt: now,
         gitRoot,
@@ -631,14 +824,7 @@ export function allocateMapWorkspace(
         await removeAllocatedWorkspace();
         throw error;
       }
-      return {
-        key,
-        cwd,
-        kind: "map-slot" as const,
-        sourceCwd: source,
-        recordPath,
-        strategy,
-      };
+      return bindingFromRecord(record, recordPath);
     },
     catch: (cause) => cause instanceof WorkflowError
       ? cause
@@ -732,6 +918,13 @@ async function readWorkspaceRecords(
   return records;
 }
 
+/** Commit a lane's remaining edits onto its own branch before the worktree is
+ * removed. Every lane keeps its history — the branch is the lane version — so
+ * a losing lane's work must not vanish with its working copy. */
+async function checkpointLane(record: WorkflowWorkspaceRecord): Promise<void> {
+  await commitWorktreeChanges(record.cwd, `piano: lane ${record.laneBranch} final state`);
+}
+
 async function removeWorkspaceDirectory(
   record: WorkflowWorkspaceRecord,
   runRoot: CanonicalRunRoot,
@@ -750,6 +943,7 @@ async function removeWorkspaceDirectory(
   if (kind !== "directory") {
     throw workflowError("schedule", record.cwd, `refusing to cleanup non-directory workspace (${kind})`);
   }
+  await checkpointLane(record);
   try {
     await assertCanonicalRunRoot(runRoot);
     await execFileAsync("git", ["-C", gitRoot, "worktree", "remove", "--force", record.cwd], { encoding: "utf8" });
@@ -812,9 +1006,15 @@ export function cleanupMapWorkspaces(
       const runRoot = await canonicalRunRoot(runDir, false);
       const all = await readWorkspaceRecords(runRoot, options.sourceCwd, options.keys);
       const prefix = options.keyPrefix;
-      const records = prefix === undefined
+      // Deepest key first: a nested lane's repository root is its parent lane,
+      // so the child worktree must be removed while the parent still exists.
+      const records = (prefix === undefined
         ? all
-        : all.filter(({ record }) => record.key.startsWith(prefix));
+        : all.filter(({ record }) => record.key.startsWith(prefix)))
+        .slice()
+        .sort((left, right) =>
+          right.record.key.split("/").length - left.record.key.split("/").length
+          || right.record.key.localeCompare(left.record.key));
       const finalized: WorkflowWorkspaceRecord[] = [];
       for (const { path, record } of records) {
         if (record.status === "cleaned") {
@@ -1005,12 +1205,11 @@ async function applyWorkspaceContents(
 }
 
 /** Provenance of how a tournament winner was carried into the parent scope.
- * A git-worktree slot is merged: its worktree is committed, the commit is
- * retained under a ref, and git fast-forwards the parent — git is the delta,
- * the record, and the verification. A store-worktree slot (dirty or
- * non-Git sources) keeps the frozen-delta route, where the winning slot's own
- * coding-agent worker consolidates and the engine records only what it
- * verified (PRD §10). */
+ * A git-worktree slot is merged: its worktree is committed on the lane branch
+ * and git fast-forwards the parent — git is the delta, the record, and the
+ * verification. A store-worktree slot (non-Git sources) keeps the frozen-delta
+ * route, where the winning slot's own coding-agent worker consolidates and the
+ * engine records only what it verified (PRD §10). */
 export type WorkflowCarryKind =
   | "git-merged"
   | "worker-consolidated"
@@ -1177,13 +1376,23 @@ async function assertRunOwnedWorkspaceDirectory(
 }
 
 /** The full lane-ownership rule, once: the directory is a run-owned worktree
- * of `record.gitRoot`, and a source-owned lane's repository is still the
- * source's own. */
+ * of `record.gitRoot`, it is checked out on the record's lane branch, that
+ * branch still points at the worktree's HEAD, and a source-owned lane's
+ * repository is still the source's own. */
 async function assertOwnedWorkspace(
   root: string,
   record: WorkflowWorkspaceRecord,
 ): Promise<string> {
   const gitRoot = await assertRunOwnedWorkspaceDirectory(root, record.cwd, record.gitRoot);
+  // One process: the worktree shares the repository's refs, so both the tip
+  // and the branch can be resolved from inside the lane.
+  const tips = await execFileAsync("git", [
+    "-C", record.cwd,
+    "rev-parse", "HEAD", `refs/heads/${record.laneBranch}`,
+  ], { encoding: "utf8" }).then((result) => result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)).catch(() => []);
+  if (tips.length !== 2 || tips[0] !== tips[1]) {
+    throw workflowError("schedule", record.cwd, `workspace slot is not checked out on its lane branch ${record.laneBranch}`);
+  }
   if (record.strategy === "git-worktree") await assertGitRootBound(record.sourceCwd, gitRoot);
   return gitRoot;
 }
@@ -1613,34 +1822,51 @@ async function readBaselineCommit(storeDir: string, refName: string): Promise<st
  * `--pathspec-from-file` feeds that exact path set to git, so the tree cannot
  * pick up what the walk would have refused (or drop what it accepted, e.g.
  * ignored files). */
+/** Index a workspace's content into one git tree, fail-closed: the walk is
+ * the same validation and exclusion the directory snapshots used, and the
+ * NUL pathspec feeds git exactly the paths it accepted. `gitArgs`/`env` pick
+ * the owning repository — the run's store or the source itself. */
+async function writeContentTree(options: {
+  readonly contentDir: string;
+  readonly excludeUnder: readonly string[];
+  readonly scratchDir: string;
+  readonly gitArgs: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<string> {
+  const contentDir = await realpath(resolve(options.contentDir));
+  const paths = await collectContentPaths(contentDir, options.excludeUnder);
+  const pathspecPath = join(options.scratchDir, `piano-pathspec-${randomUUID()}`);
+  const indexPath = join(options.scratchDir, `piano-index-${randomUUID()}`);
+  const env = { ...options.env, GIT_INDEX_FILE: indexPath };
+  try {
+    await writeFile(pathspecPath, paths.map((path) => `${path}\0`).join(""), "utf8");
+    await execFileAsync("git", [
+      ...options.gitArgs,
+      "add", "-f",
+      "--pathspec-from-file", pathspecPath,
+      "--pathspec-file-nul",
+    ], { cwd: contentDir, env });
+    const result = await execFileAsync("git", [...options.gitArgs, "write-tree"], { env, encoding: "utf8" });
+    return result.stdout.trim();
+  } finally {
+    await rm(pathspecPath, { force: true });
+    await rm(indexPath, { force: true });
+  }
+}
+
 async function writeWorkspaceTree(
   storeDir: string,
   sourceContentDir: string,
   excludeUnder: readonly string[],
 ): Promise<string> {
   const contentDir = await realpath(resolve(sourceContentDir));
-  const paths = await collectContentPaths(contentDir, excludeUnder);
-  const pathspecPath = join(storeDir, `piano-pathspec-${randomUUID()}`);
-  const indexPath = join(storeDir, `piano-index-${randomUUID()}`);
-  const indexEnv = {
-    ...process.env,
-    GIT_DIR: storeDir,
-    GIT_WORK_TREE: contentDir,
-    GIT_INDEX_FILE: indexPath,
-  };
-  try {
-    await writeFile(pathspecPath, paths.map((path) => `${path}\0`).join(""), "utf8");
-    await execFileAsync("git", [
-      "add", "-f",
-      "--pathspec-from-file", pathspecPath,
-      "--pathspec-file-nul",
-    ], { cwd: contentDir, env: indexEnv });
-    const result = await execFileAsync("git", ["write-tree"], { env: indexEnv, encoding: "utf8" });
-    return result.stdout.trim();
-  } finally {
-    await rm(pathspecPath, { force: true });
-    await rm(indexPath, { force: true });
-  }
+  return writeContentTree({
+    contentDir,
+    excludeUnder,
+    scratchDir: storeDir,
+    gitArgs: [],
+    env: { ...process.env, GIT_DIR: storeDir, GIT_WORK_TREE: contentDir },
+  });
 }
 
 /** Freeze workspace content as one commit, once. The ref is the completion
@@ -1792,58 +2018,45 @@ export async function restoreWorkspaceChanges(
   }
 }
 
-/** Commit the content of a git-worktree slot into the shared repository and
- * fast-forward it onto the source HEAD when that is still possible. The ref
- * is always written so the winner's commit survives cleanup of the worktree.
- * `changed` is false when the slot committed no edits (its fork point is the
- * winner). */
+/** Commit the lane's remaining edits onto its branch and fast-forward the
+ * source checkout onto it. The lane branch always keeps the commit, so a
+ * failed fast-forward loses nothing. `changed` is false when the lane
+ * committed no edits (its fork point is the winner). */
 async function mergeGitWorktreeWinner(
   record: WorkflowWorkspaceRecord,
   gitRoot: string,
-  runId: string,
   sourceIdentity: WorkspaceDirectoryIdentity,
 ): Promise<{ readonly commit: string; readonly changed: boolean; readonly merged: boolean; readonly reason?: string }> {
-  await execFileAsync("git", ["-C", record.cwd, "add", "-A", "--", "."], { encoding: "utf8" });
-  const status = await execFileAsync("git", ["-C", record.cwd, "status", "--porcelain=v1", "--untracked-files=no"], { encoding: "utf8" });
-  if (status.stdout.trim() === "") {
-    // The slot tree equals its fork point; nothing changed to merge, but the
-    // fork point is still a valid winner identity and is already on the source.
-    const head = (await execFileAsync("git", ["-C", record.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
-    return { commit: head, changed: false, merged: true };
+  const { commit, changed } = await commitWorktreeChanges(
+    record.cwd,
+    `piano: apply winning tournament slot ${record.key}`,
+  );
+  // No edits: the fork point is the winner and is already on the source.
+  if (!changed) return { commit, changed, merged: true };
+  if (record.sourceBranch !== undefined) {
+    const current = await execFileAsync("git", ["-C", record.sourceCwd, "symbolic-ref", "--quiet", "--short", "HEAD"], { encoding: "utf8" })
+      .then((result) => result.stdout.trim())
+      .catch(() => "");
+    if (current !== record.sourceBranch) {
+      return {
+        commit,
+        changed,
+        merged: false,
+        reason: `source branch "${record.sourceBranch}" is no longer checked out (now "${current === "" ? "detached" : current}"); winner kept on ${record.laneBranch}`,
+      };
+    }
   }
-  // Checkouts are detached worktrees with no common author config; stamp one so
-  // committing never inherits global config that a host may not have set.
-  await execFileAsync("git", [
-    "-C", record.cwd,
-    ...PIANO_GIT_IDENTITY_ARGS,
-    "commit",
-    "-q",
-    "-m", `piano: apply winning tournament slot ${record.key}`,
-  ], { encoding: "utf8" });
-  const commit = (await execFileAsync("git", ["-C", record.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
-  const refName = workspaceRefName(runId, record.key);
-  await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git ref update");
+  await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git merge");
   try {
-    await execFileAsync("git", ["-C", gitRoot, "update-ref", refName, commit], { encoding: "utf8" });
-  } catch (cause) {
-    // Without the retained ref, cleanup could make the winner commit
-    // unreachable. Surface this as a carry failure so the caller can preserve
-    // the slot for recovery; do not return a skipped/retained result.
-    throw workflowError("schedule", gitRoot, `winner commit could not be retained under ${refName}: ${errorMessage(cause)}`);
-  }
-  await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after Git ref update");
-  try {
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git merge");
-    await execFileAsync("git", ["-C", gitRoot, "merge", "--ff-only", commit], { encoding: "utf8" });
+    await execFileAsync("git", ["-C", gitRoot, "merge", "--ff-only", record.laneBranch], { encoding: "utf8" });
     await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after Git merge");
-    return { commit, changed: true, merged: true };
+    return { commit, changed, merged: true };
   } catch (cause) {
     if (cause instanceof WorkflowError) throw cause;
-    // The source HEAD advanced past this slot's fork point during the run, so
-    // a fast-forward is impossible. Keep the slot's commit reachable under its
-    // ref so the operator can merge or inspect it later; cleanup still removes
-    // only the worktree working copy.
-    return { commit, changed: true, merged: false, reason: errorMessage(cause) };
+    // The source advanced past the lane's fork point during the run, so a
+    // fast-forward is impossible. The lane branch keeps the winner commit for
+    // the operator to merge or inspect; cleanup removes only the worktree.
+    return { commit, changed, merged: false, reason: errorMessage(cause) };
   }
 }
 
@@ -1851,24 +2064,22 @@ export interface WorkflowWinnerResult {
   readonly key: string;
   readonly method: "git-ff" | "git-no-changes" | "content-copy";
   readonly commit?: string;
-  /** A non-fast-forward source HEAD left the winner commit un-merged but the
-   * commit stays reachable under refs/piano/<exec>/<key>. */
+  /** A non-fast-forward source left the winner commit un-merged; it stays
+   * reachable on the lane branch. */
   readonly skipped?: { readonly reason: string };
 }
 
 /** Apply one selected slot directly to the declared source workspace. The
  * winner is never materialized as a second run-owned "winner" directory.
  *
- * A git-worktree slot is committed in the shared repository and fast-forwarded
- * onto the source HEAD (true lineage: the working tree now *is* the winner's
- * committed tree, with a retained ref under refs/piano/<exec>/<key>). A
- * store-worktree slot — the reachable strategy for dirty or non-Git sources
- * — keeps the validated content-copy so unsaved user edits still land. When the
- * source cannot fast-forward, the winner commit is retained and reported via
- * `skipped` rather than destroying source state. */
+ * A source-owned lane is committed on its own branch and fast-forwarded onto
+ * the source checkout (true lineage: the working tree now *is* the winner's
+ * committed tree). A store-worktree lane — the fallback for non-Git sources —
+ * keeps the validated content-copy so unsaved user edits still land. When the
+ * source cannot fast-forward, the lane branch keeps the winner and the result
+ * reports `skipped` rather than destroying source state. */
 export function applyWinnerWorkspace(
   runDir: string,
-  runId: string,
   winnerKey: string,
   sourceCwd: string,
 ): Effect.Effect<WorkflowWinnerResult, WorkflowError, FileSystem.FileSystem | Logging> {
@@ -1908,12 +2119,12 @@ export function applyWinnerWorkspace(
       await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
       await assertCanonicalRunRoot(runRoot);
       if (applying.strategy === "git-worktree") {
-        const merged = await mergeGitWorktreeWinner(applying, gitRoot, runId, sourceIdentity);
+        const merged = await mergeGitWorktreeWinner(applying, gitRoot, sourceIdentity);
         const result: WorkflowWinnerResult = {
           key: applying.key,
           method: merged.changed === true ? "git-ff" : "git-no-changes",
           commit: merged.commit,
-          ...(merged.merged === false ? { skipped: { reason: merged.reason ?? "source advanced; winner commit retained under refs/piano" } } : {}),
+          ...(merged.merged === false ? { skipped: { reason: merged.reason ?? `source advanced; winner kept on ${applying.laneBranch}` } } : {}),
         };
         return result;
       }

@@ -44,7 +44,7 @@
  │    · per invocation: context files → executeWorker →                      │
  │      validate (contract) → repair turn on failure                         │
  │    · handoff.ts        immutable producer records → consumer contexts     │
- │    · workspace.ts      shared root | map-slot copies (worktree/snapshot)  │
+ │    · workspace.ts      shared root | lane branch worktrees (source/store)   │
  │    · progress.ts       progress.jsonl ledger + progress.json snapshot     │
  │    · CUDA promotion    KEEP/DISCARD materialization (non-monotonic)       │
  │    · workflow-resume.ts reopens actor continuations across prompts        │
@@ -85,7 +85,7 @@
  │   executions/<exec>/invocations/<stage>/<iter|slot>/attempts/N/result.json│
  │   executions/<exec>/handoffs/{contexts,records}/…  (immutable handoffs)   │
  │   executions/<exec>/actors/<harness>/<stage>/session/*.jsonl  (transcripts)│
- │   executions/<exec>/workspaces/slots/<key>/  (map lanes)                  │
+ │   <run>/workspaces/worktree-<key>/  (map lanes on tuna/<ns>/lane-<n>)      │
  └────────────────────────────────────────────────────────────────────────────┘
 
  ┌────────────────  CONTRACT (packages/contract)  ─┐   ┌────────────────────┐

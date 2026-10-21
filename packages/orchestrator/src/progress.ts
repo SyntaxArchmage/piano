@@ -192,6 +192,9 @@ export interface WorkflowProgressExecutionStartRecord {
   readonly prompt?: string;
   /** True when this execution continues actors a previous one left behind. */
   readonly resumed: boolean;
+  /** The run's lane namespace (`<task-slug>-<runId>`), recorded so a continue
+   * reuses it instead of re-summarizing the prompt. Absent in older streams. */
+  readonly mnemonic?: string;
   readonly plan: WorkflowProgressPlan;
 }
 
@@ -370,7 +373,7 @@ export const progressRecordDeclaredFields: Readonly<Record<string, readonly stri
     "worker", "attempt", "instanceId", "iteration", "mapSlot", "mapSlots", "scope", "error",
   ],
   "execution-started": [
-    "version", "kind", "timestamp", "runId", "jobOrdinal", "prompt", "resumed", "plan",
+    "version", "kind", "timestamp", "runId", "jobOrdinal", "prompt", "resumed", "mnemonic", "plan",
   ],
   "execution-finished": [
     "version", "kind", "timestamp", "runId", "status", "error",
@@ -405,6 +408,8 @@ export interface WorkflowProgressSnapshot {
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   readonly current?: WorkflowProgressCurrent;
   readonly error?: string;
+  /** The run's lane namespace, carried across continues. */
+  readonly mnemonic?: string;
 }
 
 function emptyStageCounts(plan: WorkflowProgressPlan): Readonly<Record<string, WorkflowProgressStageCount>> {
@@ -540,6 +545,7 @@ export function applyProgressRecord(
     // one starts them over. The flag rides the record rather than being
     // inferred from whether a snapshot happens to exist on disk.
     const carried = started.resumed ? previous : undefined;
+    const mnemonic = started.mnemonic ?? carried?.mnemonic;
     return {
       version: 1,
       updatedAt: started.timestamp,
@@ -551,6 +557,7 @@ export function applyProgressRecord(
       remainingStages: started.plan.plannedStages - (carried?.acceptedStages ?? 0),
       stageCounts: carried?.stageCounts ?? emptyStageCounts(started.plan),
       ...(carried?.invocationTime === undefined ? {} : { invocationTime: carried.invocationTime }),
+      ...(mnemonic === undefined ? {} : { mnemonic }),
     };
   }
   if (kind === "stage-started") {
@@ -661,6 +668,7 @@ function snapshotOf(status: RunStatus): WorkflowProgressSnapshot {
     ...(status.invocationTime === undefined ? {} : { invocationTime: status.invocationTime }),
     ...(status.current === undefined ? {} : { current: status.current }),
     ...(status.error === undefined ? {} : { error: typeof status.error === "string" ? status.error : JSON.stringify(status.error) }),
+    ...(status.mnemonic === undefined ? {} : { mnemonic: status.mnemonic }),
   };
 }
 
@@ -729,6 +737,7 @@ export function applyRunStatusRecord(
     ...(snapshot.invocationTime === undefined ? {} : { invocationTime: snapshot.invocationTime }),
     ...(snapshot.current === undefined ? {} : { current: snapshot.current }),
     ...(snapshot.error === undefined ? {} : { error: snapshot.error }),
+    ...(snapshot.mnemonic === undefined ? {} : { mnemonic: snapshot.mnemonic }),
   };
   const kind = progressRecordKind(record);
   if (kind === "execution-started") {
@@ -828,6 +837,7 @@ export function initializeWorkflowProgress(
   jobOrdinal: number,
   prompt: string,
   resume: boolean,
+  mnemonic?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return Effect.gen(function* () {
@@ -839,6 +849,7 @@ export function initializeWorkflowProgress(
       jobOrdinal,
       prompt,
       resumed: resume,
+      ...(mnemonic === undefined ? {} : { mnemonic }),
       plan,
     });
     return path;
