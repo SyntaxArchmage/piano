@@ -2,9 +2,8 @@
 │                          PIANO — ARCHITECTURE                              │
 │    agent tuning workflows: YAML → DAG → agent stages → durable evidence   │
 └───────────────────────────────────────────────────────────────────────────┘
- NOTE (2026-10-15): historical document. The EVIDENCE box below shows an
- executions/<exec>/… run layout that was never shipped; README.md documents
- the real on-disk layout and is the authority.
+ NOTE: README.md is the authority for the on-disk run layout; this diagram
+ summarizes the package structure and the evidence flow.
 
  ┌──────────────────────────  CLI  (packages/cli)  ──────────────────────────┐
  │  main.ts · runCli · arg parsing  — one typed Effect program               │
@@ -44,8 +43,8 @@
  │    · per invocation: context files → executeWorker →                      │
  │      validate (contract) → repair turn on failure                         │
  │    · handoff.ts        immutable producer records → consumer contexts     │
- │    · workspace.ts      shared root | lane branch worktrees (source/store)   │
- │    · progress.ts       progress.jsonl ledger + progress.json snapshot     │
+ │    · workspace.ts      shared root | lane branch worktrees (source/store) │
+ │    · progress.ts       status.json state document + progress records      │
  │    · CUDA promotion    KEEP/DISCARD materialization (non-monotonic)       │
  │    · workflow-resume.ts reopens actor continuations across prompts        │
  └────────────────────────────┬──────────────────────────────────────────────┘
@@ -80,12 +79,13 @@
 
  ┌────────────────────────  EVIDENCE  (packages/logging)  ───────────────────┐
  │  session.ts createSession → ~/.piano/runs/<run-id>/                        │
- │   log.jsonl (lifecycle) · trace.jsonl (fn spans) · trajectory.json        │
- │   progress.jsonl (append-only ledger) · progress.json (monitor snapshot)  │
- │   executions/<exec>/invocations/<stage>/<iter|slot>/attempts/N/result.json│
- │   executions/<exec>/handoffs/{contexts,records}/…  (immutable handoffs)   │
- │   executions/<exec>/actors/<harness>/<stage>/session/*.jsonl  (transcripts)│
- │   <run>/workspaces/worktree-<key>/  (map lanes on tuna/<ns>/lane-<n>)      │
+ │   status.json (single state document)                                      │
+ │   system-log/{log,trace,trajectory,invocations}.jsonl                      │
+ │   results/inv-<ref>-attempt-<k>.json · context/inv-<ref>/<file>            │
+ │   contracts/<sha256>.json · eval-metrics/*.jsonl                           │
+ │   sessions/trajectory-<harness>-<worker>-<lane>/session/*.jsonl            │
+ │   <run>/git/workspaces.git  (baselines)                                    │
+ │   <run>/workspaces/worktree-<key>/  (lanes on tuna/<ns>/lane-<n>)          │
  └────────────────────────────────────────────────────────────────────────────┘
 
  ┌────────────────  CONTRACT (packages/contract)  ─┐   ┌────────────────────┐

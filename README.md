@@ -432,7 +432,8 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 ├── sessions/
 │   ├── trajectory-<harness>-<worker>-<lane>/
 │   │   └── session/<session>.jsonl # per-worker actor transcript
-│   └── side-agent/                # `/btw` side-agent harness session files
+│   ├── side-agent/                # `/btw` side-agent harness session files
+│   └── task-mnemonic/             # preflight lane-naming turn session files
 ├── workspace-records/<key>/record.json   # live lane record: branch, base commit, source branch
 └── workspaces/worktree-<key>/            # lane worktree checked out on tuna/<mnemonic>/lane-<n>
 ```
@@ -467,8 +468,9 @@ Key files:
   accepted invocations (structured entries: `invocationId`, `stageId`, `frames`,
   `iteration`), attempts and finalized regions, and the actor table —
   the session id and transcript path per conversation, plus
-  `runId`/`workflowPath`/`workspaceCwd` and a `name` once you `/rename` the
-  run. Every reader — the TUI graph, the pickers, the logs picker, the headless
+  `runId`/`workflowPath`/`workspaceCwd`, a `name` once you `/rename` the
+  run, and the `mnemonic` namespace (`<task-slug>-<runId>`) that names its lane
+  branches. Every reader — the TUI graph, the pickers, the logs picker, the headless
   `status_path`, the evals — reads this one document; a monitor never has to
   infer progress from a worker name or count accepted lines by hand.
 - **`system-log/trajectory.jsonl`** — the append-only record each write
