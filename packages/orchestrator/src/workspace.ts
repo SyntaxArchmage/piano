@@ -1744,10 +1744,9 @@ export async function snapshotWorkspaceContent(
 }
 
 /** A frozen workspace content baseline: one git commit in the run's own
- * baseline store, named by its ref. Replaces the raw directory copies a
- * tournament used to freeze (`baseline/`, `slot-baselines/`) — the commit
- * shares blobs with every lane and iteration instead of copying the tree once
- * per lane, and the ref is the resume token that re-entry reuses. */
+ * baseline store, named by its ref. The commit shares blobs across lanes and
+ * iterations instead of copying the tree once per lane, and the ref is the
+ * resume token that re-entry reuses. */
 export interface WorkspaceBaseline {
   /** The run whose store holds the commit. */
   readonly runDir: string;
