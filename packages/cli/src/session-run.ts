@@ -222,13 +222,12 @@ function runSessionBody(
        * same way a failure would. */
       const jobCommandRefused = (command: string, runDir: string, reason: string) =>
         new WorkflowError({ phase: "schedule", path: runDir, message: `/${command} is unavailable: ${reason}` });
-      /** The jobs' shape: the run's state document, which folds the stream
-       * that also carries each job's input. */
+      /** The jobs' shape: the run's state document, which records each job
+       * and its input. */
       const readJobState = (runDir: string) =>
         Effect.map(readRunStatus(runDir), (status) => status?.jobs ?? []);
-      /** The latest job's region-finalized records, folded fresh from the
-       * progress stream: the ledger is their only home — status.json holds
-       * derived, JSON-safe state and deliberately omits them. */
+      /** The latest job's region-finalized records, as the state document
+       * holds them. */
       const readJobRegions = (runDir: string): Effect.Effect<
         ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord> | undefined,
         never,

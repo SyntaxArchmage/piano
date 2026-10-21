@@ -120,6 +120,7 @@ export {
 export {
   appendWorkflowProgress,
   applyProgressRecord,
+  applyRunStatusRecord,
   closeWorkflowJob,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
@@ -141,18 +142,10 @@ export {
   type WorkflowProgressStageCount,
 } from "./progress.js";
 export {
-  foldJobSpans,
-  jobs,
-  latestJob,
-  type JobSpan,
-  type JobView,
-} from "./job-spans.js";
-export {
-  parseProgressLines,
   parseRunStatus,
   readRunStatus,
   refreshRunStatus,
-  runStatusFromParts,
+  runStatusFromTrajectory,
   runStatusPath,
   writeRunStatus,
   type RunAcceptedInvocation,

@@ -1,14 +1,14 @@
-// /continue and /restart resolve from the stream: the most recent paused job
-// resumes from its cursor; the latest job's input runs again, closing a paused
-// job first. The input comes from the job itself — the stream records it with
-// the job — so turn positions are never consulted. Refusals say what is
-// missing instead of running the wrong thing.
+// /continue and /restart resolve from the run's state document: the most
+// recent paused job resumes from its cursor; the latest job's input runs
+// again, closing a paused job first. The input comes from the job itself —
+// the document records it with the job — so turn positions are never
+// consulted. Refusals say what is missing instead of running the wrong thing.
 import { describe, expect, it } from "vitest";
-import {
-  runStatusFromParts,
-  type RunJob,
-  type WorkflowProgressStreamRecord,
+import type {
+  RunJob,
+  WorkflowProgressStreamRecord,
 } from "@piano/orchestrator";
+import { foldStatus } from "../common/status-fold.js";
 import {
   resolveContinueCommand,
   resolveRestartCommand,
@@ -48,9 +48,7 @@ const T = (second: number): string => `2026-10-14T00:00:${String(second).padStar
 /** The jobs the run's state document holds — the shapes a `/continue` reads
  * after a JSON round trip, not the in-memory sets and maps behind them. */
 const jobList = (...records: WorkflowProgressStreamRecord[]): readonly RunJob[] =>
-  runStatusFromParts({
-    progressStream: `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
-  })?.jobs ?? [];
+  foldStatus(records)?.jobs ?? [];
 
 /** Job 1 finished, job 2 paused with one stage accepted, job 3 alive. */
 const THREE_JOBS = jobList(

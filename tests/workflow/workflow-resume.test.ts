@@ -5,10 +5,7 @@ import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { readWorkflowExecutionContinuation } from "../../packages/orchestrator/src/workflow-resume.js";
-import {
-  applyRunStatusRecord,
-  type WorkflowProgressStreamRecord,
-} from "../../packages/orchestrator/src/progress.js";
+import { foldStatus } from "../common/status-fold.js";
 
 const timestamp = "2026-08-25T00:00:00.000Z";
 
@@ -72,11 +69,7 @@ async function runDirWith(rows: readonly object[]): Promise<string> {
   if (rows.length > 0) {
     // The actor table is the state document's own field; build it through the
     // writer's reducer so the fixture is exactly what a run would persist.
-    let status = undefined as ReturnType<typeof applyRunStatusRecord> | undefined;
-    for (const row of rows) {
-      status = applyRunStatusRecord(status, row as WorkflowProgressStreamRecord);
-    }
-    await writeFile(join(runDir, "status.json"), JSON.stringify(status), "utf8");
+    await writeFile(join(runDir, "status.json"), JSON.stringify(foldStatus(rows)), "utf8");
   }
   return runDir;
 }

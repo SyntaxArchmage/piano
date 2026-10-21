@@ -21,9 +21,7 @@ export async function readStream(runDir: string, name: string): Promise<Record<s
 /** The actor table a run last persisted.
  *
  * The ledger's `actor-turn` rows are the record: one row per conversation-state
- * change, newest row per actor winning, folded here the same way `foldActorTurns`
- * folds them in the orchestrator. The retired resume stream is not read: a run
- * that predates the rows is covered by the orchestrator's own fallback. */
+ * change, newest row per actor winning. */
 export async function readResumeActors(runDir: string): Promise<Record<string, Record<string, unknown>>> {
   try {
     const status = JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as {

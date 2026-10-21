@@ -1,8 +1,8 @@
 // The two job-level commands beside a prompt: `/continue` resumes the most
 // recent paused job from its cursor, and `/restart` closes the latest job and
 // runs its input again as a fresh one. Both read the job's input from the job
-// itself — the stream records it with the job — so turn positions, which
-// continues make ambiguous, are never consulted.
+// itself — the state document records it with the job — so turn positions,
+// which continues make ambiguous, are never consulted.
 import { type RunJob } from "@piano/orchestrator";
 
 /** What `/continue` resolved to: resume this job from the cursor it left. */

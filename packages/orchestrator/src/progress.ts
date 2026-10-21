@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import type { WorkflowError } from "./errors.js";
 import {
   acceptedInvocationOf,
+  emptyRunStatus,
   readRunStatus,
   runStatusPath,
   writeRunStatus,
@@ -227,7 +228,6 @@ export interface WorkflowProgressJobClosedRecord {
   readonly outcome: "restarted";
 }
 
-/** One line of the append-only progress stream. */
 /** One region's exit, recorded exactly once when the region leaves the
  * schedule: which instance ended, why, and — for a tournament — who won.
  * A continue reads it to skip a completed region instead of re-running its
@@ -486,17 +486,13 @@ function emptyProgressSnapshot(runId: string, updatedAt: string): WorkflowProgre
   };
 }
 
-/** Fold one stream record into the snapshot it produces.
+/** Fold one progress record into the snapshot it produces.
  *
- * The single definition of what a record means, shared by the two paths that
- * need it: the writers apply it to the snapshot they last wrote — one small
- * file read per record, so a long run stays linear — and a reader can reduce a
- * whole stream with it to rebuild a snapshot a hard exit never reached. Both
- * paths produce the same document, which is what makes the snapshot a view of
- * the stream rather than a second account of it.
- *
- * Folding into `undefined` is the same as folding into the empty snapshot:
- * every case establishes the identity and timestamp it needs from the record.
+ * The single definition of what a record means: every writer applies it to the
+ * document it last wrote — one small file read per record, so a long run stays
+ * linear. Folding into `undefined` is the same as folding into the empty
+ * snapshot: every case establishes the identity and timestamp it needs from
+ * the record.
  *
  * The reducer TAKES OWNERSHIP of `previous`'s `invocationTime` map and returns
  * a snapshot that owns it. Every caller hands it an accumulator it owns (the
@@ -524,7 +520,7 @@ export function applyProgressRecord(
       : { ...previous, updatedAt: record.timestamp };
   }
   if (kind === "actor-turn") {
-    // The actor table's own fold (`foldActorTurns`) reads these; the progress
+    // The state document folds these into its actor table; the progress
     // snapshot carries no actor fields, so only its timestamp advances.
     return previous === undefined
       ? emptyProgressSnapshot(record.runId, record.timestamp)
@@ -669,24 +665,6 @@ function snapshotOf(status: RunStatus): WorkflowProgressSnapshot {
     ...(status.current === undefined ? {} : { current: status.current }),
     ...(status.error === undefined ? {} : { error: typeof status.error === "string" ? status.error : JSON.stringify(status.error) }),
     ...(status.mnemonic === undefined ? {} : { mnemonic: status.mnemonic }),
-  };
-}
-
-function emptyRunStatus(runId: string, timestamp: string): RunStatus {
-  return {
-    version: 1,
-    runId,
-    updatedAt: timestamp,
-    status: "running",
-    promptLength: 0,
-    plannedStages: 0,
-    completedStages: 0,
-    acceptedStages: 0,
-    remainingStages: 0,
-    stageCounts: {},
-    jobs: [],
-    jobOrdinal: 0,
-    actors: {},
   };
 }
 
@@ -871,12 +849,11 @@ function appendAndFold(
   });
 }
 
-/** Record that a stage/attempt started on the stream.
+/** Record that a stage/attempt started.
  *
- * The stream is written first on purpose: the state document is a view of the
- * record, so a failure between the two must leave the view stale rather than
- * the record missing. Viewing the order the other way would let a crash lose
- * the start. */
+ * The record is applied to the state document and the document is written
+ * atomically: a crash leaves either the previous state or the next one, never
+ * a torn line. */
 export function markWorkflowStageStarted(
   runDir: string,
   runId: string,

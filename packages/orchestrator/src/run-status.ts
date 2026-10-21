@@ -16,20 +16,17 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { parseJsonRecord, parseRunStreamLines, parseTrajectory, trajectoryStreamPathCandidates } from "@piano/logging";
+import { parseJsonRecord, parseTrajectory, trajectoryStreamPathCandidates, type TrajectoryDocument } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
-import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
+
 import {
-  applyProgressRecord,
   type WorkflowProgressCurrent,
   type WorkflowProgressInvocationTime,
-  type WorkflowProgressSnapshot,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowProgressStageCount,
-  type WorkflowProgressStreamRecord,
 } from "./progress.js";
-import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
+import type { ResumeActorState } from "./resume-state.js";
 import {
   parseInvocationId,
   type WorkflowRuntimeFrame,
@@ -148,60 +145,66 @@ export function runStatusPath(runDir: string): string {
   return join(runDir, "status.json");
 }
 
-/** Build the run's state from the raw contents of its ledgers.
- *
- * Pure, so a reader that already has the bytes (a sync picker, a test) folds
- * without going through the filesystem. `undefined` when nothing describes the
- * run — the same answer a run dir with no evidence gives. */
-export function runStatusFromParts(parts: {
-  readonly progressStream?: string;
-  readonly trajectoryStream?: string;
-}): RunStatus | undefined {
-  const records = parseProgressLines(parts.progressStream);
-  const progress = records.reduce<WorkflowProgressSnapshot | undefined>(
-    (folded, record) => applyProgressRecord(folded, record),
-    undefined,
-  );
-  const trajectory = parseTrajectory(parts.trajectoryStream);
-  if (progress === undefined && trajectory === undefined) return undefined;
-  // The actors a run has: the ledger's own `actor-turn` rows.
-  const actors = actorTableFrom(records);
+/** The state document's trajectory-derived fields. One projection, so the
+ * bootstrap fold and the per-write refresh cannot drift. */
+function trajectoryStatusFields(trajectory: TrajectoryDocument): Partial<RunStatus> {
+  return {
+    ...(trajectory.name === undefined ? {} : { name: trajectory.name }),
+    ...(trajectory.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
+    ...(trajectory.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
+    ...(trajectory.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
+    ...(trajectory.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
+    promptLength: trajectory.promptLength ?? 0,
+    ...(trajectory.turns === undefined
+      ? {}
+      : { turns: trajectory.turns.map((turn): RunTurn => ({ prompt: turn.prompt, status: turn.status })) }),
+  };
+}
 
-  const runId = progress?.runId ?? trajectory?.runId;
-  const status = progress?.status ?? trajectory?.status;
-  const updatedAt = progress?.updatedAt ?? trajectory?.updatedAt;
-  // A run that has said neither when it is nor how it is has not recorded
-  // enough to describe; its ledgers are still there for whoever wants them.
-  if (runId === undefined || status === undefined || updatedAt === undefined) return undefined;
-
-  const error = trajectory?.error ?? progress?.error;
+/** The zero state document. The workflow-owned half (jobs, accepted
+ * invocations, stage counts) is written as the run schedules. */
+export function emptyRunStatus(runId: string, timestamp: string): RunStatus {
   return {
     version: 1,
     runId,
-    updatedAt,
+    updatedAt: timestamp,
+    status: "running",
+    promptLength: 0,
+    plannedStages: 0,
+    completedStages: 0,
+    acceptedStages: 0,
+    remainingStages: 0,
+    stageCounts: {},
+    jobs: [],
+    jobOrdinal: 0,
+    actors: {},
+  };
+}
+
+/** Bootstrap the state document from a trajectory when none exists yet.
+ *
+ * Pure, so a reader that already has the bytes can fold without going through
+ * the filesystem. The trajectory's `status` is the status of its newest turn;
+ * this is the only place it seeds the run's lifecycle status, and it is a
+ * bootstrap, not a merge. */
+export function runStatusFromTrajectory(trajectoryStream?: string): RunStatus | undefined {
+  const trajectory = parseTrajectory(trajectoryStream);
+  return trajectory === undefined ? undefined : runStatusFromTrajectoryDocument(trajectory);
+}
+
+function runStatusFromTrajectoryDocument(trajectory: TrajectoryDocument): RunStatus | undefined {
+  const runId = trajectory.runId;
+  const status = trajectory.status;
+  const updatedAt = trajectory.updatedAt;
+  // A run that has said neither when it is nor how it is has not recorded
+  // enough to describe; its trajectory is still there for whoever wants it.
+  if (runId === undefined || status === undefined || updatedAt === undefined) return undefined;
+  return {
+    ...emptyRunStatus(runId, updatedAt),
     status,
-    ...(error === undefined ? {} : { error }),
-    ...(trajectory?.name === undefined ? {} : { name: trajectory.name }),
-    ...(progress?.mnemonic === undefined ? {} : { mnemonic: progress.mnemonic }),
-    ...(trajectory?.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
-    ...(trajectory?.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
-    ...(trajectory?.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
-    ...(trajectory?.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
-    promptLength: trajectory?.promptLength ?? 0,
-    ...(trajectory?.turns === undefined
-      ? {}
-      : { turns: trajectory.turns.map((turn): RunTurn => ({ prompt: turn.prompt, status: turn.status })) }),
-    plannedStages: progress?.plannedStages ?? 0,
-    completedStages: progress?.completedStages ?? 0,
-    acceptedStages: progress?.acceptedStages ?? 0,
-    remainingStages: progress?.remainingStages ?? 0,
-    stageCounts: progress?.stageCounts ?? {},
-    ...(progress?.invocationTime === undefined ? {} : { invocationTime: progress.invocationTime }),
-    ...(progress?.current === undefined ? {} : { current: progress.current }),
-    jobs: jobs(foldJobSpans(records)).map(asRunJob),
-    jobOrdinal: actors.jobOrdinal,
-    actors: actors.actors,
-  } satisfies RunStatus;
+    ...(trajectory.error === undefined ? {} : { error: trajectory.error }),
+    ...trajectoryStatusFields(trajectory),
+  };
 }
 
 /** Read a run's state: the one document, whole.
@@ -232,25 +235,16 @@ export function refreshRunStatus(
     const trajectory = parseTrajectory(raw);
     const current = yield* readRunStatus(runDir);
     if (current === undefined) {
-      if (raw === undefined) return;
-      const folded = runStatusFromParts({ trajectoryStream: raw });
+      if (trajectory === undefined) return;
+      const folded = runStatusFromTrajectoryDocument(trajectory);
       if (folded !== undefined) yield* writeRunStatus(runDir, folded);
       return;
     }
     if (trajectory === undefined) return;
-    const turns = trajectory.turns === undefined
-      ? current.turns
-      : trajectory.turns.map((turn) => ({ prompt: turn.prompt, status: turn.status }));
     yield* writeRunStatus(runDir, {
       ...current,
       updatedAt: trajectory.updatedAt,
-      ...(trajectory.name === undefined ? {} : { name: trajectory.name }),
-      ...(trajectory.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
-      ...(trajectory.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
-      ...(trajectory.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
-      ...(trajectory.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
-      promptLength: trajectory.promptLength,
-      ...(turns === undefined ? {} : { turns }),
+      ...trajectoryStatusFields(trajectory),
       ...(current.error !== undefined || trajectory.error === undefined
         ? (current.error === undefined ? {} : { error: current.error })
         : { error: trajectory.error }),
@@ -272,7 +266,8 @@ function readTrajectoryText(
   });
 }
 
-/** Write a run's state whole. The ledgers stay the evidence; this is the view. */export function writeRunStatus(
+/** Write a run's state whole. The ledgers stay the evidence; this is the view. */
+export function writeRunStatus(
   runDir: string,
   status: RunStatus,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
@@ -283,29 +278,10 @@ function readTrajectoryText(
   });
 }
 
-/** The in-memory job, in the shapes a JSON document can hold. */
-function asRunJob(job: JobView): RunJob {
-  return {
-    jobOrdinal: job.jobOrdinal,
-    state: job.state,
-    ...(job.outcome === undefined ? {} : { outcome: job.outcome }),
-    accepted: [...job.accepted].map(acceptedInvocationOf),
-    attempts: Object.fromEntries(job.attempts),
-    ...(job.input === undefined ? {} : { input: job.input }),
-  };
-}
-
 /** Parse a state document's raw bytes. `undefined` when missing, torn, or not
  * an object — the same tolerance every reader of the document needs, so none
  * of them hand-rolls its own. */
 export function parseRunStatus(raw: string): RunStatus | undefined {
   // A torn write reads as absent; the ledgers behind it still hold the run.
   return parseJsonRecord(raw) as RunStatus | undefined;
-}
-
-/** Parse a progress ledger's raw bytes into the records this build reads.
- * Blank and unreadable lines drop; the line acceptance rule lives in
- * logging's jsonl.ts. */
-export function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {
-  return parseRunStreamLines<WorkflowProgressStreamRecord>(raw);
 }

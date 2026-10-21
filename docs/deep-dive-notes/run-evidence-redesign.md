@@ -316,7 +316,7 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 - **事故记录（我的）**：H3 探针把 pretty-bytes 留在了 picker 测试里并被提交（`7793a7e` 红），由 piano-43 发现、piano-be 询问后认领；修复 `d182881`（picker 测试回到 compact 现实；H3 的真守卫移到 `logging.test.ts` rename 测试的单行字节断言）。教训：**探针改动要么还原要么转正，不能带着中间态提交**；且当跳门禁必须覆盖被改测试文件本身。
 - **合并执行序**（邻居冻结于 `cc92410`，全量 1542 绿）：piano-be 落库 → 我 merge `cc92410` 进本分支 → 5 文件按「trajectory.ts 取邻居方向（document 删除，stream 保留单一 serializer 原则）、logs-command.test.ts 取其 status.json 契约版」解 → 全量门禁 → 报告。
 - **合并后分工提案（待邻居确认）**：它 = `session-resume`/`session-picker`/`static-analysis`/三个 writer 的 G1 收口；我 = evals 三件（driver/trajectory-evaluator/legacy-run-adapter）+ README/headless 外部契约文本 + **H6**（§C5 的 L0–L3，在其 cursor 之上）。
-- **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `runStatusFromParts` 构造以钉住 round-trip。
+- **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `applyRunStatusRecord` 构造以钉住 round-trip。
 - `progressRecordKind` 未知 kind 落 `"stage-accepted"` 的缺口归邻居修（其 `421d1d1` 依赖该 fallthrough），在 `region-finalized`/`actor-turn` 之前必须落；我侧 H5 不新增 kind，无排序冲突。
 - 另有 `piano-43` session 在做 `packages/harness/src` 模块化（branch `refactor/harness-module`，base 我的 `595c51e`，P1 已落 `04034e4`）；我的 H2c 与其 P2 有潜在交叠，合并后由它 rebase。
 

@@ -33,9 +33,9 @@ export interface WorkflowExecutionContinuation {
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
 
-/** Read the actor continuation table for a run from the ledger's `actor-turn`
- * rows. Returns `undefined` when it holds none, allowing callers to start
- * workers fresh. */
+/** Read the actor continuation table for a run from its state document, which
+ * folds the ledger's `actor-turn` rows. Returns `undefined` when it holds
+ * none, allowing callers to start workers fresh. */
 export function readWorkflowExecutionContinuation(
   runDir: string,
   _runId: string,
