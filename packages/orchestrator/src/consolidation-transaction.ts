@@ -27,13 +27,16 @@ import {
 } from "./git-metadata-transaction.js";
 import { pathWithin } from "./path-within.js";
 import {
-  captureWorkspaceChangeSet,
+  captureWorkspaceBaselineChanges,
   diffWorkspaceChangeSet,
+  freezeWorkspaceBaseline,
   inventoryWorkspaceLstat,
   restoreWorkspaceLstat,
   snapshotWorkspaceContent,
-  workspaceContentChanges,
+  workspaceBaselineChanges,
+  workspaceRefName,
   type WorkflowCarrying,
+  type WorkspaceBaseline,
   type WorkspaceChangeSet,
   type WorkspaceContentChange,
 } from "./workspace.js";
@@ -82,9 +85,9 @@ export interface ConsolidationEvidenceInput {
   readonly sourceCwd: string;
   readonly runDir: string;
   readonly winnerContentDir: string;
-  /** Complete winner tree used to rebuild the canonical external delta when a
-   * runtime caller supplies only its declared change list. */
-  readonly baselineContentDir?: string;
+  /** The baseline the winner delta is measured against, so the transaction
+   * can re-derive and verify the declared change list. */
+  readonly baseline?: WorkspaceBaseline;
   /** Runtime callers provide the already frozen delta. Legacy callers omit it
    * and derive the equivalent whole-tree delta from target-before. */
   readonly changeSet?: WorkspaceChangeSet;
@@ -97,6 +100,9 @@ export interface PreparedConsolidationEvidence {
   readonly runDir: string;
   readonly externalRoot: string;
   readonly targetBeforeDir: string;
+  /** The commit form of target-before: what every delta in this transaction
+   * is measured against. The directory beside it is the worker's evidence. */
+  readonly targetBeforeBaseline: WorkspaceBaseline;
   readonly winnerChangeDir: string;
   readonly manifestPath: string;
   readonly manifestDigest: string;
@@ -484,11 +490,16 @@ export async function prepareConsolidationEvidence(
   let canonicalEvidence: CanonicalEvidenceReference | undefined;
   try {
     await snapshotWorkspaceContent(sourceIdentity.lexicalPath, targetBeforeDir, excluded);
+    const targetBeforeBaseline = await freezeWorkspaceBaseline(sourceIdentity.lexicalPath, {
+      runDir: input.runDir,
+      refName: workspaceRefName("tx", `${transactionId}/target-before`),
+      excludeUnder: excluded,
+    });
     let changeSet: WorkspaceChangeSet;
     if (input.changeSet !== undefined) {
-      if (input.baselineContentDir !== undefined) {
-        const materialized = await captureWorkspaceChangeSet(
-          input.baselineContentDir,
+      if (input.baseline !== undefined) {
+        const materialized = await captureWorkspaceBaselineChanges(
+          input.baseline,
           input.winnerContentDir,
           winnerChangeDir,
           excluded,
@@ -508,8 +519,8 @@ export async function prepareConsolidationEvidence(
         changeSet = { winnerContentDir: winnerChangeDir, changes: input.changeSet.changes };
       }
     } else {
-      changeSet = await captureWorkspaceChangeSet(
-        targetBeforeDir,
+      changeSet = await captureWorkspaceBaselineChanges(
+        targetBeforeBaseline,
         input.winnerContentDir,
         winnerChangeDir,
         excluded,
@@ -561,6 +572,7 @@ export async function prepareConsolidationEvidence(
       runDir: runDirIdentity.lexicalPath,
       externalRoot,
       targetBeforeDir,
+      targetBeforeBaseline,
       winnerChangeDir,
       manifestPath,
       manifestDigest,
@@ -611,8 +623,8 @@ interface GateResult {
 
 async function inspectGate(evidence: PreparedConsolidationEvidence): Promise<GateResult> {
   const expected = await diffWorkspaceChangeSet(evidence.sourceCwd, evidence.changeSet);
-  const unexpected = (await workspaceContentChanges(
-    evidence.targetBeforeDir,
+  const unexpected = (await workspaceBaselineChanges(
+    evidence.targetBeforeBaseline,
     evidence.sourceCwd,
     evidence.excluded,
   ))

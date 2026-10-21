@@ -78,6 +78,7 @@ import {
 import {
   cleanupMapWorkspaces,
   sharedWorkspaceBinding,
+  type WorkspaceBaseline,
   type WorkspaceChangeSet,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
@@ -481,8 +482,9 @@ export interface ConsolidateAndGateRequest {
   /** Runtime callers provide the declared baseline-relative delta. The
    * transaction re-materialises its canonical copy outside source/runDir. */
   readonly changeSet?: WorkspaceChangeSet;
-  /** Complete runtime winner tree used to rebuild the external delta. */
-  readonly winnerBaselineContentDir?: string;
+  /** The baseline the winner delta is measured against, so the transaction
+   * can re-derive and verify the declared change list. */
+  readonly winnerBaseline?: WorkspaceBaseline;
   /** Deprecated compatibility input. It is never trusted as canonical evidence. */
   readonly targetBeforeDir?: string;
   readonly winnerActor?: ActorExecutionContext & {
@@ -599,7 +601,7 @@ export function consolidateAndGate(
       sourceCwd: args.sourceCwd,
       runDir: args.request.runDir,
       winnerContentDir: args.winnerContentDir,
-      ...(args.winnerBaselineContentDir === undefined ? {} : { baselineContentDir: args.winnerBaselineContentDir }),
+      ...(args.winnerBaseline === undefined ? {} : { baseline: args.winnerBaseline }),
       ...(args.changeSet === undefined ? {} : { changeSet: args.changeSet }),
       excludeUnder: args.excludeUnder,
     }),

@@ -8,11 +8,15 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 import {
+  cleanupMapWorkspaces,
+  freezeWorkspaceBaseline,
+  recoverMapWorkspaces,
+  workspaceBaselineChanges,
+  workspaceRefName,
+  captureWorkspaceBaselineChanges,
+  diffWorkspaceContent,
   allocateMapWorkspace,
   applyWinnerWorkspace,
-  cleanupMapWorkspaces,
-  recoverMapWorkspaces,
-  diffWorkspaceContent,
 } from "../../packages/orchestrator/src/index.js";
 import {
   diffWorkspaceLstat,
@@ -20,7 +24,6 @@ import {
   restoreWorkspaceChanges,
   restoreWorkspaceLstat,
   snapshotWorkspaceContent,
-  workspaceContentChanges,
 } from "../../packages/orchestrator/src/workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -675,20 +678,23 @@ describe("[§6] read-only winner-content gate", () => {
   it("round-trips a POSIX backslash filename without treating it as a separator", async () => {
     if (sep === "\\") return;
     const root = await mkdtemp(join(tmpdir(), "piano-backslash-root-"));
+    const runDir = await mkdtemp(join(tmpdir(), "piano-backslash-run-"));
     const before = await mkdtemp(join(tmpdir(), "piano-backslash-before-"));
     await rm(before, { recursive: true, force: true });
     const filename = "dir\\file.txt";
     try {
       await writeFile(join(root, filename), "baseline\n");
       await snapshotWorkspaceContent(root, before);
+      const baseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/backslash") });
       await writeFile(join(root, filename), "changed\n");
-      await expect(workspaceContentChanges(before, root)).resolves.toEqual([
+      await expect(workspaceBaselineChanges(baseline, root)).resolves.toEqual([
         { path: filename, kind: "modified" },
       ]);
       await restoreWorkspaceChanges(root, before, [{ path: filename, kind: "modified" }]);
       await expect(readFile(join(root, filename), "utf8")).resolves.toBe("baseline\n");
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(runDir, { recursive: true, force: true });
       await rm(before, { recursive: true, force: true });
     }
   });
@@ -712,6 +718,7 @@ describe("[§6] read-only winner-content gate", () => {
 
   it("preserves an internal file symlink through snapshot, change, and rollback", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-symlink-root-"));
+    const runDir = await mkdtemp(join(tmpdir(), "piano-symlink-run-"));
     const before = await mkdtemp(join(tmpdir(), "piano-symlink-before-"));
     await rm(before, { recursive: true, force: true });
     try {
@@ -723,12 +730,13 @@ describe("[§6] read-only winner-content gate", () => {
       expect((await lstat(join(before, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(before, "link.txt"))).resolves.toBe("target.txt");
       expect((await lstat(join(before, "target.txt"))).mode & 0o111).toBe(0o111);
+      const baseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/symlink") });
 
       await rm(join(root, "link.txt"));
       await writeFile(join(root, "other.txt"), "other\n");
       await symlink("other.txt", join(root, "link.txt"));
       await writeFile(join(root, "target.txt"), "changed\n");
-      const changes = await workspaceContentChanges(before, root);
+      const changes = await workspaceBaselineChanges(baseline, root);
       expect(changes).toEqual([
         { path: "link.txt", kind: "modified" },
         { path: "other.txt", kind: "added" },
@@ -742,6 +750,7 @@ describe("[§6] read-only winner-content gate", () => {
       expect((await lstat(join(root, "target.txt"))).mode & 0o111).toBe(0o111);
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(runDir, { recursive: true, force: true });
       await rm(before, { recursive: true, force: true });
     }
   });
@@ -944,6 +953,7 @@ describe("[§6] read-only winner-content gate", () => {
 
   it("records and restores regular-file to symlink type changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-symlink-type-root-"));
+    const runDir = await mkdtemp(join(tmpdir(), "piano-symlink-type-run-"));
     const beforeFile = await mkdtemp(join(tmpdir(), "piano-symlink-type-before-file-"));
     const beforeLink = await mkdtemp(join(tmpdir(), "piano-symlink-type-before-link-"));
     await rm(beforeFile, { recursive: true, force: true });
@@ -953,10 +963,11 @@ describe("[§6] read-only winner-content gate", () => {
       await writeFile(join(root, "entry.txt"), "file\n");
       await chmod(join(root, "entry.txt"), 0o755);
       await snapshotWorkspaceContent(root, beforeFile);
+      const fileBaseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/as-file") });
 
       await rm(join(root, "entry.txt"));
       await symlink("target.txt", join(root, "entry.txt"));
-      expect(await workspaceContentChanges(beforeFile, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
+      expect(await workspaceBaselineChanges(fileBaseline, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
       await restoreWorkspaceChanges(root, beforeFile, [{ path: "entry.txt", kind: "modified" }]);
       expect((await lstat(join(root, "entry.txt"))).isFile()).toBe(true);
       expect((await lstat(join(root, "entry.txt"))).mode & 0o111).toBe(0o111);
@@ -964,14 +975,16 @@ describe("[§6] read-only winner-content gate", () => {
       await rm(join(root, "entry.txt"));
       await symlink("target.txt", join(root, "entry.txt"));
       await snapshotWorkspaceContent(root, beforeLink);
+      const linkBaseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/as-link") });
       await rm(join(root, "entry.txt"));
       await writeFile(join(root, "entry.txt"), "replacement\n");
-      expect(await workspaceContentChanges(beforeLink, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
+      expect(await workspaceBaselineChanges(linkBaseline, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
       await restoreWorkspaceChanges(root, beforeLink, [{ path: "entry.txt", kind: "modified" }]);
       expect((await lstat(join(root, "entry.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(root, "entry.txt"))).resolves.toBe("target.txt");
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(runDir, { recursive: true, force: true });
       await rm(beforeFile, { recursive: true, force: true });
       await rm(beforeLink, { recursive: true, force: true });
     }
@@ -1114,5 +1127,80 @@ describe("[§6] read-only winner-content gate", () => {
       equal: false,
       differing: ["extra.txt"],
     });
+  });
+});
+
+describe("workspace baselines as commits", () => {
+  it("freezes once per ref and answers the delta from the commit", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-baseline-run-"));
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-source-"));
+    try {
+      await writeFile(join(source, "kept.txt"), "same\n");
+      await writeFile(join(source, "edited.txt"), "before\n");
+      await writeFile(join(source, "gone.txt"), "bye\n");
+      const refName = workspaceRefName("exec-1", "baselines/job-1/root%2Ffanout");
+      const first = await freezeWorkspaceBaseline(source, { runDir, refName, excludeUnder: [runDir] });
+      const again = await freezeWorkspaceBaseline(source, { runDir, refName, excludeUnder: [runDir] });
+      expect(again.commit).toBe(first.commit);
+      expect(again.refName).toBe(refName);
+
+      await writeFile(join(source, "edited.txt"), "after\n");
+      await rm(join(source, "gone.txt"));
+      await writeFile(join(source, "new.txt"), "hi\n");
+      await expect(workspaceBaselineChanges(first, source)).resolves.toEqual([
+        { path: "edited.txt", kind: "modified" },
+        { path: "gone.txt", kind: "deleted" },
+        { path: "new.txt", kind: "added" },
+      ]);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a nested run directory out of the tree and freezes only the delta's files", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-nested-"));
+    const runDir = join(source, "run");
+    await mkdir(runDir, { recursive: true });
+    try {
+      await writeFile(join(source, "winner.txt"), "before\n");
+      await writeFile(join(source, "kept.txt"), "same\n");
+      await writeFile(join(runDir, "evidence.txt"), "run state\n");
+      const baseline = await freezeWorkspaceBaseline(source, {
+        runDir,
+        refName: workspaceRefName("exec-1", "baselines/job-1/root"),
+        excludeUnder: [runDir],
+      });
+
+      await writeFile(join(source, "winner.txt"), "after\n");
+      await writeFile(join(runDir, "evidence.txt"), "more\n");
+      const frozenWinnerDir = join(runDir, "winner-change");
+      const changeSet = await captureWorkspaceBaselineChanges(baseline, source, frozenWinnerDir, [runDir]);
+      expect(changeSet.changes).toEqual([{ path: "winner.txt", kind: "modified" }]);
+      // Only the changed file is frozen; the run's own evidence is not content.
+      await expect(readFile(join(frozenWinnerDir, "winner.txt"), "utf8")).resolves.toBe("after\n");
+      await expect(stat(join(frozenWinnerDir, "kept.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses content the workspace walk refuses", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-baseline-external-"));
+    const outside = await mkdtemp(join(tmpdir(), "piano-baseline-outside-"));
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-link-"));
+    try {
+      await writeFile(join(outside, "secret.txt"), "outside\n");
+      await symlink(join(outside, "secret.txt"), join(source, "escape.txt"));
+      await expect(freezeWorkspaceBaseline(source, {
+        runDir,
+        refName: workspaceRefName("exec-1", "baselines/job-1/root"),
+        excludeUnder: [runDir],
+      })).rejects.toThrow(/symlink targets excluded or external content/u);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+      await rm(source, { recursive: true, force: true });
+    }
   });
 });

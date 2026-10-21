@@ -1,7 +1,7 @@
 import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -1685,10 +1685,9 @@ async function snapshotWorkspaceLstat(
   await chmod(snapshotDir, sourceInfo.mode & 0o7777);
 }
 
-/** Freeze application content for one tournament boundary. This compatibility
- * entry point also carries the exact rollback metadata consumed by
- * `restoreWorkspaceLstat`; strict content comparisons continue to ignore
- * directories and only compare files/file-links. */
+/** Freeze application content as a directory tree with the exact rollback
+ * metadata `restoreWorkspaceLstat` consumes. Only consolidation evidence and
+ * rollback use this: baselines themselves are git commits below. */
 export async function snapshotWorkspaceContent(
   sourceContentDir: string,
   snapshotDir: string,
@@ -1697,69 +1696,149 @@ export async function snapshotWorkspaceContent(
   await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
 }
 
-/** Create the snapshot once, and mark it complete only after every byte
- * landed, so a crash mid-copy leaves no reusable partial behind.
- *
- * A region re-enters under a continue with the same job ordinal, so it must
- * reuse the snapshot it already froze rather than re-snapshot (which used to
- * fail with "workspace rollback snapshot already exists"). The marker is a
- * SIBLING of the snapshot directory: content comparisons walk the snapshot
- * tree, and a marker inside it would register as a spurious added file. A
- * directory without its marker can only be a copy interrupted before any
- * stage of this region ran, so re-taking it from the current source is
- * semantically the same snapshot, taken once. */
-export async function ensureWorkspaceSnapshot(
-  sourceContentDir: string,
-  snapshotDir: string,
-  excludeUnder: readonly string[] = [],
-): Promise<void> {
-  const markerPath = `${snapshotDir}.complete`;
-  const exists = async (path: string): Promise<boolean> =>
-    stat(path).then(() => true, (error: unknown) => {
-      if (isMissingPathError(error)) return false;
-      throw error;
-    });
-  const complete = await exists(markerPath);
-  const dirExists = await exists(snapshotDir);
-  if (complete && dirExists) return;
-  if (dirExists) await rm(snapshotDir, { recursive: true, force: true });
-  await snapshotWorkspaceLstat(sourceContentDir, snapshotDir, excludeUnder);
-  await writeFile(markerPath, "", { encoding: "utf8", mode: 0o600 });
+/** A frozen workspace content baseline: one git commit in the run's own
+ * baseline store, named by its ref. Replaces the raw directory copies a
+ * tournament used to freeze (`baseline/`, `slot-baselines/`) — the commit
+ * shares blobs with every lane and iteration instead of copying the tree once
+ * per lane, and the ref is the resume token that re-entry reuses. */
+export interface WorkspaceBaseline {
+  /** The run whose store holds the commit. */
+  readonly runDir: string;
+  /** `refs/piano/<runId>/…` — the durable name, and the completion marker. */
+  readonly refName: string;
+  readonly commit: string;
 }
 
-/** Compute the concrete file delta from a frozen tournament baseline. */
-export async function workspaceContentChanges(
-  baselineContentDir: string,
+/** The identity commits made by piano itself carry. */
+const PIANO_GIT_IDENTITY_ARGS = ["-c", "user.name=Piano", "-c", "user.email=piano@localhost"] as const;
+
+/** The run-owned baseline store. Bare, so it never becomes part of a
+ * workspace's content and never touches a host repository. */
+async function workspaceBaselineStore(runDir: string): Promise<string> {
+  const storeDir = join(runDir, "git", "workspaces.git");
+  if (!existsSync(join(storeDir, "HEAD"))) {
+    await mkdir(dirname(storeDir), { recursive: true });
+    await execFileAsync("git", ["init", "--bare", "--quiet", storeDir]);
+  }
+  return storeDir;
+}
+
+/** A ref name under refs/piano/<runId>/, spelled so git accepts it. */
+export function workspaceRefName(runId: string, suffix: string): string {
+  return `refs/piano/${runId}/${suffix.replace(/[^A-Za-z0-9._/-]/g, "_").replace(/\.\./g, "~")}`;
+}
+
+async function readBaselineCommit(storeDir: string, refName: string): Promise<string | undefined> {
+  try {
+    const result = await execFileAsync("git", ["--git-dir", storeDir, "rev-parse", "--verify", "--quiet", refName], { encoding: "utf8" });
+    return result.stdout.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Index the workspace's content into one git tree. The content walk is the
+ * same fail-closed validation and exclusion the directory snapshots used —
+ * external or directory symlinks and special nodes are refused — and
+ * `--pathspec-from-file` feeds that exact path set to git, so the tree cannot
+ * pick up what the walk would have refused (or drop what it accepted, e.g.
+ * ignored files). */
+async function writeWorkspaceTree(
+  storeDir: string,
+  sourceContentDir: string,
+  excludeUnder: readonly string[],
+): Promise<string> {
+  const contentDir = await realpath(resolve(sourceContentDir));
+  const paths = await collectContentPaths(contentDir, excludeUnder);
+  const pathspecPath = join(storeDir, `piano-pathspec-${randomUUID()}`);
+  const indexPath = join(storeDir, `piano-index-${randomUUID()}`);
+  const indexEnv = {
+    ...process.env,
+    GIT_DIR: storeDir,
+    GIT_WORK_TREE: contentDir,
+    GIT_INDEX_FILE: indexPath,
+  };
+  try {
+    await writeFile(pathspecPath, paths.map((path) => `${path}\0`).join(""), "utf8");
+    await execFileAsync("git", [
+      "add", "-f",
+      "--pathspec-from-file", pathspecPath,
+      "--pathspec-file-nul",
+    ], { cwd: contentDir, env: indexEnv });
+    const result = await execFileAsync("git", ["write-tree"], { env: indexEnv, encoding: "utf8" });
+    return result.stdout.trim();
+  } finally {
+    await rm(pathspecPath, { force: true });
+    await rm(indexPath, { force: true });
+  }
+}
+
+/** Freeze workspace content as one commit, once. The ref is the completion
+ * marker: creating it is atomic, so a re-entry under a continue reuses the
+ * commit instead of re-freezing, and a freeze interrupted before the ref
+ * simply leaves unreachable objects. A `parent` gives the commit its place in
+ * the run's lineage — a lane's baseline hangs off the region's parent
+ * baseline, which is what a later worktree fork of that lane reads. */
+export async function freezeWorkspaceBaseline(
+  sourceContentDir: string,
+  options: {
+    readonly runDir: string;
+    readonly refName: string;
+    readonly parent?: WorkspaceBaseline;
+    readonly excludeUnder?: readonly string[];
+  },
+): Promise<WorkspaceBaseline> {
+  const storeDir = await workspaceBaselineStore(options.runDir);
+  const prior = await readBaselineCommit(storeDir, options.refName);
+  if (prior !== undefined) return { runDir: options.runDir, refName: options.refName, commit: prior };
+  const tree = await writeWorkspaceTree(storeDir, sourceContentDir, options.excludeUnder ?? []);
+  const result = await execFileAsync("git", [
+    "--git-dir", storeDir,
+    ...PIANO_GIT_IDENTITY_ARGS,
+    "commit-tree", tree,
+    ...(options.parent === undefined ? [] : ["-p", options.parent.commit]),
+    "-m", `piano: workspace baseline ${options.refName}`,
+  ], { encoding: "utf8" });
+  const commit = result.stdout.trim();
+  await execFileAsync("git", ["--git-dir", storeDir, "update-ref", options.refName, commit, ""]);
+  return { runDir: options.runDir, refName: options.refName, commit };
+}
+
+/** The concrete file delta from a frozen baseline to live content. Content is
+ * compared the way git compares it — bytes plus the executable bit; other
+ * permission bits and empty directories are not modeled. */
+export async function workspaceBaselineChanges(
+  baseline: WorkspaceBaseline,
   candidateContentDir: string,
   excludeUnder: readonly string[] = [],
 ): Promise<readonly WorkspaceContentChange[]> {
-  const baseline = new Set(await collectContentPaths(baselineContentDir, excludeUnder));
-  const candidate = new Set(await collectContentPaths(candidateContentDir, excludeUnder));
-  const paths = [...new Set([...baseline, ...candidate])].sort();
+  const storeDir = await workspaceBaselineStore(baseline.runDir);
+  const tree = await writeWorkspaceTree(storeDir, candidateContentDir, excludeUnder);
+  // -z keeps pathnames verbatim (no C-quoting of backslashes and the like),
+  // as `status\0path\0` pairs.
+  const result = await execFileAsync("git", [
+    "--git-dir", storeDir,
+    "diff-tree", "-r", "--name-status", "--no-renames", "-z",
+    baseline.commit, tree,
+  ], { encoding: "utf8" });
+  const fields = result.stdout.split("\0");
   const changes: WorkspaceContentChange[] = [];
-  for (const path of paths) {
-    const inBaseline = baseline.has(path);
-    const inCandidate = candidate.has(path);
-    if (!inBaseline) {
-      changes.push({ path, kind: "added" });
-    } else if (!inCandidate) {
-      changes.push({ path, kind: "deleted" });
-    } else if (!(await sameFile(join(baselineContentDir, path), join(candidateContentDir, path)))) {
-      changes.push({ path, kind: "modified" });
-    }
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const code = fields[index]!;
+    const path = fields[index + 1]!;
+    if (path === "") continue;
+    changes.push({ path, kind: code === "A" ? "added" : code === "D" ? "deleted" : "modified" });
   }
-  return changes;
+  return changes.sort((left, right) => left.path.localeCompare(right.path));
 }
 
-/** Freeze only the winner's delta. This avoids turning build/profile files
- * that were already present in the parent into a whole-tree equality demand. */
-export async function captureWorkspaceChangeSet(
-  baselineContentDir: string,
+/** Copy just the changed files into a frozen directory — the winner delta
+ * evidence and worker input. Deleted paths are represented only in `changes`. */
+async function freezeChangedFiles(
+  changes: readonly WorkspaceContentChange[],
   winnerContentDir: string,
   frozenWinnerDir: string,
-  excludeUnder: readonly string[] = [],
 ): Promise<WorkspaceChangeSet> {
-  const changes = await workspaceContentChanges(baselineContentDir, winnerContentDir, excludeUnder);
   await mkdir(frozenWinnerDir, { recursive: true });
   for (const change of changes) {
     if (change.kind === "deleted") continue;
@@ -1768,6 +1847,19 @@ export async function captureWorkspaceChangeSet(
     await copyContentNode(join(winnerContentDir, change.path), destination);
   }
   return { winnerContentDir: frozenWinnerDir, changes };
+}
+
+/** Freeze only the winner's delta against its baseline. This avoids turning
+ * build/profile files that were already present in the parent into a
+ * whole-tree equality demand. */
+export async function captureWorkspaceBaselineChanges(
+  baseline: WorkspaceBaseline,
+  winnerContentDir: string,
+  frozenWinnerDir: string,
+  excludeUnder: readonly string[] = [],
+): Promise<WorkspaceChangeSet> {
+  const changes = await workspaceBaselineChanges(baseline, winnerContentDir, excludeUnder);
+  return freezeChangedFiles(changes, winnerContentDir, frozenWinnerDir);
 }
 
 /** Check only the winner delta against a target; unrelated parent files are
@@ -1857,14 +1949,13 @@ async function mergeGitWorktreeWinner(
   // committing never inherits global config that a host may not have set.
   await execFileAsync("git", [
     "-C", record.cwd,
-    "-c", "user.name=Piano",
-    "-c", "user.email=piano-winner@localhost",
+    ...PIANO_GIT_IDENTITY_ARGS,
     "commit",
     "-q",
     "-m", `piano: apply winning tournament slot ${record.key}`,
   ], { encoding: "utf8" });
   const commit = (await execFileAsync("git", ["-C", record.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
-  const refName = `refs/piano/${runId}/${record.key.replace(/[^A-Za-z0-9._/-]/g, "_")}`;
+  const refName = workspaceRefName(runId, record.key);
   await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git ref update");
   try {
     await execFileAsync("git", ["-C", gitRoot, "update-ref", refName, commit], { encoding: "utf8" });

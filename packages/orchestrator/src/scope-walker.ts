@@ -7,15 +7,16 @@
 
 import { Either, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
-import { join } from "node:path";
 import type { Logging } from "@piano/logging";
 import {
   allocateMapWorkspace,
   applyWinnerWorkspace,
   carryLanded,
   cleanupMapWorkspaces,
-  ensureWorkspaceSnapshot,
-  workspaceContentChanges,
+  freezeWorkspaceBaseline,
+  workspaceBaselineChanges,
+  workspaceRefName,
+  type WorkspaceBaseline,
   type WorkspaceChangeSet,
   type WorkspaceContentChange,
   type WorkflowCarrying,
@@ -106,7 +107,8 @@ interface ScopeExecution extends NodeExecution {
 
 interface RuntimeTournamentCandidate extends WorkflowWorkspaceCandidate {
   readonly boundaryResults: readonly InternalStageResult[];
-  readonly baselineContentDir: string;
+  /** What the lane started from, so the winner delta is "this lane's edits". */
+  readonly baseline: WorkspaceBaseline;
   readonly stopped?: boolean;
 }
 
@@ -400,7 +402,7 @@ const finalizeTournament = (
   region: WorkflowRegionPlan,
   frames: readonly WorkflowRuntimeFrame[],
   parentWorkspace: WorkflowWorkspaceBinding,
-  baselineContentDir: string,
+  parentBaseline: WorkspaceBaseline,
   candidates: readonly RuntimeTournamentCandidate[],
 ): Effect.Effect<TournamentFinalization, WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
   if (candidates.length === 0) return {};
@@ -580,12 +582,12 @@ const finalizeTournament = (
       const frozen = yield* Effect.tryPromise({
         try: async () => {
           const [changes, parentChanges] = await Promise.all([
-            workspaceContentChanges(
-            winnerCandidate.baselineContentDir,
+            workspaceBaselineChanges(
+            winnerCandidate.baseline,
             winnerContentDir,
             excludeUnder,
             ),
-            workspaceContentChanges(baselineContentDir, sourceCwd, excludeUnder),
+            workspaceBaselineChanges(parentBaseline, sourceCwd, excludeUnder),
           ]);
           return {
             changeSet: { winnerContentDir, changes },
@@ -631,7 +633,7 @@ const finalizeTournament = (
               winnerHarness,
               excludeUnder,
               changeSet,
-              winnerBaselineContentDir: winnerCandidate.baselineContentDir,
+              winnerBaseline: winnerCandidate.baseline,
               winnerActor: {
                 ...actorContext,
                 ...(actor?.continuation === undefined ? {} : { continuation: actor.continuation }),
@@ -996,30 +998,29 @@ const executeScope = (
         ));
       }
       const items = yield* mapItems(region, source.results);
-      const tournamentSnapshotRoot = join(
-        request.runDir,
-        "workspace-snapshots",
-        `job-${jobOrdinal}`,
-        encodeURIComponent(`${runtimeInstanceId(frames) ?? "root"}/${region.id}`),
-      );
-      const baselineContentDir = join(tournamentSnapshotRoot, "baseline");
       const slotBindings = [] as Array<{
         readonly item: HandoffMapItem;
         readonly frames: readonly WorkflowRuntimeFrame[];
         readonly workspace: WorkflowWorkspaceBinding;
-        readonly baselineContentDir: string;
+        readonly baseline: WorkspaceBaseline;
       }>;
-      yield* Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () => ensureWorkspaceSnapshot(
-            workspace.cwd,
-            baselineContentDir,
-            [request.runDir],
-          ),
+      // The parent freeze is the drift reference: what the region saw when it
+      // entered. Each lane freezes its own starting content after allocation,
+      // which is what its winner delta is measured against.
+      const parentBaseline = yield* Effect.gen(function* () {
+        const frozen = yield* Effect.tryPromise({
+          try: () => freezeWorkspaceBaseline(workspace.cwd, {
+            runDir: request.runDir,
+            refName: workspaceRefName(
+              runId,
+              `baselines/job-${jobOrdinal}/${encodeURIComponent(`${runtimeInstanceId(frames) ?? "root"}/${region.id}`)}`,
+            ),
+            excludeUnder: [request.runDir],
+          }),
           catch: (cause) => workflowError(
             "schedule",
             workspace.cwd,
-            `cannot snapshot tournament parent: ${errorMessage(cause)}`,
+            `cannot freeze tournament parent baseline: ${errorMessage(cause)}`,
           ),
         });
         for (const item of items) {
@@ -1034,29 +1035,20 @@ const executeScope = (
             // already swept; every other re-entry must stay loud.
             request.continueJob === undefined ? {} : { recreateWhenSwept: true },
           );
-          const slotBaselineContentDir = join(
-            tournamentSnapshotRoot,
-            "slot-baselines",
-            encodeURIComponent(slotWorkspace.key),
-          );
-          slotBindings.push({
-            item,
-            frames: slotFrames,
-            workspace: slotWorkspace,
-            baselineContentDir: slotBaselineContentDir,
-          });
-          yield* Effect.tryPromise({
-            try: () => ensureWorkspaceSnapshot(
-              slotWorkspace.cwd,
-              slotBaselineContentDir,
-              [request.runDir],
-            ),
+          const baseline = yield* Effect.tryPromise({
+            try: () => freezeWorkspaceBaseline(slotWorkspace.cwd, {
+              runDir: request.runDir,
+              refName: workspaceRefName(runId, `lanes/${encodeURIComponent(slotWorkspace.key)}`),
+              parent: frozen,
+              excludeUnder: [request.runDir],
+            }),
             catch: (cause) => workflowError(
               "schedule",
               slotWorkspace.cwd,
-              `cannot snapshot tournament slot "${slotWorkspace.key}" baseline: ${errorMessage(cause)}`,
+              `cannot freeze tournament slot "${slotWorkspace.key}" baseline: ${errorMessage(cause)}`,
             ),
           });
+          slotBindings.push({ item, frames: slotFrames, workspace: slotWorkspace, baseline });
           yield* WORKFLOW_LOG.info("workspace.prepared", {
             data: {
               runId,
@@ -1065,11 +1057,12 @@ const executeScope = (
             },
           });
         }
+        return frozen;
       }).pipe(Effect.catchAll((cause) => failTournamentWithPreservedSlots(
         region,
         workspace.cwd,
         slotBindings.map((slot) => slot.workspace.key),
-        `workspace snapshot failed: ${errorMessage(cause)}`,
+        `workspace preparation failed: ${errorMessage(cause)}`,
       )));
       // Collect each slot as its own Either so one failing slot does not
       // cancel already-started siblings (Effect.all is fail-fast by
@@ -1115,13 +1108,13 @@ const executeScope = (
       // the shared source now — one decision per tournament, per instance.
       // A failed slot set keeps upstream's fail-net effect (the node
       // fails above and no consolidation runs).
-      const finalization = yield* finalizeTournament(region, frames, workspace, baselineContentDir, slotBindings.map((slot, index) => ({
+      const finalization = yield* finalizeTournament(region, frames, workspace, parentBaseline, slotBindings.map((slot, index) => ({
         key: slot.workspace.key,
         workspace: slot.workspace,
         mapItem: slot.item,
         boundaryResults: slots[index]?.boundary.results ?? [],
         stages: slots[index]?.stages ?? [],
-        baselineContentDir: slot.baselineContentDir,
+        baseline: slot.baseline,
         ...(slots[index]?.stopped === true ? { stopped: true } : {}),
       })));
       if (finalization.outcome !== undefined) {

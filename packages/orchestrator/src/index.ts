@@ -58,8 +58,13 @@ export { iterationOfInvocationId, runtimeRegionInstanceId } from "./workflow-run
 export {
   allocateMapWorkspace,
   cleanupMapWorkspaces,
+  freezeWorkspaceBaseline,
   recoverMapWorkspaces,
   sharedWorkspaceBinding,
+  workspaceBaselineChanges,
+  workspaceRefName,
+  captureWorkspaceBaselineChanges,
+  type WorkspaceBaseline,
   type WorkflowCarrying,
   type WorkflowCarryKind,
   type WorkflowWorkspaceBinding,

@@ -3251,14 +3251,17 @@ workflow:
       }
       const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log.match(/"event":"workspace.prepared"/g)).toHaveLength(3);
-      // Tournament baselines are workspace snapshots, filed under a name that
-      // says so — never under prompts/.
-      const snapshotRoot = join(session.runDir, "workspace-snapshots", "job-1");
-      const regionKeys = await readdir(snapshotRoot);
-      expect(regionKeys).toHaveLength(1);
-      await expect(readdir(join(snapshotRoot, regionKeys[0]!)))
-        .resolves.toEqual(expect.arrayContaining(["baseline", "slot-baselines"]));
+      // Tournament baselines are git commits in the run's own store — no
+      // frozen directory copies.
       await expect(readdir(session.runDir)).resolves.not.toContain("prompts");
+      await expect(readdir(session.runDir)).resolves.not.toContain("workspace-snapshots");
+      const refs = await runFile("git", ["--git-dir", join(session.runDir, "git", "workspaces.git"), "for-each-ref", "--format=%(refname)", "refs/piano"]);
+      const refNames = refs.stdout.split("\n").filter((line) => line !== "");
+      expect(refNames.filter((ref) => ref.includes("/baselines/"))).toHaveLength(1);
+      expect(refNames.filter((ref) => ref.includes("/lanes/")).sort()).toEqual([
+        expect.stringMatching(/slot-0$/),
+        expect.stringMatching(/slot-1$/),
+      ]);
       const snapshot = JSON.parse(await readFile(join(session.runDir, "status.json"), "utf8")) as {
         status: string;
         plannedStages: number;
@@ -6045,8 +6048,8 @@ workflow:
         Effect.provide(NodeFileSystem.layer),
       ));
 
-      if (Exit.isSuccess(exit)) throw new Error("expected slot baseline snapshot to fail");
-      expect(Cause.pretty(exit.cause)).toContain("cannot snapshot tournament slot");
+      if (Exit.isSuccess(exit)) throw new Error("expected slot baseline freeze to fail");
+      expect(Cause.pretty(exit.cause)).toContain("cannot freeze tournament slot");
       expect(calls.map(stageId)).toEqual(["propose"]);
       const recordRoot = join(session.runDir, "workspace-records");
       const records = await Promise.all((await readdir(recordRoot)).map(async (entry) =>
