@@ -260,10 +260,10 @@ describe("workflow progress stream", () => {
     // needs for every count; the job ordinal ties the span to its job.
     const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as {
       runId: string; status: string; plannedStages: number;
-      jobs: Array<{ jobOrdinal: number; state: string; input?: string }>;
+      jobs: Array<{ jobOrdinal: number; input?: string }>;
     };
     expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
-    expect(status.jobs).toMatchObject([{ jobOrdinal: 1, state: "alive", input: "do the work" }]);
+    expect(status.jobs).toMatchObject([{ jobOrdinal: 1, input: "do the work" }]);
   });
 
   it("keeps a run going when its state document is unreadable", async () => {
@@ -399,23 +399,24 @@ describe("workflow progress stream", () => {
     await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
 
     // A restart folds the close and the new job's start into one write: the
-    // document never shows a paused run whose latest job is already finished.
+    // closed job and its successor are never observed apart.
     at("2026-01-01T00:01:00.000Z");
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 2, "again", true, { restartOrdinal: 1 }));
 
     const status = JSON.parse(
       await readFile(runStatusPath(runDir), "utf8"),
-    ) as { status: string; jobs: Array<{ jobOrdinal: number; state: string; outcome?: string }> };
+    ) as { status: string; jobs: Array<{ jobOrdinal: number; outcome?: string }> };
     expect(status.status).toBe("running");
     expect(status.jobs).toMatchObject([
-      { jobOrdinal: 1, state: "finished", outcome: "restarted" },
-      { jobOrdinal: 2, state: "alive" },
+      { jobOrdinal: 1, outcome: "restarted" },
+      { jobOrdinal: 2 },
     ]);
+    expect(status.jobs[1]?.outcome).toBeUndefined();
   });
 
 });
 
-describe("run status projection", () => {
+describe("run status fold", () => {
   const started = (ordinal: number, timestamp: string) => ({
     version: 1,
     kind: "execution-started",
@@ -434,9 +435,8 @@ describe("run status projection", () => {
     status,
   }) as unknown as WorkflowProgressStreamRecord;
 
-  it("follows the latest job through its whole lifecycle", () => {
-    // The job table is the one state machine: nothing writes run status on its
-    // own, and a stage record cannot revive a job that stopped.
+  it("follows the run status through start and finish", () => {
+    // Only the boundary records write status; job rows are history.
     let status = applyRunStatusRecord(undefined, started(1, "2026-01-01T00:00:00.000Z"));
     expect(status.status).toBe("running");
     status = applyRunStatusRecord(status, finished("paused", "2026-01-01T00:00:01.000Z"));
@@ -461,23 +461,24 @@ describe("run status projection", () => {
     } as unknown as WorkflowProgressStreamRecord);
     expect(status.status).toBe("running");
     expect(status.jobs).toMatchObject([
-      { jobOrdinal: 1, state: "finished", outcome: "restarted" },
-      { jobOrdinal: 2, state: "alive" },
+      { jobOrdinal: 1, outcome: "restarted" },
+      { jobOrdinal: 2 },
     ]);
+    expect(status.jobs[1]?.outcome).toBeUndefined();
   });
 
   it("keeps the status a record wrote when the document holds no job yet", () => {
     // A run finalized without initialize (a failure before any job) still
-    // records its own outcome; there is no job to project from.
+    // records its own outcome; there is nothing to update in the job table.
     const status = applyRunStatusRecord(undefined, finished("failed", "2026-01-01T00:00:00.000Z"));
     expect(status.status).toBe("failed");
     expect(status.jobs).toEqual([]);
   });
 
-  it("leaves a job-less document's status standing unless the record says otherwise", () => {
-    // A trajectory bootstrap can record `cancelled` before any job exists; a
-    // record that names no job must not invent one. A record that describes
-    // work, however, means the run is live.
+  it("leaves a job-less document's status standing for bookkeeping records", () => {
+    // A trajectory bootstrap can record `cancelled` before any job exists.
+    // Only start/finish records write status, so a bookkeeping record must
+    // not revive it.
     const cancelled: RunStatus = { ...emptyRunStatus("projection", "2026-01-01T00:00:00.000Z"), status: "cancelled" };
     const regionExit = {
       version: 1,
@@ -492,13 +493,6 @@ describe("run status projection", () => {
       iterations: 1,
     } as unknown as WorkflowProgressStreamRecord;
     expect(applyRunStatusRecord(cancelled, regionExit).status).toBe("cancelled");
-
-    const accepted = {
-      version: 1,
-      timestamp: "2026-01-01T00:00:02.000Z",
-      ...record({ runId: "projection" }),
-    } as unknown as WorkflowProgressStreamRecord;
-    expect(applyRunStatusRecord(cancelled, accepted).status).toBe("running");
   });
 });
 
@@ -515,13 +509,12 @@ describe("crash reconcile", () => {
       instanceId: "tune/iter-0",
     }));
 
-    // The process died here: the state still says `running` and its job
-    // `alive`. A reopen folds the missing `execution-finished`, so the job
-    // reads `paused` and the continue-or-restart question is the human's.
+    // The process died here: the state still says `running`. A reopen folds
+    // the missing `execution-finished`, so the run reads `paused` and the
+    // continue-or-restart question is the human's.
     expect(await run(reconcileCrashedRun(runDir))).toBe(true);
     const status = await run(readRunStatus(runDir));
     expect(status?.status).toBe("paused");
-    expect(status?.jobs.map((job) => job.state)).toEqual(["paused"]);
 
     // A run already at rest is left alone: reconcile is not a rewrite.
     expect(await run(reconcileCrashedRun(runDir))).toBe(false);

@@ -60,7 +60,7 @@ const PAUSED_LATEST = statusOf(
 
 /** A newer job started while an older one stayed paused. The invariant forbids
  * creating this, but a document written before it can still hold the shape:
- * the status reads from the latest job, so the old pause is retired. */
+ * the status comes from the latest start/finish, so the old pause is retired. */
 const RETIRED_PAUSED = statusOf(
   started(1, T(0), "retired input"),
   finished(T(1), "paused"),
@@ -68,7 +68,7 @@ const RETIRED_PAUSED = statusOf(
   finished(T(3), "completed"),
 );
 
-/** A paused job followed by the alive job of a running prompt. */
+/** A paused job followed by the start of a running prompt. */
 const ALIVE_LATEST = statusOf(
   started(1, T(0), "first input"),
   finished(T(1), "paused"),
@@ -146,7 +146,7 @@ describe("resolveRestartCommand", () => {
     });
   });
 
-  it("refuses while a job is alive, and when nothing was ever run", () => {
+  it("refuses while the run is live, and when nothing was ever run", () => {
     expect(resolveRestartCommand(ALIVE_LATEST)).toEqual({
       kind: "refused",
       reason: "a job is running; interrupt it first",

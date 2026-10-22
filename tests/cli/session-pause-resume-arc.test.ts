@@ -200,7 +200,7 @@ describe("one run across finish → exit → resume → Escape → exit → resu
       expect(finalActor?.turns).toBe(2);
       // The interrupted prompt's job was continued, not replaced: two jobs,
       // and the second is the one that finished.
-      expect((trajectory.jobs as Array<{ jobOrdinal: number; state: string }>).map((job) => job.jobOrdinal))
+      expect((trajectory.jobs as Array<{ jobOrdinal: number }>).map((job) => job.jobOrdinal))
         .toEqual([1, 2]);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });

@@ -63,14 +63,15 @@ export function acceptedInvocationOf(invocationId: string): RunAcceptedInvocatio
 
 /** One job, as the state document holds it.
  *
- * `accepted` and `attempts` are a set and a map while a run is live; a JSON
- * document holds them as a list and a table. The coordinates stay the same. */
+ * A job is history and a cursor, never a second lifecycle: whether the run is
+ * working, paused, or finished is `RunStatus.status` alone. `accepted` and
+ * `attempts` are a set and a map while a run is live; a JSON document holds
+ * them as a list and a table. */
 export interface RunJob {
   readonly jobOrdinal: number;
-  /** `alive` while the last span runs; `paused` after a human stop; `finished`
-   * once a span closed with an outcome. */
-  readonly state: "alive" | "paused" | "finished";
-  /** Present only when `state` is `finished`. */
+  /** The verdict of a job that ended, kept for history and for finding the
+   * slots a restart abandoned. Absent while the job is the run's live or
+   * paused one. */
   readonly outcome?: "completed" | "failed" | "restarted";
   /** Invocations accepted across every span of this job — what a continue of
    * this job skips. */

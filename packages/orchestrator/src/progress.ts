@@ -633,39 +633,11 @@ function bumpAttempt(
  * run has: there is no second stream to reconcile, and writing the document is
  * the commit.
  *
- * The run's status is computed from its latest job; the job table is the one
- * lifecycle. */
+ * The record maintains the run's status and the job table together. The job
+ * table is history and a cursor: whether the run is working, paused, or
+ * finished is `status` alone. Only `execution-started` and
+ * `execution-finished` write the status; stage records touch jobs only. */
 export function applyRunStatusRecord(
-  previous: RunStatus | undefined,
-  record: WorkflowProgressStreamRecord,
-): RunStatus {
-  const folded = foldRunStatusRecord(previous, record);
-  return { ...folded, status: runStatusOf(folded, record) };
-}
-
-/** `alive` while work runs, a finished job's own verdict, and `paused` for
- * everything else — a human stop and a restarted job both leave the run
- * waiting for the next prompt. Without a job, an `execution-finished` record
- * carries the run's verdict and a stage record means the run is live; any
- * other record leaves the document's status standing. */
-function runStatusOf(
-  status: RunStatus,
-  record: WorkflowProgressStreamRecord,
-): RunStatus["status"] {
-  const latest = status.jobs.at(-1);
-  if (latest !== undefined) {
-    if (latest.state === "alive") return "running";
-    if (latest.state === "finished" && (latest.outcome === "completed" || latest.outcome === "failed")) {
-      return latest.outcome;
-    }
-    return "paused";
-  }
-  const kind = progressRecordKind(record);
-  if (kind === "execution-finished") return (record as WorkflowProgressExecutionFinishRecord).status;
-  return kind === "stage-started" || kind === "stage-accepted" ? "running" : status.status;
-}
-
-function foldRunStatusRecord(
   previous: RunStatus | undefined,
   record: WorkflowProgressStreamRecord,
 ): RunStatus {
@@ -694,7 +666,7 @@ function foldRunStatusRecord(
     // successor.
     const priorJobs = started.closesJobOrdinal === undefined
       ? next.jobs
-      : updateJob(next.jobs, started.closesJobOrdinal, (job) => ({ ...job, state: "finished", outcome: "restarted" }));
+      : updateJob(next.jobs, started.closesJobOrdinal, (job) => ({ ...job, outcome: "restarted" }));
     const existing = priorJobs.find((job) => job.jobOrdinal === ordinal);
     // The job's input is the work it currently stands for: a plain prompt that
     // continues a one-stage job replaces it, so a later `/restart` re-runs
@@ -702,7 +674,6 @@ function foldRunStatusRecord(
     const input = started.prompt ?? existing?.input;
     const job: RunJob = {
       jobOrdinal: ordinal,
-      state: "alive",
       accepted: existing?.accepted ?? [],
       attempts: existing?.attempts ?? {},
       ...(input === undefined ? {} : { input }),
@@ -710,7 +681,7 @@ function foldRunStatusRecord(
     };
     const jobs = [...priorJobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
       .sort((left, right) => left.jobOrdinal - right.jobOrdinal);
-    return { ...next, jobs };
+    return { ...next, jobs, status: "running" };
   }
   if (kind === "stage-started") {
     const started = record as WorkflowProgressStartRecord;
@@ -765,10 +736,16 @@ function foldRunStatusRecord(
   if (kind === "execution-finished") {
     const finished = record as WorkflowProgressExecutionFinishRecord;
     if (finished.status === "paused") {
-      return { ...next, jobs: updateLatestJob(next.jobs, (job) => ({ ...job, state: "paused" })) };
+      return { ...next, status: "paused" };
     }
+    // A finished job keeps its verdict as history; the run's status is the
+    // same verdict, set here rather than projected from the job later.
     const outcome = finished.status;
-    return { ...next, jobs: updateLatestJob(next.jobs, (job) => ({ ...job, state: "finished", outcome })) };
+    return {
+      ...next,
+      status: outcome,
+      jobs: updateLatestJob(next.jobs, (job) => ({ ...job, outcome })),
+    };
   }
   return next;
 }
@@ -776,9 +753,9 @@ function foldRunStatusRecord(
 /** Create the initial snapshot before the first worker turn. This makes a
  * long-running workflow observable even while no stage has validated yet.
  *
- * `restartOrdinal` is the job this start replaces: the record closes it as
- * `finished/restarted` in the same atomic write, so no reader ever sees a
- * paused run whose latest job is already finished. */
+ * `restartOrdinal` is the job this start replaces: the record gives it
+ * `outcome: restarted` in the same atomic write, so the close and the
+ * successor's start are never observed apart. */
 export function initializeWorkflowProgress(
   runDir: string,
   runId: string,
@@ -903,11 +880,11 @@ export function finalizeWorkflowProgress(
 }
 
 /** A crashed run reopened: its process died before it could record the end of
- * its execution, so the state still says `running` and its job `alive`.
- * Nothing is running it now — one process per run — so fold the missing
- * `execution-finished` and the job reads `paused`, which is the
- * continue-or-restart question a human answers. Returns whether anything was
- * reconciled; a run already at rest is left alone. */
+ * its execution, so the run still says `running`. Nothing is running it now —
+ * one process per run — so fold the missing `execution-finished` and the run
+ * reads `paused`, which is the continue-or-restart question a human answers.
+ * Returns whether anything was reconciled; a run already at rest is left
+ * alone. */
 export function reconcileCrashedRun(
   runDir: string,
 ): Effect.Effect<boolean, WorkflowError, FileSystem.FileSystem> {

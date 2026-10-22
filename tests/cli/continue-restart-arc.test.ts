@@ -90,10 +90,10 @@ async function submitJobCommand(
 function jobsOf(
   runsRoot: string,
   runId: string,
-): Array<{ jobOrdinal: number; state: string; outcome?: string }> {
+): Array<{ jobOrdinal: number; outcome?: string }> {
   try {
     const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
-    const document = JSON.parse(raw) as { jobs?: Array<{ jobOrdinal: number; state: string; outcome?: string }> };
+    const document = JSON.parse(raw) as { jobs?: Array<{ jobOrdinal: number; outcome?: string }> };
     return Array.isArray(document.jobs) ? document.jobs : [];
   } catch {
     return [];
@@ -173,7 +173,7 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       // never started again.
       const afterContinue = jobsOf(runsRoot, runId);
       expect(afterContinue.map((job) => job.jobOrdinal)).toEqual([1]);
-      expect(afterContinue[0]).toMatchObject({ state: "finished", outcome: "completed" });
+      expect(afterContinue[0]).toMatchObject({ outcome: "completed" });
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(1);
       // The turn records the input that actually ran, not the command.
       await wait("turn 2 persisted", () => recordedTurns(runsRoot, runId)?.length === 2);
@@ -195,7 +195,7 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(3);
       const afterRestart = jobsOf(runsRoot, runId);
       expect(afterRestart.map((job) => job.jobOrdinal)).toEqual([1, 2, 3]);
-      expect(afterRestart[1]).toMatchObject({ jobOrdinal: 2, state: "finished", outcome: "restarted" });
+      expect(afterRestart[1]).toMatchObject({ jobOrdinal: 2, outcome: "restarted" });
       // The restart's turn carries the input it re-ran.
       await wait("turn 4 persisted", () => recordedTurns(runsRoot, runId)?.length === 4);
       expect(recordedTurns(runsRoot, runId)?.map((turn) => turn.prompt))

@@ -726,7 +726,6 @@ async function readRunStatusFile(runDir: string): Promise<{
   completedStages?: number;
   jobs: Array<{
     jobOrdinal: number;
-    state: string;
     accepted: readonly RunAcceptedInvocation[];
     attempts: Record<string, number>;
     regions?: Record<string, WorkflowProgressRegionFinalizedRecord>;
@@ -5065,8 +5064,7 @@ workflow:
       await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
       const session = await testSession(root);
       // The previous process died after announcing job 1 and before installing
-      // its finalizer: the document says running, the job says alive, and
-      // nothing is working it.
+      // its finalizer: the document says running, and nothing is working it.
       await mkdir(session.runDir, { recursive: true });
       await Effect.runPromise(initializeWorkflowProgress(
         session.runDir,
@@ -5101,14 +5099,14 @@ workflow:
         },
       }));
 
-      // The dead job was folded to paused, and the one-node workflow continued
+      // The dead run was folded to paused, and the one-node workflow continued
       // it instead of opening a second job. The new prompt is the job's input
       // from now on, so a later restart re-runs what the human last asked.
       expect(result.text).toBe("repaired");
       expect(calls).toHaveLength(1);
       const status = await readRunStatusFile(session.runDir);
       expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1]);
-      expect(status.jobs[0]).toMatchObject({ state: "finished", input: "second" });
+      expect(status.jobs[0]).toMatchObject({ input: "second", outcome: "completed" });
       expect(status.jobs[0]?.attempts["respond@root"]).toBe(2);
       expect(status.status).toBe("completed");
     } finally {

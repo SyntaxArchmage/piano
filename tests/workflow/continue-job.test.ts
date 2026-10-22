@@ -90,7 +90,7 @@ async function setup() {
 }
 
 const readStatusFile = async (runDir: string): Promise<{
-  jobs: Array<{ jobOrdinal: number; state: string; accepted: readonly RunAcceptedInvocation[]; attempts: Record<string, number> }>;
+  jobs: Array<{ jobOrdinal: number; accepted: readonly RunAcceptedInvocation[]; attempts: Record<string, number> }>;
 }> => JSON.parse(await readFile(join(runDir, "status.json"), "utf8"));
 
 describe("a continue resumes a paused job from its cursor", () => {

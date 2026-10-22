@@ -159,7 +159,6 @@ export interface RunStatusView {
   }>;
   readonly jobs?: Array<{
     readonly jobOrdinal?: number;
-    readonly state?: string;
     readonly accepted?: readonly { readonly invocationId: string; readonly stageId: string }[];
     readonly attempts?: Readonly<Record<string, number>>;
     readonly regions?: Readonly<Record<string, unknown>>;

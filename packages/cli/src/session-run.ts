@@ -512,8 +512,8 @@ function runSessionBody(
           const next = runId === active.session.id
             ? active.session
             : yield* createSession({ cwd: session.cwd, runsRoot, id: runId });
-          // Fold the end record a crash skipped, so the reopened job reads
-          // `paused` instead of `alive`.
+          // Fold the end record a crash skipped, so the reopened run reads
+          // `paused` instead of `running`.
           if (yield* reconcileCrashedRun(next.runDir)) {
             yield* TUI_LOG.warn("run.crash-reconciled", { data: { runId } });
           }

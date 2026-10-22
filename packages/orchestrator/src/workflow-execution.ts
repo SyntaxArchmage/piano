@@ -139,7 +139,7 @@ export interface WorkflowExecutionRequest {
   };
   /** Restart a paused job: close it as `restarted` and start the next job in
    * one state transition. The close folds into the same `status.json` write,
-   * so no reader sees a paused run whose latest job is already finished. */
+   * so the two are never observed apart. */
   readonly restartOrdinal?: number;
   readonly cwd: string;
   readonly prompt: string;
@@ -354,7 +354,7 @@ function readRunJobLedger(
   runDir: string,
 ): Effect.Effect<
   {
-    readonly status?: RunStatus;
+    readonly runStatus?: RunStatus;
     readonly nextOrdinal: number;
     readonly abandonedOrdinals: readonly number[];
   },
@@ -372,10 +372,10 @@ function readRunJobLedger(
       ));
     }
     return {
-      ...(status === undefined ? {} : { status }),
+      ...(status === undefined ? {} : { runStatus: status }),
       nextOrdinal: nextJobOrdinal(jobs),
       abandonedOrdinals: jobs
-        .filter((job) => job.state === "finished" && job.outcome === "restarted")
+        .filter((job) => job.outcome === "restarted")
         .map((job) => job.jobOrdinal),
     };
   });
@@ -724,12 +724,12 @@ export function executeWorkflow(
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
     // A process can die after announcing its execution but before installing
-    // the finalizer, leaving a job `alive` with nothing working it. One
-    // process runs a run, so a job this process is not running is over: fold
+    // the finalizer, leaving the run `running` with nothing working it. One
+    // process runs a run, so a run this process is not running is over: fold
     // the end it never wrote, exactly as the resume picker does.
     yield* reconcileCrashedRun(request.runDir);
     const jobLedger = yield* readRunJobLedger(request.runDir);
-    const runStatus = jobLedger.status;
+    const runStatus = jobLedger.runStatus;
     const latestJob = runStatus?.jobs.at(-1);
     // Lifecycle decisions read the run's status, the one enum every module
     // polls; the job table supplies identity and the cursor.
