@@ -260,7 +260,7 @@ export function summarizeTiming(
 }
 
 export function assessCaseEvidence(
-  result: Pick<CaseResult, "status" | "artifact" | "runDir" | "trajectoryPath" | "workflowTrajectoryPath" | "workflowTrajectory" | "workflowTrajectoryError" | "logPath" | "tracePath" | "transcriptPath" | "transcript" | "stageTrajectories" | "progressPath" | "baseline" | "metric" | "codeChanges">,
+  result: Pick<CaseResult, "status" | "artifact" | "runDir" | "trajectoryPath" | "workflowTrajectoryPath" | "workflowTrajectory" | "workflowTrajectoryError" | "logPath" | "tracePath" | "transcriptPath" | "transcript" | "stageTrajectories" | "progressPath" | "runStatusPath" | "baseline" | "metric" | "codeChanges">,
   options: {
     readonly policy?: AcceptancePolicy;
     readonly availability?: EvidenceAvailability;
@@ -274,7 +274,7 @@ export function assessCaseEvidence(
     log: result.logPath !== undefined,
     trace: result.tracePath !== undefined,
     transcript: result.transcriptPath !== undefined,
-    progress: result.progressPath !== undefined,
+    progress: result.progressPath !== undefined || result.runStatusPath !== undefined,
   };
   const issues: EvidenceIssue[] = [];
   if (result.status !== "skipped") {

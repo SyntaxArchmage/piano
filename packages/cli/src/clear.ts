@@ -22,7 +22,7 @@ interface ClearOptions {
   force: boolean;
 }
 
-export interface ClearDeps {
+interface ClearDeps {
   runsRoot?: string;
 }
 

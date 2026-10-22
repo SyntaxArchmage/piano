@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { readWorkflowExecutionContinuation } from "../../packages/orchestrator/src/workflow-resume.js";
+import { foldStatus } from "../common/status-fold.js";
 
 const timestamp = "2026-08-25T00:00:00.000Z";
 
@@ -21,7 +22,6 @@ function turn(input: {
   continuation?: unknown;
 }) {
   return {
-    version: 1,
     kind: "actor-turn",
     timestamp,
     runId: "run-1",
@@ -66,18 +66,16 @@ function actor(input: {
 async function runDirWith(rows: readonly object[]): Promise<string> {
   const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-resume-"));
   if (rows.length > 0) {
-    await writeFile(
-      join(runDir, "progress.jsonl"),
-      `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
-      "utf8",
-    );
+    // The actor table is the state document's own field; build it through the
+    // writer's reducer so the fixture is exactly what a run would persist.
+    await writeFile(join(runDir, "status.json"), JSON.stringify(foldStatus(rows)), "utf8");
   }
   return runDir;
 }
 
-function read(runDir: string, runId: string) {
+function read(runDir: string) {
   return Effect.runPromise(
-    readWorkflowExecutionContinuation(runDir, runId).pipe(Effect.provide(NodeFileSystem.layer)),
+    readWorkflowExecutionContinuation(runDir).pipe(Effect.provide(NodeFileSystem.layer)),
   );
 }
 
@@ -103,7 +101,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
 
     expect(continuation?.id).toBe("run-1");
     expect(continuation?.actors.size).toBe(2);
@@ -141,7 +139,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
     const resumed = continuation?.actors.get("run-1/claude/coding/root");
 
     expect(resumed).toMatchObject({
@@ -166,7 +164,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
 
     expect([...(continuation?.actors.keys() ?? [])]).toEqual(["run-1/pi/plan"]);
   });
@@ -189,7 +187,7 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    const continuation = await read(runDir, "run-1");
+    const continuation = await read(runDir);
 
     expect(continuation?.actors.get("run-1/pi/tune/0")?.continuation.sessionId).toBe("sess-0");
     expect(continuation?.actors.get("run-1/pi/tune/1")?.continuation.sessionId).toBe("sess-1");
@@ -205,10 +203,10 @@ describe("readWorkflowExecutionContinuation", () => {
       }),
     ]);
 
-    expect(await read(runDir, "run-1")).toBeUndefined();
+    expect(await read(runDir)).toBeUndefined();
   });
 
   it("returns undefined when the ledger holds no actor rows", async () => {
-    expect(await read(await runDirWith([]), "run-1")).toBeUndefined();
+    expect(await read(await runDirWith([]))).toBeUndefined();
   });
 });

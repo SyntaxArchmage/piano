@@ -5,7 +5,7 @@ import { stdin, stdout } from "node:process";
 /** Contrast class a theme was built for. The mission and `/btw`'s side screen
  * each have their own palette, but both must stay legible on the same shell, so
  * a side palette is selected by the contrast class of the theme it replaces. */
-export type PianoThemeVariant = "dark" | "light" | "high-contrast";
+type PianoThemeVariant = "dark" | "light" | "high-contrast";
 
 /** Color roles used throughout the TUI. `accent` is the brand dark-red. */
 export interface PianoTheme {
@@ -216,7 +216,7 @@ export const highContrastTheme: PianoTheme = {
 // ── Background / theme detection ──────────────────────────────────────────────
 
 /** Parse an OSC-11 background reply into "#rrggbb", or null if not understood. */
-export function parseBackgroundQuery(s: string): string | null {
+function parseBackgroundQuery(s: string): string | null {
   // eslint-disable-next-line no-control-regex -- OSC-11 escape sequence
   const rgb = s.match(/\x1b\]11;rgb:([0-9a-fA-F]{4})\/([0-9a-fA-F]{4})\/([0-9a-fA-F]{4})/);
   if (rgb) {

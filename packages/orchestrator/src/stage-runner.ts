@@ -7,7 +7,6 @@
 // module forward, so the dependency stays one-way.
 
 import { FileSystem } from "@effect/platform";
-import { createHash } from "node:crypto";
 import { Duration, Either, Effect } from "effect";
 import { TRACE, failureDetails, isCancellation, type Logging } from "@piano/logging";
 import {
@@ -22,6 +21,7 @@ import {
   handoffContextPath,
   mapItemContextPath,
   readHandoffRecord,
+  sha256Bytes,
   writeHandoffContext,
   writeHandoffRecord,
   writeMapItemContext,
@@ -38,11 +38,11 @@ import {
   mapFrames,
   runtimeInstanceId,
   runtimeInvocationId,
-  validationResultPath,
   workflowActorKey,
   type WorkflowRuntimeFrame,
   type WorkflowRuntimeInvocation,
 } from "./workflow-runtime.js";
+import { invocationResultPath, recordInvocationStart } from "./invocations.js";
 import {
   resolveWorkerResources,
   workerResourcesKey,
@@ -104,6 +104,8 @@ export interface StageRunnerContext {
   readonly loaded: LoadedWorkflow;
   readonly compiled: CompiledWorkflow;
   readonly runId: string;
+  /** Lane namespace (`<task-slug>-<runId>`) for map/tournament branches. */
+  readonly mnemonic: string;
   readonly jobOrdinal: number;
   readonly actors: Map<string, ActorState>;
   readonly announcedContinuations: Map<string, AgentContinuation>;
@@ -162,7 +164,6 @@ export function rebuildAcceptedStage(
       ...(producer.metrics === undefined ? {} : { metrics: producer.metrics }),
       ...(producer.projections === undefined ? {} : { projections: producer.projections }),
       ...(producer.contract === undefined ? {} : { contract: producer.contract }),
-      handoffRecordPath: producer.recordPath,
       handoff: producer,
     };
   });
@@ -293,8 +294,8 @@ export function executeStage(
         : []),
       ...(node.stage.handoff === undefined
         ? []
-        : [yield* handoffContextPath(request.runDir, invocation, node.stage.handoff, loaded.workflowPath)]),
-      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, invocation)]),
+        : [yield* handoffContextPath(request.runDir, rebuilt.handoff.ref, node.stage.handoff, loaded.workflowPath)]),
+      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, rebuilt.handoff.ref)]),
     ];
     const fileSystem = yield* FileSystem.FileSystem;
     const contextFilePaths: string[] = [];
@@ -388,11 +389,20 @@ export function executeStage(
         },
       });
     }
+    // The flat name this invocation's evidence paths use; the allocator
+    // serializes its own read–compute–append.
+    const ref = yield* recordInvocationStart(request.runDir, {
+      runId: invocation.runId,
+      jobOrdinal: invocation.jobOrdinal,
+      invocationId: runtimeInvocationId(invocation),
+      stageId: node.id,
+    });
     const handoffPath = node.stage.handoff === undefined
       ? undefined
       : yield* writeHandoffContext(
         request.runDir,
         invocation,
+        ref,
         node.stage.handoff,
         inputs.map((input) => input.handoff),
         workspace,
@@ -400,7 +410,7 @@ export function executeStage(
       );
     const mapItemPath = mapItem === undefined
       ? undefined
-      : yield* writeMapItemContext(request.runDir, invocation, mapItem, workspace);
+      : yield* writeMapItemContext(request.runDir, invocation, ref, mapItem, workspace);
     const contextFilePaths = [
       ...resources.contextFilePaths,
       ...(validation?.kind === "worker" ? [validation.reference.snapshotPath] : []),
@@ -439,7 +449,7 @@ export function executeStage(
     });
 
     // A continue's re-run follows the attempts this job already recorded;
-    // starting from one again would overwrite attempts/<n>/result.json.
+    // starting from one again would overwrite the first attempt's result file.
     let attempt = request.continueJob === undefined
       ? 1
       : (request.continueJob.attempts.get(invocationId) ?? 0) + 1;
@@ -624,7 +634,7 @@ export function executeStage(
       })).pipe(Effect.catchAll(() => Effect.void));
       const resultPath = validation === undefined
         ? undefined
-        : validationResultPath(request.runDir, invocation, attempt);
+        : invocationResultPath(request.runDir, ref, attempt);
       if (resultPath !== undefined) yield* ensureResultDirectory(resultPath);
       yield* workflowTrajectory.observe({
         type: "stage_attempt_started",
@@ -927,7 +937,7 @@ export function executeStage(
       // into the matched path.
       repairError = acceptCheck.left.message.replaceAll(
         resultPath!,
-        () => validationResultPath(request.runDir, invocation, attempt + 1),
+        () => invocationResultPath(request.runDir, ref, attempt + 1),
       );
       yield* stageLog.error("stage.validation.failed", {
         outcome: "failure",
@@ -1007,7 +1017,7 @@ export function executeStage(
         Effect.flatMap((fileSystem) => fileSystem.readFile(acceptedResultPath)),
         Effect.map((bytes) => ({
           path: acceptedResultPath,
-          sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          sha256: sha256Bytes(bytes),
           trust: materializedPayload ? "orchestrator-materialized" as const : "worker" as const,
         })),
         Effect.mapError((cause) => workflowError(
@@ -1019,6 +1029,7 @@ export function executeStage(
     const requestedModel = request.model ?? stageModel;
     const requestedThinkingLevel = request.thinkingLevel ?? node.stage.thinkingLevel;
     const handoff = yield* writeHandoffRecord(request.runDir, invocation, {
+      ref,
       stage: node.stage.name,
       worker: node.stage.worker,
       text: acceptedWorker.text,
@@ -1058,13 +1069,12 @@ export function executeStage(
       ...(acceptedMetrics.length === 0 ? {} : { metrics: acceptedMetrics }),
       ...(acceptedProjections.length === 0 ? {} : { projections: acceptedProjections }),
       ...(validation?.kind === "worker" ? { contract: validation.reference } : {}),
-      handoffRecordPath: handoff.recordPath,
       handoff,
       ...(reviewNote === undefined ? {} : { reviewNote }),
     };
     const persistedProgress = yield* progressSemaphore.withPermits(1)(Effect.gen(function* () {
       // Keep the counter update and append under the same lock. Map slots
-      // may finish concurrently; JSONL order and snapshot counts must not
+      // may finish concurrently; accepted counts must not
       // jump backwards or include an unappended sibling.
       counters.acceptedStageCount += 1;
       counters.completedByStage.set(node.id, (counters.completedByStage.get(node.id) ?? 0) + 1);
@@ -1094,7 +1104,6 @@ export function executeStage(
         sessionId: result.sessionId,
         transcriptPath: result.transcriptPath,
         ...(result.resultPath === undefined ? {} : { resultPath: result.resultPath }),
-        handoffRecordPath: result.handoffRecordPath,
         ...(result.requestedModel === undefined ? {} : { requestedModel: result.requestedModel }),
         ...(result.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: result.requestedThinkingLevel }),
         ...(result.model === undefined ? {} : { model: result.model }),
@@ -1126,7 +1135,7 @@ export function executeStage(
         progress,
       },
     });
-    const persistedResult: InternalStageResult = { ...result, progressRecordPath: progressPath };
+    const persistedResult: InternalStageResult = { ...result };
     yield* workflowTrajectory.observe({
       type: "stage_accepted",
       context: trajectoryContext(result.attempts, result),
@@ -1146,7 +1155,6 @@ export function executeStage(
         ...(result.thinkingLevel === undefined ? {} : { thinkingLevel: result.thinkingLevel }),
         workspace: result.workspace,
         attempts: result.attempts,
-        handoffRecordPath: result.handoffRecordPath,
         progressPath,
         textLength: result.text.length,
       },

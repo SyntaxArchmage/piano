@@ -5,7 +5,7 @@
 // and the append-only stream behind it. The next prompt then reopens the same
 // actor conversation and runs to completion. The TUI half lives in
 // tests/tui/pause-exit-resume.test.ts.
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sleep, waitFor } from "../common/terminal.js";
@@ -36,14 +36,6 @@ workflow:
         harness: pi
         from: []
 `;
-
-/** The last record of a run's append-only progress stream: how the run ended,
- * as the stream itself tells it. */
-async function lastProgressRecord(runDir: string): Promise<{ kind?: string; status?: string }> {
-  const text = await readFile(join(runDir, "progress.jsonl"), "utf8");
-  const lines = text.split("\n").filter((line) => line.trim() !== "");
-  return JSON.parse(lines.at(-1) ?? "{}") as { kind?: string; status?: string };
-}
 
 const SIGNOFF_STAGE_WORKFLOW = `version: 3
 workflow:
@@ -154,15 +146,11 @@ describe("Escape pauses a run instead of failing it", () => {
       // the same thing, which is what makes the outcome survive a snapshot a
       // wedged finalizer never reached.
       expect((await readJson(join(session.runDir, "status.json"))).status).toBe("paused");
-      expect(await lastProgressRecord(session.runDir)).toMatchObject({
-        kind: "execution-finished",
-        status: "paused",
-      });
 
       // Prompt 2 on the same run: the next-prompt path (identical to /resume)
       // hands the harness the exact session the interrupted turn opened.
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(execution).toBeDefined();
       const continued = await Effect.runPromise(prompt("continue", execution));
@@ -172,17 +160,19 @@ describe("Escape pauses a run instead of failing it", () => {
       expect((requests[1] as { continuation?: { transcriptPath?: string } }).continuation?.transcriptPath)
         .toBe(HANGING_SESSION.transcriptPath);
 
-      // Paused -> running -> completed: one execution across the pause.
-      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("completed");
-      expect(await lastProgressRecord(session.runDir)).toMatchObject({
-        kind: "execution-finished",
-        status: "completed",
-      });
+      // Paused -> running -> completed: one execution across the pause. The
+      // plain prompt continued the one-node job instead of opening a second
+      // one, so the run still holds exactly one job.
+      const finalStatus = await readJson(join(session.runDir, "status.json")) as {
+        status: string;
+        jobs: Array<{ jobOrdinal: number }>;
+      };
+      expect(finalStatus.status).toBe("completed");
       const after = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(after?.id).toBe(continued.runId);
-      expect(after?.jobOrdinal).toBe(2);
+      expect(finalStatus.jobs.map((job) => job.jobOrdinal)).toEqual([1]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -288,7 +278,7 @@ describe("Escape pauses a run instead of failing it", () => {
 
       // The next prompt (identical to /resume) reopens it rather than starting over.
       const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(session.runDir, session.id).pipe(Effect.provide(NodeFileSystem.layer)),
+        readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(execution?.actors.size).toBe(1);
       expect([...(execution?.actors.values() ?? [])][0]?.continuation.sessionId).toBe(announced.sessionId);

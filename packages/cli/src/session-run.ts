@@ -18,34 +18,28 @@ import {
   type LoggingError,
   type LoggingService,
   type Session,
-  type SessionError,
   type Source,
   type StagingSession,
   type TrajectoryWriteInput,
 } from "@piano/logging";
-import { FileSystem } from "@effect/platform";
 import {
-  closeWorkflowJob,
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
   EXPLICIT_LOAD_SOURCE,
-  foldJobSpans,
-  latestJob,
   LOAD_SOURCE,
   loadDefaultWorkflow,
   loadWorkflow,
-  parseProgressLines,
+  mnemonicNamespace,
   readWorkflowExecutionContinuation,
   readRunStatus,
+  reconcileCrashedRun,
   refreshRunStatus,
   runStatusPath,
   setWorkflowSelection,
-  workflowProgressPath,
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
-  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
   type WorkflowDiscussDecision,
@@ -69,6 +63,7 @@ import { runTui, type TuiResumeResult, type TuiScreenKind } from "./tui.js";
 import { headlessSignoffChannel } from "./signoff.js";
 import { headlessDiscussChannel } from "./discuss.js";
 import { sideAgentRequest } from "./side-agent.js";
+import { summarizeTaskMnemonic } from "./task-mnemonic.js";
 import {
   agentEventLine,
   completedLine,
@@ -99,6 +94,8 @@ export interface SessionRunOptions {
   readonly workflowPath?: string;
   readonly prompt?: string;
   readonly json?: boolean;
+  /** Task namespace for lane branches; skips the preflight summary. */
+  readonly mnemonic?: string;
   /** Resume this run as soon as the TUI opens. When it is the session's own run,
    * the takeover reuses the open session instead of opening a second one. */
   readonly resumeRunId?: string;
@@ -164,7 +161,6 @@ function runSessionBody(
       Effect.tap(() => SESSION_LOG.info("run.created", {
         data: { runDir: session.runDir, promptLength: prompt.length },
       })),
-      Effect.mapError((error) => error as SessionError),
     )
     : undefined;
   return Effect.gen(function* () {
@@ -201,7 +197,7 @@ function runSessionBody(
       session: Session;
       logging: LoggingService;
       /** Present only while the session is still staging. */
-      commit?: (prompt: string) => Effect.Effect<void, SessionError, import("@effect/platform").FileSystem.FileSystem | Logging>;
+      commit?: (prompt: string) => Effect.Effect<void, LoggingError, import("@effect/platform").FileSystem.FileSystem | Logging>;
     } = { session, logging, ...(commitSession === undefined ? {} : { commit: commitSession }) };
     const runsRoot = dirname(session.runDir);
     yield* TRACE(SESSION_SOURCE, Effect.gen(function* () {
@@ -222,25 +218,6 @@ function runSessionBody(
        * same way a failure would. */
       const jobCommandRefused = (command: string, runDir: string, reason: string) =>
         new WorkflowError({ phase: "schedule", path: runDir, message: `/${command} is unavailable: ${reason}` });
-      /** The jobs' shape: the run's state document, which folds the stream
-       * that also carries each job's input. */
-      const readJobState = (runDir: string) =>
-        Effect.map(readRunStatus(runDir), (status) => status?.jobs ?? []);
-      /** The latest job's region-finalized records, folded fresh from the
-       * progress stream: the ledger is their only home — status.json holds
-       * derived, JSON-safe state and deliberately omits them. */
-      const readJobRegions = (runDir: string): Effect.Effect<
-        ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord> | undefined,
-        never,
-        import("@effect/platform").FileSystem.FileSystem
-      > => Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-          Effect.orElseSucceed(() => ""),
-        );
-        const records = parseProgressLines(ledger);
-        return latestJob(foldJobSpans(records))?.regions;
-      });
       const runPrompt = (
         prompt: string,
         onEvent: (event: AgentEvent) => void,
@@ -309,11 +286,33 @@ function runSessionBody(
               // each prompt continues the actors the previous prompts left
               // behind — `/continue` takes the identical path, only carrying
               // the paused job's cursor.
-              const execution = yield* readWorkflowExecutionContinuation(current.session.runDir, current.session.id);
+              const execution = yield* readWorkflowExecutionContinuation(current.session.runDir);
+              // The lane namespace is the task's identity. A resumed run keeps
+              // the one the orchestrator recorded; a new run takes --mnemonic,
+              // else a preflight summary of this prompt, else the workflow's
+              // own mnemonic. An injected runner owns the whole conversation,
+              // so it also owns naming: pass --mnemonic instead of relying on
+              // the summary.
+              const allowSummary = options.agentRunner === undefined;
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
                 runId: current.session.id,
+                ...(options.mnemonic === undefined
+                  ? {}
+                  : { mnemonic: mnemonicNamespace(options.mnemonic, current.session.id) }),
+                ...(allowSummary
+                  ? {
+                    summarizeMnemonic: () => summarizeTaskMnemonic({
+                      prompt,
+                      cwd: activeCwd,
+                      runDir: current.session.runDir,
+                      runAgent: executeAgent,
+                      ...(options.agentOptions === undefined ? {} : { options: options.agentOptions }),
+                      signal: controller.signal,
+                    }),
+                  }
+                  : {}),
                 ...(execution === undefined ? {} : { execution }),
                 signal: controller.signal,
                 steering,
@@ -329,14 +328,13 @@ function runSessionBody(
               if (jobCommand === undefined) {
                 return yield* executeWorkflow(workflow, { ...request, prompt });
               }
-              const spans = yield* readJobState(current.session.runDir);
+              const runStatus = yield* readRunStatus(current.session.runDir);
               if (jobCommand === "continue") {
-                const resolved = resolveContinueCommand(spans);
+                const resolved = resolveContinueCommand(runStatus);
                 if (resolved.kind === "refused") {
                   return yield* Effect.fail(jobCommandRefused("continue", current.session.runDir, resolved.reason));
                 }
                 effectivePrompt = resolved.command.input;
-                const regions = yield* readJobRegions(current.session.runDir);
                 return yield* executeWorkflow(workflow, {
                   ...request,
                   prompt: effectivePrompt,
@@ -344,24 +342,20 @@ function runSessionBody(
                     jobOrdinal: resolved.command.jobOrdinal,
                     accepted: resolved.command.accepted,
                     attempts: resolved.command.attempts,
-                    ...(regions === undefined ? {} : { regions }),
+                    ...(resolved.command.regions === undefined ? {} : { regions: resolved.command.regions }),
                   },
                 });
               }
-              const resolved = resolveRestartCommand(spans);
+              const resolved = resolveRestartCommand(runStatus);
               if (resolved.kind === "refused") {
                 return yield* Effect.fail(jobCommandRefused("restart", current.session.runDir, resolved.reason));
               }
-              if (resolved.command.closeOrdinal !== undefined) {
-                yield* closeWorkflowJob(
-                  current.session.runDir,
-                  current.session.id,
-                  resolved.command.closeOrdinal,
-                  "restarted",
-                );
-              }
               effectivePrompt = resolved.command.input;
-              return yield* executeWorkflow(workflow, { ...request, prompt: effectivePrompt });
+              return yield* executeWorkflow(workflow, {
+                ...request,
+                prompt: effectivePrompt,
+                ...(resolved.command.restartOrdinal === undefined ? {} : { restartOrdinal: resolved.command.restartOrdinal }),
+              });
             }),
         ))).pipe(
           Effect.map((result) => ({
@@ -518,6 +512,11 @@ function runSessionBody(
           const next = runId === active.session.id
             ? active.session
             : yield* createSession({ cwd: session.cwd, runsRoot, id: runId });
+          // Fold the end record a crash skipped, so the reopened run reads
+          // `paused` instead of `running`.
+          if (yield* reconcileCrashedRun(next.runDir)) {
+            yield* TUI_LOG.warn("run.crash-reconciled", { data: { runId } });
+          }
           // A run records the workflow it executed. Reload it so the resumed
           // prompt runs the same stages; keep the current one when the run
           // predates the field or the file has since moved or broken, and say so

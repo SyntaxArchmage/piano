@@ -34,6 +34,7 @@ vi.mock("@piano/orchestrator", () => ({
   loadAndExecuteWorkflow: vi.fn(),
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
   refreshRunStatus: vi.fn(() => Effect.void),
+  reconcileCrashedRun: vi.fn(() => Effect.succeed(false)),
   runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/repo",
@@ -154,7 +155,7 @@ describe("/btw side agent through the live session", () => {
     expect(requests[0]).toMatchObject({
       prompt: "rename the flag",
       cwd: "/repo/work",
-      sessionDir: join(runsRoot, RUN_ID, SIDE_AGENT_DIR),
+      sessionDir: join(runsRoot, RUN_ID, "sessions", SIDE_AGENT_DIR),
       tools: [...SIDE_AGENT_TOOLS],
     });
     // The differentiator: `/btw` is a lone agent call, so the mission's
@@ -234,7 +235,7 @@ describe("/btw side agent through the live session", () => {
     expect(requests[1]).toMatchObject({
       prompt: "after takeover",
       cwd: "/repo/other-work",
-      sessionDir: join(runsRoot, OTHER_RUN, SIDE_AGENT_DIR),
+      sessionDir: join(runsRoot, OTHER_RUN, "sessions", SIDE_AGENT_DIR),
     });
     // Resuming the old transcript here would point the new run's agent at a
     // conversation filed under the run the TUI just left.

@@ -3,7 +3,7 @@
 // not run again. The span repeats the job's ordinal, re-runs follow the attempt
 // numbers already on disk, and a missing producer record falls back to a
 // re-run rather than inventing a result.
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -12,8 +12,10 @@ import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 import {
   executeWorkflow,
+  invocationStreamPath,
   loadWorkflow,
   readWorkflowExecutionContinuation,
+  type RunAcceptedInvocation,
 } from "../../packages/orchestrator/src/index.js";
 import type { AgentRequest, AgentResult, AgentRunner } from "../../packages/harness/src/index.js";
 
@@ -69,7 +71,7 @@ async function setup() {
   const run = (prompt: string, calls: AgentRequest[], continueJob?: ContinueJob) =>
     Effect.runPromise(
       loadWorkflow(join(root, "workflow.yml"), root).pipe(
-        Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir, session.id).pipe(
+        Effect.flatMap((loaded) => readWorkflowExecutionContinuation(session.runDir).pipe(
           Effect.flatMap((execution) => executeWorkflow(loaded, {
             runDir: session.runDir,
             cwd: root,
@@ -87,11 +89,9 @@ async function setup() {
   return { root, session, run };
 }
 
-const streamRecords = async (runDir: string): Promise<Array<Record<string, unknown>>> =>
-  (await readFile(join(runDir, "progress.jsonl"), "utf8"))
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+const readStatusFile = async (runDir: string): Promise<{
+  jobs: Array<{ jobOrdinal: number; accepted: readonly RunAcceptedInvocation[]; attempts: Record<string, number> }>;
+}> => JSON.parse(await readFile(join(runDir, "status.json"), "utf8"));
 
 describe("a continue resumes a paused job from its cursor", () => {
   it("rebuilds accepted invocations from their evidence instead of running them", async () => {
@@ -114,20 +114,23 @@ describe("a continue resumes a paused job from its cursor", () => {
         ["first@root", "first output"],
         ["second@root", "second output"],
       ]);
-      expect(second.stages[0]?.handoffRecordPath).toContain("first/root/handoff/record.json");
 
       // The rebuilt producer feeds the consumer's context like any other.
       const contextPath = calls[0]?.contextFilePaths?.find((path) => path.endsWith("/first-report.json"));
       const context = JSON.parse(await readFile(contextPath!, "utf8")) as { inputs: Array<{ text: string }> };
       expect(context.inputs).toMatchObject([{ text: "first output" }]);
 
-      // The span repeats the job's ordinal, so the stream groups both spans
-      // into one job, and the skipped stage is not started again.
-      const records = await streamRecords(session.runDir);
-      const starts = records.filter((record) => record.kind === "execution-started");
-      expect(starts.map((record) => record.jobOrdinal)).toEqual([1, 1]);
-      const firstStarts = records.filter((record) => record.kind === "stage-started" && record.invocationId === "first@root");
-      expect(firstStarts).toHaveLength(1);
+      // The continue repeats the job's ordinal — one job, not a second one —
+      // and the skipped stage is not started again.
+      const status = await readStatusFile(session.runDir);
+      expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1]);
+      // The cursor spells each key's identity out as structure: a reader of
+      // the document never parses `first@root`. `first` was rebuilt from its
+      // evidence and `second` was accepted fresh in the same job.
+      expect(status.jobs[0]?.accepted).toEqual([
+        { invocationId: "first@root", stageId: "first" },
+        { invocationId: "second@root", stageId: "second" },
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -143,14 +146,11 @@ describe("a continue resumes a paused job from its cursor", () => {
         attempts: new Map([["first@root", 1], ["second@root", 1]]),
       });
 
-      const records = await streamRecords(session.runDir);
-      const attemptsOf = (invocationId: string) => records
-        .filter((record) => record.kind === "stage-started" && record.invocationId === invocationId)
-        .map((record) => record.attempt);
       // The re-run follows the attempts this job recorded instead of
-      // overwriting attempts/1/result.json.
-      expect(attemptsOf("first@root")).toEqual([1, 2]);
-      expect(attemptsOf("second@root")).toEqual([1, 2]);
+      // overwriting the first attempt's result file.
+      const status = await readStatusFile(session.runDir);
+      expect(status.jobs[0]?.attempts["first@root"]).toBe(2);
+      expect(status.jobs[0]?.attempts["second@root"]).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -160,7 +160,14 @@ describe("a continue resumes a paused job from its cursor", () => {
     const { root, session, run } = await setup();
     try {
       await run("do the work", []);
-      await unlink(join(session.runDir, "prompts", "1", "invocations", "first", "root", "handoff", "record.json"));
+      // "Producer record gone" means its evidence is off the invocation
+      // stream: drop the accepted rows for the stage and the rebuild has
+      // nothing left to trust.
+      const streamPath = invocationStreamPath(session.runDir);
+      const rows = (await readFile(streamPath, "utf8")).split("\n")
+        .filter((line) => line.trim() !== "")
+        .filter((line) => !((JSON.parse(line) as { invocationId?: string }).invocationId ?? "").startsWith("first@"));
+      await writeFile(streamPath, rows.length === 0 ? "" : `${rows.join("\n")}\n`);
 
       const calls: AgentRequest[] = [];
       await run("keep going", calls, {
@@ -171,9 +178,8 @@ describe("a continue resumes a paused job from its cursor", () => {
 
       // Evidence missing: the stage runs again rather than inventing a result.
       expect(calls.map(stageOf)).toEqual(["first", "second"]);
-      const records = await streamRecords(session.runDir);
-      const firstStarts = records.filter((record) => record.kind === "stage-started" && record.invocationId === "first@root");
-      expect(firstStarts.map((record) => record.attempt)).toEqual([1, 2]);
+      const status = await readStatusFile(session.runDir);
+      expect(status.jobs[0]?.attempts["first@root"]).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

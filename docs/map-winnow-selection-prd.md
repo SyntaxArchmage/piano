@@ -89,17 +89,13 @@ and — if a winner is configured — calls `applyWinnerWorkspace`. But:
 
 - `materializeGpuPromotion` (lines 547-780) is CUDA/Triton-specific single-file
   promotion that demonstrates the KEEP/DISCARD semantics offline.
-- `applyWinnerWorkspace` → `applyWorkspaceContents` (workspace.ts) does a
-  *content copy*, not a merge: it deletes non-protected entries in the source
-  and copies from the candidate. For `git-worktree` slots it loses the commit
-  history; for directory-snapshot slots it deletes unsaved user edits.
-- Neither handles the *parent scope* as a commit frontier; they operate on a
-  copy without Git history.
-
-The automatic worker-consolidated tournament path supersedes use of this
-engine-side copy/merge machinery (§6). The exported
-`applyWinnerWorkspace` compatibility surface remains for legacy direct callers;
-automatic tournament selection uses the winner worker and the delta gate.
+- `applyWinnerWorkspace` (workspace.ts) carries a winner by its lane's owner:
+  a `git-worktree` lane is committed on its `tuna/<mnemonic>/lane-<n>` branch
+  and fast-forwarded onto the source checkout; a `store-worktree` lane copies
+  the validated content through `applyWorkspaceContents`.
+- The automatic tournament path uses that carry: git lanes merge, store lanes
+  consolidate through the winner worker and the baseline-relative delta gate
+  (§6).
 
 ### 2.3 Requirements from the driving scenario
 
@@ -343,10 +339,8 @@ baseline-relative delta gate and one cleanliness note:
   unrelated to the winner delta are preserved.
 
   The implementation obtains the snapshots with a Node filesystem walker and
-  applies the baseline-relative delta comparison above. A whole-tree
-  directory-diff helper remains available for legacy compatibility, but it is
-  not the tournament's business gate. The business predicate is the
-  baseline-relative delta comparison above.
+  applies the baseline-relative delta comparison above. The business predicate
+  is that delta comparison.
 - **Cleanliness (informational)**: `git status --porcelain` on the target
   workspace. This is **not** a pass/fail member; it is a report line so an
   operator sees leftover untracked/half-applied files. (Making it a hard gate
@@ -601,7 +595,7 @@ the current seams and the remaining compatibility boundaries.
 |---|---|---|
 | `workflow.ts` | DSL rename `map`→`tournament`; scope/lowering rules; the exit boundary used by runtime selection | implemented in parsing and compilation; the 2+ metric guard is load-time validation where worker contracts are available |
 | `workflow-execution.ts` | tournament region exit: rank survivors by the deciding metric (Exclusion + Direction/Tie), collapse the region boundary to the winner result, **re-activate the winner worker with the §6.1 prompt**, run the baseline-relative delta gate with bounded repair, and emit the selection observation | implemented by `automaticTournamentOutcome`, `finalizeTournament`, and `consolidateAndGate`; no automatic engine merge |
-| `workspace.ts` | branch allocation, frozen winner change sets, and the read-only baseline-relative delta gate | implemented by `captureWorkspaceChangeSet`/`diffWorkspaceChangeSet`; whole-tree diff and `applyWinnerWorkspace` remain deprecated compatibility APIs |
+| `workspace.ts` | lane branch allocation, frozen winner change sets, and the read-only baseline-relative delta gate | implemented by `captureWorkspaceBaselineChanges`/`diffWorkspaceChangeSet`; `applyWinnerWorkspace` carries a git lane by commit and fast-forward |
 | `git-metadata-transaction.ts` | protect, observe, and conditionally restore semantic Git metadata around consolidation; fail closed on unsafe or concurrent mutation | required consolidation boundary; never the winner merge/cherry-pick mechanism |
 | `harness/pi.ts` (or the worker seam) | the winner-consolidate invocation: continue the winner worker on its continuation with the §6.1 sentence | reuse existing continuation/injection seams (no new subsystem) |
 | `workflow-runtime.ts` | runtime lane identity and compatibility evidence fields | `slot`/`mapSlot` protocol names remain stable for the current evidence schema |
@@ -729,13 +723,12 @@ fanning out.
   branch. It is the contract-owned `round.materialization-v1` capability
   described in §12; future changes are new versioned capabilities with the same
   generic executor boundary.
-- The automatic tournament path does not use engine git merge/copy helpers for
-  winner carry — the winner worker consolidates (§6), and the engine ranks,
-  protects Git metadata transactionally, and gate-checks (§6.0–§6.2). Legacy
-  `applyWinnerWorkspace` remains a deprecated direct workspace API and is not
-  the automatic tournament path. The automatic path and the
-  `consolidateAndGate` compatibility adapter share the same consolidation
-  transaction core.
+- Winner carry follows the lane's owner: a `git-worktree` lane is merged by git
+  (`applyWinnerWorkspace` commits the lane branch and fast-forwards the source
+  checkout), a `store-worktree` lane is consolidated by the winner worker
+  through the baseline-relative delta gate. The engine ranks, protects Git
+  metadata transactionally, and gate-checks the store path (§6.0–§6.2). Every
+  consolidation runs through the same transaction core.
 - A metric-less code-competition fan-out that silently keeps a winner without a
   referee is not a promotion path: it never carries and records no winner (A2/D4).
   A metric-less `tournament` is nevertheless a legal report/fan-out (carries
@@ -766,13 +759,12 @@ fanning out.
   (§6.0/6.2), rejecting-and-repairing through the existing validate loop. A
   worker that cannot carry its change leaves the parent workspace untouched and
   records `carry-failed` rather than corrupting state.
-- **A5. The automatic tournament path is worker-consolidated.** The
-  execution-scoped winner selector and `applyWinnerWorkspace` remain explicit
-  compatibility surfaces for legacy callers, but automatic metric selection
-  uses the winner worker and the baseline-relative delta gate (§11). The
-  `consolidateAndGate` entry point routes both the automatic path and its legacy
-  adapter through the same transaction core; the direct workspace API is kept
-  separately and is deprecated.
+- **A5. Carry follows the lane's owner.** Automatic metric selection carries a
+  `git-worktree` winner by commit and fast-forward (`applyWinnerWorkspace`) and
+  a `store-worktree` winner through the winner worker and the
+  baseline-relative delta gate (§11). Every consolidation runs through the same
+  transaction core; the execution-scoped winner selector remains an explicit
+  selection surface.
 
 ### Deliberate, still open (need code-prove before approval)
 - **D1. Whether a non-loop single-pass tournament has meaningful use** beyond
@@ -834,9 +826,9 @@ fanning out.
    an exit of a nested compare? Probably yes, allowing cross-worker challenge.
 3. A metric-less `map`/`tournament` is a legal report/fan-out (never carries a
    winner); 2+ declared metrics is a load-time validation error (A2/D4). The
-   automatic path proves worker-consolidated carry via a metric `tournament`,
-   while the legacy `workspace.winner` selector and `applyWinnerWorkspace`
-   compatibility surfaces remain outside that automatic path.
+   automatic path carries a git lane by commit and fast-forward and a store
+   lane through worker consolidation, while the execution-scoped
+   `workspace.winner` selector remains an explicit selection surface.
 
 ---
 

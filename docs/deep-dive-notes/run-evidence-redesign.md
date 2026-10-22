@@ -196,7 +196,7 @@ root 级（无 loop）tournament 同样报 `race/slot-0 was already cleaned` →
 **独立真缺陷（默认不在 scope）**：
 - **dsh 证据链静默死亡**：装机 dsh 写 `session.v3.jsonl.zstd`，`subprocess.ts` 只认 `["session.jsonl.zstd","session.jsonl"]` → `readDshSessionEvidence` 返回 undefined → canonical transcript 退化成 raw stdout markdown → `piano logs --check` 报 26 条 `transcript-invalid`。（**已修**，H1 `ae4037e`。）
 - `ARCHITECTURE.txt` 与 `docs/workflow-trajectory-evaluation-prd.md` 的 `executions/<exec>/` 布局与磁盘完全不符。（**已标记**，`e5370c7`。）
-- `workspace.applyWinnerWorkspace` / `recoverMapWorkspaces` 两个导出无运行时调用点。
+- `workspace.recoverMapWorkspaces` 导出无运行时调用点。（**已修**，导出删除；recovery 由 `allocateMapWorkspace` 的 existing-record 路径承担；`applyWinnerWorkspace` 由 tournament carry 调用。）
 - `piano logs` picker 在 pretty-printed `trajectory.json` 上静默退化成 id-only 行。（**已修**，H3 `7793a7e`。）
 
 ### D2. 测试面盲区审计（2026-10-15，对照真实装机工具逐项核验）
@@ -311,11 +311,12 @@ branch 在本设计成稿后继续重构，**符号位置已漂移**（`workflow
 
 **F5.1 协调落定（2026-10-15 晚，三方消息往返后）**
 - **G1 裁定（邻居 session 携开发者原话）**：`status.json` **取代**（不是并存）三个 fold 视图——`progress.json`/`trajectory.json`/`resume.json` 删除；`progress.jsonl` 等 append-only ledger 保留为证据与折叠源。「ignore historical compatibility, do it straightly; before delete, review all references」。我的 H3（`7793a7e`）与邻居的 `a18904c` 均被此裁定反转，按 G4 必须写进 PR 描述。
+- **G1 后续（2026-10-19，开发者裁定「progress must remove」）**：`progress.jsonl` 也不再写——每条 progress record 经 `applyRunStatusRecord` 直接落到 `status.json`（jobs / accepted / attempts / regions / actors），`--rebuild`/`--force` 删除。run 目录按受众分为 `system-log/`、`sessions/`、`eval-metrics/` + `status.json`。落库：`8a40406`（布局）、`a8eb127`（退休 index.json）、`8e9cd10`（退休 progress.jsonl）、`f8123e5`（evidence 指向 status.json）。同日再次裁定：`piano logs` 只保留「pick run + 打印绝对目录」，格式化 viewer、`--trace`、`--check`、`--jobs/--job` 全部删除，`logging/static-analysis.ts` 及其测试一并退休（命令不再读 evidence）。
 - **parentId WIP 归属确认**：`piano-be` session（同一主 worktree、同一分支上未提交的 `workflow.ts`/`workflow-runtime.ts`/`workflow-execution.ts` 3 处 + 3 测试；`regionPath: readonly string[]` → `parentId?: string`，删 `isDirectStageInScope`）。已要求其**先落库再合并**（`workflow-runtime.ts` 在合并面上，git 会拒绝带脏合并）；合并后其 3 处执行侧站点需按分支拆分后的新家重锚（`workflowProgressPlan/Projection` → `stage-runner-support.ts`）。
 - **事故记录（我的）**：H3 探针把 pretty-bytes 留在了 picker 测试里并被提交（`7793a7e` 红），由 piano-43 发现、piano-be 询问后认领；修复 `d182881`（picker 测试回到 compact 现实；H3 的真守卫移到 `logging.test.ts` rename 测试的单行字节断言）。教训：**探针改动要么还原要么转正，不能带着中间态提交**；且当跳门禁必须覆盖被改测试文件本身。
 - **合并执行序**（邻居冻结于 `cc92410`，全量 1542 绿）：piano-be 落库 → 我 merge `cc92410` 进本分支 → 5 文件按「trajectory.ts 取邻居方向（document 删除，stream 保留单一 serializer 原则）、logs-command.test.ts 取其 status.json 契约版」解 → 全量门禁 → 报告。
 - **合并后分工提案（待邻居确认）**：它 = `session-resume`/`session-picker`/`static-analysis`/三个 writer 的 G1 收口；我 = evals 三件（driver/trajectory-evaluator/legacy-run-adapter）+ README/headless 外部契约文本 + **H6**（§C5 的 L0–L3，在其 cursor 之上）。
-- **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `runStatusFromParts` 构造以钉住 round-trip。
+- **status.json 硬约束（邻居的血泪教训，进 §C 同级）**：写入 `status.json` 的一切必须 JSON-shaped——`ReadonlySet`/`ReadonlyMap` 经 `JSON.stringify` 静默变 `{}`，曾清空 `/continue` cursor 挂死 `continue-restart-arc`。`RunJob` 用 `accepted: string[]` / `attempts: Record<string, number>`；fixture 一律经 `applyRunStatusRecord` 构造以钉住 round-trip。
 - `progressRecordKind` 未知 kind 落 `"stage-accepted"` 的缺口归邻居修（其 `421d1d1` 依赖该 fallthrough），在 `region-finalized`/`actor-turn` 之前必须落；我侧 H5 不新增 kind，无排序冲突。
 - 另有 `piano-43` session 在做 `packages/harness/src` 模块化（branch `refactor/harness-module`，base 我的 `595c51e`，P1 已落 `04034e4`）；我的 H2c 与其 P2 有潜在交叠，合并后由它 rebase。
 

@@ -7,16 +7,17 @@
 
 import { Either, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
-import { join } from "node:path";
 import type { Logging } from "@piano/logging";
 import {
   allocateMapWorkspace,
   applyWinnerWorkspace,
   carryLanded,
   cleanupMapWorkspaces,
-  ensureWorkspaceSnapshot,
-  workspaceContentChanges,
-  type WorkspaceChangeSet,
+  createLaneNumberAllocator,
+  prepareMapLaneFork,
+  workspaceBaselineChanges,
+  type MapLaneFork,
+  type WorkspaceBaseline,
   type WorkspaceContentChange,
   type WorkflowCarrying,
   type WorkflowWorkspaceBinding,
@@ -106,7 +107,6 @@ interface ScopeExecution extends NodeExecution {
 
 interface RuntimeTournamentCandidate extends WorkflowWorkspaceCandidate {
   readonly boundaryResults: readonly InternalStageResult[];
-  readonly baselineContentDir: string;
   readonly stopped?: boolean;
 }
 
@@ -254,11 +254,14 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     commitRoundWinner,
     consolidate,
   } = context;
+  /** One lane counter per execution: sibling and nested lanes share it. */
+  const laneAllocator = createLaneNumberAllocator();
   const {
     request,
     loaded,
     compiled,
     runId,
+    mnemonic,
     jobOrdinal,
     actors,
     actorContexts,
@@ -341,7 +344,7 @@ const failTournamentWithPreservedSlots = (
   reason: string,
 ): Effect.Effect<never, WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
   workspaceState.preserve = true;
-  const preservation = yield* cleanupMapWorkspaces(request.runDir, runId, {
+  const preservation = yield* cleanupMapWorkspaces(request.runDir, {
     sourceCwd,
     keys,
     preserve: true,
@@ -400,7 +403,6 @@ const finalizeTournament = (
   region: WorkflowRegionPlan,
   frames: readonly WorkflowRuntimeFrame[],
   parentWorkspace: WorkflowWorkspaceBinding,
-  baselineContentDir: string,
   candidates: readonly RuntimeTournamentCandidate[],
 ): Effect.Effect<TournamentFinalization, WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
   if (candidates.length === 0) return {};
@@ -420,7 +422,7 @@ const finalizeTournament = (
       outcome: "no-winner",
       skipped: `tournament contains terminal blocked result(s): ${blockedIds.join(", ")}`,
     }).pipe(Effect.catchAll(() => Effect.void));
-    yield* cleanupMapWorkspaces(request.runDir, runId, {
+    yield* cleanupMapWorkspaces(request.runDir, {
       sourceCwd,
       keys: candidates.map((candidate) => candidate.key),
       preserve: options?.preserve === true,
@@ -514,7 +516,7 @@ const finalizeTournament = (
         winnerKey,
         carrying,
       }).pipe(Effect.catchAll(() => Effect.void));
-      yield* cleanupMapWorkspaces(request.runDir, runId, {
+      yield* cleanupMapWorkspaces(request.runDir, {
         sourceCwd,
         keys: cleanupKeys,
         preserve: options?.preserve === true,
@@ -541,7 +543,7 @@ const finalizeTournament = (
         winnerKey,
         carrying,
       }).pipe(Effect.catchAll(() => Effect.void));
-      yield* cleanupMapWorkspaces(request.runDir, runId, {
+      yield* cleanupMapWorkspaces(request.runDir, {
         sourceCwd,
         keys: cleanupKeys,
         preserve: options?.preserve === true,
@@ -559,12 +561,12 @@ const finalizeTournament = (
     } else if (winnerCandidate.workspace.strategy === "git-worktree") {
       // A git-worktree winner is merged, not consolidated: its worktree holds
       // the winning edits, git fast-forwards the parent onto the commit it
-      // makes of them, and the retained ref is the record. Git carries the
+      // makes of them, and the lane branch is the record. Git carries the
       // delta and git is the verification — no frozen file delta and no
       // worker turn. A source that cannot fast-forward is a carry failure:
       // the winner's work did not reach the parent, and saying otherwise
       // would be the silent loss the delta gate exists to catch.
-      const applied = yield* applyWinnerWorkspace(request.runDir, runId, winnerKey, sourceCwd).pipe(
+      const applied = yield* applyWinnerWorkspace(request.runDir, winnerKey, sourceCwd).pipe(
         Effect.map((result): WorkflowCarrying => result.skipped === undefined
           ? { kind: "git-merged", ...(result.commit === undefined ? {} : { commit: result.commit }) }
           : {
@@ -576,21 +578,29 @@ const finalizeTournament = (
           Effect.succeed({ kind: "carry-failed", reason: errorMessage(error) })),
       );
       consolidating = applied;
+    } else if (winnerCandidate.workspace.baseCommit === undefined) {
+      consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no forked base commit to measure against` };
     } else {
+      // The lane record carries what it forked from; a store lane's fork is
+      // also the region's drift reference (every sibling shares it).
+      const laneBaseline: WorkspaceBaseline = {
+        runDir: request.runDir,
+        commit: winnerCandidate.workspace.baseCommit,
+      };
       const frozen = yield* Effect.tryPromise({
         try: async () => {
           const [changes, parentChanges] = await Promise.all([
-            workspaceContentChanges(
-            winnerCandidate.baselineContentDir,
+            workspaceBaselineChanges(
+            laneBaseline,
             winnerContentDir,
             excludeUnder,
             ),
-            workspaceContentChanges(baselineContentDir, sourceCwd, excludeUnder),
+            workspaceBaselineChanges(laneBaseline, sourceCwd, excludeUnder),
           ]);
           return {
-            changeSet: { winnerContentDir, changes },
+            changes,
             parentChanges,
-          } satisfies { readonly changeSet: WorkspaceChangeSet; readonly parentChanges: readonly WorkspaceContentChange[] };
+          } satisfies { readonly changes: readonly WorkspaceContentChange[]; readonly parentChanges: readonly WorkspaceContentChange[] };
         },
         catch: (cause) => workflowError("schedule", sourceCwd, `cannot inspect tournament winner delta: ${errorMessage(cause)}`),
       }).pipe(Effect.either);
@@ -600,15 +610,15 @@ const finalizeTournament = (
           reason: errorMessage(frozen.left),
         };
       } else {
-        const { changeSet, parentChanges } = frozen.right;
-        const winnerPaths = new Set(changeSet.changes.map((change) => change.path));
+        const { changes, parentChanges } = frozen.right;
+        const winnerPaths = new Set(changes.map((change) => change.path));
         const conflicts = parentChanges.filter((change) => winnerPaths.has(change.path));
         if (conflicts.length > 0) {
           consolidating = {
             kind: "carry-failed",
             reason: `the tournament parent changed after branch allocation at: ${conflicts.map((change) => change.path).join(", ")}`,
           };
-        } else if (changeSet.changes.length === 0) {
+        } else if (changes.length === 0) {
           consolidating = { kind: "worker-consolidated" };
         } else {
           const actorContext = winnerExitResult === undefined
@@ -630,8 +640,8 @@ const finalizeTournament = (
               winnerWorker,
               winnerHarness,
               excludeUnder,
-              changeSet,
-              winnerBaselineContentDir: winnerCandidate.baselineContentDir,
+              changes,
+              winnerBaseline: laneBaseline,
               winnerActor: {
                 ...actorContext,
                 ...(actor?.continuation === undefined ? {} : { continuation: actor.continuation }),
@@ -698,7 +708,7 @@ const finalizeTournament = (
       tournamentIncumbents.set(incumbentKey, admission.winner);
     }
   }
-  yield* cleanupMapWorkspaces(request.runDir, runId, {
+  yield* cleanupMapWorkspaces(request.runDir, {
     sourceCwd,
     keys: cleanupKeys,
     preserve: options?.preserve === true,
@@ -996,33 +1006,23 @@ const executeScope = (
         ));
       }
       const items = yield* mapItems(region, source.results);
-      const tournamentSnapshotRoot = join(
-        request.runDir,
-        "prompts",
-        String(jobOrdinal),
-        "tournaments",
-        encodeURIComponent(`${runtimeInstanceId(frames) ?? "root"}/${region.id}`),
-      );
-      const baselineContentDir = join(tournamentSnapshotRoot, "baseline");
       const slotBindings = [] as Array<{
         readonly item: HandoffMapItem;
         readonly frames: readonly WorkflowRuntimeFrame[];
         readonly workspace: WorkflowWorkspaceBinding;
-        readonly baselineContentDir: string;
       }>;
+      // One fork per region entry: every lane of this tournament starts from
+      // the same commit. The thunk keeps it lazy — a resume whose slots all
+      // exist never pays for a seed commit it will not use.
+      let forkPromise: Promise<MapLaneFork> | undefined;
+      const fork = (): Promise<MapLaneFork> => (forkPromise ??= prepareMapLaneFork(workspace.cwd, {
+        runDir: request.runDir,
+        runId,
+        jobOrdinal,
+        frames,
+        parent: workspace,
+      }));
       yield* Effect.gen(function* () {
-        yield* Effect.tryPromise({
-          try: () => ensureWorkspaceSnapshot(
-            workspace.cwd,
-            baselineContentDir,
-            [request.runDir],
-          ),
-          catch: (cause) => workflowError(
-            "schedule",
-            workspace.cwd,
-            `cannot snapshot tournament parent: ${errorMessage(cause)}`,
-          ),
-        });
         for (const item of items) {
           const slotFrames = [...frames, { kind: "map" as const, regionId: region.id, slot: item.index }];
           const slotWorkspace = yield* allocateMapWorkspace(
@@ -1031,33 +1031,13 @@ const executeScope = (
             jobOrdinal,
             slotFrames,
             workspace.cwd,
-            // Only an explicit continue may re-create a slot whose record was
-            // already swept; every other re-entry must stay loud.
-            request.continueJob === undefined ? {} : { recreateWhenSwept: true },
+            {
+              mnemonic,
+              fork,
+              laneAllocator,
+            },
           );
-          const slotBaselineContentDir = join(
-            tournamentSnapshotRoot,
-            "slot-baselines",
-            encodeURIComponent(slotWorkspace.key),
-          );
-          slotBindings.push({
-            item,
-            frames: slotFrames,
-            workspace: slotWorkspace,
-            baselineContentDir: slotBaselineContentDir,
-          });
-          yield* Effect.tryPromise({
-            try: () => ensureWorkspaceSnapshot(
-              slotWorkspace.cwd,
-              slotBaselineContentDir,
-              [request.runDir],
-            ),
-            catch: (cause) => workflowError(
-              "schedule",
-              slotWorkspace.cwd,
-              `cannot snapshot tournament slot "${slotWorkspace.key}" baseline: ${errorMessage(cause)}`,
-            ),
-          });
+          slotBindings.push({ item, frames: slotFrames, workspace: slotWorkspace });
           yield* WORKFLOW_LOG.info("workspace.prepared", {
             data: {
               runId,
@@ -1070,7 +1050,7 @@ const executeScope = (
         region,
         workspace.cwd,
         slotBindings.map((slot) => slot.workspace.key),
-        `workspace snapshot failed: ${errorMessage(cause)}`,
+        `workspace preparation failed: ${errorMessage(cause)}`,
       )));
       // Collect each slot as its own Either so one failing slot does not
       // cancel already-started siblings (Effect.all is fail-fast by
@@ -1116,13 +1096,12 @@ const executeScope = (
       // the shared source now — one decision per tournament, per instance.
       // A failed slot set keeps upstream's fail-net effect (the node
       // fails above and no consolidation runs).
-      const finalization = yield* finalizeTournament(region, frames, workspace, baselineContentDir, slotBindings.map((slot, index) => ({
+      const finalization = yield* finalizeTournament(region, frames, workspace, slotBindings.map((slot, index) => ({
         key: slot.workspace.key,
         workspace: slot.workspace,
         mapItem: slot.item,
         boundaryResults: slots[index]?.boundary.results ?? [],
         stages: slots[index]?.stages ?? [],
-        baselineContentDir: slot.baselineContentDir,
         ...(slots[index]?.stopped === true ? { stopped: true } : {}),
       })));
       if (finalization.outcome !== undefined) {
@@ -1175,7 +1154,7 @@ const executeScope = (
       }
       // A scope has one mutable workspace binding. The DSL does not carry
       // read-only/write ownership, so stable-order execution avoids races
-      // and makes map snapshots deterministic. Run one ready node at a
+      // and makes map lane allocation deterministic. Run one ready node at a
       // time so a validated blocked result can stop the scope before later
       // independent nodes consume more model turns. Map slots receive
       // distinct bindings below and remain the intentional parallel

@@ -10,7 +10,7 @@ import { detectSixelSupport, encodeSixelPng } from "./sixel.js";
 import { formatCompactDuration } from "./duration.js";
 import { isRecord } from "@piano/logging";
 
-export interface WorkflowGraphStage {
+interface WorkflowGraphStage {
   readonly id: string;
   readonly displayId?: string;
   readonly dependsOn: readonly string[];
@@ -26,7 +26,7 @@ export interface WorkflowGraphStage {
   readonly visualStatus?: WorkflowGraphNodeStatus;
 }
 
-export interface WorkflowGraphMap {
+interface WorkflowGraphMap {
   readonly id: string;
   readonly entryStageId: string;
   readonly exitStageId: string;
@@ -48,7 +48,7 @@ export interface WorkflowGraphDefinition {
 /** Cumulative worker time the orchestrator recorded for one runtime
  * invocation. The CLI only reads it: every field is written by
  * `markWorkflowStageStarted` / `appendWorkflowProgress`. */
-export interface WorkflowGraphInvocationTime {
+interface WorkflowGraphInvocationTime {
   readonly stageId?: string;
   readonly instanceId?: string;
   readonly completedMs?: number;
@@ -133,8 +133,8 @@ export function parseWorkflowGraphSnapshot(value: unknown): WorkflowGraphSnapsho
   };
 }
 
-export type WorkflowGraphSnapshotReader = () => Promise<WorkflowGraphSnapshot | undefined>;
-export type WorkflowGraphNodeStatus = "completed" | "running" | "failed" | "pending";
+type WorkflowGraphSnapshotReader = () => Promise<WorkflowGraphSnapshot | undefined>;
+type WorkflowGraphNodeStatus = "completed" | "running" | "failed" | "pending";
 
 interface PositionedNode {
   readonly stage: WorkflowGraphStage;

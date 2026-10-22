@@ -26,7 +26,12 @@ vi.mock("@piano/orchestrator", () => ({
   loadAndExecuteWorkflow: vi.fn(),
   // A fresh fixture run has no progress stream, so there is nothing to continue.
   readWorkflowExecutionContinuation: vi.fn(() => Effect.succeed(undefined)),
+  readRunStatus: vi.fn(() => Effect.succeed(undefined)),
+  isWorkflowIdentifier: (value: string) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(value),
+  mnemonicNamespace: (slug: string, runId: string) => `${slug}-${runId}`,
+  WorkflowError: class WorkflowError extends Error {},
   refreshRunStatus: vi.fn(() => Effect.void),
+  reconcileCrashedRun: vi.fn(() => Effect.succeed(false)),
   runStatusPath: (runDir: string) => `${runDir}/status.json`,
   loadWorkflow: vi.fn(() => Effect.succeed({
     root: "/tmp/piano",
@@ -201,6 +206,20 @@ describe("reborn CLI entrypoint", () => {
       prompt: "check workflow",
     }));
     expect(runTui).not.toHaveBeenCalled();
+  });
+
+  it("passes --mnemonic through as the run's lane namespace", async () => {
+    vi.mocked(executeWorkflow).mockReturnValue(Effect.succeed({
+      text: "workflow result",
+      sessionId: "session",
+      transcriptPath: "/tmp/session.jsonl",
+    } as never));
+
+    await Effect.runPromise(main(["--workflow", "./special-workflow.yml", "--mnemonic", "gemm", "-p", "tune gemm"]).pipe(Effect.provide(NodeFileSystem.layer)));
+
+    expect(executeWorkflow).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      mnemonic: `gemm-${session.id}`,
+    }));
   });
 
   it("runs a bare -p prompt headless without opening the TUI", async () => {

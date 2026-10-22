@@ -6,9 +6,8 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import type { AgentContinuation } from "@piano/harness";
 import { type WorkflowError } from "./errors.js";
-import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
-import { workflowProgressPath } from "./progress.js";
-import { parseProgressLines } from "./run-status.js";
+import type { ResumeActorState } from "./resume-state.js";
+import { readRunStatus } from "./run-status.js";
 
 /** One actor's carried-over state: the complete record the ledger holds for
  * it. The identity fields are part of it because the orchestrator appends a
@@ -29,34 +28,25 @@ export interface WorkflowActorContinuation {
 /** Identity and actor table of an execution that is being continued. */
 export interface WorkflowExecutionContinuation {
   readonly id: string;
-  readonly jobOrdinal: number;
   /** Keyed by `workflowActorKey`, hence only valid for `id`. */
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
 
-/** Read the actor continuation table for a run from the ledger's `actor-turn`
- * rows. Returns `undefined` when it holds none, allowing callers to start
- * workers fresh. */
+/** Read the actor continuation table for a run from its state document, which
+ * folds the ledger's `actor-turn` rows. Returns `undefined` when it holds
+ * none, allowing callers to start workers fresh. */
 export function readWorkflowExecutionContinuation(
   runDir: string,
-  _runId: string,
 ): Effect.Effect<WorkflowExecutionContinuation | undefined, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-      Effect.orElseSucceed(() => ""),
-    );
-    const ledgerRecords = parseProgressLines(ledger);
-    const table = actorTableFrom(ledgerRecords);
-    const runId = ledgerRecords.find((record) => record.runId !== undefined)?.runId;
-    if (runId === undefined) return undefined;
-    return finish(runId, table.jobOrdinal, table.actors);
+    const status = yield* readRunStatus(runDir);
+    if (status === undefined) return undefined;
+    return finish(status.runId, status.actors);
   });
 }
 
 function finish(
   runId: string,
-  jobOrdinal: number,
   table: Record<string, ResumeActorState>,
 ): WorkflowExecutionContinuation | undefined {
   const actors = new Map<string, WorkflowActorContinuation>();
@@ -72,5 +62,5 @@ function finish(
       continuation: actor.continuation,
     });
   }
-  return actors.size === 0 ? undefined : { id: runId, jobOrdinal, actors };
+  return actors.size === 0 ? undefined : { id: runId, actors };
 }

@@ -12,15 +12,15 @@
 export const DEFAULT_SPLIT_RATIO = 0.3;
 export const MIN_RIGHT_COLUMNS = 20; // right pane never shrinks below this
 const MIN_CHAT_COLUMNS = 30;        // left pane never shrinks below this
-export const SPLIT_CAPTURE_RANGE = 1;      // ±N columns around the border arm the grab
+const SPLIT_CAPTURE_RANGE = 1;      // ±N columns around the border arm the grab
 
-export interface SgrMouseEvent {
+interface SgrMouseEvent {
   kind: "press" | "motion" | "release" | "wheel";
   button: number;  // raw SGR code: 0=left, 32=left drag, 64=wheel up, 65=wheel down
   col: number;     // 1-based terminal column
   row: number;     // 1-based terminal row
 }
-export interface SplitDragState {
+interface SplitDragState {
   dragging: boolean;
   ratio: number;   // fraction of terminal width given to the right pane, in (0,1)
   visible: boolean;

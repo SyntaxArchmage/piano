@@ -27,15 +27,18 @@ import {
 } from "./git-metadata-transaction.js";
 import { pathWithin } from "./path-within.js";
 import {
-  captureWorkspaceChangeSet,
+  captureWorkspaceBaselineChanges,
   diffWorkspaceChangeSet,
+  freezeWorkspaceBaseline,
   inventoryWorkspaceLstat,
   restoreWorkspaceLstat,
-  snapshotWorkspaceContent,
-  workspaceContentChanges,
+  snapshotWorkspaceLstat,
+  workspaceBaselineChanges,
   type WorkflowCarrying,
+  type WorkspaceBaseline,
   type WorkspaceChangeSet,
   type WorkspaceContentChange,
+  type WorkspaceLstatEntry,
 } from "./workspace.js";
 
 const EXTERNAL_SCHEMA = "piano.consolidation.evidence/v1";
@@ -48,17 +51,9 @@ export interface ConsolidationDirectoryIdentity {
   readonly ino: number;
 }
 
-interface SnapshotEntry {
-  readonly path: string;
-  readonly kind: "file" | "directory" | "symlink" | "fifo" | "other";
-  readonly mode: number;
-  readonly contentHash?: string;
-  readonly symlinkTarget?: string;
-}
-
 interface SnapshotManifest {
   readonly root: typeof ROOT_KIND;
-  readonly entries: readonly SnapshotEntry[];
+  readonly entries: readonly WorkspaceLstatEntry[];
   readonly digest: string;
 }
 
@@ -82,12 +77,13 @@ export interface ConsolidationEvidenceInput {
   readonly sourceCwd: string;
   readonly runDir: string;
   readonly winnerContentDir: string;
-  /** Complete winner tree used to rebuild the canonical external delta when a
-   * runtime caller supplies only its declared change list. */
-  readonly baselineContentDir?: string;
-  /** Runtime callers provide the already frozen delta. Legacy callers omit it
-   * and derive the equivalent whole-tree delta from target-before. */
-  readonly changeSet?: WorkspaceChangeSet;
+  /** The baseline the winner delta is measured against, so the transaction
+   * can re-derive and verify the declared change list. */
+  readonly baseline: WorkspaceBaseline;
+  /** The declared winner delta (paths and kinds). The transaction derives the
+   * canonical frozen files from the baseline and rejects a winner tree that
+   * disagrees. */
+  readonly changes: readonly WorkspaceContentChange[];
   readonly excludeUnder: readonly string[];
 }
 
@@ -97,6 +93,9 @@ export interface PreparedConsolidationEvidence {
   readonly runDir: string;
   readonly externalRoot: string;
   readonly targetBeforeDir: string;
+  /** The commit form of target-before: what every delta in this transaction
+   * is measured against. The directory beside it is the worker's evidence. */
+  readonly targetBeforeBaseline: WorkspaceBaseline;
   readonly winnerChangeDir: string;
   readonly manifestPath: string;
   readonly manifestDigest: string;
@@ -243,28 +242,19 @@ async function createExternalRoot(
   );
 }
 
-async function captureInventory(root: string, excluded: readonly string[] = []): Promise<readonly SnapshotEntry[]> {
-  const entries = await inventoryWorkspaceLstat(root, excluded);
-  return entries.map((entry) => ({
-    path: entry.path,
-    kind: entry.kind,
-    mode: entry.mode,
-    ...(entry.contentHash === undefined ? {} : { contentHash: entry.contentHash }),
-    ...(entry.symlinkTarget === undefined ? {} : { symlinkTarget: entry.symlinkTarget }),
-  }));
-}
-
-function snapshotManifest(entries: readonly SnapshotEntry[]): SnapshotManifest {
+function snapshotManifest(entries: readonly WorkspaceLstatEntry[]): SnapshotManifest {
   const content = { root: ROOT_KIND, entries };
   return { ...content, digest: digest(content) };
 }
 
 function changesEqual(left: readonly WorkspaceContentChange[], right: readonly WorkspaceContentChange[]): boolean {
   if (left.length !== right.length) return false;
-  const normalize = (changes: readonly WorkspaceContentChange[]) => changes
+  const normalize = (changes: readonly WorkspaceContentChange[]): readonly string[] => changes
     .map((change) => `${change.kind}:${change.path}`)
     .sort();
-  return normalize(left).every((change, index) => change === normalize(right)[index]);
+  const normalizedLeft = normalize(left);
+  const normalizedRight = normalize(right);
+  return normalizedLeft.every((change, index) => change === normalizedRight[index]);
 }
 
 async function writeExclusiveJson(path: string, value: unknown): Promise<string> {
@@ -308,7 +298,7 @@ async function verifyCanonicalEvidence(evidence: CanonicalEvidenceReference): Pr
     if (typeof expected !== "object" || expected === null || Array.isArray(expected)) {
       throw workflowError("schedule", evidence.manifestPath, `canonical ${name} manifest is missing`);
     }
-    const entries = await captureInventory(directory);
+    const entries = await inventoryWorkspaceLstat(directory);
     const actual = snapshotManifest(entries);
     if (digest(expected) !== digest(actual)) {
       throw workflowError("schedule", directory, `canonical ${name} snapshot inventory/hash changed`);
@@ -359,8 +349,8 @@ async function verifySourceMatchesTargetBefore(
   phase: "before first worker turn" | "before first worker turn after Git metadata transaction creation" | "after rollback",
 ): Promise<void> {
   await assertDirectoryIdentity(evidence.sourceIdentity, "source workspace");
-  const sourceEntries = await captureInventory(evidence.sourceCwd, evidence.excluded);
-  const beforeEntries = await captureInventory(evidence.targetBeforeDir);
+  const sourceEntries = await inventoryWorkspaceLstat(evidence.sourceCwd, evidence.excluded);
+  const beforeEntries = await inventoryWorkspaceLstat(evidence.targetBeforeDir);
   const before = snapshotManifest(beforeEntries);
   const source = snapshotManifest(sourceEntries);
   if (before.digest !== source.digest || JSON.stringify(before.entries) !== JSON.stringify(source.entries)) {
@@ -483,37 +473,19 @@ export async function prepareConsolidationEvidence(
   ])];
   let canonicalEvidence: CanonicalEvidenceReference | undefined;
   try {
-    await snapshotWorkspaceContent(sourceIdentity.lexicalPath, targetBeforeDir, excluded);
-    let changeSet: WorkspaceChangeSet;
-    if (input.changeSet !== undefined) {
-      if (input.baselineContentDir !== undefined) {
-        const materialized = await captureWorkspaceChangeSet(
-          input.baselineContentDir,
-          input.winnerContentDir,
-          winnerChangeDir,
-          excluded,
-        );
-        if (!changesEqual(materialized.changes, input.changeSet.changes)) {
-          throw workflowError("schedule", input.winnerContentDir, "winner tree does not match its declared change set");
-        }
-        changeSet = materialized;
-      } else {
-        await snapshotWorkspaceContent(input.changeSet.winnerContentDir, winnerChangeDir);
-        const winnerEntries = await captureInventory(winnerChangeDir);
-        const actualPaths = winnerEntries.filter((entry) => entry.kind !== "directory").map((entry) => entry.path).sort();
-        const expectedPaths = input.changeSet.changes.filter((change) => change.kind !== "deleted").map((change) => change.path).sort();
-        if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
-          throw workflowError("schedule", input.winnerContentDir, "frozen winner change does not match its declared change set");
-        }
-        changeSet = { winnerContentDir: winnerChangeDir, changes: input.changeSet.changes };
-      }
-    } else {
-      changeSet = await captureWorkspaceChangeSet(
-        targetBeforeDir,
-        input.winnerContentDir,
-        winnerChangeDir,
-        excluded,
-      );
+    await snapshotWorkspaceLstat(sourceIdentity.lexicalPath, targetBeforeDir, excluded);
+    const targetBeforeBaseline = await freezeWorkspaceBaseline(sourceIdentity.lexicalPath, {
+      runDir: input.runDir,
+      excludeUnder: excluded,
+    });
+    const changeSet = await captureWorkspaceBaselineChanges(
+      input.baseline,
+      input.winnerContentDir,
+      winnerChangeDir,
+      excluded,
+    );
+    if (!changesEqual(changeSet.changes, input.changes)) {
+      throw workflowError("schedule", input.winnerContentDir, "winner tree does not match its declared change set");
     }
     await assertDirectoryIdentity(sourceIdentity, "source workspace");
     await assertDirectoryIdentity(runDirIdentity, "run directory");
@@ -524,8 +496,8 @@ export async function prepareConsolidationEvidence(
       runDir: runDirIdentity.realPath,
       excluded,
       snapshots: {
-        targetBefore: snapshotManifest(await captureInventory(targetBeforeDir)),
-        winnerChange: snapshotManifest(await captureInventory(winnerChangeDir)),
+        targetBefore: snapshotManifest(await inventoryWorkspaceLstat(targetBeforeDir)),
+        winnerChange: snapshotManifest(await inventoryWorkspaceLstat(winnerChangeDir)),
       },
       changeSet: { changes: changeSet.changes },
     } satisfies Omit<ExternalEvidenceManifest, "manifestDigest">;
@@ -561,6 +533,7 @@ export async function prepareConsolidationEvidence(
       runDir: runDirIdentity.lexicalPath,
       externalRoot,
       targetBeforeDir,
+      targetBeforeBaseline,
       winnerChangeDir,
       manifestPath,
       manifestDigest,
@@ -611,8 +584,8 @@ interface GateResult {
 
 async function inspectGate(evidence: PreparedConsolidationEvidence): Promise<GateResult> {
   const expected = await diffWorkspaceChangeSet(evidence.sourceCwd, evidence.changeSet);
-  const unexpected = (await workspaceContentChanges(
-    evidence.targetBeforeDir,
+  const unexpected = (await workspaceBaselineChanges(
+    evidence.targetBeforeBaseline,
     evidence.sourceCwd,
     evidence.excluded,
   ))
@@ -772,8 +745,8 @@ async function rollbackPrepared(
   });
 }
 
-/** Run the one canonical consolidation lifecycle for both runtime and legacy
- * callers. The core owns only evidence, gate, rollback, and Git metadata; the
+/** Run the one canonical consolidation lifecycle for every consolidation
+ * caller. The core owns only evidence, gate, rollback, and Git metadata; the
  * caller owns worker prompts, actor continuation, and workflow-specific state. */
 export function runConsolidationTransaction<R>(
   input: ConsolidationTransactionInput<R>,

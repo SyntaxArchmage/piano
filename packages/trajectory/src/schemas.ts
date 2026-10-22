@@ -106,16 +106,3 @@ export const selectionRecordSchema = z.object({
   carrying: selectionCarryingSchema.optional(),
 }).strict();
 
-export const trajectoryIndexSchema = z.object({
-  version: z.literal(1),
-  runId: z.string().min(1),
-  updatedAt: z.string().datetime(),
-  status: z.enum(["running", "completed", "failed", "cancelled"]),
-  streams: z.array(z.object({
-    id: z.string().min(1),
-    schema: z.string().min(1),
-    path: z.string().min(1),
-    status: z.enum(["running", "completed", "error"]),
-    errors: z.array(z.string()),
-  }).strict()),
-}).strict();

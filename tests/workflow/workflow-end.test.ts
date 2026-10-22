@@ -19,6 +19,7 @@ import {
   loadWorkflow,
 } from "../../packages/orchestrator/src/index.js";
 import type { AgentRequest } from "../../packages/harness/src/index.js";
+import { validationResultPathFromPrompt } from "../common/validation-path.mjs";
 
 const ONE_WORKER_WORKFLOW = `version: 3
 workflow:
@@ -147,7 +148,7 @@ function invocationId(request: AgentRequest): string {
 }
 
 function validationPath(request: AgentRequest): string {
-  const path = request.prompt.split("\n").find((line) => line.endsWith("/result.json"));
+  const path = validationResultPathFromPrompt(request.prompt);
   if (path === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return path;
 }

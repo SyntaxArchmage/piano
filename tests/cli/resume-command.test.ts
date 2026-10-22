@@ -47,7 +47,8 @@ describe("piano resume command ", () => {
     root = await mkdtemp(join(tmpdir(), "piano-resume-command-"));
     const runDir = join(root, runId);
     await mkdir(runDir, { recursive: true });
-    await writeFile(join(runDir, "trajectory.jsonl"), JSON.stringify({
+    await mkdir(join(runDir, "system-log"), { recursive: true });
+    await writeFile(join(runDir, "system-log", "trajectory.jsonl"), JSON.stringify({
       version: 1,
       runId,
       updatedAt: "2026-08-21T12:00:00.000Z",

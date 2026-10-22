@@ -4,7 +4,7 @@ import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { type PianoTheme } from "./theme.js";
 
-export interface WorkspacePickerDeps {
+interface WorkspacePickerDeps {
   readonly cwd: string;
   readonly onChoose: (cwd: string) => void;
   readonly onCancel: () => void;

@@ -1,55 +1,97 @@
 /**
  * The run's state, as one document.
  *
- * A run records its work in append-only ledgers — `progress.jsonl` for what the
- * workflow did and which harness sessions hold the conversations, and
- * `trajectory.jsonl` for what the agent said. This is the one view of them.
- * Every reader asks for the run's state here instead of folding its own, so
- * "how is this run doing" has exactly one answer and cannot disagree with
- * itself between the log picker, the TUI and a resume.
+ * A run records what the agent said in the append-only `trajectory.jsonl`
+ * ledger and keeps the workflow's own bookkeeping — jobs, accepted
+ * invocations, the actor table — here, in the one mutable document. Every
+ * reader asks for the run's state here instead of folding its own, so "how is
+ * this run doing" has exactly one answer and cannot disagree with itself
+ * between the log picker, the TUI and a resume.
  *
- * The ledgers stay the only evidence. Nothing here is written that cannot be
- * rebuilt by folding them, which is what lets the per-source documents that
- * used to sit beside them go away without losing a run.
+ * The trajectory ledger stays the evidence for the narrative fields; the
+ * orchestrator writes the rest as it schedules, so the document is the source
+ * for them rather than a second view that could drift.
  */
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
-import { parseJsonRecord, parseRunStreamLines, parseTrajectory, trajectoryStreamPath } from "@piano/logging";
+import { parseJsonRecord, parseTrajectory, trajectoryStreamPathCandidates, type TrajectoryDocument } from "@piano/logging";
 import { writeFileAtomic } from "./atomic-write.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
-import { foldJobSpans, jobs, type JobView } from "./job-spans.js";
+
 import {
-  applyProgressRecord,
-  workflowProgressPath,
   type WorkflowProgressCurrent,
   type WorkflowProgressInvocationTime,
-  type WorkflowProgressSnapshot,
+  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowProgressStageCount,
-  type WorkflowProgressStreamRecord,
 } from "./progress.js";
-import { actorTableFrom, type ResumeActorState } from "./resume-state.js";
+import type { ResumeActorState } from "./resume-state.js";
+import {
+  parseInvocationId,
+  type WorkflowRuntimeFrame,
+} from "./workflow-runtime.js";
+
+/** One accepted invocation of a job, as the state document holds it.
+ *
+ * `invocationId` is the key a continue matches on — the workflow's
+ * persistence contract. The fields beside it restate that key's identity as
+ * structure (`tune.propose@tune/iter-2` → stage, frames, iteration) so a
+ * reader of this document never has to parse it. */
+export interface RunAcceptedInvocation {
+  readonly invocationId: string;
+  /** Static dotted stage identity from the compiled workflow. */
+  readonly stageId: string;
+  /** The runtime frames the key carries (`[{regionId, iteration}, …]`), or
+   * absent for a root invocation or a key this build cannot parse. */
+  readonly frames?: readonly WorkflowRuntimeFrame[];
+  /** Innermost loop iteration, when the invocation ran inside a loop. */
+  readonly iteration?: number;
+}
+
+/** The state document's accepted entry for one invocation id: the key,
+ * spelled back out as structure. */
+export function acceptedInvocationOf(invocationId: string): RunAcceptedInvocation {
+  const { stageId, frames, iteration } = parseInvocationId(invocationId);
+  return {
+    invocationId,
+    stageId,
+    ...(frames === undefined ? {} : { frames }),
+    ...(iteration === undefined ? {} : { iteration }),
+  };
+}
 
 /** One job, as the state document holds it.
  *
- * `accepted` and `attempts` are a set and a map while a run is live; a JSON
- * document holds them as a list and a table. The coordinates stay the same. */
+ * A job is history and a cursor, never a second lifecycle: whether the run is
+ * working, paused, or finished is `RunStatus.status` alone. `accepted` and
+ * `attempts` are a set and a map while a run is live; a JSON document holds
+ * them as a list and a table. */
 export interface RunJob {
   readonly jobOrdinal: number;
-  /** `alive` while the last span runs; `paused` after a human stop; `finished`
-   * once a span closed with an outcome. */
-  readonly state: "alive" | "paused" | "finished";
-  /** Present only when `state` is `finished`. */
+  /** The verdict of a job that ended, kept for history and for finding the
+   * slots a restart abandoned. Absent while the job is the run's live or
+   * paused one. */
   readonly outcome?: "completed" | "failed" | "restarted";
-  /** Invocation ids accepted across every span of this job — what a continue
-   * of this job skips. */
-  readonly accepted: readonly string[];
+  /** Invocations accepted across every span of this job — what a continue of
+   * this job skips. */
+  readonly accepted: readonly RunAcceptedInvocation[];
   /** Highest attempt number recorded per invocation across the job's spans, so
    * a continue's re-run follows the attempts already on disk. */
   readonly attempts: Readonly<Record<string, number>>;
   /** The input the job runs. */
   readonly input?: string;
+  /** Regions that already finalized in this job, keyed by runtime instance.
+   * The `/continue` path rebuilds those boundaries instead of re-entering
+   * their workers. */
+  readonly regions?: Readonly<Record<string, WorkflowProgressRegionFinalizedRecord>>;
+}
+
+/** The ordinal the next job takes: one past the latest the table records.
+ * The table is the only source — evidence rows and caller hints never mint
+ * one. */
+export function nextJobOrdinal(jobs: readonly RunJob[]): number {
+  return (jobs.at(-1)?.jobOrdinal ?? 0) + 1;
 }
 
 /** One turn as the state document records it: what the turn was asked and how
@@ -61,11 +103,8 @@ export interface RunTurn {
   readonly status: "completed" | "failed" | "cancelled";
 }
 
-/** The run's state.
- *
- * One of each thing a run used to say once per file: `runId` (which the
- * progress and resume documents called `runId`), one `status`, one
- * `error`, one `updatedAt`. Everything else is what a reader asks for. */
+/** The run's state: identity, lifecycle status, error, and the job/actor
+ * tables — everything a reader asks for, in one document. */
 export interface RunStatus {
   readonly version: 1;
   readonly runId: string;
@@ -74,6 +113,9 @@ export interface RunStatus {
   readonly error?: unknown;
   /** Human-assigned run name (set via the TUI `/rename` command). */
   readonly name?: string;
+  /** The run's lane namespace (`<task-slug>-<runId>`), recorded so a continue
+   * reuses it instead of re-summarizing the prompt. */
+  readonly mnemonic?: string;
   /** Workflow this run executed, so `resume` reloads the same one. */
   readonly workflowPath?: string;
   /** TUI workspace at the time of the last turn, which may differ from the
@@ -91,16 +133,16 @@ export interface RunStatus {
   readonly remainingStages: number;
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
   /** Invocation id -> cumulative worker time, so the footer can show a stage's
-   * accumulated duration without replaying the stream. */
+   * accumulated duration without replaying the events. */
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   /** The invocation in flight, if any. */
   readonly current?: WorkflowProgressCurrent;
   /** The jobs this run has run, latest last. A continue keeps its ordinal; a
    * new prompt or a restart starts the next one. */
   readonly jobs: readonly RunJob[];
-  /** The job ordinal the actor table belongs to, and the registry itself:
-   * which harness session holds each conversation. */
-  readonly jobOrdinal: number;
+  /** Which harness session holds each conversation. One run is one execution,
+   * so the registry is run-scoped: every prompt after the first reopens what
+   * the previous one left. */
   readonly actors: Readonly<Record<string, ResumeActorState>>;
 }
 
@@ -108,59 +150,65 @@ export function runStatusPath(runDir: string): string {
   return join(runDir, "status.json");
 }
 
-/** Build the run's state from the raw contents of its ledgers.
- *
- * Pure, so a reader that already has the bytes (a sync picker, a test) folds
- * without going through the filesystem. `undefined` when nothing describes the
- * run — the same answer a run dir with no evidence gives. */
-export function runStatusFromParts(parts: {
-  readonly progressStream?: string;
-  readonly trajectoryStream?: string;
-}): RunStatus | undefined {
-  const records = parseProgressLines(parts.progressStream);
-  const progress = records.reduce<WorkflowProgressSnapshot | undefined>(
-    (folded, record) => applyProgressRecord(folded, record),
-    undefined,
-  );
-  const trajectory = parseTrajectory(parts.trajectoryStream);
-  if (progress === undefined && trajectory === undefined) return undefined;
-  // The actors a run has: the ledger's own `actor-turn` rows.
-  const actors = actorTableFrom(records);
+/** The state document's trajectory-derived fields. One projection, so the
+ * bootstrap fold and the per-write refresh cannot drift. */
+function trajectoryStatusFields(trajectory: TrajectoryDocument): Partial<RunStatus> {
+  return {
+    ...(trajectory.name === undefined ? {} : { name: trajectory.name }),
+    ...(trajectory.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
+    ...(trajectory.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
+    ...(trajectory.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
+    ...(trajectory.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
+    promptLength: trajectory.promptLength ?? 0,
+    ...(trajectory.turns === undefined
+      ? {}
+      : { turns: trajectory.turns.map((turn): RunTurn => ({ prompt: turn.prompt, status: turn.status })) }),
+  };
+}
 
-  const runId = progress?.runId ?? trajectory?.runId;
-  const status = progress?.status ?? trajectory?.status;
-  const updatedAt = progress?.updatedAt ?? trajectory?.updatedAt;
-  // A run that has said neither when it is nor how it is has not recorded
-  // enough to describe; its ledgers are still there for whoever wants them.
-  if (runId === undefined || status === undefined || updatedAt === undefined) return undefined;
-
-  const error = trajectory?.error ?? progress?.error;
+/** The zero state document. The workflow-owned half (jobs, accepted
+ * invocations, stage counts) is written as the run schedules. */
+export function emptyRunStatus(runId: string, timestamp: string): RunStatus {
   return {
     version: 1,
     runId,
-    updatedAt,
+    updatedAt: timestamp,
+    status: "running",
+    promptLength: 0,
+    plannedStages: 0,
+    completedStages: 0,
+    acceptedStages: 0,
+    remainingStages: 0,
+    stageCounts: {},
+    jobs: [],
+    actors: {},
+  };
+}
+
+/** Bootstrap the state document from a trajectory when none exists yet.
+ *
+ * Pure, so a reader that already has the bytes can fold without going through
+ * the filesystem. The trajectory's `status` is the status of its newest turn;
+ * this is the only place it seeds the run's lifecycle status, and it is a
+ * bootstrap, not a merge. */
+export function runStatusFromTrajectory(trajectoryStream?: string): RunStatus | undefined {
+  const trajectory = parseTrajectory(trajectoryStream);
+  return trajectory === undefined ? undefined : runStatusFromTrajectoryDocument(trajectory);
+}
+
+function runStatusFromTrajectoryDocument(trajectory: TrajectoryDocument): RunStatus | undefined {
+  const runId = trajectory.runId;
+  const status = trajectory.status;
+  const updatedAt = trajectory.updatedAt;
+  // A run that has said neither when it is nor how it is has not recorded
+  // enough to describe; its trajectory is still there for whoever wants it.
+  if (runId === undefined || status === undefined || updatedAt === undefined) return undefined;
+  return {
+    ...emptyRunStatus(runId, updatedAt),
     status,
-    ...(error === undefined ? {} : { error }),
-    ...(trajectory?.name === undefined ? {} : { name: trajectory.name }),
-    ...(trajectory?.workflowPath === undefined ? {} : { workflowPath: trajectory.workflowPath }),
-    ...(trajectory?.workspaceCwd === undefined ? {} : { workspaceCwd: trajectory.workspaceCwd }),
-    ...(trajectory?.transcriptPath === undefined ? {} : { transcriptPath: trajectory.transcriptPath }),
-    ...(trajectory?.sessionId === undefined ? {} : { sessionId: trajectory.sessionId }),
-    promptLength: trajectory?.promptLength ?? 0,
-    ...(trajectory?.turns === undefined
-      ? {}
-      : { turns: trajectory.turns.map((turn): RunTurn => ({ prompt: turn.prompt, status: turn.status })) }),
-    plannedStages: progress?.plannedStages ?? 0,
-    completedStages: progress?.completedStages ?? 0,
-    acceptedStages: progress?.acceptedStages ?? 0,
-    remainingStages: progress?.remainingStages ?? 0,
-    stageCounts: progress?.stageCounts ?? {},
-    ...(progress?.invocationTime === undefined ? {} : { invocationTime: progress.invocationTime }),
-    ...(progress?.current === undefined ? {} : { current: progress.current }),
-    jobs: jobs(foldJobSpans(records)).map(asRunJob),
-    jobOrdinal: actors.jobOrdinal,
-    actors: actors.actors,
-  } satisfies RunStatus;
+    ...(trajectory.error === undefined ? {} : { error: trajectory.error }),
+    ...trajectoryStatusFields(trajectory),
+  };
 }
 
 /** Read a run's state: the one document, whole.
@@ -177,65 +225,53 @@ export function readRunStatus(
   });
 }
 
-/** Fold the ledgers a run has recorded, producing the state document. */
-function foldRunStatus(
-  runDir: string,
-): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const read = (path: string) => fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-    const [progressStream, trajectoryStream] = yield* Effect.all([
-      read(workflowProgressPath(runDir)),
-      read(trajectoryStreamPath(runDir)),
-    ], { concurrency: "unbounded" });
-    return runStatusFromParts({
-      ...(progressStream === undefined ? {} : { progressStream }),
-      ...(trajectoryStream === undefined ? {} : { trajectoryStream }),
-    });
-  });
-}
-
-/** Fold the ledgers and write the view.
+/** Bring the trajectory-derived fields of the state document up to date.
  *
- * Called after a record lands so the view a reader picks up is the one the
- * record describes. The fold is the same one a reader performs, so what a
- * write leaves behind is by construction what reading it back would give. */
+ * Called after a trajectory write (a turn, a rename). The job and actor tables
+ * are the orchestrator's own writes and are preserved: this only refreshes
+ * what the trajectory is the source of, so a rename cannot erase a run.
+ * A run with no state document yet is folded whole from its trajectory. */
 export function refreshRunStatus(
   runDir: string,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
-    const status = yield* foldRunStatus(runDir);
-    if (status !== undefined) yield* writeRunStatus(runDir, status);
-  });
-}
-
-/** Rebuild a run's state document from its ledgers — the recovery path when the
- * view is missing or torn.
- *
- * Refuses while the latest job is still open: a live run's own writer owns the
- * view, and a second fold racing it could land a stale table over a newer one.
- * `force` folds anyway, for the operator who knows the run is not writing. */
-export function rebuildRunStatus(
-  runDir: string,
-  options: { readonly force?: boolean } = {},
-): Effect.Effect<RunStatus | undefined, WorkflowError, FileSystem.FileSystem> {
-  return Effect.gen(function* () {
-    const status = yield* foldRunStatus(runDir);
-    if (status === undefined) return undefined;
-    const latest = status.jobs.at(-1);
-    if (latest?.state === "alive" && options.force !== true) {
-      return yield* Effect.fail(workflowError(
-        "schedule",
-        runStatusPath(runDir),
-        "the latest job is still running; rebuild with --force to fold the ledgers anyway",
-      ));
+    const raw = yield* readTrajectoryText(runDir);
+    const trajectory = parseTrajectory(raw);
+    const current = yield* readRunStatus(runDir);
+    if (current === undefined) {
+      if (trajectory === undefined) return;
+      const folded = runStatusFromTrajectoryDocument(trajectory);
+      if (folded !== undefined) yield* writeRunStatus(runDir, folded);
+      return;
     }
-    yield* writeRunStatus(runDir, status);
-    return status;
+    if (trajectory === undefined) return;
+    yield* writeRunStatus(runDir, {
+      ...current,
+      updatedAt: trajectory.updatedAt,
+      ...trajectoryStatusFields(trajectory),
+      ...(current.error !== undefined || trajectory.error === undefined
+        ? (current.error === undefined ? {} : { error: current.error })
+        : { error: trajectory.error }),
+    });
   });
 }
 
-/** Write a run's state whole. The ledgers stay the evidence; this is the view. */export function writeRunStatus(
+/** The raw trajectory stream, first candidate that is present. */
+function readTrajectoryText(
+  runDir: string,
+): Effect.Effect<string | undefined, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    for (const path of trajectoryStreamPathCandidates(runDir)) {
+      const text = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
+      if (text !== undefined) return text;
+    }
+    return undefined;
+  });
+}
+
+/** Write a run's state whole. It is the source every reader polls. */
+export function writeRunStatus(
   runDir: string,
   status: RunStatus,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
@@ -246,29 +282,10 @@ export function rebuildRunStatus(
   });
 }
 
-/** The in-memory job, in the shapes a JSON document can hold. */
-function asRunJob(job: JobView): RunJob {
-  return {
-    jobOrdinal: job.jobOrdinal,
-    state: job.state,
-    ...(job.outcome === undefined ? {} : { outcome: job.outcome }),
-    accepted: [...job.accepted],
-    attempts: Object.fromEntries(job.attempts),
-    ...(job.input === undefined ? {} : { input: job.input }),
-  };
-}
-
 /** Parse a state document's raw bytes. `undefined` when missing, torn, or not
  * an object — the same tolerance every reader of the document needs, so none
  * of them hand-rolls its own. */
 export function parseRunStatus(raw: string): RunStatus | undefined {
   // A torn write reads as absent; the ledgers behind it still hold the run.
   return parseJsonRecord(raw) as RunStatus | undefined;
-}
-
-/** Parse a progress ledger's raw bytes into the records this build reads.
- * Blank and unreadable lines drop; the line acceptance rule lives in
- * logging's jsonl.ts. */
-export function parseProgressLines(raw: string | undefined): readonly WorkflowProgressStreamRecord[] {
-  return parseRunStreamLines<WorkflowProgressStreamRecord>(raw);
 }

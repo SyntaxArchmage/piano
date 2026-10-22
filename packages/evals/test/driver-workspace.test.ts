@@ -168,8 +168,8 @@ describe("eval workspace destination (ISSUE-016)", () => {
       plannedStages: 82,
       current: { stageId: "tune.race.implement" },
     }));
-    await mkdir(join(runDir, "trajectories"), { recursive: true });
-    await writeFile(join(runDir, "trajectories", "benchmark.jsonl"), [
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    await writeFile(join(runDir, "eval-metrics", "benchmark.jsonl"), [
       JSON.stringify({ iteration: 0, metric: { name: "tflops", best: 5.5 } }),
       JSON.stringify({ iteration: 1, metric: { name: "tflops", best: 6.5 } }),
       // A later iteration that measured worse (reverted idea) must not drag

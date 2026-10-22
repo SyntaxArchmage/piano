@@ -1,6 +1,5 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
-import { join } from "node:path";
 import {
   failureDetails,
   isCancellation,
@@ -28,6 +27,8 @@ import {
 } from "@piano/trajectory";
 import {
   compileWorkflow,
+  isSingleStageWorkflow,
+  isWorkflowIdentifier,
   type CompiledWorkflow,
   type WorkflowHarness,
 } from "./workflow.js";
@@ -68,15 +69,19 @@ import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import {
   actorSessionDirectory,
   runId as normalizeExecutionId,
-  migrateLegacyActorKey,
 } from "./workflow-runtime.js";
 import {
   type HandoffMapItem,
 } from "./handoff.js";
 import {
+  readInvocationRecords,
+} from "./invocations.js";
+import {
   cleanupMapWorkspaces,
+  mnemonicNamespace,
   sharedWorkspaceBinding,
-  type WorkspaceChangeSet,
+  type WorkspaceBaseline,
+  type WorkspaceContentChange,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
 import {
@@ -90,12 +95,11 @@ import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
-  workflowProgressPath,
+  reconcileCrashedRun,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
-import { foldJobSpans, nextJobOrdinal } from "./job-spans.js";
-import { parseProgressLines, runStatusPath } from "./run-status.js";
+import { nextJobOrdinal, readRunStatus, runStatusPath, type RunStatus } from "./run-status.js";
 import {
   buildCommitMessage,
   commitRoundFiles,
@@ -133,8 +137,22 @@ export interface WorkflowExecutionRequest {
      * accepted invocations' evidence instead of re-entering its workers. */
     readonly regions?: ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord>;
   };
+  /** Restart a paused job: close it as `restarted` and start the next job in
+   * one state transition. The close folds into the same `status.json` write,
+   * so the two are never observed apart. */
+  readonly restartOrdinal?: number;
   readonly cwd: string;
   readonly prompt: string;
+  /** Lane namespace (`<task-slug>-<runId>`) for this run's map/tournament
+   * branches. The caller resolves an explicit override; omitted runs get the
+   * recorded namespace on resume, else the preflight summary, else
+   * `<workflow.mnemonic|name>-<runId>`. A resumed run rejects a differing
+   * value. */
+  readonly mnemonic?: string;
+  /** One preflight agent turn naming the task; the CLI supplies it for
+   * workflows that declare lanes. Omitted (tests, lane-free workflows) means
+   * the workflow's own mnemonic is used without a model call. */
+  readonly summarizeMnemonic?: () => Effect.Effect<string | undefined, never, FileSystem.FileSystem | Logging>;
   readonly signal?: AbortSignal;
   /** Mid-turn steering channel for whichever stage worker is live. The engine
    * threads it exactly like `signal` — transport only, never interpreted. */
@@ -267,7 +285,8 @@ export interface WorkflowExecutionResult {
   /** The terminal root-node output(s). A single downstream join produces one
    * item; a terminal map deliberately exposes its ordered slot outputs. */
   readonly terminalStages: readonly WorkflowStageExecutionResult[];
-  /** Run-level append-only progress stream, including every loop iteration. */
+  /** Deprecated alias for `statusPath`, kept while the headless
+   * `progress_path` key retires. Current runs write no progress stream. */
   readonly progressPath: string;
   /** Where the run's one state document lives, for monitors. */
   readonly statusPath?: string;
@@ -325,35 +344,39 @@ function createExecutionDirectory(
   );
 }
 
-/** What the run's own ledger says about its jobs before a new one starts: the
- * ordinal it must not reuse, and the jobs a close already abandoned. Both come
- * from one fold of the evidence — the ledger's spans and the `prompts/<n>`
- * trees, with the resume state's index as a floor only. A hint that lags
- * behind cannot reopen an ordinal another job's evidence already holds. */
+/** What the run's state document says before a prompt starts: its status, the
+ * next ordinal, and the jobs a restart already abandoned. The document is the
+ * only identity source — invocation rows are evidence, not a second ordinal
+ * ledger. Rows without a job table mean the document was lost; minting from 1
+ * then would alias the old job's `inv-<ref>` names, so the run refuses
+ * instead. */
 function readRunJobLedger(
   runDir: string,
-  hint: number | undefined,
 ): Effect.Effect<
-  { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[] },
-  never,
+  {
+    readonly runStatus?: RunStatus;
+    readonly nextOrdinal: number;
+    readonly abandonedOrdinals: readonly number[];
+  },
+  WorkflowError,
   FileSystem.FileSystem
 > {
   return Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const ledger = yield* fileSystem.readFileString(workflowProgressPath(runDir)).pipe(
-      Effect.orElseSucceed(() => ""),
-    );
-    const records = parseProgressLines(ledger);
-    const spans = foldJobSpans(records);
-    const entries = yield* fileSystem.readDirectory(join(runDir, "prompts")).pipe(
-      Effect.orElseSucceed(() => [] as readonly string[]),
-    );
-    const recordedOrdinals = entries
-      .map((entry) => Number(entry))
-      .filter((value) => Number.isSafeInteger(value) && value > 0);
+    const status = yield* readRunStatus(runDir);
+    const jobs = status?.jobs ?? [];
+    if (jobs.length === 0 && (yield* readInvocationRecords(runDir)).length > 0) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        runDir,
+        "run state has no job table but its invocation evidence exists; the state document is missing",
+      ));
+    }
     return {
-      nextOrdinal: nextJobOrdinal(spans, recordedOrdinals, hint),
-      abandonedOrdinals: spans.filter((span) => span.closed !== undefined).map((span) => span.jobOrdinal),
+      ...(status === undefined ? {} : { runStatus: status }),
+      nextOrdinal: nextJobOrdinal(jobs),
+      abandonedOrdinals: jobs
+        .filter((job) => job.outcome === "restarted")
+        .map((job) => job.jobOrdinal),
     };
   });
 }
@@ -369,7 +392,7 @@ const reclaimAbandonedSlots = (
   runId: string,
   ordinals: readonly number[],
 ): Effect.Effect<void, never, FileSystem.FileSystem | Logging> =>
-  Effect.forEach(ordinals, (ordinal) => cleanupMapWorkspaces(runDir, runId, {
+  Effect.forEach(ordinals, (ordinal) => cleanupMapWorkspaces(runDir, {
     keyPrefix: `job-${ordinal}/`,
   }).pipe(Effect.asVoid), { discard: true }).pipe(
     Effect.tapError((error) => WORKFLOW_LOG.error("workspace.reclaim.failed", {
@@ -475,20 +498,18 @@ function validateTournamentExitMetricArity(
 export interface ConsolidateAndGateRequest {
   readonly request: WorkflowExecutionRequest;
   readonly winnerKey: string;
-  /** Frozen winner tree for legacy callers, or the frozen changed-file tree
-   * paired with changeSet for runtime tournament calls. */
+  /** The winner's live content, re-materialized against the baseline. */
   readonly winnerContentDir: string;
   readonly winnerWorker: string;
   readonly winnerHarness: string;
   readonly sourceCwd: string;
   readonly excludeUnder: readonly string[];
-  /** Runtime callers provide the declared baseline-relative delta. The
-   * transaction re-materialises its canonical copy outside source/runDir. */
-  readonly changeSet?: WorkspaceChangeSet;
-  /** Complete runtime winner tree used to rebuild the external delta. */
-  readonly winnerBaselineContentDir?: string;
-  /** Deprecated compatibility input. It is never trusted as canonical evidence. */
-  readonly targetBeforeDir?: string;
+  /** The declared baseline-relative delta (paths and kinds). The transaction
+   * re-materialises the canonical frozen files outside source/runDir. */
+  readonly changes: readonly WorkspaceContentChange[];
+  /** The baseline the winner delta is measured against, so the transaction
+   * can re-derive and verify the declared change list. */
+  readonly winnerBaseline: WorkspaceBaseline;
   readonly winnerActor?: ActorExecutionContext & {
     readonly continuation?: AgentContinuation;
     readonly onTurn: (worker: {
@@ -603,8 +624,8 @@ export function consolidateAndGate(
       sourceCwd: args.sourceCwd,
       runDir: args.request.runDir,
       winnerContentDir: args.winnerContentDir,
-      ...(args.winnerBaselineContentDir === undefined ? {} : { baselineContentDir: args.winnerBaselineContentDir }),
-      ...(args.changeSet === undefined ? {} : { changeSet: args.changeSet }),
+      baseline: args.winnerBaseline,
+      changes: args.changes,
       excludeUnder: args.excludeUnder,
     }),
     catch: (cause) => cause instanceof ConsolidationEvidencePreparationError
@@ -702,15 +723,104 @@ export function executeWorkflow(
     }
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
-    // A continue repeats its job's ordinal: the span belongs to the same job,
-    // so its evidence lands in the same prompts/<i>/ tree and the stream
-    // groups the spans together. A fresh job takes the next ordinal the run's
-    // own evidence leaves — the resume state's index is only a floor there.
-    const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.jobOrdinal);
-    yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
-    const jobOrdinal = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
+    // A process can die after announcing its execution but before installing
+    // the finalizer, leaving the run `running` with nothing working it. One
+    // process runs a run, so a run this process is not running is over: fold
+    // the end it never wrote, exactly as the resume picker does.
+    yield* reconcileCrashedRun(request.runDir);
+    const jobLedger = yield* readRunJobLedger(request.runDir);
+    const runStatus = jobLedger.runStatus;
+    const latestJob = runStatus?.jobs.at(-1);
+    // Lifecycle decisions read the run's status, the one enum every module
+    // polls; the job table supplies identity and the cursor.
+    let continueJob = request.continueJob;
+    if (continueJob !== undefined && latestJob?.jobOrdinal !== continueJob.jobOrdinal) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        "cannot continue a job that is not this run's latest",
+      ));
+    }
+    if (request.restartOrdinal !== undefined
+      && (runStatus?.status !== "paused" || latestJob?.jobOrdinal !== request.restartOrdinal)) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        "cannot restart a job the run does not hold paused",
+      ));
+    }
+    const pausedJob = runStatus?.status === "paused" ? latestJob : undefined;
+    if (continueJob === undefined && request.restartOrdinal === undefined && pausedJob !== undefined) {
+      // A one-node workflow's restart and continue both re-enter that node, so
+      // a plain prompt resumes it. Accepted work is deliberately not skipped:
+      // the new prompt is new work, not a request to replay the old answer.
+      if (!isSingleStageWorkflow(loaded.document)) {
+        return yield* Effect.fail(workflowError(
+          "schedule",
+          loaded.workflowPath,
+          "run is paused mid-workflow; use /continue or /restart",
+        ));
+      }
+      continueJob = {
+        jobOrdinal: pausedJob.jobOrdinal,
+        accepted: new Set(),
+        attempts: new Map(Object.entries(pausedJob.attempts)),
+      };
+    }
+    const jobOrdinal = continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
+    // The stage runner reads the cursor from the request; a synthesized
+    // implicit continue must be visible there too, not only to this block.
+    const executionRequest: WorkflowExecutionRequest = continueJob === request.continueJob
+      ? request
+      : { ...request, continueJob };
     const knownLoopIterations = new Map<string, number>();
-    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, jobOrdinal, request.prompt, request.execution !== undefined);
+    // The lane namespace is the run's task identity. A resumed run keeps the
+    // one it recorded; a new run takes the caller's value, else a preflight
+    // summary when the workflow has lanes, else the workflow's own mnemonic.
+    // A conflicting caller value is a mistake: the user is resuming a
+    // different task under this run id.
+    const recordedMnemonic = runStatus?.mnemonic;
+    if (request.mnemonic !== undefined && recordedMnemonic !== undefined && request.mnemonic !== recordedMnemonic) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        `run already uses lane namespace "${recordedMnemonic}"; resume it or start a new run`,
+      ));
+    }
+    let mnemonic = request.mnemonic ?? recordedMnemonic;
+    if (mnemonic === undefined) {
+      const summary = request.summarizeMnemonic === undefined
+        || !compiled.regions.some((region) => region.kind === "map")
+        ? undefined
+        : yield* request.summarizeMnemonic();
+      mnemonic = mnemonicNamespace(summary ?? compiled.mnemonic ?? compiled.name, runId);
+    }
+    if (!isWorkflowIdentifier(mnemonic)) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        `lane namespace must be a simple workflow identifier: ${mnemonic}`,
+      ));
+    }
+    yield* initializeWorkflowProgress(
+      request.runDir,
+      runId,
+      progressPlan,
+      jobOrdinal,
+      request.prompt,
+      request.execution !== undefined,
+      {
+        ...(mnemonic === undefined ? {} : { mnemonic }),
+        ...(request.restartOrdinal === undefined ? {} : { restartOrdinal: request.restartOrdinal }),
+      },
+    );
+    // Reclaim only once the new job's start is committed: a validation
+    // failure leaves the paused job's preserved slots untouched, and a
+    // crash after the write is finished by the next job's ledger sweep.
+    yield* reclaimAbandonedSlots(request.runDir, runId, [
+      ...jobLedger.abandonedOrdinals,
+      ...(request.restartOrdinal === undefined ? [] : [request.restartOrdinal]),
+    ]);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {
@@ -737,20 +847,6 @@ export function executeWorkflow(
     // worker request, so the harness reopens exactly the transcripts this prompt
     // touches and nothing else.
     const actors = new Map<string, ActorState>(request.execution?.actors);
-    // Actors written before they were keyed by worker carry the stage id in
-    // their key. Rekey them once here: the compiled workflow is the only place
-    // the stage→worker mapping exists, so this is the one moment the rewrite
-    // is possible. An actor whose stage the current workflow does not hold
-    // keeps its old key and is simply not looked up.
-    if (request.execution !== undefined) {
-      const stageToWorker = new Map(compiled.stages.map((stage) => [stage.id, stage.stage.worker]));
-      for (const [key, state] of [...actors]) {
-        const migratedKey = migrateLegacyActorKey(key, stageToWorker);
-        if (migratedKey === undefined || actors.has(migratedKey)) continue;
-        actors.delete(key);
-        actors.set(migratedKey, state);
-      }
-    }
     const workflowAgentOptions: AgentHarnessOptions = {
       ...(request.agentOptions ?? {}),
       // Codex's workspace-write sandbox only grants the task cwd by default;
@@ -773,13 +869,13 @@ export function executeWorkflow(
     const workspaceState: WalkerWorkspaceState = { preserve: false };
     /** Set by the exit classifier below before the finalizer runs: a human
      * pause (`/exit`, Escape on a stuck prompt) must keep this job's slots so
-     * a continue can rebind them instead of finding swept tombstones. */
+     * a continue can rebind them instead of finding them deleted. */
     let pausedExit = false;
     // A continue's snapshot starts where the job left off: the invocations
     // accepted in earlier spans are not re-run, so nothing would count them
     // again and the run's counts would restart from the continue instead.
-    if (request.continueJob !== undefined) {
-      for (const invocationId of request.continueJob.accepted) {
+    if (continueJob !== undefined) {
+      for (const invocationId of continueJob.accepted) {
         counters.acceptedStageCount += 1;
         const stageId = invocationId.split("@", 1)[0] ?? invocationId;
         counters.completedByStage.set(stageId, (counters.completedByStage.get(stageId) ?? 0) + 1);
@@ -821,10 +917,11 @@ export function executeWorkflow(
 
     /** Everything the stage runner reaches outside itself. */
     const stageRunnerContext: StageRunnerContext = {
-      request,
+      request: executionRequest,
       loaded,
       compiled,
       runId,
+      mnemonic,
       jobOrdinal,
       actors,
       announcedContinuations,
@@ -847,11 +944,11 @@ export function executeWorkflow(
      * shape. */
 
     const finalizeWorkspaces = (preserveSlots: boolean): Effect.Effect<void, WorkflowError, FileSystem.FileSystem | Logging> =>
-      Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, runId, {
+      Effect.uninterruptible(Effect.suspend(() => cleanupMapWorkspaces(request.runDir, {
         // A nested map slot legitimately records its immediate parent slot as
         // sourceCwd. The execution id and run-owned record path already bound
         // this backstop to the current run; applying the root source identity
-        // here would reject valid nested (including already-cleaned) records.
+        // here would reject valid nested records.
         preserve: preserveSlots || request.workspace?.preserve === true || workspaceState.preserve,
         // Only this job's slots: a completed prompt must never sweep the
         // preserved slots a paused job left for its continue to rebind.
@@ -1087,7 +1184,7 @@ export function executeWorkflow(
         ...(final.thinkingLevel === undefined ? {} : { thinkingLevel: final.thinkingLevel }),
         stages: completed.stages,
         terminalStages: terminal,
-        progressPath: workflowProgressPath(request.runDir),
+        progressPath: runStatusPath(request.runDir),
         statusPath: runStatusPath(request.runDir),
       };
     });
@@ -1113,8 +1210,8 @@ export function executeWorkflow(
         const cancelled = isCancellation(exit.cause);
         pausedExit = cancelled;
         const details = failureDetails(exit.cause);
-        // An execution that failed before it had an identity never opened a
-        // stream or a snapshot, so it has no outcome of its own to record.
+        // An execution that failed before it had an identity never started a
+        // schedule, so it has no outcome of its own to record.
         if (runId !== undefined) {
           yield* finalizeWorkflowProgress(
             request.runDir,

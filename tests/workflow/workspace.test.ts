@@ -2,25 +2,26 @@ import { execFile } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
-import { join, sep } from "node:path";
+import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 import {
+  cleanupMapWorkspaces,
+  freezeWorkspaceBaseline,
+  prepareMapLaneFork,
+  workspaceBaselineChanges,
+  workspaceRefName,
+  captureWorkspaceBaselineChanges,
   allocateMapWorkspace,
   applyWinnerWorkspace,
-  cleanupMapWorkspaces,
-  recoverMapWorkspaces,
-  diffWorkspaceContent,
 } from "../../packages/orchestrator/src/index.js";
 import {
   diffWorkspaceLstat,
   inventoryWorkspaceLstat,
-  restoreWorkspaceChanges,
   restoreWorkspaceLstat,
-  snapshotWorkspaceContent,
-  workspaceContentChanges,
+  snapshotWorkspaceLstat,
 } from "../../packages/orchestrator/src/workspace.js";
 
 const execFileAsync = promisify(execFile);
@@ -44,7 +45,7 @@ function runEffect<A>(
 }
 
 describe(" workspace lifecycle", () => {
-  it("prefers a detached Git worktree for a clean repository and cleans its metadata", async () => {
+  it("prefers a lane branch worktree for a clean repository and cleans its metadata", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-git-workspace-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-git-run-"));
     try {
@@ -60,22 +61,21 @@ describe(" workspace lifecycle", () => {
         "git-clean",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
-      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as { strategy: string; status: string };
-      expect(record).toMatchObject({ strategy: "git-worktree", status: "active" });
+        { mnemonic: "test" },));
+      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as { strategy: string; phase: string };
+      expect(record).toMatchObject({ strategy: "git-worktree", phase: "allocated" });
       await expect(readFile(join(binding.cwd, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
 
-      const finalized = await runEffect(session, cleanupMapWorkspaces(session.runDir, "git-clean", { sourceCwd: root }));
-      expect(finalized[0]).toMatchObject({ key: "job-1/tournament/slot-0", status: "cleaned", phase: "cleaned" });
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ status: "cleaned" });
+      await expect(stat(binding.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
     }
   });
 
-  it("applies a selected dirty/non-Git snapshot back to the source and supports explicit recovery preservation", async () => {
+  it("applies a selected dirty/non-Git lane back to the source and supports explicit recovery preservation", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-snapshot-workspace-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-snapshot-run-"));
     try {
@@ -86,16 +86,21 @@ describe(" workspace lifecycle", () => {
         "snapshot",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
-      expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ strategy: "directory-snapshot" });
+        { mnemonic: "test" },));
+      expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ strategy: "store-worktree" });
       await rm(join(binding.cwd, "kernel.py"));
       await writeFile(join(binding.cwd, "winner.py"), "selected\n");
 
-      const recovered = await runEffect(session, recoverMapWorkspaces(session.runDir, "snapshot", root));
-      expect(recovered).toHaveLength(1);
-      expect(recovered[0]).toMatchObject({ key: "job-1/tournament/slot-0", cwd: binding.cwd });
-      await runEffect(session, applyWinnerWorkspace(session.runDir, "snapshot", binding.key, root));
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "snapshot", { sourceCwd: root }));
+      // Reallocation is the recovery path: it rebinds the same lane.
+      const rebound = await runEffect(session, allocateMapWorkspace(
+        session.runDir,
+        "snapshot",
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
+        root,
+        { mnemonic: "test" },));
+      expect(rebound.cwd).toBe(binding.cwd);
+      await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(readFile(join(root, "winner.py"), "utf8")).resolves.toBe("selected\n");
       await expect(stat(join(root, "kernel.py"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
@@ -105,11 +110,11 @@ describe(" workspace lifecycle", () => {
         "preserve",
         1, [{ kind: "map", regionId: "tournament", slot: 1 }],
         root,
-      ));
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve", { sourceCwd: root, preserve: true }));
-      expect(JSON.parse(await readFile(preserved.recordPath!, "utf8"))).toMatchObject({ status: "preserved", phase: "preserved" });
+        { mnemonic: "test" },));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root, preserve: true }));
+      expect(JSON.parse(await readFile(preserved.recordPath!, "utf8"))).toMatchObject({ phase: "preserved" });
       expect((await stat(preserved.cwd)).isDirectory()).toBe(true);
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
       await expect(stat(preserved.cwd)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -133,11 +138,11 @@ describe(" workspace lifecycle", () => {
         "apply-rollback",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       slotBlocked = join(binding.cwd, "blocked");
       await writeFile(join(binding.cwd, "winner.txt"), "winner\n");
 
-      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, "apply-rollback", binding.key, root)))
+      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root)))
         .rejects.toThrow();
       await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("baseline\n");
       await expect(readFile(join(blocked, "kept.txt"), "utf8")).resolves.toBe("must survive\n");
@@ -177,7 +182,7 @@ describe(" workspace lifecycle", () => {
         "slot-substitution",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       await replace(binding.cwd, outside);
 
       await expect(runEffect(session, allocateMapWorkspace(
@@ -185,10 +190,8 @@ describe(" workspace lifecycle", () => {
         "slot-substitution",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ))).rejects.toThrow(/symlink|substitution|realpath/u);
-      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, "slot-substitution", root)))
-        .rejects.toThrow(/symlink|substitution|realpath/u);
-      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, "slot-substitution", binding.key, root)))
+        { mnemonic: "test" },))).rejects.toThrow(/symlink|substitution|realpath/u);
+      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root)))
         .rejects.toThrow(/symlink|substitution|realpath/u);
       await expect(readFile(join(root, "source.txt"), "utf8")).resolves.toBe("source\n");
     } finally {
@@ -208,7 +211,7 @@ describe(" workspace lifecycle", () => {
         "slot-missing",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       await rm(binding.cwd, { recursive: true, force: true });
 
       await expect(runEffect(session, allocateMapWorkspace(
@@ -216,14 +219,14 @@ describe(" workspace lifecycle", () => {
         "slot-missing",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ))).rejects.toThrow(/workspace slot .* is missing at/u);
+        { mnemonic: "test" },))).rejects.toThrow(/workspace slot .* is missing at/u);
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
     }
   });
 
-  it("preserves an internal file symlink when allocating a directory snapshot", async () => {
+  it("preserves an internal file symlink when allocating a store worktree", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-internal-link-source-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-internal-link-run-"));
     try {
@@ -235,24 +238,24 @@ describe(" workspace lifecycle", () => {
         "internal-link",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
 
-      expect(binding.strategy).toBe("directory-snapshot");
+      expect(binding.strategy).toBe("store-worktree");
       expect((await lstat(join(binding.cwd, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(binding.cwd, "link.txt"))).resolves.toMatch(/target\.txt$/u);
       await expect(readFile(join(binding.cwd, "target.txt"), "utf8")).resolves.toBe("target\n");
 
-      await runEffect(session, applyWinnerWorkspace(session.runDir, "internal-link", binding.key, root));
+      await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
       expect((await lstat(join(root, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(root, "link.txt"))).resolves.toBe("target.txt");
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "internal-link", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
     }
   });
 
-  it("rejects a FIFO during directory-snapshot allocation without opening or blocking on it", async () => {
+  it("rejects a FIFO during store-worktree allocation without opening or blocking on it", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-fifo-source-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-fifo-run-"));
     try {
@@ -265,7 +268,7 @@ describe(" workspace lifecycle", () => {
         "fifo-source",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ))).rejects.toThrow(/unsupported filesystem node/u);
+        { mnemonic: "test" },))).rejects.toThrow(/unsupported filesystem node/u);
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
@@ -294,21 +297,19 @@ describe(" workspace lifecycle", () => {
         "run-root-replacement",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       await rm(session.runDir, { recursive: true, force: true });
       await replace(session.runDir, outside);
 
       const options = { sourceCwd: root };
-      await expect(runEffect(session, recoverMapWorkspaces(session.runDir, "run-root-replacement", root)))
-        .rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "run-root-replacement", options)))
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, options)))
         .rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
       await expect(runEffect(session, allocateMapWorkspace(
         session.runDir,
         "run-root-replacement",
         1, [{ kind: "map", regionId: "other", slot: 1 }],
         root,
-      ))).rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
+        { mnemonic: "test" },))).rejects.toThrow(/run directory|symlink|non-directory|realpath/u);
 
       await expect(readFile(join(outside, "sentinel.txt"), "utf8")).resolves.toBe("must remain untouched\n");
       await expect(stat(join(outside, "workspaces"))).rejects.toMatchObject({ code: "ENOENT" });
@@ -332,23 +333,23 @@ describe(" workspace lifecycle", () => {
         "scoped-cleanup",
         1, [{ kind: "map", regionId: "first", slot: 0 }],
         firstRoot,
-      ));
+        { mnemonic: "test" },));
       const second = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "scoped-cleanup",
         1, [{ kind: "map", regionId: "second", slot: 0 }],
         secondRoot,
-      ));
+        { mnemonic: "test" },));
 
-      const cleaned = await runEffect(session, cleanupMapWorkspaces(session.runDir, "scoped-cleanup", {
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: firstRoot,
         keys: [first.key],
       }));
-      expect(cleaned.map((record) => record.key)).toEqual([first.key]);
       await expect(stat(first.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(first.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
       expect((await stat(second.cwd)).isDirectory()).toBe(true);
 
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "scoped-cleanup", {
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: secondRoot,
         keys: [second.key],
       }));
@@ -370,23 +371,23 @@ describe(" workspace lifecycle", () => {
         "job-scoped-cleanup",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       const second = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "job-scoped-cleanup",
         2, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
 
-      const cleaned = await runEffect(session, cleanupMapWorkspaces(session.runDir, "job-scoped-cleanup", {
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         keyPrefix: "job-1/",
       }));
-      expect(cleaned.map((record) => record.key)).toEqual([first.key]);
       await expect(stat(first.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(first.recordPath!)).rejects.toMatchObject({ code: "ENOENT" });
       // The other job's slot stays active: a paused job keeps it so its
-      // continue can rebind instead of finding a swept tombstone.
-      expect(JSON.parse(await readFile(second.recordPath!, "utf8"))).toMatchObject({ key: second.key, status: "active" });
+      // continue can rebind instead of finding it deleted.
+      expect(JSON.parse(await readFile(second.recordPath!, "utf8"))).toMatchObject({ key: second.key, phase: "allocated" });
       expect((await stat(second.cwd)).isDirectory()).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -410,20 +411,20 @@ describe(" workspace lifecycle", () => {
       const slotA = await runEffect(session, allocateMapWorkspace(
         session.runDir, "git-winner-run",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }], root,
-      ));
+        { mnemonic: "test" },));
       const slotB = await runEffect(session, allocateMapWorkspace(
         session.runDir, "git-winner-run",
         1, [{ kind: "map", regionId: "tournament", slot: 1 }], root,
-      ));
+        { mnemonic: "test" },));
       expect(JSON.parse(await readFile(slotA.recordPath!, "utf8"))).toMatchObject({ strategy: "git-worktree" });
 
-      // Each slot edits its detached worktree; slot B is the winner.
+      // Each slot edits its own lane worktree; slot B is the winner.
       await writeFile(join(slotA.cwd, "kernel.py"), "loser-a\n");
       await writeFile(join(slotB.cwd, "kernel.py"), "WINNER\n");
 
-      const applied = await runEffect(session, applyWinnerWorkspace(session.runDir, "git-winner-run", slotB.key, root));
+      const applied = await runEffect(session, applyWinnerWorkspace(session.runDir, slotB.key, root));
       expect(applied.method).toBe("git-ff");
-      await runEffect(session, cleanupMapWorkspaces(session.runDir, "git-winner-run", { sourceCwd: root }));
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
 
       // The source HEAD advanced by ONE fast-forward and now holds the winner.
       expect(applied.commit).toBeDefined();
@@ -434,8 +435,14 @@ describe(" workspace lifecycle", () => {
       // The winner commit still exists and is a descendant of the base.
       expect((await execFileAsync("git", ["-C", root, "rev-list", "--count", `${applied.commit}^{}..${applied.commit}`], { encoding: "utf8" })).stdout.trim())
         .toBeDefined();
-      // The winning commit is reachable via a retained piano ref.
-      expect((await execFileAsync("git", ["-C", root, "for-each-ref", "refs/piano/"], { encoding: "utf8" })).stdout).toContain(applied.commit);
+      // The winner's commit lives on its lane branch, which survives cleanup.
+      const winnerBranch = "tuna/test/lane-1";
+      expect((await execFileAsync("git", ["-C", root, "rev-parse", winnerBranch], { encoding: "utf8" })).stdout.trim())
+        .toBe(applied.commit);
+      // The losing lane keeps its own branch, checkpointed with its edits.
+      const loserTip = (await execFileAsync("git", ["-C", root, "rev-parse", "--verify", "refs/heads/tuna/test/lane-0"], { encoding: "utf8" })).stdout.trim();
+      expect(loserTip).not.toBe(baseHead);
+      expect((await execFileAsync("git", ["-C", root, "show", `${loserTip}:kernel.py`], { encoding: "utf8" })).stdout).toBe("loser-a\n");
 
       // Losing slot A never reached the source.
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("WINNER\n");
@@ -445,7 +452,7 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("keeps a git slot recoverable when worktree removal fails", async () => {
+  it("keeps a git slot recoverable when its worktree metadata is broken", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-git-cleanup-failure-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-git-cleanup-failure-run-"));
     try {
@@ -461,15 +468,16 @@ describe(" workspace lifecycle", () => {
         "git-cleanup-failure",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
-      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
-      await writeFile(binding.recordPath!, `${JSON.stringify({ ...record, gitRoot: join(root, "missing-git-root") }, null, 2)}\n`);
+        { mnemonic: "test" },));
+      // Drop the repository's admin entry for the worktree while leaving the
+      // lane and its pointer intact: removal then fails, but the slot must
+      // stay recoverable rather than being half-deleted.
+      await rm(join(root, ".git", "worktrees", basename(binding.cwd)), { recursive: true, force: true });
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "git-cleanup-failure", { sourceCwd: root })))
-        .rejects.toThrow(/git worktree cleanup failed/u);
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root })))
+        .rejects.toThrow(/not checked out on its lane branch|git worktree cleanup failed/u);
       await expect(stat(binding.cwd)).resolves.toMatchObject({});
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({
-        status: "active",
         phase: "cleaning",
       });
     } finally {
@@ -497,12 +505,16 @@ describe(" workspace lifecycle", () => {
         "git-root-binding",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
+      // Rewrite both the pointer and the record so ownership still holds, but
+      // the named repository is no longer the source's common root.
+      await mkdir(join(foreign, ".git", "worktrees"), { recursive: true });
+      await writeFile(join(binding.cwd, ".git"), `gitdir: ${join(foreign, ".git", "worktrees", "forged")}\n`);
       const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as Record<string, unknown>;
       await writeFile(binding.recordPath!, `${JSON.stringify({ ...record, gitRoot: foreign }, null, 2)}\n`);
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "git-root-binding", { sourceCwd: root })))
-        .rejects.toThrow(/does not match source Git common root/u);
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root })))
+        .rejects.toThrow(/not checked out on its lane branch|does not match source Git common root/u);
       await expect(stat(binding.cwd)).resolves.toMatchObject({});
       expect(JSON.parse(await readFile(binding.recordPath!, "utf8"))).toMatchObject({ phase: "cleaning" });
     } finally {
@@ -525,11 +537,11 @@ describe(" workspace lifecycle", () => {
         "preserve-slot-substitution",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       await rm(binding.cwd, { recursive: true, force: true });
       await symlink(outside, binding.cwd);
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-slot-substitution", {
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         preserve: true,
       }))).rejects.toThrow(/symlink|substitution|realpath/u);
@@ -552,12 +564,12 @@ describe(" workspace lifecycle", () => {
         "preserve-ordinary-slot-substitution",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       await rm(binding.cwd, { recursive: true, force: true });
       await mkdir(binding.cwd);
       await writeFile(join(binding.cwd, "attacker.txt"), "not run-owned\n");
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-ordinary-slot-substitution", {
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         preserve: true,
       }))).rejects.toThrow(/run-owned|allocated directory|identity marker/u);
@@ -568,9 +580,10 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("rejects a replacement whose record identity matches but durable marker is missing", async () => {
+  it("rejects a replacement whose forged worktree pointer is outside the owning repository", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-preserve-marker-slot-source-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-preserve-marker-slot-run-"));
+    const outside = await mkdtemp(join(tmpdir(), "piano-preserve-marker-outside-"));
     try {
       await writeFile(join(root, "source.txt"), "source\n");
       const session = await sessionFor(root, runRoot);
@@ -579,34 +592,25 @@ describe(" workspace lifecycle", () => {
         "preserve-marker-substitution",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
-      const record = JSON.parse(await readFile(binding.recordPath!, "utf8")) as {
-        slotIdentity: { dev: number; ino: number; birthtimeMs: number; marker: string };
-      };
+        { mnemonic: "test" },));
       await rm(binding.cwd, { recursive: true, force: true });
       await mkdir(binding.cwd);
       await writeFile(join(binding.cwd, "attacker.txt"), "not run-owned\n");
-      const replacement = await lstat(binding.cwd);
-      record.slotIdentity = {
-        ...record.slotIdentity,
-        dev: replacement.dev,
-        ino: replacement.ino,
-        birthtimeMs: replacement.birthtimeMs,
-      };
-      await writeFile(binding.recordPath!, `${JSON.stringify(record, null, 2)}\n`);
+      await writeFile(join(binding.cwd, ".git"), `gitdir: ${outside}\n`);
 
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "preserve-marker-substitution", {
+      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, {
         sourceCwd: root,
         preserve: true,
-      }))).rejects.toThrow(/identity marker is missing or invalid/u);
+      }))).rejects.toThrow(/does not belong/u);
       await expect(readFile(join(binding.cwd, "attacker.txt"), "utf8")).resolves.toBe("not run-owned\n");
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 
-  it("requires every legacy apply record to name the declared source workspace", async () => {
+  it("requires every apply record to name the declared source workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-source-binding-root-"));
     const runRoot = await mkdtemp(join(tmpdir(), "piano-source-binding-run-"));
     try {
@@ -617,17 +621,17 @@ describe(" workspace lifecycle", () => {
         "source-binding",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
+        { mnemonic: "test" },));
       const second = await runEffect(session, allocateMapWorkspace(
         session.runDir,
         "source-binding",
         1, [{ kind: "map", regionId: "tournament", slot: 1 }],
         root,
-      ));
+        { mnemonic: "test" },));
       const record = JSON.parse(await readFile(first.recordPath!, "utf8")) as Record<string, unknown>;
       await writeFile(first.recordPath!, `${JSON.stringify({ ...record, sourceCwd: second.cwd }, null, 2)}\n`);
 
-      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, "source-binding", first.key, root)))
+      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, first.key, root)))
         .rejects.toThrow(/different source workspace/u);
       await expect(readFile(join(root, "source.txt"), "utf8")).resolves.toBe("source\n");
     } finally {
@@ -636,9 +640,9 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("fails winner carry when update-ref cannot retain the commit and preserves the slot", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-git-ref-failure-"));
-    const runRoot = await mkdtemp(join(tmpdir(), "piano-git-ref-failure-run-"));
+  it("keeps the winner on its lane branch when the source advanced past the fork", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-git-nonfastforward-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-git-nonfastforward-run-"));
     try {
       await execFileAsync("git", ["init", "-q", root]);
       await execFileAsync("git", ["-C", root, "config", "user.email", "piano-tests@example.invalid"]);
@@ -649,21 +653,181 @@ describe(" workspace lifecycle", () => {
       const session = await sessionFor(root, runRoot);
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
-        "git-ref-failure",
+        "git-nonfastforward",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
-      ));
-      await writeFile(join(binding.cwd, "source.txt"), "winner\n");
-      await mkdir(join(root, ".git", "refs", "piano"), { recursive: true });
-      await writeFile(join(root, ".git", "refs", "piano", "git-ref-failure"), "ref-path-blocker\n");
 
-      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, "git-ref-failure", binding.key, root)))
-        .rejects.toThrow(/winner commit could not be retained/u);
-      await expect(stat(binding.cwd)).resolves.toMatchObject({});
-      await expect(runEffect(session, cleanupMapWorkspaces(session.runDir, "git-ref-failure", {
-        sourceCwd: root,
-        preserve: true,
-      }))).resolves.toMatchObject([{ status: "preserved", phase: "preserved" }]);
+        { mnemonic: "test" },));
+      await writeFile(join(binding.cwd, "source.txt"), "winner\n");
+      // The user keeps working on the source branch while the lane runs.
+      await writeFile(join(root, "unrelated.txt"), "user edit\n");
+      await execFileAsync("git", ["-C", root, "add", "unrelated.txt"]);
+      await execFileAsync("git", ["-C", root, "commit", "-q", "-m", "user progress"]);
+
+      const applied = await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
+      expect(applied.skipped).toBeDefined();
+      // The winner's work is safe on its lane branch even though it did not land.
+      expect((await execFileAsync("git", ["-C", root, "rev-parse", "tuna/test/lane-0"], { encoding: "utf8" })).stdout.trim())
+        .toBe(applied.commit);
+      await expect(readFile(join(root, "source.txt"), "utf8")).resolves.toBe("source\n");
+      await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root }));
+      await expect(stat(binding.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+      // Cleanup removes the worktree but keeps the lane branch.
+      expect((await execFileAsync("git", ["-C", root, "rev-parse", "tuna/test/lane-0"], { encoding: "utf8" })).stdout.trim())
+        .toBe(applied.commit);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("seeds one commit of unsaved content and forks every lane from it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-dirty-source-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-dirty-source-run-"));
+    try {
+      await execFileAsync("git", ["init", "-q", root]);
+      await execFileAsync("git", ["-C", root, "config", "user.email", "piano-tests@example.invalid"]);
+      await execFileAsync("git", ["-C", root, "config", "user.name", "Piano Tests"]);
+      await writeFile(join(root, "tracked.txt"), "committed\n");
+      await execFileAsync("git", ["-C", root, "add", "tracked.txt"]);
+      await execFileAsync("git", ["-C", root, "commit", "-q", "-m", "baseline"]);
+      const baseHead = (await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
+      // Unsaved edits and an untracked file must still reach every lane.
+      await writeFile(join(root, "tracked.txt"), "unsaved\n");
+      await writeFile(join(root, "untracked.txt"), "untracked\n");
+
+      const session = await sessionFor(root, runRoot);
+      const frames = [{ kind: "map" as const, regionId: "tournament", slot: 0 }];
+      const fork = await prepareMapLaneFork(root, {
+        runDir: session.runDir,
+        runId: "dirty",
+        jobOrdinal: 1,
+        frames,
+      });
+      expect(fork.strategy).toBe("git-worktree");
+      expect(fork.sourceBranch).toBe(
+        (await execFileAsync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" })).stdout.trim(),
+      );
+      const first = await runEffect(session, allocateMapWorkspace(
+        session.runDir, "dirty",
+        1, frames, root,
+
+        { mnemonic: "test", fork },));
+      const second = await runEffect(session, allocateMapWorkspace(
+        session.runDir, "dirty",
+        1, [{ kind: "map", regionId: "tournament", slot: 1 }], root,
+
+        { mnemonic: "test", fork },));
+
+      await expect(readFile(join(first.cwd, "tracked.txt"), "utf8")).resolves.toBe("unsaved\n");
+      await expect(readFile(join(second.cwd, "untracked.txt"), "utf8")).resolves.toBe("untracked\n");
+      // The user's branch and index are untouched; the seed is only reachable
+      // through the lane branches.
+      expect((await execFileAsync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim()).toBe(baseHead);
+      const firstRecord = JSON.parse(await readFile(first.recordPath!, "utf8")) as { baseCommit: string; laneBranch: string };
+      const secondRecord = JSON.parse(await readFile(second.recordPath!, "utf8")) as { baseCommit: string };
+      expect(firstRecord.baseCommit).toBe(secondRecord.baseCommit);
+      expect(firstRecord.baseCommit).not.toBe(baseHead);
+      await execFileAsync("git", ["-C", root, "merge-base", "--is-ancestor", baseHead, firstRecord.baseCommit]);
+      expect(firstRecord.laneBranch).toBe("tuna/test/lane-0");
+      expect((await execFileAsync("git", ["-C", root, "rev-parse", firstRecord.laneBranch], { encoding: "utf8" })).stdout.trim())
+        .toBe(firstRecord.baseCommit);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps lane numbers monotonic while every branch survives cleanup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-lane-numbers-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-lane-numbers-run-"));
+    try {
+      await execFileAsync("git", ["init", "-q", root]);
+      await execFileAsync("git", ["-C", root, "config", "user.email", "piano-tests@example.invalid"]);
+      await execFileAsync("git", ["-C", root, "config", "user.name", "Piano Tests"]);
+      await writeFile(join(root, "source.txt"), "source\n");
+      await execFileAsync("git", ["-C", root, "add", "source.txt"]);
+      await execFileAsync("git", ["-C", root, "commit", "-q", "-m", "baseline"]);
+      const session = await sessionFor(root, runRoot);
+
+      const branches: string[] = [];
+      for (const slot of [0, 1, 2]) {
+        const binding = await runEffect(session, allocateMapWorkspace(
+          session.runDir, "lane-numbers",
+          1, [{ kind: "map", regionId: "tournament", slot }], root,
+
+          { mnemonic: "test" },));
+        branches.push((JSON.parse(await readFile(binding.recordPath!, "utf8")) as { laneBranch: string }).laneBranch);
+        await runEffect(session, cleanupMapWorkspaces(session.runDir, { sourceCwd: root, keys: [binding.key] }));
+      }
+      expect(branches).toEqual(["tuna/test/lane-0", "tuna/test/lane-1", "tuna/test/lane-2"]);
+      // Cleanup removed every worktree but kept every branch.
+      for (const branch of branches) {
+        await execFileAsync("git", ["-C", root, "rev-parse", "--verify", `refs/heads/${branch}`]);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to fork from an unborn branch or a detached HEAD", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-unforkable-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-unforkable-run-"));
+    try {
+      await execFileAsync("git", ["init", "-q", root]);
+      await execFileAsync("git", ["-C", root, "config", "user.email", "piano-tests@example.invalid"]);
+      await execFileAsync("git", ["-C", root, "config", "user.name", "Piano Tests"]);
+      const session = await sessionFor(root, runRoot);
+      const options = { mnemonic: "test" };
+      await expect(runEffect(session, allocateMapWorkspace(
+        session.runDir, "unforkable",
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }], root,
+        options,
+      ))).rejects.toThrow(/no commits to fork/u);
+
+      await writeFile(join(root, "source.txt"), "source\n");
+      await execFileAsync("git", ["-C", root, "add", "source.txt"]);
+      await execFileAsync("git", ["-C", root, "commit", "-q", "-m", "baseline"]);
+      await execFileAsync("git", ["-C", root, "checkout", "-q", "--detach", "HEAD"]);
+      await expect(runEffect(session, allocateMapWorkspace(
+        session.runDir, "unforkable",
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }], root,
+        options,
+      ))).rejects.toThrow(/HEAD is detached/u);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not carry onto a different branch than the one the lane forked from", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-git-branch-switch-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-git-branch-switch-run-"));
+    try {
+      await execFileAsync("git", ["init", "-q", root]);
+      await execFileAsync("git", ["-C", root, "config", "user.email", "piano-tests@example.invalid"]);
+      await execFileAsync("git", ["-C", root, "config", "user.name", "Piano Tests"]);
+      await writeFile(join(root, "source.txt"), "source\n");
+      await execFileAsync("git", ["-C", root, "add", "source.txt"]);
+      await execFileAsync("git", ["-C", root, "commit", "-q", "-m", "baseline"]);
+      const session = await sessionFor(root, runRoot);
+      const binding = await runEffect(session, allocateMapWorkspace(
+        session.runDir,
+        "git-branch-switch",
+        1, [{ kind: "map", regionId: "tournament", slot: 0 }],
+        root,
+
+        { mnemonic: "test" },));
+      await writeFile(join(binding.cwd, "source.txt"), "winner\n");
+      // The user switches branches mid-run.
+      await execFileAsync("git", ["-C", root, "checkout", "-q", "-b", "other"]);
+
+      const applied = await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
+      expect(applied.skipped?.reason).toMatch(/no longer checked out/u);
+      await expect(readFile(join(root, "source.txt"), "utf8")).resolves.toBe("source\n");
+      expect((await execFileAsync("git", ["-C", root, "rev-parse", "tuna/test/lane-0"], { encoding: "utf8" })).stdout.trim())
+        .toBe(applied.commit);
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
@@ -671,47 +835,10 @@ describe(" workspace lifecycle", () => {
   });
 });
 
-describe("[§6] read-only winner-content gate", () => {
-  it("round-trips a POSIX backslash filename without treating it as a separator", async () => {
-    if (sep === "\\") return;
-    const root = await mkdtemp(join(tmpdir(), "piano-backslash-root-"));
-    const before = await mkdtemp(join(tmpdir(), "piano-backslash-before-"));
-    await rm(before, { recursive: true, force: true });
-    const filename = "dir\\file.txt";
-    try {
-      await writeFile(join(root, filename), "baseline\n");
-      await snapshotWorkspaceContent(root, before);
-      await writeFile(join(root, filename), "changed\n");
-      await expect(workspaceContentChanges(before, root)).resolves.toEqual([
-        { path: filename, kind: "modified" },
-      ]);
-      await restoreWorkspaceChanges(root, before, [{ path: filename, kind: "modified" }]);
-      await expect(readFile(join(root, filename), "utf8")).resolves.toBe("baseline\n");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-      await rm(before, { recursive: true, force: true });
-    }
-  });
-
-  it("does not exclude ordinary uppercase infrastructure-looking names on Linux", async () => {
-    if (process.platform !== "linux") return;
-    const left = await mkdtemp(join(tmpdir(), "piano-case-sensitive-left-"));
-    const right = await mkdtemp(join(tmpdir(), "piano-case-sensitive-right-"));
-    try {
-      await writeFile(join(left, ".GIT"), "application\n");
-      await writeFile(join(left, ".PIANO-RUN.LOCK"), "application\n");
-      await expect(diffWorkspaceContent(left, right)).resolves.toEqual({
-        equal: false,
-        differing: [".GIT", ".PIANO-RUN.LOCK"],
-      });
-    } finally {
-      await rm(left, { recursive: true, force: true });
-      await rm(right, { recursive: true, force: true });
-    }
-  });
-
+describe("workspace snapshot and rollback", () => {
   it("preserves an internal file symlink through snapshot, change, and rollback", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-symlink-root-"));
+    const runDir = await mkdtemp(join(tmpdir(), "piano-symlink-run-"));
     const before = await mkdtemp(join(tmpdir(), "piano-symlink-before-"));
     await rm(before, { recursive: true, force: true });
     try {
@@ -719,29 +846,31 @@ describe("[§6] read-only winner-content gate", () => {
       await chmod(join(root, "target.txt"), 0o755);
       await symlink("target.txt", join(root, "link.txt"));
 
-      await snapshotWorkspaceContent(root, before);
+      await snapshotWorkspaceLstat(root, before);
       expect((await lstat(join(before, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(before, "link.txt"))).resolves.toBe("target.txt");
       expect((await lstat(join(before, "target.txt"))).mode & 0o111).toBe(0o111);
+      const baseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/symlink") });
 
       await rm(join(root, "link.txt"));
       await writeFile(join(root, "other.txt"), "other\n");
       await symlink("other.txt", join(root, "link.txt"));
       await writeFile(join(root, "target.txt"), "changed\n");
-      const changes = await workspaceContentChanges(before, root);
+      const changes = await workspaceBaselineChanges(baseline, root);
       expect(changes).toEqual([
         { path: "link.txt", kind: "modified" },
         { path: "other.txt", kind: "added" },
         { path: "target.txt", kind: "modified" },
       ]);
 
-      await restoreWorkspaceChanges(root, before, changes);
+      await restoreWorkspaceLstat(root, before, changes);
       expect((await lstat(join(root, "link.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(root, "link.txt"))).resolves.toBe("target.txt");
       await expect(readFile(join(root, "target.txt"), "utf8")).resolves.toBe("target\n");
       expect((await lstat(join(root, "target.txt"))).mode & 0o111).toBe(0o111);
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(runDir, { recursive: true, force: true });
       await rm(before, { recursive: true, force: true });
     }
   });
@@ -755,7 +884,7 @@ describe("[§6] read-only winner-content gate", () => {
       await writeFile(join(outside, "secret.txt"), "outside\n");
       await symlink(join(outside, "secret.txt"), join(root, "link.txt"));
 
-      await expect(snapshotWorkspaceContent(root, snapshot)).rejects.toThrow(/external content/);
+      await expect(snapshotWorkspaceLstat(root, snapshot)).rejects.toThrow(/external content/);
       await expect(stat(snapshot)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -772,7 +901,7 @@ describe("[§6] read-only winner-content gate", () => {
       await writeFile(join(root, "target.txt"), "live source\n");
       await symlink(join(root, "target.txt"), join(root, "link.txt"));
 
-      await expect(snapshotWorkspaceContent(root, snapshot)).rejects.toThrow(/absolute symlink targets/);
+      await expect(snapshotWorkspaceLstat(root, snapshot)).rejects.toThrow(/absolute symlink targets/);
       await expect(lstat(join(snapshot, "link.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -787,7 +916,7 @@ describe("[§6] read-only winner-content gate", () => {
     try {
       await execFileAsync("mkfifo", [join(root, "worker.pipe")]);
 
-      await expect(snapshotWorkspaceContent(root, snapshot)).rejects.toThrow(/unsupported filesystem node/u);
+      await expect(snapshotWorkspaceLstat(root, snapshot)).rejects.toThrow(/unsupported filesystem node/u);
       await expect(stat(snapshot)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -799,12 +928,13 @@ describe("[§6] read-only winner-content gate", () => {
     const baseline = await mkdtemp(join(tmpdir(), "piano-lstat-baseline-"));
     const candidate = await mkdtemp(join(tmpdir(), "piano-lstat-candidate-"));
     const outside = await mkdtemp(join(tmpdir(), "piano-lstat-outside-"));
+    const strictSnapshot = join(tmpdir(), `piano-lstat-strict-${process.pid}-${Date.now()}`);
     try {
       await writeFile(join(baseline, "keep.txt"), "baseline\n");
       await mkdir(join(baseline, "nested"), { recursive: true });
       await writeFile(join(baseline, "nested", "keep.txt"), "nested baseline\n");
       await rm(candidate, { recursive: true, force: true });
-      await snapshotWorkspaceContent(baseline, candidate);
+      await snapshotWorkspaceLstat(baseline, candidate);
       await writeFile(join(outside, "secret.txt"), "must remain outside\n");
       await mkdir(join(outside, "directory"), { recursive: true });
       await writeFile(join(outside, "directory", "secret.txt"), "must remain outside\n");
@@ -815,7 +945,7 @@ describe("[§6] read-only winner-content gate", () => {
       const fifo = join(candidate, "worker.pipe");
       await execFileAsync("mkfifo", [fifo]);
 
-      await expect(diffWorkspaceContent(baseline, candidate)).rejects.toThrow();
+      await expect(snapshotWorkspaceLstat(candidate, strictSnapshot)).rejects.toThrow();
 
       const inventory = await inventoryWorkspaceLstat(candidate);
       expect(inventory).toEqual(expect.arrayContaining([
@@ -844,6 +974,7 @@ describe("[§6] read-only winner-content gate", () => {
       await rm(baseline, { recursive: true, force: true });
       await rm(candidate, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
+      await rm(strictSnapshot, { recursive: true, force: true });
     }
   });
 
@@ -860,7 +991,7 @@ describe("[§6] read-only winner-content gate", () => {
       await mkdir(join(outside, "directory"), { recursive: true });
       await writeFile(join(outside, "directory", "must-remain.txt"), "outside\n");
       await rm(candidate, { recursive: true, force: true });
-      await snapshotWorkspaceContent(baseline, candidate);
+      await snapshotWorkspaceLstat(baseline, candidate);
 
       await rm(join(candidate, "nested"), { recursive: true, force: true });
       await replace(join(candidate, "nested"), outside);
@@ -891,7 +1022,7 @@ describe("[§6] read-only winner-content gate", () => {
       await mkdir(join(runDir, "evidence"), { recursive: true });
       await writeFile(join(runDir, "evidence", "trace.ndjson"), "run-owned evidence\n");
       await rm(baseline, { recursive: true, force: true });
-      await snapshotWorkspaceContent(source, baseline, [runDir]);
+      await snapshotWorkspaceLstat(source, baseline, [runDir]);
 
       await writeFile(join(source, "app.txt"), "candidate\n");
       await expect(diffWorkspaceLstat(baseline, source, [runDir])).resolves.toEqual([
@@ -918,7 +1049,7 @@ describe("[§6] read-only winner-content gate", () => {
       await chmod(join(source, "empty"), 0o1750);
       await mkdir(join(source, "mode-dir"));
       await chmod(join(source, "mode-dir"), 0o1730);
-      await snapshotWorkspaceContent(source, baseline);
+      await snapshotWorkspaceLstat(source, baseline);
 
       await rm(join(source, "empty"), { recursive: true, force: true });
       await chmod(join(source, "mode-dir"), 0o700);
@@ -944,6 +1075,7 @@ describe("[§6] read-only winner-content gate", () => {
 
   it("records and restores regular-file to symlink type changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-symlink-type-root-"));
+    const runDir = await mkdtemp(join(tmpdir(), "piano-symlink-type-run-"));
     const beforeFile = await mkdtemp(join(tmpdir(), "piano-symlink-type-before-file-"));
     const beforeLink = await mkdtemp(join(tmpdir(), "piano-symlink-type-before-link-"));
     await rm(beforeFile, { recursive: true, force: true });
@@ -952,41 +1084,44 @@ describe("[§6] read-only winner-content gate", () => {
       await writeFile(join(root, "target.txt"), "target\n");
       await writeFile(join(root, "entry.txt"), "file\n");
       await chmod(join(root, "entry.txt"), 0o755);
-      await snapshotWorkspaceContent(root, beforeFile);
+      await snapshotWorkspaceLstat(root, beforeFile);
+      const fileBaseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/as-file") });
 
       await rm(join(root, "entry.txt"));
       await symlink("target.txt", join(root, "entry.txt"));
-      expect(await workspaceContentChanges(beforeFile, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
-      await restoreWorkspaceChanges(root, beforeFile, [{ path: "entry.txt", kind: "modified" }]);
+      expect(await workspaceBaselineChanges(fileBaseline, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
+      await restoreWorkspaceLstat(root, beforeFile, [{ path: "entry.txt", kind: "modified" }]);
       expect((await lstat(join(root, "entry.txt"))).isFile()).toBe(true);
       expect((await lstat(join(root, "entry.txt"))).mode & 0o111).toBe(0o111);
 
       await rm(join(root, "entry.txt"));
       await symlink("target.txt", join(root, "entry.txt"));
-      await snapshotWorkspaceContent(root, beforeLink);
+      await snapshotWorkspaceLstat(root, beforeLink);
+      const linkBaseline = await freezeWorkspaceBaseline(root, { runDir, refName: workspaceRefName("test", "baselines/as-link") });
       await rm(join(root, "entry.txt"));
       await writeFile(join(root, "entry.txt"), "replacement\n");
-      expect(await workspaceContentChanges(beforeLink, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
-      await restoreWorkspaceChanges(root, beforeLink, [{ path: "entry.txt", kind: "modified" }]);
+      expect(await workspaceBaselineChanges(linkBaseline, root)).toContainEqual({ path: "entry.txt", kind: "modified" });
+      await restoreWorkspaceLstat(root, beforeLink, [{ path: "entry.txt", kind: "modified" }]);
       expect((await lstat(join(root, "entry.txt"))).isSymbolicLink()).toBe(true);
       await expect(readlink(join(root, "entry.txt"))).resolves.toBe("target.txt");
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(runDir, { recursive: true, force: true });
       await rm(beforeFile, { recursive: true, force: true });
       await rm(beforeLink, { recursive: true, force: true });
     }
   });
 
-  it("rejects traversal and absolute paths before legacy rollback mutates anything", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-legacy-safe-root-"));
-    const before = await mkdtemp(join(tmpdir(), "piano-legacy-safe-before-"));
-    const outside = await mkdtemp(join(tmpdir(), "piano-legacy-safe-outside-"));
+  it("rejects traversal and absolute rollback paths before mutating anything", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-rollback-safe-root-"));
+    const before = await mkdtemp(join(tmpdir(), "piano-rollback-safe-before-"));
+    const outside = await mkdtemp(join(tmpdir(), "piano-rollback-safe-outside-"));
     try {
       await writeFile(join(root, "keep.txt"), "keep\n");
       await writeFile(join(outside, "escape.txt"), "outside\n");
-      await expect(restoreWorkspaceChanges(root, before, [{ path: "../escape.txt", kind: "added" }]))
+      await expect(restoreWorkspaceLstat(root, before, [{ path: "../escape.txt", kind: "added" }]))
         .rejects.toThrow(/unsafe workspace rollback path|escapes/u);
-      await expect(restoreWorkspaceChanges(root, before, [{ path: join(outside, "escape.txt"), kind: "added" }]))
+      await expect(restoreWorkspaceLstat(root, before, [{ path: join(outside, "escape.txt"), kind: "added" }]))
         .rejects.toThrow(/unsafe workspace rollback path|escapes/u);
       await expect(readFile(join(root, "keep.txt"), "utf8")).resolves.toBe("keep\n");
       await expect(readFile(join(outside, "escape.txt"), "utf8")).resolves.toBe("outside\n");
@@ -997,17 +1132,17 @@ describe("[§6] read-only winner-content gate", () => {
     }
   });
 
-  it("rejects legacy rollback paths with symlink ancestors", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-legacy-link-root-"));
-    const before = await mkdtemp(join(tmpdir(), "piano-legacy-link-before-"));
-    const outside = await mkdtemp(join(tmpdir(), "piano-legacy-link-outside-"));
+  it("rejects rollback paths with symlink ancestors", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-rollback-link-root-"));
+    const before = await mkdtemp(join(tmpdir(), "piano-rollback-link-before-"));
+    const outside = await mkdtemp(join(tmpdir(), "piano-rollback-link-outside-"));
     try {
       await mkdir(join(before, "nested"));
       await writeFile(join(before, "nested", "file.txt"), "baseline\n");
       await writeFile(join(outside, "file.txt"), "outside\n");
       await symlink(outside, join(root, "nested"));
 
-      await expect(restoreWorkspaceChanges(root, before, [{ path: "nested/file.txt", kind: "modified" }]))
+      await expect(restoreWorkspaceLstat(root, before, [{ path: "nested/file.txt", kind: "modified" }]))
         .rejects.toThrow(/symlink|ancestor/u);
       await expect(readFile(join(outside, "file.txt"), "utf8")).resolves.toBe("outside\n");
       await expect(readlink(join(root, "nested"))).resolves.toBe(outside);
@@ -1017,102 +1152,137 @@ describe("[§6] read-only winner-content gate", () => {
       await rm(outside, { recursive: true, force: true });
     }
   });
+});
 
-  it("reports equality only when both trees hold identical application content", async () => {
-    const left = await mkdtemp(join(tmpdir(), "piano-gate-left-"));
-    const right = await mkdtemp(join(tmpdir(), "piano-gate-right-"));
+describe("workspace baselines as commits", () => {
+  it("freezes once per ref and answers the delta from the commit", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-baseline-run-"));
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-source-"));
     try {
-      await writeFile(join(left, "kernel.py"), "WINNER\n");
-      await writeFile(join(right, "kernel.py"), "WINNER\n");
-      await expect(diffWorkspaceContent(left, right)).resolves.toEqual({ equal: true, differing: [] });
+      await writeFile(join(source, "kept.txt"), "same\n");
+      await writeFile(join(source, "edited.txt"), "before\n");
+      await writeFile(join(source, "gone.txt"), "bye\n");
+      const refName = workspaceRefName("exec-1", "baselines/job-1/root%2Ffanout");
+      const first = await freezeWorkspaceBaseline(source, { runDir, refName, excludeUnder: [runDir] });
+      const again = await freezeWorkspaceBaseline(source, { runDir, refName, excludeUnder: [runDir] });
+      expect(again.commit).toBe(first.commit);
 
-      await writeFile(join(right, "kernel.py"), "LOSER\n");
-      await expect(diffWorkspaceContent(left, right)).resolves.toEqual({
-        equal: false,
-        differing: ["kernel.py"],
-      });
+      await writeFile(join(source, "edited.txt"), "after\n");
+      await rm(join(source, "gone.txt"));
+      await writeFile(join(source, "new.txt"), "hi\n");
+      await expect(workspaceBaselineChanges(first, source)).resolves.toEqual([
+        { path: "edited.txt", kind: "modified" },
+        { path: "gone.txt", kind: "deleted" },
+        { path: "new.txt", kind: "added" },
+      ]);
     } finally {
-      await rm(left, { recursive: true, force: true });
-      await rm(right, { recursive: true, force: true });
+      await rm(runDir, { recursive: true, force: true });
+      await rm(source, { recursive: true, force: true });
     }
   });
 
-  it("detects non-execute permission changes in the content gate", async () => {
-    const left = await mkdtemp(join(tmpdir(), "piano-gate-mode-left-"));
-    const right = await mkdtemp(join(tmpdir(), "piano-gate-mode-right-"));
-    try {
-      await writeFile(join(left, "kernel.py"), "same\n");
-      await writeFile(join(right, "kernel.py"), "same\n");
-      await chmod(join(left, "kernel.py"), 0o640);
-      await chmod(join(right, "kernel.py"), 0o600);
-
-      await expect(diffWorkspaceContent(left, right)).resolves.toEqual({
-        equal: false,
-        differing: ["kernel.py"],
-      });
-    } finally {
-      await rm(left, { recursive: true, force: true });
-      await rm(right, { recursive: true, force: true });
-    }
-  });
-
-  it("treats files present on only one side as differing", async () => {
-    const left = await mkdtemp(join(tmpdir(), "piano-gate-absent-"));
-    const right = await mkdtemp(join(tmpdir(), "piano-gate-absent-"));
-    try {
-      await writeFile(join(left, "only-left.py"), "x\n");
-      await writeFile(join(right, "only-right.txt"), "y\n");
-      const result = await diffWorkspaceContent(left, right);
-      expect(result.equal).toBe(false);
-      expect([...result.differing].sort()).toEqual(["only-left.py", "only-right.txt"]);
-    } finally {
-      await rm(left, { recursive: true, force: true });
-      await rm(right, { recursive: true, force: true });
-    }
-  });
-
-  it("always ignores run-infrastructure names regardless of the excluded set", async () => {
-    const left = await mkdtemp(join(tmpdir(), "piano-gate-infra-"));
-    const right = await mkdtemp(join(tmpdir(), "piano-gate-infra-"));
-    try {
-      await writeFile(join(left, "kernel.py"), "a\n");
-      await mkdir(join(left, ".git"), { recursive: true });
-      await writeFile(join(left, ".git", "config"), "ignored\n");
-      await writeFile(join(left, ".piano-run.lock"), "ignored\n");
-      await writeFile(join(right, "kernel.py"), "a\n");
-      await expect(diffWorkspaceContent(left, right)).resolves.toEqual({ equal: true, differing: [] });
-    } finally {
-      await rm(left, { recursive: true, force: true });
-      await rm(right, { recursive: true, force: true });
-    }
-  });
-
-  it("honours a shared-source exclusion only when it is a subtree of the walked root, so a winner nested under the run dir is not emptied", async () => {
-    const source = await mkdtemp(join(tmpdir(), "piano-gate-source-"));
-    // The winner slot is materialised *under* the shared source's run directory,
-    // mirroring how allocateMapWorkspace seeds snapshots under the run dir.
-    const runDir = join(source, "runs");
+  it("keeps a nested run directory out of the tree and freezes only the delta's files", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-nested-"));
+    const runDir = join(source, "run");
     await mkdir(runDir, { recursive: true });
-    const winner = join(runDir, "slots", "race%2Fslot-1");
-    await mkdir(winner, { recursive: true });
+    try {
+      await writeFile(join(source, "winner.txt"), "before\n");
+      await writeFile(join(source, "kept.txt"), "same\n");
+      await writeFile(join(runDir, "evidence.txt"), "run state\n");
+      const baseline = await freezeWorkspaceBaseline(source, {
+        runDir,
+        refName: workspaceRefName("exec-1", "baselines/job-1/root"),
+        excludeUnder: [runDir],
+      });
 
-    await writeFile(join(source, "kernel.py"), "WINNER\n");
-    await writeFile(join(winner, "kernel.py"), "WINNER\n");
-    // Run-management evidence on the shared source that consolidation must ignore
-    // because it is engine state, not application content.
-    await writeFile(join(source, "runs", "evidence.json"), "ignored\n");
+      await writeFile(join(source, "winner.txt"), "after\n");
+      await writeFile(join(runDir, "evidence.txt"), "more\n");
+      const frozenWinnerDir = join(runDir, "winner-change");
+      const changeSet = await captureWorkspaceBaselineChanges(baseline, source, frozenWinnerDir, [runDir]);
+      expect(changeSet.changes).toEqual([{ path: "winner.txt", kind: "modified" }]);
+      // Only the changed file is frozen; the run's own evidence is not content.
+      await expect(readFile(join(frozenWinnerDir, "winner.txt"), "utf8")).resolves.toBe("after\n");
+      await expect(stat(join(frozenWinnerDir, "kept.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
+  });
 
-    // Equal application files + infra-only run subtree on the source side:
-    // the winner (nested under the excluded run dir) must still be scanned in
-    // full, and the source's run subtree must be excluded.
-    const diff = await diffWorkspaceContent(source, winner, [runDir]);
-    expect(diff).toEqual({ equal: true, differing: [] });
+  it("keeps a POSIX backslash filename verbatim in the delta", async () => {
+    if (process.platform === "win32") return;
+    const runDir = await mkdtemp(join(tmpdir(), "piano-baseline-backslash-"));
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-backslash-source-"));
+    const filename = "dir\\file.txt";
+    try {
+      await writeFile(join(source, filename), "before\n");
+      const baseline = await freezeWorkspaceBaseline(source, {
+        runDir,
+        refName: workspaceRefName("test", "baselines/backslash"),
+      });
+      await writeFile(join(source, filename), "after\n");
+      await expect(workspaceBaselineChanges(baseline, source)).resolves.toEqual([
+        { path: filename, kind: "modified" },
+      ]);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      await rm(source, { recursive: true, force: true });
+    }
+  });
 
-    // A genuine leftover on one side still surfaces as a mismatch.
-    await writeFile(join(source, "extra.txt"), "leftover\n");
-    await expect(diffWorkspaceContent(source, winner, [runDir])).resolves.toEqual({
-      equal: false,
-      differing: ["extra.txt"],
-    });
+  it("always ignores infrastructure names", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-baseline-protected-"));
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-protected-source-"));
+    try {
+      await writeFile(join(source, "app.txt"), "app\n");
+      const baseline = await freezeWorkspaceBaseline(source, {
+        runDir,
+        refName: workspaceRefName("test", "baselines/protected"),
+      });
+      await writeFile(join(source, ".git"), "ignored\n");
+      await writeFile(join(source, ".piano-run.lock"), "ignored\n");
+      await expect(workspaceBaselineChanges(baseline, source)).resolves.toEqual([]);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  it("scans a winner nested under the run directory even when that run is excluded", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-nested-winner-"));
+    const runDir = join(source, "runs", "exec");
+    const winnerDir = join(runDir, "workspaces", "worktree-slot");
+    await mkdir(winnerDir, { recursive: true });
+    try {
+      await writeFile(join(winnerDir, "kernel.py"), "winner\n");
+      const baseline = await freezeWorkspaceBaseline(winnerDir, {
+        runDir,
+        refName: workspaceRefName("test", "baselines/nested-winner"),
+      });
+      await writeFile(join(winnerDir, "kernel.py"), "edited\n");
+      await expect(workspaceBaselineChanges(baseline, winnerDir, [runDir])).resolves.toEqual([
+        { path: "kernel.py", kind: "modified" },
+      ]);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses content the workspace walk refuses", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-baseline-external-"));
+    const outside = await mkdtemp(join(tmpdir(), "piano-baseline-outside-"));
+    const source = await mkdtemp(join(tmpdir(), "piano-baseline-link-"));
+    try {
+      await writeFile(join(outside, "secret.txt"), "outside\n");
+      await symlink(join(outside, "secret.txt"), join(source, "escape.txt"));
+      await expect(freezeWorkspaceBaseline(source, {
+        runDir,
+        refName: workspaceRefName("exec-1", "baselines/job-1/root"),
+        excludeUnder: [runDir],
+      })).rejects.toThrow(/symlink targets excluded or external content/u);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+      await rm(source, { recursive: true, force: true });
+    }
   });
 });

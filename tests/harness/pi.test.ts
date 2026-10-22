@@ -540,7 +540,7 @@ describe(" pi sdk cancellation", () => {
           },
         },
       ]);
-      const log = await readFile(join(runSession.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(runSession.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"agent.resource.requested"');
       expect(log).toContain('"event":"agent.resource.loaded"');
       expect(log).toContain(join(root, "AGENTS.md"));
@@ -633,7 +633,7 @@ describe(" pi sdk cancellation", () => {
         }
       }
       expect(disposeCalls).toBe(1);
-      const log = await readFile(join(runSession.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(runSession.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"agent.session.failed"');
       expect(log).toContain('"kind":"session-artifact"');
     } finally {
@@ -692,7 +692,7 @@ describe(" pi sdk cancellation", () => {
           resource: expect.objectContaining({ kind: "context-file", status: "failed", path: missingPath }),
         }),
       ]);
-      const log = await readFile(join(runSession.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(runSession.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"agent.resource.failed"');
       expect(log).toContain(missingPath);
     } finally {
@@ -748,7 +748,7 @@ describe(" pi sdk cancellation", () => {
       // attempts (initial + two retries) before surfacing the error; each
       // attempt disposes its session.
       expect(disposeCalls).toBe(3);
-      const log = await readFile(join(runSession.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(runSession.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"agent.session.failed"');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1280,7 +1280,7 @@ describe(" pi sdk cancellation", () => {
         .toMatchObject({ assistantMessageEvent: { delta: "check", contentIndex: 1 } });
       expect(normalizedUpdates.find((event) => event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_end"))
         .toMatchObject({ assistantMessageEvent: { toolCall: { id: "call-1", name: "read" } } });
-      const log = await readFile(join(runSession.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(runSession.runDir, "system-log", "log.jsonl"), "utf8");
       expect(log).toContain('"event":"agent.event.received"');
       expect(log).toContain('"eventType":"tool_execution_start"');
       expect(log).toContain('"toolName":"read"');

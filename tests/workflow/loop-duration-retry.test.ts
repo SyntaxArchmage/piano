@@ -364,7 +364,7 @@ describe("stage retry execution", () => {
       // The retries belong to the same actor, so a resumed session is reused
       // rather than the run fanning out into unrelated conversations.
       expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(1);
-      const log = await readFile(join(session.runDir, "log.jsonl"), "utf8");
+      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       const scheduled = log.split("\n")
         .filter((line) => line.includes("stage.retry.scheduled"))
         .map((line) => JSON.parse(line) as { attributes?: { delayMs?: number; retry?: number } });

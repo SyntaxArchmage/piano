@@ -151,7 +151,7 @@ export function statsStatusLabel(stats: RunStats): string {
 
 /** Theme tokens the USAGE renderer needs (pre-built from PianoTheme by the
  * caller, so this module stays free of the pi-tui/theme dependency). */
-export interface UsageRowTheme {
+interface UsageRowTheme {
   readonly dim: string;
   readonly primary: string;
   readonly accent: string;

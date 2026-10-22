@@ -24,7 +24,7 @@ export const SIDE_AGENT_TOOLS = [
  * tree would make them read as evidence a stage produced. */
 export const SIDE_AGENT_DIR = "side-agent";
 
-export interface SideAgentTurn {
+interface SideAgentTurn {
   readonly prompt: string;
   /** The session's workspace — the side agent edits the same tree the mission
    * does, which is why it is worth having at all. */
@@ -51,7 +51,7 @@ export function sideAgentRequest(turn: SideAgentTurn): AgentRequest {
     cwd: turn.cwd,
     prompt: turn.prompt,
     tools: [...SIDE_AGENT_TOOLS],
-    sessionDir: join(turn.runDir, SIDE_AGENT_DIR),
+    sessionDir: join(turn.runDir, "sessions", SIDE_AGENT_DIR),
     ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
     ...(turn.signal === undefined ? {} : { signal: turn.signal }),
     ...(turn.steering === undefined ? {} : { steering: turn.steering }),

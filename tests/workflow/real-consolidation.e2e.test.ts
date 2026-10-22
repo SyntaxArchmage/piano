@@ -19,6 +19,7 @@ import {
   type HarnessName,
 } from "../../packages/harness/src/index.js";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
+import { validationResultPathFromPrompt } from "../common/validation-path.mjs";
 
 const runReal = process.env.PIANO_HARNESS_REAL_E2E === "1";
 // The one real turn per acceptance goes to the LLM service the developer
@@ -108,7 +109,7 @@ function slotOf(request: AgentRequest): number {
 /** The validator result path a `validate: true` stage writes to, lifted from the
  * stage's standard prompt line. */
 function validationPath(request: AgentRequest): string {
-  const found = request.prompt.split("\n").find((line) => line.endsWith("/result.json"));
+  const found = validationResultPathFromPrompt(request.prompt);
   if (found === undefined) throw new Error(`missing validation result path: ${request.prompt}`);
   return found;
 }
@@ -232,7 +233,7 @@ describe.skipIf(!runReal)(" real-model tournament winner consolidation (§6)", (
         // mechanism under test is that the winner worker received the real
         // handoff, the engine drew an honest gate conclusion, and nothing
         // crashed.
-        const selectionPath = join(session.runDir, "trajectories", "selection.jsonl");
+        const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
         const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
         expect(records.length).toBeGreaterThanOrEqual(1);
         const terminal = records[records.length - 1];
@@ -402,7 +403,7 @@ workflow:
         throw new Error(Cause.pretty(outcome.cause));
       }
 
-      const selectionRecords = (await readFile(join(session.runDir, "trajectories", "selection.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
+      const selectionRecords = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string; winnerKey?: string; carrying?: { kind: string };
       });
       // Exactly one decision per tournament instance, whenever it happens:

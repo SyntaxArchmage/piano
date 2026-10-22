@@ -18,12 +18,12 @@ import { Effect } from "effect";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
-import { parseTrajectory, trajectoryStreamPath, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
+import { parseTrajectory, trajectoryStreamPathCandidates, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
 import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrator";
 import { LogsStorageError } from "./errors.js";
 
 /** One replayable prompt and the events it produced. */
-export interface ResumeTurn {
+interface ResumeTurn {
   readonly prompt: string;
   readonly status: "completed" | "failed" | "cancelled";
   readonly events: readonly AgentEvent[];
@@ -33,7 +33,7 @@ export interface ResumeTurn {
 }
 
 /** Everything a resume needs from one run's trajectory. */
-export interface ResumeContext {
+interface ResumeContext {
   readonly runId: string;
   readonly name?: string;
   readonly workflowPath?: string;
@@ -71,10 +71,17 @@ export async function readRunRow(runDir: string): Promise<RunSummary | undefined
  * not there at all counts against it — one that cannot be read is not evidence
  * of absence, so the run stays listed. */
 async function hasTrajectory(runDir: string): Promise<boolean> {
-  return readFile(trajectoryStreamPath(runDir), "utf8").then(
-    () => true,
-    (cause: unknown) => (cause as NodeJS.ErrnoException).code !== "ENOENT",
-  );
+  for (const path of trajectoryStreamPathCandidates(runDir)) {
+    try {
+      await readFile(path, "utf8");
+      return true;
+    } catch (cause) {
+      // A candidate that is not there is simply the wrong layout; any other
+      // failure still counts as evidence the run recorded something.
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") return true;
+    }
+  }
+  return false;
 }
 
 /** The run's state document, or `undefined` when it is missing, unreadable, or
@@ -163,12 +170,17 @@ function readTrajectory(
   runsRoot: string,
   runId: string,
 ): Effect.Effect<Partial<TrajectoryDocument>, LogsStorageError, FileSystem.FileSystem> {
-  const path = trajectoryStreamPath(join(runsRoot, runId));
+  const candidates = trajectoryStreamPathCandidates(join(runsRoot, runId));
+  const path = candidates[0]!;
   const storageError = (message: string): LogsStorageError =>
     new LogsStorageError({ operation: "read-trajectory", path, message });
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const stream = yield* fileSystem.readFileString(path).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+    const read = (candidate: string) =>
+      fileSystem.readFileString(candidate).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+    // Current layout first, then the pre-audience layout: old runs stay
+    // replayable, while new runs only ever write the first candidate.
+    const stream = (yield* read(candidates[0]!)) ?? (yield* read(candidates[1]!));
     const parsed = parseTrajectory(stream);
     if (parsed !== undefined) return parsed;
     return yield* Effect.fail(storageError(

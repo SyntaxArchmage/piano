@@ -46,7 +46,10 @@ vi.mock("@piano/harness", async (importOriginal) => ({
  * waits, and every step here is driven by real subprocess turns. */
 const wait = (label: string, check: () => boolean) => waitFor(label, check, 120_000);
 
-function statusOf(runDir: string): { status?: string; jobs?: Array<{ accepted?: string[] }> } | undefined {
+function statusOf(runDir: string): {
+  status?: string;
+  jobs?: Array<{ accepted?: Array<{ invocationId: string; stageId: string; iteration?: number; frames?: unknown }> }>;
+} | undefined {
   try {
     return JSON.parse(readFileSync(join(runDir, "status.json"), "utf8")) as ReturnType<typeof statusOf>;
   } catch {
@@ -133,14 +136,18 @@ describe("a tuning run paused half-way continues from its cursor with real subpr
     await sleep(50);
     terminalA.onInput?.(RESUME_PROMPT);
     terminalA.onInput?.("\r");
-    // The wedge: iteration 0 is complete evidence (6 turns), and iteration 1's
-    // propose has announced its thread and is now sleeping (row 7).
-    await wait("the run wedged on iteration 1's propose", () => {
-      const rows = ledgerRows(home.ledger);
-      return rows.length === 7
-        && rows[6]!.stage.endsWith("propose")
-        && rows[6]!.invocation.includes("iter-1");
-    });
+    // The wedge: iteration 0 is complete evidence, and iteration 1's propose has
+    // announced its thread and is now sleeping. Waiting for the row itself —
+    // not for a total row count — keeps a slow machine's extra leading row
+    // from hanging the wait; a timeout dumps the ledger, the only evidence of
+    // where the run actually got to.
+    try {
+      await wait("the run wedged on iteration 1's propose", () =>
+        ledgerRows(home.ledger).some((row) => row.stage.endsWith("propose") && row.invocation.includes("iter-1")));
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\nledger:\n`
+        + ledgerRows(home.ledger).map((row) => `  ${row.index}: ${row.mode} ${row.stage} ${row.invocation}`).join("\n"));
+    }
     terminalA.onInput?.("\x1b"); // Escape: interrupt, exactly like the real key
     await wait("the run ended as interrupted", () => plain(terminalA).includes("interrupted"));
     await wait("the run is paused", () => statusOf(runDir)?.status === "paused");
@@ -148,13 +155,21 @@ describe("a tuning run paused half-way continues from its cursor with real subpr
     // The paused job's cursor: iteration 0 accepted in full, the wedged
     // propose not accepted — this is what /continue will rebuild from.
     const accepted = statusOf(runDir)?.jobs?.[0]?.accepted ?? [];
-    expect([...accepted].sort()).toEqual([
+    expect(accepted.map((entry) => entry.invocationId).sort()).toEqual([
       "tune.propose@tune/iter-0",
       "tune.race.bench@tune/iter-0/tune.race/slot-0",
       "tune.race.bench@tune/iter-0/tune.race/slot-1",
       "tune.race.implement@tune/iter-0/tune.race/slot-0",
       "tune.race.implement@tune/iter-0/tune.race/slot-1",
     ]);
+    // The cursor spells the key's identity out as structure: the loop
+    // iteration and its frames are fields, not something to parse out of
+    // `tune.propose@tune/iter-0`.
+    expect(accepted.find((entry) => entry.invocationId === "tune.propose@tune/iter-0")).toMatchObject({
+      stageId: "tune.propose",
+      iteration: 0,
+      frames: [{ kind: "loop", regionId: "tune", iteration: 0 }],
+    });
     terminalA.onInput?.("/exit");
     terminalA.onInput?.("\r");
     await sessionA;

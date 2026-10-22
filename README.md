@@ -413,108 +413,114 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 
 ```
 ~/.piano/runs/<run-id>/
-├── log.jsonl          # run + stage lifecycle events (machine-readable)
-├── trace.jsonl        # function-level span traces
-├── trajectory.jsonl   # append-only record of each write; status.json is folded from it
-├── progress.jsonl     # the run's single ledger: spans, stage attempts, region exits, actor turns
-├── status.json        # the run's single state document, folded from the ledgers above
+├── system-log/
+│   ├── log.jsonl                 # run + stage lifecycle events (machine-readable)
+│   ├── trace.jsonl               # function-level span traces
+│   ├── trajectory.jsonl          # append-only record of each write
+│   └── invocations.jsonl         # invocation-started/accepted rows (producer evidence)
+├── status.json                   # the run's single state document
 ├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
-├── trajectories/
-│   ├── index.json                # recorder inventory, status, and errors
+├── eval-metrics/
 │   ├── benchmark.jsonl           # validated task metrics by iteration (when the workflow declares one)
 │   ├── duration.jsonl            # stage-attempt durations
 │   ├── token-usage.jsonl         # token reports: cumulative plus per-attempt deltas
-│   └── tool-calls.jsonl          # tool outcomes and durations
-├── prompts/<jobOrdinal>/
-│   └── invocations/<stageId>/<instance>/
-│       ├── handoff/record.json   # immutable producer record for that invocation
-│       ├── handoff-context/<file> # immutable context injected into a consumer
-│       └── attempts/<n>/result.json # validation result per attempt
-├── actors/<harness>/<worker>/<lane>/
-│   └── session/<session>.jsonl   # per-worker actor transcript
-├── side-agent/                   # `/btw` side-agent harness session files (no stage, no execution)
-├── workspace-records/<key>/record.json   # durable map/tournament workspace evidence
-└── workspaces/slots/<key>/               # temporary map/tournament workspace copy
+│   ├── tool-calls.jsonl          # tool outcomes and durations
+│   └── selection.jsonl           # tournament/selection decisions
+├── results/inv-<ref>-attempt-<k>.json  # agent-written validation result per attempt
+├── context/inv-<ref>/<file>            # immutable context injected into a consumer
+├── git/workspaces.git             # bare store: non-Git lane baselines and transaction commits
+├── sessions/
+│   ├── trajectory-<harness>-<worker>-<lane>/
+│   │   └── session/<session>.jsonl # per-worker actor transcript
+│   ├── side-agent/                # `/btw` side-agent harness session files
+│   └── task-mnemonic/             # preflight lane-naming turn session files
+├── workspace-records/<key>/record.json   # live lane record: branch, base commit, source branch
+└── workspaces/worktree-<key>/            # lane worktree checked out on tuna/<mnemonic>/lane-<n>
 ```
 
-`<instance>` is `root` for a top-level stage, `<region>/iter-<n>` inside a
-loop, and `<region>/slot-<n>` (or nested paths) for tournament lanes. A run
-may hold several prompts: each prompt's invocations live under its own
-`prompts/<jobOrdinal>/` tree — the ordinal is a job's identity, taken from the
-highest the run's ledger and trees already record — while the actors continue
-under `actors/` across prompts, and a loop iteration or a map slot does not
-start a new one: `<lane>` carries only the map frames, so one worker keeps one
-conversation across stages, iterations, and prompts. A map slot's workspace
+Each invocation's evidence name is `inv-<ref>` — a run-wide serial its
+`invocation-started` row records on `system-log/invocations.jsonl`, so one `jq`
+names the stage, instance, and attempt behind any `results/` or `context/` path
+and no directory spells a dotted stage id or a slash-joined instance. A run may
+hold several jobs: a prompt after a finished job opens the next one, whose
+ordinal is the highest the run's state document records plus one. A prompt
+after a pause continues that job when the workflow is a single stage — the
+shape where `/restart` and `/continue` would re-enter the same node — and is
+refused mid-workflow otherwise, where `/continue` and `/restart` are the
+explicit choices. The actors continue under `sessions/` across prompts, and a
+loop iteration or a map slot does not start a new job: `<lane>` carries only the
+map frames, so one worker keeps one conversation across stages, iterations, and
+prompts. A map slot's workspace
 `<key>` is `job-<n>/<instance>` so that two jobs' slots can never rebind
-each other; `record.json` carries the slot's `allocation` provenance (`fresh`,
-`rebound`, or `recreated-after-sweep`). `contracts/`, validated result files,
-handoff files, and workspace directories appear only when the workflow uses
-those features; completed runs normally clean up `workspaces/` while retaining
-`workspace-records/`, and a run's `/restart`ed job hands its preserved slots to
-the next job, which reclaims them.
+each other; `record.json` carries the lane branch, its base commit, and the
+source branch it forked from while the slot lives. `contracts/`, validated
+result files, handoff files, and workspace directories appear only when the
+workflow uses those features; completed runs clean up `workspaces/` and
+`workspace-records/` alike — the lane branch under
+`tuna/<task-mnemonic>-<runId>/lane-<n>` is the durable record — and a run's
+`/restart`ed job hands its preserved slots to the next job, which reclaims
+them.
 
 Key files:
 
-- **`status.json`** — the run's single state document, folded from the ledgers
-  above: `status` (`running` | `completed` | `failed` | `paused` |
-  `cancelled`), the per-prompt `turns`, planned/completed/accepted stage
-  counts, the currently running or last accepted invocation (loop iteration,
-  tournament slot, validation attempt), the job list with each job's accepted
-  invocations, and the latest `sessionId`/`transcriptPath`, plus
-  `runId`/`workflowPath`/`workspaceCwd` and a `name` once you `/rename` the
-  run. Every reader — the TUI graph, the pickers, `piano logs`, the headless
+- **`status.json`** — the run's single state document, written by the
+  orchestrator as it schedules: `status` (`running` | `completed` | `failed` |
+  `paused` | `cancelled`), the per-prompt `turns`, planned/completed/accepted
+  stage counts, the currently running or last accepted invocation (loop
+  iteration, tournament slot, validation attempt), the job list with each job's
+  accepted invocations (structured entries: `invocationId`, `stageId`, `frames`,
+  `iteration`), attempts and finalized regions, and the actor table —
+  the session id and transcript path per conversation, plus
+  `runId`/`workflowPath`/`workspaceCwd`, a `name` once you `/rename` the
+  run, and the `mnemonic` namespace (`<task-slug>-<runId>`) that names its lane
+  branches. Every reader — the TUI graph, the pickers, the logs picker, the headless
   `status_path`, the evals — reads this one document; a monitor never has to
   infer progress from a worker name or count accepted lines by hand.
-- **`trajectory.jsonl`** — the append-only record each write appends: one line
-  carrying that write's prompt and events, or the single field a rename
-  touched. `status.json` is folded from it.
-- **`progress.jsonl`** — the run's single ledger, one record per line, each
-  carrying `runId`, `jobOrdinal`, and a `kind`: `execution-started` /
-  `execution-finished` open and close a job's span, `stage-started` and
-  `stage-accepted` record an attempt's lifecycle (the accepted line also
-  carries `stageId`, `stage`, `worker`, `attempt`, `invocationId`, `harness`,
-  `sessionId`, `transcriptPath`, `handoffRecordPath`, the workspace, and the
-  latest progress snapshot), `region-finalized` records how a loop or map
-  region exited — its outcome, its iteration count, and which slot won,
-  `actor-turn` records each actor conversation-state change (the table a
-  resume folds), and `job-closed` records an abandoned job. A reader that
-  meets a `kind` it does not know skips it rather than failing. This is where
-  you confirm a loop actually ran its `iterations` times.
-- **`trajectories/index.json`** — the versioned workflow-trajectory index. A
-  `WorkflowTrajectory` drives independent benchmark, duration, token, and tool
-  recorders. Recorder errors are isolated and make the index incomplete without
-  discarding the accepted stage result.
-- **`trajectories/benchmark.jsonl`** — task-specific metrics projected only
-  from validated worker contracts (present when the workflow declares a
-  benchmark metric). A loop supplies each record's `iteration`, so throughput,
-  latency, or another declared metric naturally forms a series.
+- **`system-log/trajectory.jsonl`** — the append-only record each write
+  appends: one line carrying that write's prompt and events, or the single
+  field a rename touched. The state document's narrative fields are refreshed
+  from it after every trajectory write.
+- **`system-log/invocations.jsonl`** — one row per invocation event: an
+  `invocation-started` allocation of the invocation's `inv-<ref>` evidence
+  name, and an accepted attempt's producer evidence (stage, worker, session,
+  text, result pin). A continue rebuilds skipped stages from these rows; the
+  payload itself stays in its result file behind the `sha256` pin.
+- **`eval-metrics/`** — the recorder streams (`benchmark.jsonl`,
+  `duration.jsonl`, `token-usage.jsonl`, `tool-calls.jsonl`,
+  `selection.jsonl`). Each is the evidence for its own metric; there is no
+  index document, so a stream's health is a property of its file.
 - **`contracts/<sha256>.json`** — exact schemas used during this run. Metric
   records carry the matching digest for reproducible evaluation.
-- **`log.jsonl`** — ordering, prompt/skill injection, agent messages, tools,
-  resource cleanup. Filter by `event` (for example `run.created`,
-  `workflow.loaded`, `workflow.compiled`, `stage.started`,
+- **`system-log/log.jsonl`** — ordering, prompt/skill injection, agent
+  messages, tools, resource cleanup. Filter by `event` (for example
+  `run.created`, `workflow.loaded`, `workflow.compiled`, `stage.started`,
   `agent.turn.started`, `agent.event.received`, or `function.enter`).
-- **`trace.jsonl`** — the `fn` spans through the session and orchestrator
-  (`createSession`, `loadOrCreateWorkflow`, `createAgentSession`,
-  `executeWorker`, `executeAgent`, `sendPrompt`, …).
+- **`system-log/trace.jsonl`** — the `fn` spans through the session and
+  orchestrator (`createSession`, `loadOrCreateWorkflow`,
+  `createAgentSession`, `executeWorker`, `executeAgent`, `sendPrompt`, …).
 
-### Inspect a run
+### Locate a run
 
 ```bash
-# interactive logs viewer (pick a run from a list)
+# pick a run from a list and print its directory
 piano logs
-piano logs --trace          # view trace spans instead of lifecycle events
-piano logs --jobs <run-id>  # list the run's jobs from its ledger
-piano logs --check <run-id> # offline consistency check for run evidence
+# skip the picker
+piano logs 20260824T051320-f17b74
+# open the evidence with whatever tool you like
+cd "$(piano logs)"
 ```
+
+`piano logs` only prints the run directory's absolute path. It does not render
+or page through the evidence; use `jq`, `less`, `$EDITOR` or any other tool on
+the files below.
 
 To inspect raw evidence directly:
 
 ```bash
 RUN_DIR=~/.piano/runs/20260824T051320-f17b74
 jq . "$RUN_DIR/status.json"
-jq -C . "$RUN_DIR/log.jsonl"       | less
-cat     "$RUN_DIR/progress.jsonl"  | jq -c .
+jq -C . "$RUN_DIR/system-log/log.jsonl" | less
+cat     "$RUN_DIR/system-log/trajectory.jsonl" | jq -c .
 find "$RUN_DIR" -type f -print | sort
 ```
 
@@ -933,22 +939,12 @@ Run one workflow. With `-p` and a prompt, runs headlessly; without a prompt,
 opens the interactive TUI. `--json` streams newline-delimited events to stdout
 (requires headless mode).
 
-### `piano logs [--trace] [--check <run-id>] [--jobs [<run-id>]] [--job <ordinal>] [--rebuild <run-id> [--force]]`
+### `piano logs [<run-id>]`
 
-Open the interactive logs viewer (default) or trace viewer (`--trace`), picking
-a run from the stored runs. `--check <run-id>` performs a non-interactive,
-read-only consistency check across the log, trace, trajectory, progress, and
-referenced transcript, handoff, and result files; it prints a report and exits
-non-zero when evidence is missing, malformed, or inconsistent — including a
-record carrying fields this build does not declare (`undeclared-field`), a
-`status.json` that lags or is missing while the ledger exists (`view-stale`),
-and a handoff record or its pinned result file that is gone or changed
-(`ref-missing` / `ref-mismatch`). `--jobs` reads a run's job ledger
-(`progress.jsonl`) and lists each job with its state, spans, and accepted
-invocations; `--job <ordinal>` shows one job's detail. `--rebuild <run-id>`
-re-folds the ledgers into `status.json` — the recovery path when the view is
-missing or stale — and refuses while the latest job is still running unless
-`--force` is given.
+Print the absolute directory of a run. With no id, pick one from the stored
+runs; with an id, print it directly. stdout carries exactly the path (one
+line), so `cd "$(piano logs)"` works. The command does not read or render the
+run's evidence.
 
 ### `piano resume [<run-id>] [--list]`
 

@@ -18,7 +18,8 @@ describe("piano clear-all command ", () => {
     for (const id of [staleRun, recentRun]) {
       const runDir = join(root, id);
       await mkdir(runDir, { recursive: true });
-      await writeFile(join(runDir, "log.jsonl"), "{}\n", "utf8");
+      await mkdir(join(runDir, "system-log"), { recursive: true });
+      await writeFile(join(runDir, "system-log", "log.jsonl"), "{}\n", "utf8");
     }
   });
 

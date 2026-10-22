@@ -5,7 +5,7 @@
 // again from scratch. Only "sending the prompt" is mocked, at the harness
 // adapter boundary (the same seam the other session arcs drive).
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -86,12 +86,15 @@ async function submitJobCommand(
   expect(took()).toBe(true);
 }
 
-function streamRecords(runsRoot: string, runId: string): Array<Record<string, unknown>> {
+/** The jobs recorded in a run's state so far (empty mid-write). */
+function jobsOf(
+  runsRoot: string,
+  runId: string,
+): Array<{ jobOrdinal: number; outcome?: string }> {
   try {
-    return readFileSync(join(runsRoot, runId, "progress.jsonl"), "utf8")
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const raw = readFileSync(join(runsRoot, runId, "status.json"), "utf8");
+    const document = JSON.parse(raw) as { jobs?: Array<{ jobOrdinal: number; outcome?: string }> };
+    return Array.isArray(document.jobs) ? document.jobs : [];
   } catch {
     return [];
   }
@@ -139,6 +142,18 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       }).pipe(Effect.provide(NodeFileSystem.layer)));
       await sleep(50);
 
+      // ——— A fresh session has no run status, so neither command applies.
+      // They are answers, not turns: the alert lands and the run never
+      // materialises.
+      terminal.onInput?.("/continue");
+      terminal.onInput?.("\r");
+      await wait("continue refused", () => plain(terminal).includes("/continue needs a paused run"));
+      terminal.onInput?.("/restart");
+      terminal.onInput?.("\r");
+      await wait("restart refused", () => plain(terminal).includes("/restart needs a paused or finished run"));
+      expect(existsSync(join(runsRoot, runId))).toBe(false);
+      expect(requests).toHaveLength(0);
+
       // ——— Job 1: the prompt runs first, second hangs, Escape pauses the job.
       terminal.onInput?.("build the counter");
       terminal.onInput?.("\r");
@@ -153,13 +168,13 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       await submitJobCommand(terminal, "/continue", () => requests.filter((request) => stageOf(request) === "second").length === 2);
       await wait("job 1 completed", () => progressStatus(runsRoot, runId) === "completed");
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(1);
-      // The continue's span repeats the job's ordinal; the skipped stage is
-      // never started again, so the stream still holds exactly one start.
-      const afterContinue = streamRecords(runsRoot, runId);
-      expect(afterContinue.filter((record) => record.kind === "execution-started").map((record) => record.jobOrdinal))
-        .toEqual([1, 1]);
-      expect(afterContinue.filter((record) => record.kind === "stage-started" && record.stageId === "first"))
-        .toHaveLength(1);
+      // The continue's span repeats the job's ordinal: the state document
+      // still holds exactly one job #1, finished, and the skipped stage was
+      // never started again.
+      const afterContinue = jobsOf(runsRoot, runId);
+      expect(afterContinue.map((job) => job.jobOrdinal)).toEqual([1]);
+      expect(afterContinue[0]).toMatchObject({ outcome: "completed" });
+      expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(1);
       // The turn records the input that actually ran, not the command.
       await wait("turn 2 persisted", () => recordedTurns(runsRoot, runId)?.length === 2);
       expect(recordedTurns(runsRoot, runId)?.map((turn) => turn.prompt))
@@ -178,12 +193,9 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
       await wait("job 3 completed", () => progressStatus(runsRoot, runId) === "completed");
       // The restart re-ran the first stage too: a fresh job, no cursor.
       expect(requests.filter((request) => stageOf(request) === "first")).toHaveLength(3);
-      const afterRestart = streamRecords(runsRoot, runId);
-      expect(afterRestart.filter((record) => record.kind === "execution-started").map((record) => record.jobOrdinal))
-        .toEqual([1, 1, 2, 3]);
-      expect(afterRestart.filter((record) => record.kind === "job-closed")).toEqual([
-        expect.objectContaining({ jobOrdinal: 2, outcome: "restarted" }),
-      ]);
+      const afterRestart = jobsOf(runsRoot, runId);
+      expect(afterRestart.map((job) => job.jobOrdinal)).toEqual([1, 2, 3]);
+      expect(afterRestart[1]).toMatchObject({ jobOrdinal: 2, outcome: "restarted" });
       // The restart's turn carries the input it re-ran.
       await wait("turn 4 persisted", () => recordedTurns(runsRoot, runId)?.length === 4);
       expect(recordedTurns(runsRoot, runId)?.map((turn) => turn.prompt))

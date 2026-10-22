@@ -79,6 +79,31 @@ export function runtimeInvocationId(invocation: WorkflowRuntimeInvocation): stri
   return `${invocation.stageId}@${runtimeInstanceId(invocation.frames) ?? "root"}`;
 }
 
+/** The identity a `stageId@instance` key carries — the inverse of
+ * {@link runtimeInvocationId}, kept beside the speller so the two cannot
+ * drift. `frames` and `iteration` are absent for a root invocation or a key
+ * this build cannot parse. */
+export function parseInvocationId(invocationId: string): {
+  readonly stageId: string;
+  readonly instance?: string;
+  readonly frames?: readonly WorkflowRuntimeFrame[];
+  readonly iteration?: number;
+} {
+  const at = invocationId.indexOf("@");
+  const stageId = at === -1 ? invocationId : invocationId.slice(0, at);
+  const instance = at === -1 || invocationId.slice(at + 1) === "root"
+    ? undefined
+    : invocationId.slice(at + 1);
+  const frames = instance === undefined ? undefined : runtimeFramesFromInstanceId(instance);
+  const iteration = iterationOfInvocationId(invocationId);
+  return {
+    stageId,
+    ...(instance === undefined ? {} : { instance }),
+    ...(frames === undefined ? {} : { frames }),
+    ...(iteration === undefined ? {} : { iteration }),
+  };
+}
+
 /** The runtime instance of one region: its frame chain plus the region id.
  * The single spelling `region-finalized` records are keyed by — written and
  * read through this function so the two can never disagree. A frame chain is
@@ -122,38 +147,8 @@ export function runtimeFramesFromInstanceId(
   return frames;
 }
 
-/** Path segments shared by all per-invocation evidence. Static names and frame
- * values originate from the validated workflow or generated integers. */
-function runtimeInvocationPathSegments(
-  invocation: WorkflowRuntimeInvocation,
-): readonly string[] {
-  return [
-    invocation.stageId,
-    runtimeInstanceId(invocation.frames) ?? "root",
-  ];
-}
-
-export function invocationDirectory(runDir: string, invocation: WorkflowRuntimeInvocation): string {
-  return join(
-    runDir,
-    "prompts",
-    String(invocation.jobOrdinal),
-    "invocations",
-    ...runtimeInvocationPathSegments(invocation),
-  );
-}
-
-export function validationResultPath(
-  runDir: string,
-  invocation: WorkflowRuntimeInvocation,
-  attempt: number,
-): string {
-  return join(invocationDirectory(runDir, invocation), "attempts", String(attempt), "result.json");
-}
-
-/** The actor key's version marker. Keys written before actors were keyed by
- * worker carried the logical stage id as their third segment; the marker is
- * what lets a reader tell the two formats apart without guessing. */
+/** The actor key's on-disk format version: every persisted actor entry
+ * carries it, so a future format change can be told apart without guessing. */
 export const ACTOR_KEY_VERSION = "v2";
 
 /** Fan-out lane segments of an invocation: every active map slot is an
@@ -165,13 +160,6 @@ function actorLaneSegments(frames: readonly WorkflowRuntimeFrame[]): readonly st
     .flatMap((frame) => [frame.regionId, `slot-${frame.slot}`]);
 }
 
-/** The actor identity: session × harness × worker × lane, under a versioned
- * prefix. Worker — the recipe's role — rather than logical stage: one worker
- * continues a single conversation across stages, loop iterations, workflow
- * switches, and prompts of a session, which is what lets "run a workflow,
- * then keep working on it" resume the same chat. Keys written before this
- * format used the stage id on the opposite reading (that two stages sharing a
- * worker must not share a chat); {@link migrateLegacyActorKey} rewrites them. */
 /** The actor's lane as path segments: `["root"]` for an actor with no map
  * frame, the map frame pairs otherwise. The one spelling the actor key, the
  * session directory, and the ledger's `actor-turn` row share. */
@@ -180,6 +168,11 @@ export function actorLane(frames: readonly WorkflowRuntimeFrame[]): readonly str
   return lane.length === 0 ? ["root"] : lane;
 }
 
+/** The actor identity: session × harness × worker × lane, under a versioned
+ * prefix. Worker — the recipe's role — rather than logical stage: one worker
+ * continues a single conversation across stages, loop iterations, workflow
+ * switches, and prompts of a session, which is what lets "run a workflow,
+ * then keep working on it" resume the same chat. */
 export function workflowActorKey(
   invocation: WorkflowRuntimeInvocation,
   harness: string,
@@ -188,36 +181,18 @@ export function workflowActorKey(
   return [ACTOR_KEY_VERSION, invocation.runId, harness, worker, ...actorLane(invocation.frames)].join("/");
 }
 
-/** Rewrite one legacy stage-keyed actor key into the worker-keyed form, or
- * `undefined` when the key is not legacy or names a stage the current
- * workflow does not hold. Migration is best-effort by design: an actor whose
- * stage is gone keeps its old key and is simply not looked up. */
-export function migrateLegacyActorKey(
-  key: string,
-  stageToWorker: ReadonlyMap<string, string>,
-): string | undefined {
-  if (key.startsWith(`${ACTOR_KEY_VERSION}/`)) return undefined;
-  const parts = key.split("/");
-  const [runId, harness, stageId] = parts;
-  if (runId === undefined || harness === undefined || stageId === undefined || parts.length < 4) return undefined;
-  const worker = stageToWorker.get(stageId);
-  if (worker === undefined) return undefined;
-  return [ACTOR_KEY_VERSION, runId, harness, worker, ...parts.slice(3)].join("/");
-}
-
 export function actorSessionDirectory(
   runDir: string,
   invocation: WorkflowRuntimeInvocation,
   harness: string,
   worker: string,
 ): string {
+  // One flat, human-readable name per conversation: the lane rides as the
+  // worker name's suffix (`tuning-slot-0`), never as nested directories.
   return join(
     runDir,
-    "actors",
-    harness,
-    worker,
-    ...actorLane(invocation.frames),
-    "session",
+    "sessions",
+    `trajectory-${harness}-${worker}-${actorLane(invocation.frames).join("-")}`,
   );
 }
 

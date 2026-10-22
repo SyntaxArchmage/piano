@@ -19,7 +19,7 @@ import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { RST, type PianoTheme } from "./theme.js";
 import { formatRunId, oneLine, readRunRow, type RunSummary } from "./session-resume.js";
 
-export interface SessionPickerDeps {
+interface SessionPickerDeps {
   readonly runsRoot: string;
   /** Run currently open in this TUI, marked so it is not resumed onto itself. */
   readonly currentRunId?: string;

@@ -9,7 +9,7 @@ describe("side agent request", () => {
     const request = sideAgentRequest(turn);
     expect(request.cwd).toBe("/repo/work");
     expect(request.prompt).toBe("rename the flag");
-    expect(request.sessionDir).toBe(`/runs/20260909T120000-run/${SIDE_AGENT_DIR}`);
+    expect(request.sessionDir).toBe(`/runs/20260909T120000-run/sessions/${SIDE_AGENT_DIR}`);
     // A sibling of `executions/`, never a child: the side agent has no
     // execution, so its transcripts must not read as a stage's evidence.
     expect(request.sessionDir).not.toContain("executions");

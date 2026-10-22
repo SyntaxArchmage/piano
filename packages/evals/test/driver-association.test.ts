@@ -34,6 +34,19 @@ describe("eval run-directory association", () => {
     expect(result.candidates).toEqual(["run-a", "run-b"]);
   });
 
+  it("matches the workspace from the system-log evidence layout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-eval-association-"));
+    roots.push(root);
+    await mkdir(join(root, "run-a"));
+    await mkdir(join(root, "run-b"));
+    await mkdir(join(root, "run-b", "system-log"));
+    await writeFile(join(root, "run-b", "system-log", "log.jsonl"), JSON.stringify({ workspace: "/tmp/workspace-b" }));
+
+    const result = await Effect.runPromise(findNewRunDir(root, new Set(), "/tmp/workspace-b", Date.now() - 1_000));
+    expect(result.path).toBe(join(root, "run-b"));
+    expect(result.candidates).toEqual(["run-a", "run-b"]);
+  });
+
   it("does not attach a lone run that explicitly belongs to another workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-eval-association-"));
     roots.push(root);
@@ -121,7 +134,7 @@ describe("parallel presentation", () => {
     progress: { completed: number; planned: number; stage: string; iteration: number; best: number },
   ): Promise<void> {
     await mkdir(join(root, id));
-    await mkdir(join(root, id, "trajectories"));
+    await mkdir(join(root, id, "eval-metrics"));
     await writeFile(join(root, id, "log.jsonl"), JSON.stringify({ type: "run.started", workspace }) + "\n");
     await writeFile(join(root, id, "status.json"), JSON.stringify({
       version: 1,
@@ -131,7 +144,7 @@ describe("parallel presentation", () => {
       plannedStages: progress.planned,
       current: { stageId: progress.stage },
     }));
-    await writeFile(join(root, id, "trajectories", "benchmark.jsonl"), JSON.stringify({
+    await writeFile(join(root, id, "eval-metrics", "benchmark.jsonl"), JSON.stringify({
       iteration: progress.iteration,
       metric: { name: "tflops", unit: "TFLOPS", direction: "higher", best: progress.best },
     }) + "\n");

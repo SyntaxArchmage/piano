@@ -72,7 +72,7 @@ type AgentRunner = (request, options) => Effect<...>
 
 ## L5 — evals（case 绑定的 TS 代码）
 
-`evals` 的每个 workload 目录带一个 `case.yaml`，声明 `compileCommand`/`verifyCommand`，并可用完整的 `metric`/`baselineCommand`/`benchmarkCommand`/`metricPattern` 能力组合启用 performance readout，不再使用 write/tuning 类型标签。`artifact-evaluator.ts` 按配置执行 compile→verify→benchmark；`WorkflowEvaluator` 优先读取 `trajectories/index.json` 及各 recorder JSONL，并只通过 `LegacyRunAdapter` 兼容旧 `trajectory.json`/`progress.jsonl`。`scorer.ts` 对统一的 workflow case 做加权合成。
+`evals` 的每个 workload 目录带一个 `case.yaml`，声明 `compileCommand`/`verifyCommand`，并可用完整的 `metric`/`baselineCommand`/`benchmarkCommand`/`metricPattern` 能力组合启用 performance readout，不再使用 write/tuning 类型标签。`artifact-evaluator.ts` 按配置执行 compile→verify→benchmark；`WorkflowEvaluator` 优先读取 `eval-metrics/` 下的 recorder JSONL，并只通过 `LegacyRunAdapter` 兼容旧 `trajectory.json`/`progress.jsonl`。`scorer.ts` 对统一的 workflow case 做加权合成。
 
 - **为什么 evals 是 TS 代码而非 workflow**：这是设计上一个关键区别，也是人类强调的一点——**evals 评分不是编排流程，它是绑定在每个 case 上的固定评分逻辑**（不同 case 有不同 metrics 收集与打分规则）。所以它合法地是 TS 代码，而不是「该迁移到 workflow 的编排」。
 - **它测什么**：给定 workload 的产出是否满足判分标准——不是「工作流跑通了吗」，而是「这个 case 的解法质量是否达标」。这是 benchmark 层，不是 correctness 层。

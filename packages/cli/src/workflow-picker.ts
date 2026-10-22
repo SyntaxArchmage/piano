@@ -8,7 +8,7 @@ import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { visibleWidth } from "./text.js";
 import { RST, type PianoTheme } from "./theme.js";
 
-export interface WorkflowPickerDeps {
+interface WorkflowPickerDeps {
   readonly cwd: string;
   readonly onChoose: (workflowPath: string, builtinName?: string) => void;
   readonly onCancel: () => void;

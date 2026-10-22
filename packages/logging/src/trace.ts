@@ -6,7 +6,12 @@ import { appendJsonlLine } from "./jsonl.js";
 
 /** The run's trace-span stream, beside the other evidence files. */
 export function traceStreamPath(runDir: string): string {
-  return join(runDir, "trace.jsonl");
+  return join(runDir, "system-log", "trace.jsonl");
+}
+
+/** Read candidates for the trace stream: current layout first, legacy second. */
+export function traceStreamPathCandidates(runDir: string): readonly string[] {
+  return [traceStreamPath(runDir), join(runDir, "trace.jsonl")];
 }
 
 export interface TraceSpan {

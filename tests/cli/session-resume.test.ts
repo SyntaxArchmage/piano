@@ -229,7 +229,7 @@ describe("readResumeContext", () => {
         expect(exit.cause.error).toMatchObject({
           _tag: "LogsStorageError",
           operation: "read-trajectory",
-          path: join(root, runId, "trajectory.jsonl"),
+          path: join(root, runId, "system-log", "trajectory.jsonl"),
         });
       }
     }

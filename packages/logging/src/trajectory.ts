@@ -85,7 +85,13 @@ export interface TrajectoryStreamRecord {
 
 /** The run's trajectory stream, beside the state document that describes it. */
 export function trajectoryStreamPath(runDir: string): string {
-  return join(runDir, "trajectory.jsonl");
+  return join(runDir, "system-log", "trajectory.jsonl");
+}
+
+/** Read candidates for the trajectory stream: current layout first, legacy
+ * second, so runs recorded before the directory split stay replayable. */
+export function trajectoryStreamPathCandidates(runDir: string): readonly string[] {
+  return [trajectoryStreamPath(runDir), join(runDir, "trajectory.jsonl")];
 }
 
 /** Append one record to the trajectory stream beside a document path.

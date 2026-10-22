@@ -260,7 +260,7 @@ async function assertRunEvidence(
   for (const file of expectedFileNames) expect(toolOutput).toContain(file);
 
   const runDir = join(home, ".piano", "runs", runId);
-  const trajectory = (parseTrajectory(await readFile(join(runDir, "trajectory.jsonl"), "utf8")) ?? {}) as Record<string, unknown>;
+  const trajectory = (parseTrajectory(await readFile(join(runDir, "system-log", "trajectory.jsonl"), "utf8")) ?? {}) as Record<string, unknown>;
   expect(trajectory).toMatchObject({
     status: "completed",
     workflowPath,

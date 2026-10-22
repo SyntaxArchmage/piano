@@ -6,9 +6,7 @@ import { join, resolve } from "node:path";
 import {
   errorMessage,
   SessionCreateError,
-  type LogWriteError,
-  TrajectoryWriteError,
-  type TraceWriteError,
+  type LoggingError,
 } from "./errors.js";
 import { AsyncLogWriter, type ILogWriter, LogWriter, logStreamPath } from "./log.js";
 import { AsyncTraceWriter, type ITraceWriter, TraceWriter, traceStreamPath } from "./trace.js";
@@ -55,12 +53,10 @@ export interface CreateSessionOptions {
   id?: string;
 }
 
-export type SessionError = SessionCreateError | LogWriteError | TraceWriteError | TrajectoryWriteError;
-
 /** Allocate the Piano session and its logging surface as one typed Effect. */
 export function createSession(
   opts: CreateSessionOptions = {},
-): Effect.Effect<Session, SessionError, FileSystem.FileSystem> {
+): Effect.Effect<Session, LoggingError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const values = yield* Effect.try({
       try: () => {
@@ -105,7 +101,7 @@ export interface StagingSession extends Session {
   /** Flush buffered log/trace/trajectory entries to the real run directory.
    * Creates the run directory, then replays all staged entries in order.
    * Must be called exactly once, before the first prompt is submitted. */
-  commit(): Effect.Effect<void, SessionError, FileSystem.FileSystem>;
+  commit(): Effect.Effect<void, LoggingError, FileSystem.FileSystem>;
 }
 
 /** Allocate a session whose writers buffer entries in memory.  No filesystem

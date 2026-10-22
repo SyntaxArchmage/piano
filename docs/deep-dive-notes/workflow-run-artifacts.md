@@ -1,5 +1,15 @@
 # 一次完整 run 产生的序列化文件
 
+> **更新（2026-10-19）**：run 目录已按受众重排，下文的结构图是历史版本。
+> 当前布局：观测流在 `system-log/`（`log.jsonl`、`trace.jsonl`、
+> `trajectory.jsonl`），每个 actor 一条 flat 转录
+> `sessions/trajectory-<harness>-<worker>-<lane>/`，评估流在
+> `eval-metrics/`（benchmark / duration / token-usage / tool-calls /
+> selection）。`progress.jsonl`、`resume.jsonl`、`trajectories/index.json`
+> 已退休；`status.json` 是唯一状态文档，由 orchestrator 直接维护
+> （jobs、accepted、attempts、regions、actors），trajectory 只负责叙述字段。
+> 下文关于记录内容与写入者的分析仍然有效，路径与编号不再对应。
+
 文件分布在 **4 个磁盘区域**。"种"是固定的（约 25 种），"个数"随 run 形状变化，每种的计数公式标在表里。
 
 ```
