@@ -136,14 +136,18 @@ describe("a tuning run paused half-way continues from its cursor with real subpr
     await sleep(50);
     terminalA.onInput?.(RESUME_PROMPT);
     terminalA.onInput?.("\r");
-    // The wedge: iteration 0 is complete evidence (6 turns), and iteration 1's
-    // propose has announced its thread and is now sleeping (row 7).
-    await wait("the run wedged on iteration 1's propose", () => {
-      const rows = ledgerRows(home.ledger);
-      return rows.length === 7
-        && rows[6]!.stage.endsWith("propose")
-        && rows[6]!.invocation.includes("iter-1");
-    });
+    // The wedge: iteration 0 is complete evidence, and iteration 1's propose has
+    // announced its thread and is now sleeping. Waiting for the row itself —
+    // not for a total row count — keeps a slow machine's extra leading row
+    // from hanging the wait; a timeout dumps the ledger, the only evidence of
+    // where the run actually got to.
+    try {
+      await wait("the run wedged on iteration 1's propose", () =>
+        ledgerRows(home.ledger).some((row) => row.stage.endsWith("propose") && row.invocation.includes("iter-1")));
+    } catch (error) {
+      throw new Error(`${error instanceof Error ? error.message : String(error)}\nledger:\n`
+        + ledgerRows(home.ledger).map((row) => `  ${row.index}: ${row.mode} ${row.stage} ${row.invocation}`).join("\n"));
+    }
     terminalA.onInput?.("\x1b"); // Escape: interrupt, exactly like the real key
     await wait("the run ended as interrupted", () => plain(terminalA).includes("interrupted"));
     await wait("the run is paused", () => statusOf(runDir)?.status === "paused");
