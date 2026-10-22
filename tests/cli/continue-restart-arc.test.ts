@@ -5,7 +5,7 @@
 // again from scratch. Only "sending the prompt" is mocked, at the harness
 // adapter boundary (the same seam the other session arcs drive).
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -141,6 +141,18 @@ describe("a paused job continues from its cursor, and restarts from scratch", ()
         agentRunner: runner,
       }).pipe(Effect.provide(NodeFileSystem.layer)));
       await sleep(50);
+
+      // ——— A fresh session has no run status, so neither command applies.
+      // They are answers, not turns: the alert lands and the run never
+      // materialises.
+      terminal.onInput?.("/continue");
+      terminal.onInput?.("\r");
+      await wait("continue refused", () => plain(terminal).includes("/continue needs a paused run"));
+      terminal.onInput?.("/restart");
+      terminal.onInput?.("\r");
+      await wait("restart refused", () => plain(terminal).includes("/restart needs a paused or finished run"));
+      expect(existsSync(join(runsRoot, runId))).toBe(false);
+      expect(requests).toHaveLength(0);
 
       // ——— Job 1: the prompt runs first, second hangs, Escape pauses the job.
       terminal.onInput?.("build the counter");

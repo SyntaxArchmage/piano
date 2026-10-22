@@ -4,7 +4,26 @@
 // state document records it with the job — so turn positions, which continues
 // make ambiguous, are never consulted. One run has at most one unfinished job,
 // and it is the latest: an older paused job is retired and never offered.
-import { type RunJob } from "@piano/orchestrator";
+import { type RunJob, type RunStatus } from "@piano/orchestrator";
+
+/** The two job-level commands beside a prompt. */
+export type JobCommand = "continue" | "restart";
+
+/** Whether a job command applies to a run in this status.
+ *
+ * Status is the whole test: a fresh run has none, a running one has nothing
+ * to act on yet, and both commands are about work that already stopped.
+ * `/continue` resumes a paused job; `/restart` re-runs the last one, so it
+ * accepts a paused or finished run. `cancelled` is a run with no job to name.
+ */
+export function jobCommandAllowed(
+  command: JobCommand,
+  status: RunStatus["status"] | undefined,
+): boolean {
+  return command === "continue"
+    ? status === "paused"
+    : status === "paused" || status === "completed" || status === "failed";
+}
 
 /** What `/continue` resolved to: resume this job from the cursor it left. */
 export interface ContinueCommand {

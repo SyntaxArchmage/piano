@@ -24,6 +24,7 @@ import {
 import { readWorkflowSnapshot } from "./progress-view.js";
 import { TranscriptView } from "./chat-render.js";
 import { interactiveTerminalRequired, TuiError } from "./errors.js";
+import { jobCommandAllowed, type JobCommand } from "./job-commands.js";
 import { AskQuestion, type AskQuestionAnswer, type AskQuestionSpec, type AskQuestionStyles } from "./ask-question.js";
 import { runSignoffDialog, signoffDecisionText } from "./signoff.js";
 import { runDiscussDialog } from "./discuss.js";
@@ -1352,7 +1353,31 @@ export function runTui(
           if (command === "/continue" || command === "/restart") {
             if (missionOnly(command)) return;
             editor.setText("");
-            submitPrompt(command, front, false, command === "/continue" ? "continue" : "restart");
+            const action: JobCommand = command === "/continue" ? "continue" : "restart";
+            const target = front;
+            if (target.running) {
+              // The live turn's own answer ("waits for the current job") is
+              // clearer than a status refusal; submitPrompt says it.
+              submitPrompt(command, target, false, action);
+              return;
+            }
+            // Status is the whole legality test: a fresh run has none, a
+            // running one has nothing to act on yet, and both commands are
+            // about work that already stopped.
+            void (statusPath === undefined
+              ? Promise.resolve(undefined)
+              : readWorkflowSnapshot(dirname(statusPath))
+            ).then((snapshot) => {
+              if (!jobCommandAllowed(action, snapshot?.status)) {
+                target.transcript.appendText(`  ${target.theme.accent}${action === "continue"
+                  ? "/continue needs a paused run"
+                  : "/restart needs a paused or finished run"}${RST}`);
+                if (target === front) chatViewport.scrollEnd();
+                tui.requestRender();
+                return;
+              }
+              submitPrompt(command, target, false, action);
+            });
             return;
           }
           if (command === "/workspace") {

@@ -12,6 +12,7 @@ import type {
 } from "@piano/orchestrator";
 import { foldStatus } from "../common/status-fold.js";
 import {
+  jobCommandAllowed,
   resolveContinueCommand,
   resolveRestartCommand,
 } from "../../packages/cli/src/job-commands.js";
@@ -110,6 +111,26 @@ describe("resolveContinueCommand", () => {
       kind: "refused",
       reason: "the paused job's input is not recorded",
     });
+  });
+});
+
+describe("jobCommandAllowed", () => {
+  it("allows /continue only on a paused run", () => {
+    expect(jobCommandAllowed("continue", "paused")).toBe(true);
+    for (const status of ["running", "completed", "failed", "cancelled", undefined] as const) {
+      expect(jobCommandAllowed("continue", status)).toBe(false);
+    }
+  });
+
+  it("allows /restart only once a run has stopped with a job to re-run", () => {
+    for (const status of ["paused", "completed", "failed"] as const) {
+      expect(jobCommandAllowed("restart", status)).toBe(true);
+    }
+    // No run at all (a fresh session), a live one, and a legacy cancelled
+    // document with no job are not restart targets.
+    for (const status of ["running", "cancelled", undefined] as const) {
+      expect(jobCommandAllowed("restart", status)).toBe(false);
+    }
   });
 });
 
