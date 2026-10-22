@@ -160,13 +160,19 @@ describe("Escape pauses a run instead of failing it", () => {
       expect((requests[1] as { continuation?: { transcriptPath?: string } }).continuation?.transcriptPath)
         .toBe(HANGING_SESSION.transcriptPath);
 
-      // Paused -> running -> completed: one execution across the pause.
-      expect((await readJson(join(session.runDir, "status.json"))).status).toBe("completed");
+      // Paused -> running -> completed: one execution across the pause. The
+      // plain prompt continued the one-node job instead of opening a second
+      // one, so the run still holds exactly one job.
+      const finalStatus = await readJson(join(session.runDir, "status.json")) as {
+        status: string;
+        jobs: Array<{ jobOrdinal: number }>;
+      };
+      expect(finalStatus.status).toBe("completed");
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(after?.id).toBe(continued.runId);
-      expect(after?.jobOrdinal).toBe(2);
+      expect(finalStatus.jobs.map((job) => job.jobOrdinal)).toEqual([1]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

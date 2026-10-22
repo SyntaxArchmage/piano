@@ -66,7 +66,6 @@ describe("run status", () => {
       status: "running",
       plannedStages: 2,
       stageCounts: { tune: { planned: 2, completed: 0 } },
-      jobOrdinal: 1,
       actors: { "run-1/basic/root": { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl", turns: 1 } },
     });
     expect(status?.jobs).toHaveLength(1);
@@ -141,7 +140,6 @@ describe("run status", () => {
     expect(status?.actors).toEqual({
       "run-5/basic/root": { harness: "pi", sessionId: "sess-5", transcriptPath: "/t.jsonl", turns: 2 },
     });
-    expect(status?.jobOrdinal).toBe(1);
   });
 
   it("says which turns ran and how they ended, not where their events sit", () => {

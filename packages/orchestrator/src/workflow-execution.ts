@@ -27,6 +27,7 @@ import {
 } from "@piano/trajectory";
 import {
   compileWorkflow,
+  isSingleStageWorkflow,
   isWorkflowIdentifier,
   type CompiledWorkflow,
   type WorkflowHarness,
@@ -94,10 +95,11 @@ import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
+  reconcileCrashedRun,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
-import { readRunStatus, runStatusPath } from "./run-status.js";
+import { nextJobOrdinal, readRunStatus, runStatusPath, type RunJob } from "./run-status.js";
 import {
   buildCommitMessage,
   commitRoundFiles,
@@ -338,27 +340,39 @@ function createExecutionDirectory(
   );
 }
 
-/** What the run's own evidence says about its jobs before a new one starts:
- * the ordinal it must not reuse, and the jobs a close already abandoned. Both
- * come from the state document's jobs and the invocation records, with the
- * continuation's ordinal as a floor only. A hint that lags behind cannot
- * reopen an ordinal another job's evidence already holds. */
+/** What the run's state document says before a prompt starts: the next ordinal,
+ * the latest job the prompt acts on, and the jobs a close already abandoned.
+ * The document's job table is the only identity source — invocation rows are
+ * evidence, not a second ordinal ledger. Rows without a job table mean the
+ * document was lost; minting from 1 then would alias the old job's `inv-<ref>`
+ * names, so the run refuses instead. */
 function readRunJobLedger(
   runDir: string,
-  hint: number | undefined,
 ): Effect.Effect<
-  { readonly nextOrdinal: number; readonly abandonedOrdinals: readonly number[]; readonly mnemonic?: string },
+  {
+    readonly nextOrdinal: number;
+    readonly latestJob?: RunJob;
+    readonly abandonedOrdinals: readonly number[];
+    readonly mnemonic?: string;
+  },
   WorkflowError,
   FileSystem.FileSystem
 > {
   return Effect.gen(function* () {
     const status = yield* readRunStatus(runDir);
-    const rows = yield* readInvocationRecords(runDir);
-    const recordedOrdinals = rows.map((row) => row.jobOrdinal);
-    const jobOrdinals = status?.jobs.map((job) => job.jobOrdinal) ?? [];
+    const jobs = status?.jobs ?? [];
+    if (jobs.length === 0 && (yield* readInvocationRecords(runDir)).length > 0) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        runDir,
+        "run state has no job table but its invocation evidence exists; the state document is missing",
+      ));
+    }
+    const latestJob = jobs.at(-1);
     return {
-      nextOrdinal: Math.max(0, hint ?? 0, ...jobOrdinals, ...recordedOrdinals) + 1,
-      abandonedOrdinals: (status?.jobs ?? [])
+      nextOrdinal: nextJobOrdinal(jobs),
+      ...(latestJob === undefined ? {} : { latestJob }),
+      abandonedOrdinals: jobs
         .filter((job) => job.state === "finished" && job.outcome === "restarted")
         .map((job) => job.jobOrdinal),
       ...(status?.mnemonic === undefined ? {} : { mnemonic: status.mnemonic }),
@@ -708,13 +722,49 @@ export function executeWorkflow(
     }
     yield* createExecutionDirectory(request.runDir);
     const progressPlan = workflowProgressPlan(compiled);
-    // A continue repeats its job's ordinal: the span belongs to the same job,
-    // so its evidence lands under the same job's stream rows and result files.
-    // A fresh job takes the next ordinal the run's own evidence leaves — the
-    // resume state's index is only a floor there.
-    const jobLedger = yield* readRunJobLedger(request.runDir, request.execution?.jobOrdinal);
+    // A process can die after announcing its execution but before installing
+    // the finalizer, leaving a job `alive` with nothing working it. One
+    // process runs a run, so a job this process is not running is over: fold
+    // the end it never wrote, exactly as the resume picker does.
+    yield* reconcileCrashedRun(request.runDir);
+    const jobLedger = yield* readRunJobLedger(request.runDir);
     yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
-    const jobOrdinal = request.continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
+    const latestJob = jobLedger.latestJob;
+    // A continue repeats its job's ordinal, so its evidence lands under the
+    // same job's stream rows and result files. The engine only checks that the
+    // cursor names the latest job; the CLI is what offers `/continue` for a
+    // paused one.
+    let continueJob = request.continueJob;
+    if (continueJob !== undefined && latestJob?.jobOrdinal !== continueJob.jobOrdinal) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        "cannot continue a job that is not this run's latest",
+      ));
+    }
+    if (continueJob === undefined && latestJob?.state === "paused") {
+      // A one-node workflow's restart and continue both re-enter that node, so
+      // a plain prompt resumes it. Accepted work is deliberately not skipped:
+      // the new prompt is new work, not a request to replay the old answer.
+      if (!isSingleStageWorkflow(loaded.document)) {
+        return yield* Effect.fail(workflowError(
+          "schedule",
+          loaded.workflowPath,
+          "run is paused mid-workflow; use /continue or /restart",
+        ));
+      }
+      continueJob = {
+        jobOrdinal: latestJob.jobOrdinal,
+        accepted: new Set(),
+        attempts: new Map(Object.entries(latestJob.attempts)),
+      };
+    }
+    const jobOrdinal = continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
+    // The stage runner reads the cursor from the request; a synthesized
+    // implicit continue must be visible there too, not only to this block.
+    const executionRequest: WorkflowExecutionRequest = continueJob === request.continueJob
+      ? request
+      : { ...request, continueJob };
     const knownLoopIterations = new Map<string, number>();
     // The lane namespace is the run's task identity. A resumed run keeps the
     // one it recorded; a new run takes the caller's value, else a preflight
@@ -798,8 +848,8 @@ export function executeWorkflow(
     // A continue's snapshot starts where the job left off: the invocations
     // accepted in earlier spans are not re-run, so nothing would count them
     // again and the run's counts would restart from the continue instead.
-    if (request.continueJob !== undefined) {
-      for (const invocationId of request.continueJob.accepted) {
+    if (continueJob !== undefined) {
+      for (const invocationId of continueJob.accepted) {
         counters.acceptedStageCount += 1;
         const stageId = invocationId.split("@", 1)[0] ?? invocationId;
         counters.completedByStage.set(stageId, (counters.completedByStage.get(stageId) ?? 0) + 1);
@@ -841,7 +891,7 @@ export function executeWorkflow(
 
     /** Everything the stage runner reaches outside itself. */
     const stageRunnerContext: StageRunnerContext = {
-      request,
+      request: executionRequest,
       loaded,
       compiled,
       runId,

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendWorkflowProgress,
   applyProgressRecord,
+  applyRunStatusRecord,
   closeWorkflowJob,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
@@ -258,10 +259,10 @@ describe("workflow progress stream", () => {
     // The state document opens with the run's boundary and the plan a reader
     // needs for every count; the job ordinal ties the span to its job.
     const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as {
-      runId: string; status: string; plannedStages: number; jobOrdinal: number;
+      runId: string; status: string; plannedStages: number;
       jobs: Array<{ jobOrdinal: number; state: string; input?: string }>;
     };
-    expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4, jobOrdinal: 1 });
+    expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
     expect(status.jobs).toMatchObject([{ jobOrdinal: 1, state: "alive", input: "do the work" }]);
   });
 
@@ -391,21 +392,77 @@ describe("workflow progress stream", () => {
     expect(status.error).toBe("boom");
   });
 
-  it("closes a job on the stream without touching the snapshot's run state", async () => {
+  it("closes a job on the stream and projects the run's status from it", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
     await run(closeWorkflowJob(runDir, "execution", 1, "restarted"));
 
-    // The human's close marks the job itself; the run keeps its own status.
+    // The human's close marks the job; the run's status is that job's view, and
+    // a restarted job leaves the run waiting for the next one.
     const status = JSON.parse(
       await readFile(runStatusPath(runDir), "utf8"),
     ) as { updatedAt: string; status: string; jobs: Array<{ state: string; outcome?: string }> };
     expect(status.updatedAt).toBe("2026-01-01T00:00:00.000Z");
-    expect(status.status).toBe("running");
+    expect(status.status).toBe("paused");
     expect(status.jobs[0]).toMatchObject({ state: "finished", outcome: "restarted" });
   });
 
+});
+
+describe("run status projection", () => {
+  const started = (ordinal: number, timestamp: string) => ({
+    version: 1,
+    kind: "execution-started",
+    timestamp,
+    runId: "projection",
+    jobOrdinal: ordinal,
+    prompt: `job ${ordinal}`,
+    resumed: ordinal > 1,
+    plan: timingPlan,
+  }) as unknown as WorkflowProgressStreamRecord;
+  const finished = (status: "completed" | "failed" | "paused", timestamp: string) => ({
+    version: 1,
+    kind: "execution-finished",
+    timestamp,
+    runId: "projection",
+    status,
+  }) as unknown as WorkflowProgressStreamRecord;
+  const closed = (ordinal: number, timestamp: string) => ({
+    version: 1,
+    kind: "job-closed",
+    timestamp,
+    runId: "projection",
+    jobOrdinal: ordinal,
+    outcome: "restarted",
+  }) as unknown as WorkflowProgressStreamRecord;
+
+  it("follows the latest job through its whole lifecycle", () => {
+    // The job table is the one state machine: nothing writes run status on its
+    // own, and a stage record cannot revive a job that stopped.
+    let status = applyRunStatusRecord(undefined, started(1, "2026-01-01T00:00:00.000Z"));
+    expect(status.status).toBe("running");
+    status = applyRunStatusRecord(status, finished("paused", "2026-01-01T00:00:01.000Z"));
+    expect(status.status).toBe("paused");
+    status = applyRunStatusRecord(status, started(2, "2026-01-01T00:00:02.000Z"));
+    expect(status.status).toBe("running");
+    status = applyRunStatusRecord(status, finished("completed", "2026-01-01T00:00:03.000Z"));
+    expect(status.status).toBe("completed");
+    status = applyRunStatusRecord(status, started(3, "2026-01-01T00:00:04.000Z"));
+    status = applyRunStatusRecord(status, finished("failed", "2026-01-01T00:00:05.000Z"));
+    expect(status.status).toBe("failed");
+    status = applyRunStatusRecord(status, started(4, "2026-01-01T00:00:06.000Z"));
+    status = applyRunStatusRecord(status, closed(4, "2026-01-01T00:00:07.000Z"));
+    expect(status.status).toBe("paused");
+  });
+
+  it("keeps the status a record wrote when the document holds no job yet", () => {
+    // A run finalized without initialize (a failure before any job) still
+    // records its own outcome; there is no job to project from.
+    const status = applyRunStatusRecord(undefined, finished("failed", "2026-01-01T00:00:00.000Z"));
+    expect(status.status).toBe("failed");
+    expect(status.jobs).toEqual([]);
+  });
 });
 
 describe("crash reconcile", () => {

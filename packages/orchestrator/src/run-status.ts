@@ -86,6 +86,13 @@ export interface RunJob {
   readonly regions?: Readonly<Record<string, WorkflowProgressRegionFinalizedRecord>>;
 }
 
+/** The ordinal the next job takes: one past the latest the table records.
+ * The table is the only source — evidence rows and caller hints never mint
+ * one. */
+export function nextJobOrdinal(jobs: readonly RunJob[]): number {
+  return (jobs.at(-1)?.jobOrdinal ?? 0) + 1;
+}
+
 /** One turn as the state document records it: what the turn was asked and how
  * it ended. Where its events begin and end is a question about the evidence —
  * `eventCount` — and the answer comes from folding the trajectory, which is
@@ -132,9 +139,9 @@ export interface RunStatus {
   /** The jobs this run has run, latest last. A continue keeps its ordinal; a
    * new prompt or a restart starts the next one. */
   readonly jobs: readonly RunJob[];
-  /** The job ordinal the actor table belongs to, and the registry itself:
-   * which harness session holds each conversation. */
-  readonly jobOrdinal: number;
+  /** Which harness session holds each conversation. One run is one execution,
+   * so the registry is run-scoped: every prompt after the first reopens what
+   * the previous one left. */
   readonly actors: Readonly<Record<string, ResumeActorState>>;
 }
 
@@ -173,7 +180,6 @@ export function emptyRunStatus(runId: string, timestamp: string): RunStatus {
     remainingStages: 0,
     stageCounts: {},
     jobs: [],
-    jobOrdinal: 0,
     actors: {},
   };
 }

@@ -157,6 +157,14 @@ export interface WorkflowDocument {
   };
 }
 
+/** A workflow with exactly one root node, and that node is a stage. That is
+ * the shape where restarting and continuing a paused job do the same work:
+ * both re-enter the one stage. A region — even one holding a single stage —
+ * has its own working instance, so the two commands differ there. */
+export function isSingleStageWorkflow(document: WorkflowDocument): boolean {
+  return document.workflow.nodes.length === 1 && "stage" in (document.workflow.nodes[0] ?? {});
+}
+
 /** A region plan surviving compile: iteration/fan-out controls + resolved
  * boundaries + its nested nodes. A region is an aggregated stage — `children`
  * is the region tree plane, the leaves of which are also members of the leaf

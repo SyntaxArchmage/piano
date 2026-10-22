@@ -442,12 +442,15 @@ Each invocation's evidence name is `inv-<ref>` — a run-wide serial its
 `invocation-started` row records on `system-log/invocations.jsonl`, so one `jq`
 names the stage, instance, and attempt behind any `results/` or `context/` path
 and no directory spells a dotted stage id or a slash-joined instance. A run may
-hold several prompts: each prompt opens a job — the ordinal is a job's identity,
-taken from the highest the run's state document and stream already record —
-while the actors continue under `sessions/` across prompts, and a loop iteration
-or a map slot does not start a new one: `<lane>` carries only the map frames, so
-one worker keeps one conversation across stages, iterations, and prompts. A map
-slot's workspace
+hold several jobs: a prompt after a finished job opens the next one, whose
+ordinal is the highest the run's state document records plus one. A prompt
+after a pause continues that job when the workflow is a single stage — the
+shape where `/restart` and `/continue` would re-enter the same node — and is
+refused mid-workflow otherwise, where `/continue` and `/restart` are the
+explicit choices. The actors continue under `sessions/` across prompts, and a
+loop iteration or a map slot does not start a new job: `<lane>` carries only the
+map frames, so one worker keeps one conversation across stages, iterations, and
+prompts. A map slot's workspace
 `<key>` is `job-<n>/<instance>` so that two jobs' slots can never rebind
 each other; `record.json` carries the lane branch, its base commit, and the
 source branch it forked from while the slot lives. `contracts/`, validated

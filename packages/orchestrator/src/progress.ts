@@ -4,6 +4,7 @@ import type { WorkflowError } from "./errors.js";
 import {
   acceptedInvocationOf,
   emptyRunStatus,
+  nextJobOrdinal,
   readRunStatus,
   runStatusPath,
   writeRunStatus,
@@ -634,6 +635,16 @@ function updateJob(
   return next;
 }
 
+/** Apply a record to the run's latest job — the only one a record can target
+ * when it carries no ordinal of its own. */
+function updateLatestJob(
+  jobs: readonly RunJob[],
+  update: (job: RunJob) => RunJob,
+): readonly RunJob[] {
+  const latest = jobs.at(-1);
+  return latest === undefined ? jobs : [...jobs.slice(0, -1), update(latest)];
+}
+
 function bumpAttempt(
   attempts: Readonly<Record<string, number>>,
   invocationId: string,
@@ -649,8 +660,33 @@ function bumpAttempt(
  * that document alone cannot express — jobs, their finalized regions and the
  * actor table — are applied alongside it. This is the whole state machine a
  * run has: there is no second stream to reconcile, and writing the document is
- * the commit. */
+ * the commit.
+ *
+ * The run's status is a projection of its latest job, applied after the fold:
+ * the job table is the one lifecycle. A document with no job — a run that
+ * failed before its first one — keeps the record's own verdict. */
 export function applyRunStatusRecord(
+  previous: RunStatus | undefined,
+  record: WorkflowProgressStreamRecord,
+): RunStatus {
+  return projectRunStatus(foldRunStatusRecord(previous, record));
+}
+
+/** `alive` while work runs, a finished job's own verdict, and `paused` for
+ * everything else — a human stop and a restarted job both leave the run
+ * waiting for the next prompt. */
+function projectRunStatus(status: RunStatus): RunStatus {
+  const latest = status.jobs.at(-1);
+  if (latest === undefined) return status;
+  const projected = latest.state === "alive"
+    ? "running"
+    : latest.state === "finished" && (latest.outcome === "completed" || latest.outcome === "failed")
+      ? latest.outcome
+      : "paused";
+  return status.status === projected ? status : { ...status, status: projected };
+}
+
+function foldRunStatusRecord(
   previous: RunStatus | undefined,
   record: WorkflowProgressStreamRecord,
 ): RunStatus {
@@ -674,9 +710,12 @@ export function applyRunStatusRecord(
   const kind = progressRecordKind(record);
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
-    const ordinal = started.jobOrdinal ?? (next.jobs.at(-1)?.jobOrdinal ?? 0) + 1;
+    const ordinal = started.jobOrdinal ?? nextJobOrdinal(next.jobs);
     const existing = next.jobs.find((job) => job.jobOrdinal === ordinal);
-    const input = existing?.input ?? started.prompt;
+    // The job's input is the work it currently stands for: a plain prompt that
+    // continues a one-stage job replaces it, so a later `/restart` re-runs
+    // what the human last asked, not the job's first message.
+    const input = started.prompt ?? existing?.input;
     const job: RunJob = {
       jobOrdinal: ordinal,
       state: "alive",
@@ -687,15 +726,14 @@ export function applyRunStatusRecord(
     };
     const jobs = [...next.jobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
       .sort((left, right) => left.jobOrdinal - right.jobOrdinal);
-    return { ...next, jobs, jobOrdinal: ordinal };
+    return { ...next, jobs };
   }
   if (kind === "stage-started") {
     const started = record as WorkflowProgressStartRecord;
     return {
       ...next,
-      jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({
+      jobs: updateLatestJob(next.jobs, (job) => ({
         ...job,
-        state: "alive",
         attempts: bumpAttempt(job.attempts, started.invocationId, started.attempt),
       })),
     };
@@ -705,9 +743,8 @@ export function applyRunStatusRecord(
     const entry = acceptedInvocationOf(accepted.invocationId);
     return {
       ...next,
-      jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({
+      jobs: updateLatestJob(next.jobs, (job) => ({
         ...job,
-        state: "alive",
         accepted: job.accepted.some((item) => item.invocationId === entry.invocationId)
           ? job.accepted
           : [...job.accepted, entry],
@@ -729,7 +766,6 @@ export function applyRunStatusRecord(
     const turn = record as WorkflowProgressActorTurnRecord;
     return {
       ...next,
-      jobOrdinal: turn.jobOrdinal,
       actors: {
         ...next.actors,
         [turn.actorKey]: {
@@ -752,10 +788,10 @@ export function applyRunStatusRecord(
   if (kind === "execution-finished") {
     const finished = record as WorkflowProgressExecutionFinishRecord;
     if (finished.status === "paused") {
-      return { ...next, jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({ ...job, state: "paused" })) };
+      return { ...next, jobs: updateLatestJob(next.jobs, (job) => ({ ...job, state: "paused" })) };
     }
     const outcome = finished.status;
-    return { ...next, jobs: updateJob(next.jobs, next.jobOrdinal, (job) => ({ ...job, state: "finished", outcome })) };
+    return { ...next, jobs: updateLatestJob(next.jobs, (job) => ({ ...job, state: "finished", outcome })) };
   }
   return next;
 }

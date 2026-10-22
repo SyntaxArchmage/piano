@@ -1,8 +1,9 @@
-// The two job-level commands beside a prompt: `/continue` resumes the most
-// recent paused job from its cursor, and `/restart` closes the latest job and
-// runs its input again as a fresh one. Both read the job's input from the job
-// itself — the state document records it with the job — so turn positions,
-// which continues make ambiguous, are never consulted.
+// The two job-level commands beside a prompt: `/continue` resumes the latest
+// job from its cursor, and `/restart` closes the latest job and runs its input
+// again as a fresh one. Both read the job's input from the job itself — the
+// state document records it with the job — so turn positions, which continues
+// make ambiguous, are never consulted. One run has at most one unfinished job,
+// and it is the latest: an older paused job is retired and never offered.
 import { type RunJob } from "@piano/orchestrator";
 
 /** What `/continue` resolved to: resume this job from the cursor it left. */
@@ -26,22 +27,22 @@ export type Resolved<Command> =
   | { readonly kind: "run"; readonly command: Command }
   | { readonly kind: "refused"; readonly reason: string };
 
-/** Resolve `/continue`: the most recent paused job wins, even when a newer job
- * has since finished — the alive job is by construction the latest, so any
- * paused job is an older one waiting for exactly this command. */
+/** Resolve `/continue`: only the latest job can be paused work. An older
+ * paused job was left behind by the run's progress and is retired — continuing
+ * it would run evidence the newer job has already superseded. */
 export function resolveContinueCommand(
   jobList: readonly RunJob[],
 ): Resolved<ContinueCommand> {
-  const paused = jobList.filter((job) => job.state === "paused").at(-1);
-  if (paused === undefined) return { kind: "refused", reason: "no paused job to continue" };
-  if (paused.input === undefined) return { kind: "refused", reason: "the paused job's input is not recorded" };
+  const latest = jobList.at(-1);
+  if (latest?.state !== "paused") return { kind: "refused", reason: "no paused job to continue" };
+  if (latest.input === undefined) return { kind: "refused", reason: "the paused job's input is not recorded" };
   return {
     kind: "run",
     command: {
-      input: paused.input,
-      jobOrdinal: paused.jobOrdinal,
-      accepted: new Set(paused.accepted.map((item) => item.invocationId)),
-      attempts: new Map(Object.entries(paused.attempts)),
+      input: latest.input,
+      jobOrdinal: latest.jobOrdinal,
+      accepted: new Set(latest.accepted.map((item) => item.invocationId)),
+      attempts: new Map(Object.entries(latest.attempts)),
     },
   };
 }

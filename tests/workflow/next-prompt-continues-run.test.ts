@@ -13,6 +13,7 @@ import { createSession, Logging, loggingService } from "../../packages/logging/s
 import {
   executeWorkflow,
   loadWorkflow,
+  readRunStatus,
   readWorkflowExecutionContinuation,
   type WorkflowExecutionContinuation,
   type WorkflowSignoffRequest,
@@ -100,7 +101,9 @@ describe("a finished run's next prompt continues its workflow execution", () => 
       const after = await Effect.runPromise(
         readWorkflowExecutionContinuation(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)),
       );
-      expect(after?.jobOrdinal).toBe(2);
+      // A finished job's next prompt is new work: a second job, not a continue.
+      const status = await Effect.runPromise(readRunStatus(session.runDir).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect(status?.jobs.map((job) => job.jobOrdinal)).toEqual([1, 2]);
       const firstActor = continued?.actors.values().next().value;
       const secondActor = after?.actors.values().next().value;
       // Resumed the very same harness session: one actor, two turns.

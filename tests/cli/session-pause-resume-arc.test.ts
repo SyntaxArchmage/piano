@@ -22,7 +22,6 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import { createSession, createStagingSession } from "@piano/logging";
-import { readWorkflowExecutionContinuation } from "@piano/orchestrator";
 import type { AgentRunner } from "@piano/harness";
 import { runSession } from "../../packages/cli/src/session-run.js";
 import { FakeTerminal, plain, sleep, waitFor } from "../common/terminal.js";
@@ -199,10 +198,10 @@ describe("one run across finish → exit → resume → Escape → exit → resu
       const finalActor = Object.values(await readResumeActors(join(runsRoot, runId)))[0];
       expect(finalActor?.sessionId).toBe("sess-arc");
       expect(finalActor?.turns).toBe(2);
-      const execution = await Effect.runPromise(
-        readWorkflowExecutionContinuation(join(runsRoot, runId)).pipe(Effect.provide(NodeFileSystem.layer)),
-      );
-      expect(execution?.jobOrdinal).toBe(3);
+      // The interrupted prompt's job was continued, not replaced: two jobs,
+      // and the second is the one that finished.
+      expect((trajectory.jobs as Array<{ jobOrdinal: number; state: string }>).map((job) => job.jobOrdinal))
+        .toEqual([1, 2]);
     } finally {
       await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }

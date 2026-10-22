@@ -1,8 +1,10 @@
-// /continue and /restart resolve from the run's state document: the most
-// recent paused job resumes from its cursor; the latest job's input runs
-// again, closing a paused job first. The input comes from the job itself —
-// the document records it with the job — so turn positions are never
-// consulted. Refusals say what is missing instead of running the wrong thing.
+// /continue and /restart resolve from the run's state document: the latest
+// paused job resumes from its cursor; the latest job's input runs again,
+// closing a paused job first. The input comes from the job itself — the
+// document records it with the job — so turn positions are never consulted.
+// One run has at most one unfinished job and it is the latest, so an older
+// paused job is never offered. Refusals say what is missing instead of running
+// the wrong thing.
 import { describe, expect, it } from "vitest";
 import type {
   RunJob,
@@ -50,20 +52,36 @@ const T = (second: number): string => `2026-10-14T00:00:${String(second).padStar
 const jobList = (...records: WorkflowProgressStreamRecord[]): readonly RunJob[] =>
   foldStatus(records)?.jobs ?? [];
 
-/** Job 1 finished, job 2 paused with one stage accepted, job 3 alive. */
-const THREE_JOBS = jobList(
+/** Job 1 finished, job 2 paused — the only shape a live run reaches. */
+const PAUSED_LATEST = jobList(
   started(1, T(0), "first input"),
   accepted(T(1), "first@root"),
   finished(T(2), "completed"),
   started(2, T(3), "second input"),
   accepted(T(4), "first@root"),
   finished(T(5), "paused"),
-  started(3, T(6), "third input"),
+);
+
+/** Legacy evidence: a newer job started while an older one stayed paused. The
+ * invariant forbids creating this, but a document written before it can still
+ * hold the shape, so the resolver must never fall back to the old job. */
+const RETIRED_PAUSED = jobList(
+  started(1, T(0), "retired input"),
+  finished(T(1), "paused"),
+  started(2, T(2), "latest input"),
+  finished(T(3), "completed"),
+);
+
+/** A paused job followed by the alive job of a running prompt. */
+const ALIVE_LATEST = jobList(
+  started(1, T(0), "first input"),
+  finished(T(1), "paused"),
+  started(2, T(2), "second input"),
 );
 
 describe("resolveContinueCommand", () => {
-  it("resumes the most recent paused job, even when a newer job exists", () => {
-    const resolved = resolveContinueCommand(THREE_JOBS);
+  it("resumes the latest paused job from its cursor", () => {
+    const resolved = resolveContinueCommand(PAUSED_LATEST);
     expect(resolved).toEqual({
       kind: "run",
       command: {
@@ -72,6 +90,13 @@ describe("resolveContinueCommand", () => {
         accepted: new Set(["first@root"]),
         attempts: new Map([["first@root", 1]]),
       },
+    });
+  });
+
+  it("never falls back to an older paused job", () => {
+    expect(resolveContinueCommand(RETIRED_PAUSED)).toEqual({
+      kind: "refused",
+      reason: "no paused job to continue",
     });
   });
 
@@ -106,7 +131,7 @@ describe("resolveRestartCommand", () => {
   });
 
   it("refuses while a job is alive, and when nothing was ever run", () => {
-    expect(resolveRestartCommand(THREE_JOBS)).toEqual({
+    expect(resolveRestartCommand(ALIVE_LATEST)).toEqual({
       kind: "refused",
       reason: "a job is running; interrupt it first",
     });

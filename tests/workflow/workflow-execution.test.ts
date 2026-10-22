@@ -19,11 +19,14 @@ import {
   allocateMapWorkspace,
   closeWorkflowJob,
   executeWorkflow,
+  initializeWorkflowProgress,
   loadAndExecuteWorkflow,
   invocationStreamPath,
   loadWorkflow,
+  markWorkflowStageStarted,
   parseInvocationRecords,
   readWorkflowExecutionContinuation,
+  recordInvocationStart,
   WorkflowError,
   type InvocationAcceptedRecord,
   type RunAcceptedInvocation,
@@ -4622,6 +4625,22 @@ workflow:
       const exit = await Effect.runPromise(Fiber.interrupt(fiber));
       expect(Exit.isFailure(exit)).toBe(true);
 
+      // A plain prompt now would restart the multi-node graph from the top
+      // while the job's evidence says it stopped in the middle: refused, with
+      // the two commands that can act on the pause.
+      const refused = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "just go",
+        agentRunner: () => Effect.fail(new AgentError({ kind: "unknown", message: "should not run" })),
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      expect(Exit.isFailure(refused)).toBe(true);
+      if (Exit.isFailure(refused)) {
+        expect(Cause.pretty(refused.cause)).toContain("run is paused mid-workflow; use /continue or /restart");
+      }
+      expect((await readRunStatusFile(session.runDir)).jobs).toHaveLength(1);
+
       const recordsDir = join(session.runDir, "workspace-records");
       const readRecords = async () => Promise.all((await readdir(recordsDir))
         .filter((entry) => !entry.startsWith("."))
@@ -5001,7 +5020,7 @@ workflow:
     }
   });
 
-  it("allocates the next job ordinal from the run's own evidence, not a stale hint", async () => {
+  it("mints the next job ordinal from the state document alone", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-next-ordinal-"));
     try {
       await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
@@ -5022,18 +5041,111 @@ workflow:
       }));
 
       await run();
-      // A prompt with no resume state at all still follows job 1: the run's
-      // own evidence, not the caller's hint, decides what is next.
+      // A higher ordinal on the invocation stream is evidence, not identity:
+      // the state document's job table is the only source the next job reads.
+      await Effect.runPromise(recordInvocationStart(session.runDir, {
+        runId: session.id,
+        jobOrdinal: 99,
+        invocationId: "decoy@root",
+        stageId: "decoy",
+      }).pipe(Effect.provide(NodeFileSystem.layer)));
       await run();
-      // A stale hint (the state says 0) is a floor, never the answer.
-      await run({ id: session.id, jobOrdinal: 0, actors: new Map() });
 
       const status = await readRunStatusFile(session.runDir);
-      expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1, 2, 3]);
-      // The stream follows the ordinals: one acceptance per job, no job
-      // writing over another's evidence.
-      expect((await acceptedRows(session.runDir)).map((row) => row.jobOrdinal)).toEqual([1, 2, 3]);
-      expect(calls).toHaveLength(3);
+      expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1, 2]);
+      expect(calls).toHaveLength(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs an execution that was announced but never finished, then continues its one-node job", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-alive-repair-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      // The previous process died after announcing job 1 and before installing
+      // its finalizer: the document says running, the job says alive, and
+      // nothing is working it.
+      await mkdir(session.runDir, { recursive: true });
+      await Effect.runPromise(initializeWorkflowProgress(
+        session.runDir,
+        session.id,
+        { plannedStages: 1, stageCounts: {} },
+        1,
+        "first",
+        false,
+      ).pipe(Effect.provide(NodeFileSystem.layer)));
+      // The dead span had already opened attempt 1; the re-run must follow it
+      // instead of overwriting the result file that attempt left.
+      await Effect.runPromise(markWorkflowStageStarted(session.runDir, session.id, {
+        invocationId: "respond@root",
+        stageId: "respond",
+        stage: "respond",
+        worker: "basic",
+        attempt: 1,
+      }).pipe(Effect.provide(NodeFileSystem.layer)));
+      expect((await readRunStatusFile(session.runDir)).status).toBe("running");
+
+      const calls: AgentRequest[] = [];
+      const result = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "second",
+        agentRunner: (request) => {
+          calls.push(request);
+          return Effect.succeed({
+            sessionId: "repair-session",
+            transcriptPath: "/tmp/repair-session.jsonl",
+            text: "repaired",
+            continuation: continuation("repair-session"),
+          });
+        },
+      }));
+
+      // The dead job was folded to paused, and the one-node workflow continued
+      // it instead of opening a second job. The new prompt is the job's input
+      // from now on, so a later restart re-runs what the human last asked.
+      expect(result.text).toBe("repaired");
+      expect(calls).toHaveLength(1);
+      const status = await readRunStatusFile(session.runDir);
+      expect(status.jobs.map((job) => job.jobOrdinal)).toEqual([1]);
+      expect(status.jobs[0]).toMatchObject({ state: "finished", input: "second" });
+      expect(status.jobs[0]?.attempts["respond@root"]).toBe(2);
+      expect(status.status).toBe("completed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a continue cursor that is not the latest job", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-stale-continue-"));
+    try {
+      await writeFile(join(root, "basic.yml"), BASIC_WORKFLOW);
+      const session = await testSession(root);
+      const run = () => runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "answer",
+        agentRunner: () => Effect.succeed({
+          sessionId: "stale-session",
+          transcriptPath: "/tmp/stale-session.jsonl",
+          text: "ans = 4",
+          continuation: continuation("stale-session"),
+        }),
+      }));
+      await run();
+      await run();
+
+      const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "basic.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "again",
+        // Job 1 is finished and job 2 is the latest; the older cursor is
+        // retired, never reopened.
+        continueJob: { jobOrdinal: 1, accepted: new Set(), attempts: new Map() },
+        agentRunner: () => Effect.fail(new AgentError({ kind: "unknown", message: "should not run" })),
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain("not this run's latest");
+      expect((await readRunStatusFile(session.runDir)).jobs.map((job) => job.jobOrdinal)).toEqual([1, 2]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5091,7 +5203,6 @@ workflow:
         prompt: "answer",
         execution: {
           id: session.id,
-          jobOrdinal: 1,
           // The current actor key, deliberately missing its continuation.
           // The cast is the point: `WorkflowActorContinuation` requires
           // `continuation`, and the reader always sets it, so this shape can only

@@ -28,7 +28,6 @@ export interface WorkflowActorContinuation {
 /** Identity and actor table of an execution that is being continued. */
 export interface WorkflowExecutionContinuation {
   readonly id: string;
-  readonly jobOrdinal: number;
   /** Keyed by `workflowActorKey`, hence only valid for `id`. */
   readonly actors: ReadonlyMap<string, WorkflowActorContinuation>;
 }
@@ -42,13 +41,12 @@ export function readWorkflowExecutionContinuation(
   return Effect.gen(function* () {
     const status = yield* readRunStatus(runDir);
     if (status === undefined) return undefined;
-    return finish(status.runId, status.jobOrdinal, status.actors);
+    return finish(status.runId, status.actors);
   });
 }
 
 function finish(
   runId: string,
-  jobOrdinal: number,
   table: Record<string, ResumeActorState>,
 ): WorkflowExecutionContinuation | undefined {
   const actors = new Map<string, WorkflowActorContinuation>();
@@ -64,5 +62,5 @@ function finish(
       continuation: actor.continuation,
     });
   }
-  return actors.size === 0 ? undefined : { id: runId, jobOrdinal, actors };
+  return actors.size === 0 ? undefined : { id: runId, actors };
 }
