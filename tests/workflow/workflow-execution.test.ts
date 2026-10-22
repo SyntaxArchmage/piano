@@ -17,7 +17,6 @@ import {
 import {
   ACTOR_KEY_VERSION,
   allocateMapWorkspace,
-  closeWorkflowJob,
   executeWorkflow,
   initializeWorkflowProgress,
   loadAndExecuteWorkflow,
@@ -4655,12 +4654,13 @@ workflow:
         .toEqual(["job-1/tournament/slot-0", "job-1/tournament/slot-1"]);
       expect(preserved.every((record) => record.phase === "preserved")).toBe(true);
 
-      // The human abandons the paused job: the ledger records the close, and
-      // the next job's start is what reclaims the directories it left behind.
-      await runWorkflow(session, closeWorkflowJob(session.runDir, session.id, 1, "restarted"));
+      // The human abandons the paused job: the restart closes it and starts
+      // the next job in one state transition, reclaiming the directories the
+      // pause preserved.
       run = 2;
       const second = await runWorkflow(session, loadAndExecuteWorkflow({
         root, workflowPath: join(root, "map.yml"), runDir: session.runDir, runId: session.id, cwd: root, prompt: "map candidates again",
+        restartOrdinal: 1,
         agentRunner: runner,
       }));
       // The new job allocated its own lanes under its own key.

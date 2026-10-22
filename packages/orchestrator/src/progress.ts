@@ -189,6 +189,10 @@ export interface WorkflowProgressExecutionStartRecord {
   readonly prompt?: string;
   /** True when this execution continues actors a previous one left behind. */
   readonly resumed: boolean;
+  /** The job this span replaces: `/restart` closes it as `restarted` in the
+   * same transition that starts this one. Present only on a restart, so a
+   * closed-alone job is not expressible. */
+  readonly closesJobOrdinal?: number;
   /** The run's lane namespace (`<task-slug>-<runId>`), recorded so a continue
    * reuses it instead of re-summarizing the prompt. Absent in older streams. */
   readonly mnemonic?: string;
@@ -208,20 +212,6 @@ export interface WorkflowProgressExecutionFinishRecord {
   readonly runId: string;
   readonly status: "completed" | "failed" | "paused";
   readonly error?: string;
-}
-
-/** Append-only record that a job is closed by the human's own action rather
- * than by the work ending — today only `/restart`, which abandons a paused job
- * in favour of a fresh one. The job's spans keep their own truth (the last one
- * still says `paused`); this record is what makes the job read as finished
- * with that outcome, and what keeps its cursor from being offered again. */
-export interface WorkflowProgressJobClosedRecord {
-  readonly version: 1;
-  readonly kind: "job-closed";
-  readonly timestamp: string;
-  readonly runId: string;
-  readonly jobOrdinal: number;
-  readonly outcome: "restarted";
 }
 
 /** One region's exit, recorded exactly once when the region leaves the
@@ -308,7 +298,6 @@ export type WorkflowProgressStreamRecord =
   | WorkflowProgressStartRecord
   | WorkflowProgressExecutionStartRecord
   | WorkflowProgressExecutionFinishRecord
-  | WorkflowProgressJobClosedRecord
   | WorkflowProgressRegionFinalizedRecord
   | WorkflowProgressActorTurnRecord;
 
@@ -330,7 +319,6 @@ export function progressRecordKind(record: object | null | undefined):
   | WorkflowProgressStartRecord["kind"]
   | WorkflowProgressExecutionStartRecord["kind"]
   | WorkflowProgressExecutionFinishRecord["kind"]
-  | WorkflowProgressJobClosedRecord["kind"]
   | WorkflowProgressRegionFinalizedRecord["kind"]
   | WorkflowProgressActorTurnRecord["kind"]
   | "stage-accepted"
@@ -340,7 +328,6 @@ export function progressRecordKind(record: object | null | undefined):
   if (kind === "stage-started") return "stage-started";
   if (kind === "execution-started") return "execution-started";
   if (kind === "execution-finished") return "execution-finished";
-  if (kind === "job-closed") return "job-closed";
   if (kind === "region-finalized") return "region-finalized";
   if (kind === "actor-turn") return "actor-turn";
   return undefined;
@@ -554,13 +541,6 @@ export function applyProgressRecord(
       ...(finished.error === undefined ? {} : { error: finished.error }),
     };
   }
-  if (kind === "job-closed") {
-    const closed = record as WorkflowProgressJobClosedRecord;
-    // The snapshot describes the latest span; a job closed by an action the
-    // viewer may not even be showing moves only its timestamp.
-    const base = previous ?? emptyProgressSnapshot(closed.runId, closed.timestamp);
-    return { ...base, updatedAt: closed.timestamp };
-  }
   const accepted = record as WorkflowProgressRecord;
   const projection = accepted.progress;
   const base = previous ?? emptyProgressSnapshot(accepted.runId, accepted.timestamp);
@@ -709,7 +689,13 @@ function foldRunStatusRecord(
   if (kind === "execution-started") {
     const started = record as WorkflowProgressExecutionStartRecord;
     const ordinal = started.jobOrdinal ?? nextJobOrdinal(next.jobs);
-    const existing = next.jobs.find((job) => job.jobOrdinal === ordinal);
+    // A restart closes its predecessor in this same record, so no document
+    // can hold a closed job that was not immediately followed by its
+    // successor.
+    const priorJobs = started.closesJobOrdinal === undefined
+      ? next.jobs
+      : updateJob(next.jobs, started.closesJobOrdinal, (job) => ({ ...job, state: "finished", outcome: "restarted" }));
+    const existing = priorJobs.find((job) => job.jobOrdinal === ordinal);
     // The job's input is the work it currently stands for: a plain prompt that
     // continues a one-stage job replaces it, so a later `/restart` re-runs
     // what the human last asked, not the job's first message.
@@ -722,7 +708,7 @@ function foldRunStatusRecord(
       ...(input === undefined ? {} : { input }),
       ...(existing?.regions === undefined ? {} : { regions: existing.regions }),
     };
-    const jobs = [...next.jobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
+    const jobs = [...priorJobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
       .sort((left, right) => left.jobOrdinal - right.jobOrdinal);
     return { ...next, jobs };
   }
@@ -776,13 +762,6 @@ function foldRunStatusRecord(
       },
     };
   }
-  if (kind === "job-closed") {
-    const closed = record as WorkflowProgressJobClosedRecord;
-    return {
-      ...next,
-      jobs: updateJob(next.jobs, closed.jobOrdinal, (job) => ({ ...job, state: "finished", outcome: closed.outcome })),
-    };
-  }
   if (kind === "execution-finished") {
     const finished = record as WorkflowProgressExecutionFinishRecord;
     if (finished.status === "paused") {
@@ -795,7 +774,11 @@ function foldRunStatusRecord(
 }
 
 /** Create the initial snapshot before the first worker turn. This makes a
- * long-running workflow observable even while no stage has validated yet. */
+ * long-running workflow observable even while no stage has validated yet.
+ *
+ * `restartOrdinal` is the job this start replaces: the record closes it as
+ * `finished/restarted` in the same atomic write, so no reader ever sees a
+ * paused run whose latest job is already finished. */
 export function initializeWorkflowProgress(
   runDir: string,
   runId: string,
@@ -803,7 +786,10 @@ export function initializeWorkflowProgress(
   jobOrdinal: number,
   prompt: string,
   resume: boolean,
-  mnemonic?: string,
+  options: {
+    readonly mnemonic?: string;
+    readonly restartOrdinal?: number;
+  } = {},
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return Effect.gen(function* () {
@@ -815,7 +801,8 @@ export function initializeWorkflowProgress(
       jobOrdinal,
       prompt,
       resumed: resume,
-      ...(mnemonic === undefined ? {} : { mnemonic }),
+      ...(options.restartOrdinal === undefined ? {} : { closesJobOrdinal: options.restartOrdinal }),
+      ...(options.mnemonic === undefined ? {} : { mnemonic: options.mnemonic }),
       plan,
     });
     return path;
@@ -929,28 +916,5 @@ export function reconcileCrashedRun(
     if (status === undefined || status.status !== "running") return false;
     yield* finalizeWorkflowProgress(runDir, status.runId, "paused");
     return true;
-  });
-}
-
-/** Close one job by the human's own action, so its paused spans read as
- * finished with that outcome. Appends the marker and folds it like every
- * other record; the job's own spans keep saying how they stopped. */
-export function closeWorkflowJob(
-  runDir: string,
-  runId: string,
-  jobOrdinal: number,
-  outcome: "restarted",
-): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
-  const path = runStatusPath(runDir);
-  return Effect.gen(function* () {
-    yield* appendAndFold(runDir, {
-      version: 1,
-      kind: "job-closed",
-      timestamp: new Date().toISOString(),
-      runId,
-      jobOrdinal,
-      outcome,
-    });
-    return path;
   });
 }

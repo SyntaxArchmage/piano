@@ -23,7 +23,6 @@ import {
   type TrajectoryWriteInput,
 } from "@piano/logging";
 import {
-  closeWorkflowJob,
   compileWorkflow,
   builtinWorkflowSelection,
   executeWorkflow,
@@ -41,7 +40,6 @@ import {
   type LoadedWorkflow,
   type WorkflowExecutionError,
   WorkflowError,
-  type WorkflowProgressRegionFinalizedRecord,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
   type WorkflowDiscussDecision,
@@ -220,20 +218,6 @@ function runSessionBody(
        * same way a failure would. */
       const jobCommandRefused = (command: string, runDir: string, reason: string) =>
         new WorkflowError({ phase: "schedule", path: runDir, message: `/${command} is unavailable: ${reason}` });
-      /** The jobs' shape: the run's state document, which records each job
-       * and its input. */
-      const readJobState = (runDir: string) =>
-        Effect.map(readRunStatus(runDir), (status) => status?.jobs ?? []);
-      /** The latest job's region-finalized records, as the state document
-       * holds them. */
-      const readJobRegions = (runDir: string): Effect.Effect<
-        ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord> | undefined,
-        never,
-        import("@effect/platform").FileSystem.FileSystem
-      > => Effect.map(readRunStatus(runDir), (status) => {
-        const regions = status?.jobs.at(-1)?.regions;
-        return regions === undefined ? undefined : new Map(Object.entries(regions));
-      }).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
       const runPrompt = (
         prompt: string,
         onEvent: (event: AgentEvent) => void,
@@ -344,14 +328,13 @@ function runSessionBody(
               if (jobCommand === undefined) {
                 return yield* executeWorkflow(workflow, { ...request, prompt });
               }
-              const spans = yield* readJobState(current.session.runDir);
+              const runStatus = yield* readRunStatus(current.session.runDir);
               if (jobCommand === "continue") {
-                const resolved = resolveContinueCommand(spans);
+                const resolved = resolveContinueCommand(runStatus);
                 if (resolved.kind === "refused") {
                   return yield* Effect.fail(jobCommandRefused("continue", current.session.runDir, resolved.reason));
                 }
                 effectivePrompt = resolved.command.input;
-                const regions = yield* readJobRegions(current.session.runDir);
                 return yield* executeWorkflow(workflow, {
                   ...request,
                   prompt: effectivePrompt,
@@ -359,24 +342,20 @@ function runSessionBody(
                     jobOrdinal: resolved.command.jobOrdinal,
                     accepted: resolved.command.accepted,
                     attempts: resolved.command.attempts,
-                    ...(regions === undefined ? {} : { regions }),
+                    ...(resolved.command.regions === undefined ? {} : { regions: resolved.command.regions }),
                   },
                 });
               }
-              const resolved = resolveRestartCommand(spans);
+              const resolved = resolveRestartCommand(runStatus);
               if (resolved.kind === "refused") {
                 return yield* Effect.fail(jobCommandRefused("restart", current.session.runDir, resolved.reason));
               }
-              if (resolved.command.closeOrdinal !== undefined) {
-                yield* closeWorkflowJob(
-                  current.session.runDir,
-                  current.session.id,
-                  resolved.command.closeOrdinal,
-                  "restarted",
-                );
-              }
               effectivePrompt = resolved.command.input;
-              return yield* executeWorkflow(workflow, { ...request, prompt: effectivePrompt });
+              return yield* executeWorkflow(workflow, {
+                ...request,
+                prompt: effectivePrompt,
+                ...(resolved.command.restartOrdinal === undefined ? {} : { restartOrdinal: resolved.command.restartOrdinal }),
+              });
             }),
         ))).pipe(
           Effect.map((result) => ({

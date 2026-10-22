@@ -99,7 +99,7 @@ import {
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
-import { nextJobOrdinal, readRunStatus, runStatusPath, type RunJob } from "./run-status.js";
+import { nextJobOrdinal, readRunStatus, runStatusPath, type RunStatus } from "./run-status.js";
 import {
   buildCommitMessage,
   commitRoundFiles,
@@ -137,6 +137,10 @@ export interface WorkflowExecutionRequest {
      * accepted invocations' evidence instead of re-entering its workers. */
     readonly regions?: ReadonlyMap<string, WorkflowProgressRegionFinalizedRecord>;
   };
+  /** Restart a paused job: close it as `restarted` and start the next job in
+   * one state transition. The close folds into the same `status.json` write,
+   * so no reader sees a paused run whose latest job is already finished. */
+  readonly restartOrdinal?: number;
   readonly cwd: string;
   readonly prompt: string;
   /** Lane namespace (`<task-slug>-<runId>`) for this run's map/tournament
@@ -340,20 +344,19 @@ function createExecutionDirectory(
   );
 }
 
-/** What the run's state document says before a prompt starts: the next ordinal,
- * the latest job the prompt acts on, and the jobs a close already abandoned.
- * The document's job table is the only identity source — invocation rows are
- * evidence, not a second ordinal ledger. Rows without a job table mean the
- * document was lost; minting from 1 then would alias the old job's `inv-<ref>`
- * names, so the run refuses instead. */
+/** What the run's state document says before a prompt starts: its status, the
+ * next ordinal, and the jobs a restart already abandoned. The document is the
+ * only identity source — invocation rows are evidence, not a second ordinal
+ * ledger. Rows without a job table mean the document was lost; minting from 1
+ * then would alias the old job's `inv-<ref>` names, so the run refuses
+ * instead. */
 function readRunJobLedger(
   runDir: string,
 ): Effect.Effect<
   {
+    readonly status?: RunStatus;
     readonly nextOrdinal: number;
-    readonly latestJob?: RunJob;
     readonly abandonedOrdinals: readonly number[];
-    readonly mnemonic?: string;
   },
   WorkflowError,
   FileSystem.FileSystem
@@ -368,14 +371,12 @@ function readRunJobLedger(
         "run state has no job table but its invocation evidence exists; the state document is missing",
       ));
     }
-    const latestJob = jobs.at(-1);
     return {
+      ...(status === undefined ? {} : { status }),
       nextOrdinal: nextJobOrdinal(jobs),
-      ...(latestJob === undefined ? {} : { latestJob }),
       abandonedOrdinals: jobs
         .filter((job) => job.state === "finished" && job.outcome === "restarted")
         .map((job) => job.jobOrdinal),
-      ...(status?.mnemonic === undefined ? {} : { mnemonic: status.mnemonic }),
     };
   });
 }
@@ -728,12 +729,10 @@ export function executeWorkflow(
     // the end it never wrote, exactly as the resume picker does.
     yield* reconcileCrashedRun(request.runDir);
     const jobLedger = yield* readRunJobLedger(request.runDir);
-    yield* reclaimAbandonedSlots(request.runDir, runId, jobLedger.abandonedOrdinals);
-    const latestJob = jobLedger.latestJob;
-    // A continue repeats its job's ordinal, so its evidence lands under the
-    // same job's stream rows and result files. The engine only checks that the
-    // cursor names the latest job; the CLI is what offers `/continue` for a
-    // paused one.
+    const runStatus = jobLedger.status;
+    const latestJob = runStatus?.jobs.at(-1);
+    // Lifecycle decisions read the run's status, the one enum every module
+    // polls; the job table supplies identity and the cursor.
     let continueJob = request.continueJob;
     if (continueJob !== undefined && latestJob?.jobOrdinal !== continueJob.jobOrdinal) {
       return yield* Effect.fail(workflowError(
@@ -742,7 +741,16 @@ export function executeWorkflow(
         "cannot continue a job that is not this run's latest",
       ));
     }
-    if (continueJob === undefined && latestJob?.state === "paused") {
+    if (request.restartOrdinal !== undefined
+      && (runStatus?.status !== "paused" || latestJob?.jobOrdinal !== request.restartOrdinal)) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        "cannot restart a job the run does not hold paused",
+      ));
+    }
+    const pausedJob = runStatus?.status === "paused" ? latestJob : undefined;
+    if (continueJob === undefined && request.restartOrdinal === undefined && pausedJob !== undefined) {
       // A one-node workflow's restart and continue both re-enter that node, so
       // a plain prompt resumes it. Accepted work is deliberately not skipped:
       // the new prompt is new work, not a request to replay the old answer.
@@ -754,9 +762,9 @@ export function executeWorkflow(
         ));
       }
       continueJob = {
-        jobOrdinal: latestJob.jobOrdinal,
+        jobOrdinal: pausedJob.jobOrdinal,
         accepted: new Set(),
-        attempts: new Map(Object.entries(latestJob.attempts)),
+        attempts: new Map(Object.entries(pausedJob.attempts)),
       };
     }
     const jobOrdinal = continueJob?.jobOrdinal ?? jobLedger.nextOrdinal;
@@ -771,7 +779,7 @@ export function executeWorkflow(
     // summary when the workflow has lanes, else the workflow's own mnemonic.
     // A conflicting caller value is a mistake: the user is resuming a
     // different task under this run id.
-    const recordedMnemonic = jobLedger.mnemonic;
+    const recordedMnemonic = runStatus?.mnemonic;
     if (request.mnemonic !== undefined && recordedMnemonic !== undefined && request.mnemonic !== recordedMnemonic) {
       return yield* Effect.fail(workflowError(
         "schedule",
@@ -794,7 +802,25 @@ export function executeWorkflow(
         `lane namespace must be a simple workflow identifier: ${mnemonic}`,
       ));
     }
-    yield* initializeWorkflowProgress(request.runDir, runId, progressPlan, jobOrdinal, request.prompt, request.execution !== undefined, mnemonic);
+    yield* initializeWorkflowProgress(
+      request.runDir,
+      runId,
+      progressPlan,
+      jobOrdinal,
+      request.prompt,
+      request.execution !== undefined,
+      {
+        ...(mnemonic === undefined ? {} : { mnemonic }),
+        ...(request.restartOrdinal === undefined ? {} : { restartOrdinal: request.restartOrdinal }),
+      },
+    );
+    // Reclaim only once the new job's start is committed: a validation
+    // failure leaves the paused job's preserved slots untouched, and a
+    // crash after the write is finished by the next job's ledger sweep.
+    yield* reclaimAbandonedSlots(request.runDir, runId, [
+      ...jobLedger.abandonedOrdinals,
+      ...(request.restartOrdinal === undefined ? [] : [request.restartOrdinal]),
+    ]);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
     const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
       Effect.gen(function* () {
