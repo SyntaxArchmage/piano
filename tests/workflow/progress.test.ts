@@ -1,4 +1,3 @@
-import type { WorkflowProgressSnapshot } from "../../packages/orchestrator/src/progress.js";
 import { NodeContext } from "@effect/platform-node";
 import type { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
@@ -18,11 +17,13 @@ import {
   readRunStatus,
   reconcileCrashedRun,
   runStatusPath,
+  type RunStatus,
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
   type WorkflowProgressStreamRecord,
 } from "../../packages/orchestrator/src/index.js";
+import { emptyRunStatus } from "../../packages/orchestrator/src/run-status.js";
 
 const roots: string[] = [];
 
@@ -276,7 +277,7 @@ describe("workflow progress stream", () => {
 
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
 
-    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as WorkflowProgressSnapshot;
+    const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as RunStatus;
     expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
   });
 
@@ -350,7 +351,7 @@ describe("workflow progress stream", () => {
     } as unknown as WorkflowProgressStreamRecord;
     expect(progressRecordKind(finalized)).toBe("region-finalized");
     // The snapshot has no field for region evidence, so the fold only moves
-    // its clock: no counts, status, or current invocations change.
+    // its clock: no counts or current invocations change.
     const after = applyProgressRecord(before, finalized);
     expect(after).toEqual({ ...before, updatedAt: "2026-01-01T00:00:05.000Z" });
   });
@@ -462,6 +463,21 @@ describe("run status projection", () => {
     const status = applyRunStatusRecord(undefined, finished("failed", "2026-01-01T00:00:00.000Z"));
     expect(status.status).toBe("failed");
     expect(status.jobs).toEqual([]);
+  });
+
+  it("leaves a job-less document's status standing unless the record says otherwise", () => {
+    // A trajectory bootstrap can record `cancelled` before any job exists; a
+    // record that names no job must not invent one. A record that describes
+    // work, however, means the run is live.
+    const cancelled: RunStatus = { ...emptyRunStatus("projection", "2026-01-01T00:00:00.000Z"), status: "cancelled" };
+    expect(applyRunStatusRecord(cancelled, closed(1, "2026-01-01T00:00:01.000Z")).status).toBe("cancelled");
+
+    const accepted = {
+      version: 1,
+      timestamp: "2026-01-01T00:00:02.000Z",
+      ...record({ runId: "projection" }),
+    } as unknown as WorkflowProgressStreamRecord;
+    expect(applyRunStatusRecord(cancelled, accepted).status).toBe("running");
   });
 });
 

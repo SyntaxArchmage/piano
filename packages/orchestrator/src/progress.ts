@@ -350,9 +350,6 @@ export interface WorkflowProgressSnapshot {
   readonly version: 1;
   readonly updatedAt: string;
   readonly runId: string;
-  /** "paused": the run stopped at a human interrupt (Escape / `/exit`) with
-   * resumable state on disk; the next prompt continues the same execution. */
-  readonly status: "running" | "completed" | "failed" | "paused";
   readonly plannedStages: number;
   readonly completedStages: number;
   readonly acceptedStages: number;
@@ -432,7 +429,6 @@ function emptyProgressSnapshot(runId: string, updatedAt: string): WorkflowProgre
     version: 1,
     updatedAt,
     runId,
-    status: "running",
     plannedStages: 0,
     completedStages: 0,
     acceptedStages: 0,
@@ -501,7 +497,6 @@ export function applyProgressRecord(
       version: 1,
       updatedAt: started.timestamp,
       runId: started.runId,
-      status: "running",
       plannedStages: started.plan.plannedStages,
       completedStages: carried?.completedStages ?? 0,
       acceptedStages: carried?.acceptedStages ?? 0,
@@ -522,7 +517,6 @@ export function applyProgressRecord(
       ...base,
       updatedAt: started.timestamp,
       runId: started.runId,
-      status: "running",
       invocationTime,
       current: {
         status: "running",
@@ -546,7 +540,6 @@ export function applyProgressRecord(
     return {
       ...base,
       updatedAt: finished.timestamp,
-      status: finished.status,
       ...(base.invocationTime === undefined
         ? {}
         : { invocationTime: closeOpenSpans(base.invocationTime, finished.timestamp) }),
@@ -575,7 +568,6 @@ export function applyProgressRecord(
     ...base,
     updatedAt: accepted.timestamp,
     runId: accepted.runId,
-    status: "running",
     plannedStages: projection?.plannedStages ?? base.plannedStages,
     completedStages: projection?.completedStages ?? base.completedStages,
     acceptedStages: projection?.acceptedStages ?? base.acceptedStages,
@@ -610,7 +602,6 @@ function snapshotOf(status: RunStatus): WorkflowProgressSnapshot {
     version: 1,
     updatedAt: status.updatedAt,
     runId: status.runId,
-    status: status.status === "cancelled" ? "paused" : status.status,
     plannedStages: status.plannedStages,
     completedStages: status.completedStages,
     acceptedStages: status.acceptedStages,
@@ -662,28 +653,36 @@ function bumpAttempt(
  * run has: there is no second stream to reconcile, and writing the document is
  * the commit.
  *
- * The run's status is a projection of its latest job, applied after the fold:
- * the job table is the one lifecycle. A document with no job — a run that
- * failed before its first one — keeps the record's own verdict. */
+ * The run's status is computed from its latest job; the job table is the one
+ * lifecycle. */
 export function applyRunStatusRecord(
   previous: RunStatus | undefined,
   record: WorkflowProgressStreamRecord,
 ): RunStatus {
-  return projectRunStatus(foldRunStatusRecord(previous, record));
+  const folded = foldRunStatusRecord(previous, record);
+  return { ...folded, status: runStatusOf(folded, record) };
 }
 
 /** `alive` while work runs, a finished job's own verdict, and `paused` for
  * everything else — a human stop and a restarted job both leave the run
- * waiting for the next prompt. */
-function projectRunStatus(status: RunStatus): RunStatus {
+ * waiting for the next prompt. Without a job, an `execution-finished` record
+ * carries the run's verdict and a stage record means the run is live; any
+ * other record leaves the document's status standing. */
+function runStatusOf(
+  status: RunStatus,
+  record: WorkflowProgressStreamRecord,
+): RunStatus["status"] {
   const latest = status.jobs.at(-1);
-  if (latest === undefined) return status;
-  const projected = latest.state === "alive"
-    ? "running"
-    : latest.state === "finished" && (latest.outcome === "completed" || latest.outcome === "failed")
-      ? latest.outcome
-      : "paused";
-  return status.status === projected ? status : { ...status, status: projected };
+  if (latest !== undefined) {
+    if (latest.state === "alive") return "running";
+    if (latest.state === "finished" && (latest.outcome === "completed" || latest.outcome === "failed")) {
+      return latest.outcome;
+    }
+    return "paused";
+  }
+  const kind = progressRecordKind(record);
+  if (kind === "execution-finished") return (record as WorkflowProgressExecutionFinishRecord).status;
+  return kind === "stage-started" || kind === "stage-accepted" ? "running" : status.status;
 }
 
 function foldRunStatusRecord(
@@ -696,7 +695,6 @@ function foldRunStatusRecord(
     ...base,
     runId: snapshot.runId,
     updatedAt: snapshot.updatedAt,
-    status: snapshot.status,
     plannedStages: snapshot.plannedStages,
     completedStages: snapshot.completedStages,
     acceptedStages: snapshot.acceptedStages,
