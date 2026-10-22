@@ -28,7 +28,7 @@ interface ResumeOptions {
   list: boolean;
 }
 
-export interface ResumeDeps {
+interface ResumeDeps {
   runsRoot?: string;
 }
 

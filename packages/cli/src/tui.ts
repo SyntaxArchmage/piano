@@ -44,7 +44,7 @@ import { SessionPicker } from "./session-picker.js";
 import { slashCommandsForAutocomplete } from "./tui-commands.js";
 import { applyRunStat, emptyRunStats, markTerminal, type RunStats } from "./run-stats.js";
 
-export interface TuiPromptResult {
+interface TuiPromptResult {
   readonly text: string;
   readonly sessionId?: string;
   readonly transcriptPath?: string;
@@ -57,7 +57,7 @@ export interface TuiPromptResult {
 /** How this TUI runs one accepted prompt. Both the mission workflow and
  * `/btw`'s side agent are handed to the TUI in this shape, so the prompt path
  * (steering, queueing, interrupts, outcome reporting) is written once. */
-export type TuiPromptRunner = (
+type TuiPromptRunner = (
   prompt: string,
   onEvent: (event: AgentEvent) => void,
   /** Sign-off channel backed by this TUI: the engine blocks on it while a
@@ -71,7 +71,7 @@ export type TuiPromptRunner = (
  * job-level instruction to carry out. The prompt argument is only the
  * transcript's echo — the input actually run comes from the job's recorded
  * turn. */
-export type TuiJobCommandRunner = (
+type TuiJobCommandRunner = (
   action: "continue" | "restart",
   onEvent: (event: AgentEvent) => void,
   signoff?: (request: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError>,
@@ -150,7 +150,7 @@ function suspendThisProcess(): void {
 }
 
 /** One prompt from a resumed run, replayed into the chat in its original order. */
-export interface TuiReplayTurn {
+interface TuiReplayTurn {
   readonly prompt: string;
   readonly events: readonly AgentEvent[];
   /** Terminal state the turn reached. An interrupted turn is `cancelled` and
@@ -170,7 +170,7 @@ export interface TuiResumeResult {
   readonly statusPath?: string;
 }
 
-export type TuiTaskEvent =
+type TuiTaskEvent =
   | { readonly type: "input.accepted"; readonly prompt: string }
   | { readonly type: "agentic.task.started"; readonly prompt: string }
   | { readonly type: "agentic.task.completed"; readonly prompt: string; readonly textLength: number; readonly sessionId?: string; readonly transcriptPath?: string }
@@ -243,7 +243,7 @@ function withResizeHandler(terminal: Terminal, handler: ResizeHandlerRef): Termi
   });
 }
 
-export interface TuiResult {
+interface TuiResult {
   readonly type: "closed";
   /** True when `/exit` (or Ctrl+C) closed the TUI while the interrupted
    * prompt's finalizers were still wedged past the drain budget. The session

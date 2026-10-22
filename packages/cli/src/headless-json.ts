@@ -10,7 +10,7 @@
 import type { AgentEvent } from "@piano/harness";
 
 /** A single machine-parseable line emitted on stdout. */
-export interface HeadlessJsonLine {
+interface HeadlessJsonLine {
   readonly event: string;
   readonly run_id: string;
   readonly [key: string]: unknown;

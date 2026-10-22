@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { Key, isKeyRelease, matchesKey, type KeyId } from "@earendil-works/pi-tui";
 
-export type Shortcut = "interrupt" | "exit" | "suspend";
+type Shortcut = "interrupt" | "exit" | "suspend";
 
 /**
  * Ctrl+O: toggle tool-box expansion. One binding on every terminal — the hint
@@ -30,7 +30,7 @@ export const SCROLL_HOME_KEYS: readonly KeyId[] = [Key.ctrl("home")];
 
 export type ScrollModifier = "Ctrl" | "Alt";
 
-export interface ScrollKeyBindings {
+interface ScrollKeyBindings {
   readonly modifier: ScrollModifier;
   readonly homeKeys: readonly KeyId[];
   readonly endKeys: readonly KeyId[];
@@ -61,7 +61,7 @@ export function matchesKeyPress(data: string, keys: readonly KeyId[]): boolean {
   return keys.some((key) => matchesKey(data, key));
 }
 
-export interface ShortcutEffects {
+interface ShortcutEffects {
   readonly interrupt: Effect.Effect<void, never>;
   readonly exit: Effect.Effect<void, never>;
   readonly suspend: Effect.Effect<void, never>;

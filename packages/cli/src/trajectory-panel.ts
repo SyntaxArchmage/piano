@@ -25,7 +25,7 @@ type TrajectoryTheme = Pick<
 >;
 
 /** Ledger rows shown (tail — newest entry last). */
-export const TRAJECTORY_VISIBLE_ROWS = 8;
+const TRAJECTORY_VISIBLE_ROWS = 8;
 
 // Built via RegExp from an interpolated ESC to dodge eslint's no-control-regex.
 const ESC = String.fromCharCode(27);
@@ -188,7 +188,7 @@ function sparklineRow(state: TrajectoryState, theme: TrajectoryTheme, columns: n
  * full-width rule inserted before every non-first `spawn`. Always exactly
  * `2 + entries.length + ruleCount` rows; no row exceeds `columns` visible
  * columns. This is the unfiltered, unwindowed list the component windows over. */
-export function renderLedgerRows(
+function renderLedgerRows(
   state: TrajectoryState,
   theme: TrajectoryTheme,
   columns: number,

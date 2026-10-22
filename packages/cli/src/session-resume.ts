@@ -23,7 +23,7 @@ import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrat
 import { LogsStorageError } from "./errors.js";
 
 /** One replayable prompt and the events it produced. */
-export interface ResumeTurn {
+interface ResumeTurn {
   readonly prompt: string;
   readonly status: "completed" | "failed" | "cancelled";
   readonly events: readonly AgentEvent[];
@@ -33,7 +33,7 @@ export interface ResumeTurn {
 }
 
 /** Everything a resume needs from one run's trajectory. */
-export interface ResumeContext {
+interface ResumeContext {
   readonly runId: string;
   readonly name?: string;
   readonly workflowPath?: string;

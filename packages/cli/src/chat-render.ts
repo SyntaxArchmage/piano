@@ -176,7 +176,7 @@ function formatToolDetail(th: PianoTheme, tool: string, detail: string): string 
   return `${th.toolSection}${label}${RST} ${th.toolCommand}${prefix}${detail}${RST}`;
 }
 
-export interface TranscriptStream {
+interface TranscriptStream {
   append(delta: string): void;
   finalize(): void;
 }

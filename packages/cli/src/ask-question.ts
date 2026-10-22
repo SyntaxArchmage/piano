@@ -4,7 +4,7 @@ import { interactiveTerminalRequired, TuiError } from "./errors.js";
 import { visibleWidth } from "./text.js";
 import { RST } from "./theme.js";
 
-export interface AskQuestionOption {
+interface AskQuestionOption {
   readonly id: string;
   readonly label: string;
   readonly description?: string;
@@ -58,7 +58,7 @@ const DEFAULT_STYLES: AskQuestionStyles = {
   selectedFg: "\x1b[38;2;255;255;255m",
 };
 
-export interface AskQuestionDeps {
+interface AskQuestionDeps {
   readonly terminal?: Terminal;
 }
 

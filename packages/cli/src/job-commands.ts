@@ -26,7 +26,7 @@ export function jobCommandAllowed(
 }
 
 /** What `/continue` resolved to: resume this job from the cursor it left. */
-export interface ContinueCommand {
+interface ContinueCommand {
   readonly input: string;
   readonly jobOrdinal: number;
   readonly accepted: ReadonlySet<string>;
@@ -35,7 +35,7 @@ export interface ContinueCommand {
 
 /** What `/restart` resolved to: run the input again as a fresh job, closing
  * the paused job it replaces first. */
-export interface RestartCommand {
+interface RestartCommand {
   readonly input: string;
   /** Absent when the latest job already ended and only the re-run is left. */
   readonly closeOrdinal?: number;

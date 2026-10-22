@@ -16,7 +16,7 @@
  * with their own `argv[1]`, and none of them should leak into a usage string.
  */
 
-export const DEFAULT_PROGRAM_NAME = "piano";
+const DEFAULT_PROGRAM_NAME = "piano";
 
 const PIANO_COMMAND = /^piano(-[a-z0-9]+)*$/;
 const SCRIPT_EXTENSION = /\.(mjs|js|cjs|ts)$/;

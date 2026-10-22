@@ -38,7 +38,7 @@ import { CliArgumentError } from "./errors.js";
 export const doctorUsage =
   "usage: piano doctor --harness <pi|pi-cli|claude|dsh|codex|all> | piano doctor --model [<model>|all] [--harness <pi|pi-cli|claude|dsh|codex>]";
 
-export interface HarnessDoctorReport {
+interface HarnessDoctorReport {
   readonly harness: HarnessName;
   readonly status: "ready" | "unavailable" | "unconfigured";
   readonly executable?: string;
@@ -52,12 +52,12 @@ export interface HarnessDoctorReport {
   readonly resume?: DshResumeProbe["capability"];
 }
 
-export interface HarnessProbeResult {
+interface HarnessProbeResult {
   readonly status: "ready" | "unavailable" | "unconfigured";
   readonly reason?: string;
 }
 
-export interface ModelDoctorReport {
+interface ModelDoctorReport {
   readonly status: "supported" | "unsupported" | "unavailable" | "unconfigured";
   readonly endpoint: string;
   readonly models: readonly string[];
@@ -65,7 +65,7 @@ export interface ModelDoctorReport {
   readonly reason?: string;
 }
 
-export interface DoctorCommandDeps {
+interface DoctorCommandDeps {
   readonly write?: (line: string) => void;
   readonly fetch?: typeof globalThis.fetch;
   readonly modelEndpoint?: string;
