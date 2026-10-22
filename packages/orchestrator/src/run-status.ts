@@ -133,7 +133,7 @@ export interface RunStatus {
   readonly remainingStages: number;
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
   /** Invocation id -> cumulative worker time, so the footer can show a stage's
-   * accumulated duration without replaying the stream. */
+   * accumulated duration without replaying the events. */
   readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
   /** The invocation in flight, if any. */
   readonly current?: WorkflowProgressCurrent;
@@ -270,7 +270,7 @@ function readTrajectoryText(
   });
 }
 
-/** Write a run's state whole. The ledgers stay the evidence; this is the view. */
+/** Write a run's state whole. It is the source every reader polls. */
 export function writeRunStatus(
   runDir: string,
   status: RunStatus,

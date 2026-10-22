@@ -6,7 +6,7 @@
 // an older paused job is never offered. Refusals say what is missing instead
 // of running the wrong thing.
 import { describe, expect, it } from "vitest";
-import type { WorkflowProgressStreamRecord } from "@piano/orchestrator";
+import type { WorkflowTransition } from "@piano/orchestrator";
 import { foldStatus } from "../common/status-fold.js";
 import {
   jobCommandAllowed,
@@ -18,8 +18,7 @@ const started = (
   jobOrdinal: number,
   timestamp: string,
   prompt?: string,
-): WorkflowProgressStreamRecord => ({
-  version: 1,
+): WorkflowTransition => ({
   kind: "execution-started",
   timestamp,
   runId: "run-1",
@@ -29,14 +28,13 @@ const started = (
   plan: { plannedStages: 2, stageCounts: {} },
 });
 
-const accepted = (timestamp: string, invocationId: string, attempt = 1): WorkflowProgressStreamRecord =>
-  ({ version: 1, timestamp, runId: "run-1", invocationId, attempt } as unknown as WorkflowProgressStreamRecord);
+const accepted = (timestamp: string, invocationId: string, attempt = 1): WorkflowTransition =>
+  ({ kind: "stage-accepted", timestamp, runId: "run-1", invocationId, attempt } as unknown as WorkflowTransition);
 
 const finished = (
   timestamp: string,
   status: "completed" | "failed" | "paused",
-): WorkflowProgressStreamRecord => ({
-  version: 1,
+): WorkflowTransition => ({
   kind: "execution-finished",
   timestamp,
   runId: "run-1",
@@ -46,7 +44,7 @@ const finished = (
 const T = (second: number): string => `2026-10-14T00:00:${String(second).padStart(2, "0")}.000Z`;
 
 /** The run's state document, folded from the same records a writer folds. */
-const statusOf = (...records: WorkflowProgressStreamRecord[]) => foldStatus(records);
+const statusOf = (...records: WorkflowTransition[]) => foldStatus(records);
 
 /** Job 1 finished, job 2 paused — the only shape a live run reaches. */
 const PAUSED_LATEST = statusOf(

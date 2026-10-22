@@ -18,7 +18,6 @@ describe("run status", () => {
   it("folds the ledger's job and actor state", () => {
     const status = foldStatus([
       {
-        version: 1,
         kind: "execution-started",
         timestamp,
         runId: "run-1",
@@ -28,7 +27,6 @@ describe("run status", () => {
         plan: { plannedStages: 2, stageCounts: { tune: { planned: 2, completed: 0 } } },
       },
       {
-        version: 1,
         kind: "stage-accepted",
         timestamp,
         runId: "run-1",
@@ -42,7 +40,6 @@ describe("run status", () => {
         transcriptPath: "/t.jsonl",
       },
       {
-        version: 1,
         kind: "actor-turn",
         timestamp,
         runId: "run-1",
@@ -121,7 +118,6 @@ describe("run status", () => {
     // The ledger is the run's own record of each conversation-state change.
     const status = foldStatus([
       {
-        version: 1,
         kind: "actor-turn",
         timestamp,
         runId: "run-5",

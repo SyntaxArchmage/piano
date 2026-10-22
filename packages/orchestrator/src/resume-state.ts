@@ -29,7 +29,7 @@ export function actorTurnRow(input: {
     readonly turns: number;
     readonly continuation?: AgentContinuation;
   };
-}): Omit<WorkflowProgressActorTurnRecord, "version" | "timestamp"> | undefined {
+}): Omit<WorkflowProgressActorTurnRecord, "timestamp"> | undefined {
   const { state } = input;
   if (state.harness === undefined || state.sessionId === undefined || state.transcriptPath === undefined) {
     return undefined;

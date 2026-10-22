@@ -23,8 +23,8 @@ import type { ContractProjection } from "@piano/contract";
 export interface WorkflowProgressProjection {
   readonly status: "accepted";
   /** Number of validated stage invocations accepted so far. Kept for
-   * compatibility with the append-only evidence stream; use completedStages
-   * and plannedStages for a user-facing progress bar. */
+   * consumers that sum accepted work; use completedStages and plannedStages
+   * for a user-facing progress bar. */
   readonly acceptedStages: number;
   readonly completedStages: number;
   readonly plannedStages: number;
@@ -80,7 +80,7 @@ export interface WorkflowProgressCurrent {
   readonly stage: string;
   readonly worker: string;
   readonly attempt: number;
-  /** Runtime instance id of this invocation, so a snapshot reader can tell a
+  /** Runtime instance id of this invocation, so a status reader can tell a
    * map lane from a loop iteration without re-deriving the runtime frames. */
   readonly instanceId?: string;
   readonly iteration?: number;
@@ -92,12 +92,11 @@ export interface WorkflowProgressCurrent {
   readonly projections?: readonly ContractProjection[];
 }
 
-/** Durable, machine-readable progress emitted after each accepted stage
- * invocation. This is separate from the agent transcript: the transcript
- * explains how the worker reasoned, while this record states what the
+/** One accepted stage's payload, folded into the state document's counters
+ * and current pointer. This is separate from the agent transcript: the
+ * transcript explains how the worker reasoned, while this states what the
  * orchestrator accepted and what evidence downstream stages may consume. */
 export interface WorkflowProgressRecord {
-  readonly version: 1;
   readonly timestamp: string;
   readonly runId: string;
   readonly invocationId: string;
@@ -143,7 +142,6 @@ export interface WorkflowProgressRecord {
  * is in flight, and since when" is not derivable from acceptance records
  * alone. */
 export interface WorkflowProgressStartRecord {
-  readonly version: 1;
   readonly kind: "stage-started";
   readonly timestamp: string;
   readonly runId: string;
@@ -172,20 +170,17 @@ export interface WorkflowProgressStartRecord {
  * It carries the plan because planned stage counts come from the compiled
  * workflow, not from anything a stage could report. */
 export interface WorkflowProgressExecutionStartRecord {
-  readonly version: 1;
   readonly kind: "execution-started";
   readonly timestamp: string;
   readonly runId: string;
   /** The job this span belongs to: one prompt's workflow execution. A fresh
    * job takes the next ordinal; a span that resumes a paused job repeats its
    * predecessor's, which is what ties a continue back to the job it continues.
-   * Absent in streams written before jobs existed, where every span is its own
-   * job. */
+   * Absent in pre-job documents, where every span is its own job. */
   readonly jobOrdinal?: number;
   /** The input this job runs — the prompt the human submitted. Kept with the
    * job so `/continue` and `/restart` can re-run it without chasing turn
-   * positions, which continues make ambiguous. Absent in pre-existing
-   * streams. */
+   * positions, which continues make ambiguous. Absent in older documents. */
   readonly prompt?: string;
   /** True when this execution continues actors a previous one left behind. */
   readonly resumed: boolean;
@@ -194,19 +189,14 @@ export interface WorkflowProgressExecutionStartRecord {
    * closed-alone job is not expressible. */
   readonly closesJobOrdinal?: number;
   /** The run's lane namespace (`<task-slug>-<runId>`), recorded so a continue
-   * reuses it instead of re-summarizing the prompt. Absent in older streams. */
+   * reuses it instead of re-summarizing the prompt. Absent in older documents. */
   readonly mnemonic?: string;
   readonly plan: WorkflowProgressPlan;
 }
 
-/** Append-only record of one workflow execution ending.
- *
- * The stream carries the outcome itself rather than only a view of it. The
- * snapshot write is best-effort and a hard exit can skip it entirely, so "how
- * did this end" has to be answerable from evidence rather than from a file a
- * wedged finalizer may never have reached. */
+/** The transition that ends one execution. It carries the outcome itself, so
+ * a hard exit before any other evidence lands still says how the run stopped. */
 export interface WorkflowProgressExecutionFinishRecord {
-  readonly version: 1;
   readonly kind: "execution-finished";
   readonly timestamp: string;
   readonly runId: string;
@@ -219,7 +209,6 @@ export interface WorkflowProgressExecutionFinishRecord {
  * A continue reads it to skip a completed region instead of re-running its
  * workers, and a monitor reads it to see why a loop stopped. */
 export interface WorkflowProgressRegionFinalizedRecord {
-  readonly version: 1;
   readonly kind: "region-finalized";
   readonly timestamp: string;
   readonly runId: string;
@@ -258,22 +247,21 @@ export interface WorkflowProgressRegionFinalizedRecord {
   readonly iterations?: number;
 }
 
-/** Everything a writer must supply for a `region-finalized` line; the append
- * seam stamps version/timestamp, the execution stamps identity. */
+/** Everything a writer must supply for a `region-finalized` transition; the
+ * commit seam stamps the timestamp, the execution stamps identity. */
 export type WorkflowRegionFinalizedPayload = Omit<
   WorkflowProgressRegionFinalizedRecord,
-  "version" | "kind" | "timestamp" | "runId" | "jobOrdinal"
+  "kind" | "timestamp" | "runId" | "jobOrdinal"
 >;
 
-/** One actor's conversation state after a turn that changed it. The record
- * exists so the actor table a resume reads can be folded from this one ledger
- * instead of a second, parallel file: newest record per `actorKey` wins.
+/** One actor's conversation state after a turn that changed it. The transition
+ * exists so the actor table a resume reads has one source: newest record per
+ * `actorKey` wins.
  * `continuation` is the harness's own pointer into the conversation and is
  * copied verbatim — never synthesized — because a fabricated one would resume
- * the wrong session silently. Unlike the newness record, which is a complete
- * table, this is a delta: the fields are exactly what the writer set. */
+ * the wrong session silently. Unlike the document's complete actor table,
+ * this is a delta: the fields are exactly what the writer set. */
 export interface WorkflowProgressActorTurnRecord {
-  readonly version: 1;
   readonly kind: "actor-turn";
   readonly timestamp: string;
   readonly runId: string;
@@ -293,63 +281,16 @@ export interface WorkflowProgressActorTurnRecord {
   readonly continuation?: AgentContinuation;
 }
 
-export type WorkflowProgressStreamRecord =
-  | WorkflowProgressRecord
+/** One in-process state transition. The writers construct these and fold them
+ * straight into the run's state document; there is no persisted record stream
+ * to dispatch or tolerate, so every variant names its kind. */
+export type WorkflowTransition =
+  | ({ readonly kind: "stage-accepted" } & WorkflowProgressRecord)
   | WorkflowProgressStartRecord
   | WorkflowProgressExecutionStartRecord
   | WorkflowProgressExecutionFinishRecord
   | WorkflowProgressRegionFinalizedRecord
   | WorkflowProgressActorTurnRecord;
-
-/** Kind of one progress-stream line.
- *
- * `"stage-accepted"` is the historical shape and carries no discriminator: the
- * stream predates it, and every record written before it is an accepted stage.
- *
- * A record that DOES carry a `kind` this function does not recognize was
- * written by a newer writer, and answers `undefined`: the only safe reading of
- * a record whose meaning a reader does not know is to skip it, because folding
- * it into the historical shape would count a marker as accepted work.
- *
- * Accepts any parsed line rather than the writer's own types, because the two
- * callers hold different things — a writer holds a typed record, a reader holds
- * whatever `JSON.parse` returned. Readers ask this function rather than testing
- * `kind` themselves, so the compatibility rule lives in exactly one place. */
-export function progressRecordKind(record: object | null | undefined):
-  | WorkflowProgressStartRecord["kind"]
-  | WorkflowProgressExecutionStartRecord["kind"]
-  | WorkflowProgressExecutionFinishRecord["kind"]
-  | WorkflowProgressRegionFinalizedRecord["kind"]
-  | WorkflowProgressActorTurnRecord["kind"]
-  | "stage-accepted"
-  | undefined {
-  const kind = (record as { readonly kind?: unknown } | null | undefined)?.kind;
-  if (kind === undefined) return "stage-accepted";
-  if (kind === "stage-started") return "stage-started";
-  if (kind === "execution-started") return "execution-started";
-  if (kind === "execution-finished") return "execution-finished";
-  if (kind === "region-finalized") return "region-finalized";
-  if (kind === "actor-turn") return "actor-turn";
-  return undefined;
-}
-
-export interface WorkflowProgressSnapshot {
-  readonly version: 1;
-  readonly updatedAt: string;
-  readonly runId: string;
-  readonly plannedStages: number;
-  readonly completedStages: number;
-  readonly acceptedStages: number;
-  readonly remainingStages: number;
-  readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
-  /** Invocation id -> cumulative worker time, so the footer can show a stage's
-   * accumulated duration without replaying the trajectory. */
-  readonly invocationTime?: Readonly<Record<string, WorkflowProgressInvocationTime>>;
-  readonly current?: WorkflowProgressCurrent;
-  readonly error?: string;
-  /** The run's lane namespace, carried across continues. */
-  readonly mnemonic?: string;
-}
 
 function emptyStageCounts(plan: WorkflowProgressPlan): Readonly<Record<string, WorkflowProgressStageCount>> {
   return Object.fromEntries(Object.entries(plan.stageCounts).map(([stageId, count]) => [stageId, {
@@ -397,9 +338,8 @@ function closeOpenSpans(
 
 /** Record one invocation's time in the map the fold owns, updating it in place.
  *
- * The whole point of `applyProgressRecord`'s ownership contract: a per-record
- * copy of this map is what turned the fold quadratic, and every caller of the
- * reducer already owns the accumulator it is updating. */
+ * A per-record copy of this map is what turned the fold quadratic; the fold
+ * owns the accumulator it updates. */
 function accrueInto(
   times: Readonly<Record<string, WorkflowProgressInvocationTime>> | undefined,
   invocationId: string,
@@ -408,190 +348,6 @@ function accrueInto(
   const owned = (times ?? {}) as Record<string, WorkflowProgressInvocationTime>;
   owned[invocationId] = time;
   return owned;
-}
-
-/** A snapshot with nothing folded into it yet. */
-function emptyProgressSnapshot(runId: string, updatedAt: string): WorkflowProgressSnapshot {
-  return {
-    version: 1,
-    updatedAt,
-    runId,
-    plannedStages: 0,
-    completedStages: 0,
-    acceptedStages: 0,
-    remainingStages: 0,
-    stageCounts: {},
-  };
-}
-
-/** Fold one progress record into the snapshot it produces.
- *
- * The single definition of what a record means: every writer applies it to the
- * document it last wrote — one small file read per record, so a long run stays
- * linear. Folding into `undefined` is the same as folding into the empty
- * snapshot: every case establishes the identity and timestamp it needs from
- * the record.
- *
- * The reducer TAKES OWNERSHIP of `previous`'s `invocationTime` map and returns
- * a snapshot that owns it. Every caller hands it an accumulator it owns (the
- * reduce in `run-status`, the snapshot rewrite in `progress`) and must not read
- * `previous` afterwards. Updating that map in place is what keeps a long fold
- * linear: copying it once per record was measured at 99% of the fold's cost —
- * 228 ms of a 237 ms fold over a thousand records, against 1.5 ms without the
- * copy. */
-export function applyProgressRecord(
-  previous: WorkflowProgressSnapshot | undefined,
-  record: WorkflowProgressStreamRecord,
-): WorkflowProgressSnapshot {
-  const kind = progressRecordKind(record);
-  if (kind === undefined) {
-    // A kind this reducer does not know (a record from a newer writer): the
-    // snapshot carries only what it understands. An empty fold still gets its
-    // identity established, so a known record after this one has a base.
-    return previous ?? emptyProgressSnapshot(record.runId, record.timestamp);
-  }
-  if (kind === "region-finalized") {
-    // Region evidence a continue reads; the live snapshot has no field for
-    // it, so the fold only advances its timestamp.
-    return previous === undefined
-      ? emptyProgressSnapshot(record.runId, record.timestamp)
-      : { ...previous, updatedAt: record.timestamp };
-  }
-  if (kind === "actor-turn") {
-    // The state document folds these into its actor table; the progress
-    // snapshot carries no actor fields, so only its timestamp advances.
-    return previous === undefined
-      ? emptyProgressSnapshot(record.runId, record.timestamp)
-      : { ...previous, updatedAt: record.timestamp };
-  }
-  if (kind === "execution-started") {
-    const started = record as WorkflowProgressExecutionStartRecord;
-    // A record whose plan is missing is one this fold cannot use. The reader
-    // contract is that a reader skips what it cannot read rather than failing
-    // the whole view on it — a torn or hand-written line must not take the
-    // document down, and the ledger keeps the line for whoever repairs it.
-    if ((started as { plan?: unknown }).plan === undefined) {
-      return previous === undefined
-        ? emptyProgressSnapshot(started.runId, started.timestamp)
-        : previous;
-    }
-    // A resumed execution keeps the counts the previous one reached; a fresh
-    // one starts them over. The flag rides the record rather than being
-    // inferred from whether a snapshot happens to exist on disk.
-    const carried = started.resumed ? previous : undefined;
-    const mnemonic = started.mnemonic ?? carried?.mnemonic;
-    return {
-      version: 1,
-      updatedAt: started.timestamp,
-      runId: started.runId,
-      plannedStages: started.plan.plannedStages,
-      completedStages: carried?.completedStages ?? 0,
-      acceptedStages: carried?.acceptedStages ?? 0,
-      remainingStages: started.plan.plannedStages - (carried?.acceptedStages ?? 0),
-      stageCounts: carried?.stageCounts ?? emptyStageCounts(started.plan),
-      ...(carried?.invocationTime === undefined ? {} : { invocationTime: carried.invocationTime }),
-      ...(mnemonic === undefined ? {} : { mnemonic }),
-    };
-  }
-  if (kind === "stage-started") {
-    const started = record as WorkflowProgressStartRecord;
-    const base = previous ?? emptyProgressSnapshot(started.runId, started.timestamp);
-    const invocationTime = accrueInto(base.invocationTime, started.invocationId, {
-      ...accrueInvocationTime(base.invocationTime?.[started.invocationId], started, started.timestamp),
-      runningSince: started.timestamp,
-    });
-    return {
-      ...base,
-      updatedAt: started.timestamp,
-      runId: started.runId,
-      invocationTime,
-      current: {
-        status: "running",
-        invocationId: started.invocationId,
-        stageId: started.stageId,
-        stage: started.stage,
-        worker: started.worker,
-        attempt: started.attempt,
-        ...(started.instanceId === undefined ? {} : { instanceId: started.instanceId }),
-        ...(started.iteration === undefined ? {} : { iteration: started.iteration }),
-        ...(started.mapSlot === undefined ? {} : { mapSlot: started.mapSlot }),
-        ...(started.mapSlots === undefined ? {} : { mapSlots: started.mapSlots }),
-        ...(started.scope === undefined ? {} : { scope: started.scope }),
-        ...(started.error === undefined ? {} : { error: started.error }),
-      },
-    };
-  }
-  if (kind === "execution-finished") {
-    const finished = record as WorkflowProgressExecutionFinishRecord;
-    const base = previous ?? emptyProgressSnapshot(finished.runId, finished.timestamp);
-    return {
-      ...base,
-      updatedAt: finished.timestamp,
-      ...(base.invocationTime === undefined
-        ? {}
-        : { invocationTime: closeOpenSpans(base.invocationTime, finished.timestamp) }),
-      ...(base.current === undefined ? {} : {
-        current: {
-          ...base.current,
-          // The pointer folds but keeps naming the last active stage, so a
-          // paused run still shows where it stopped.
-          status: finished.status === "failed" ? "failed" as const : "accepted" as const,
-        },
-      }),
-      ...(finished.error === undefined ? {} : { error: finished.error }),
-    };
-  }
-  const accepted = record as WorkflowProgressRecord;
-  const projection = accepted.progress;
-  const base = previous ?? emptyProgressSnapshot(accepted.runId, accepted.timestamp);
-  return {
-    ...base,
-    updatedAt: accepted.timestamp,
-    runId: accepted.runId,
-    plannedStages: projection?.plannedStages ?? base.plannedStages,
-    completedStages: projection?.completedStages ?? base.completedStages,
-    acceptedStages: projection?.acceptedStages ?? base.acceptedStages,
-    remainingStages: projection?.remainingStages ?? base.remainingStages,
-    stageCounts: projection?.stageCounts ?? base.stageCounts,
-    invocationTime: accrueInto(base.invocationTime, accepted.invocationId, accrueInvocationTime(
-      base.invocationTime?.[accepted.invocationId],
-      accepted,
-      accepted.timestamp,
-    )),
-    current: {
-      status: "accepted",
-      invocationId: accepted.invocationId,
-      stageId: accepted.stageId,
-      stage: accepted.stage,
-      worker: accepted.worker,
-      attempt: accepted.attempt,
-      ...(accepted.instanceId === undefined ? {} : { instanceId: accepted.instanceId }),
-      ...(accepted.iteration === undefined ? {} : { iteration: accepted.iteration }),
-      ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
-      ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
-      ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
-      ...(projection === undefined ? {} : { progress: projection }),
-      ...(accepted.projections === undefined ? {} : { projections: accepted.projections }),
-    },
-  };
-}
-
-/** The state document's fields that are also the progress snapshot's. */
-function snapshotOf(status: RunStatus): WorkflowProgressSnapshot {
-  return {
-    version: 1,
-    updatedAt: status.updatedAt,
-    runId: status.runId,
-    plannedStages: status.plannedStages,
-    completedStages: status.completedStages,
-    acceptedStages: status.acceptedStages,
-    remainingStages: status.remainingStages,
-    stageCounts: status.stageCounts,
-    ...(status.invocationTime === undefined ? {} : { invocationTime: status.invocationTime }),
-    ...(status.current === undefined ? {} : { current: status.current }),
-    ...(status.error === undefined ? {} : { error: typeof status.error === "string" ? status.error : JSON.stringify(status.error) }),
-    ...(status.mnemonic === undefined ? {} : { mnemonic: status.mnemonic }),
-  };
 }
 
 function updateJob(
@@ -606,8 +362,8 @@ function updateJob(
   return next;
 }
 
-/** Apply a record to the run's latest job — the only one a record can target
- * when it carries no ordinal of its own. */
+/** Apply a transition to the run's latest job — the only one a transition can
+ * target when it carries no ordinal of its own. */
 function updateLatestJob(
   jobs: readonly RunJob[],
   update: (job: RunJob) => RunJob,
@@ -619,139 +375,188 @@ function updateLatestJob(
 function bumpAttempt(
   attempts: Readonly<Record<string, number>>,
   invocationId: string,
-  attempt: unknown,
+  attempt: number,
 ): Readonly<Record<string, number>> {
-  if (typeof attempt !== "number" || !Number.isFinite(attempt)) return attempts;
   return { ...attempts, [invocationId]: Math.max(attempts[invocationId] ?? 0, attempt) };
 }
 
-/** Fold one record into the run's state document.
+/** Fold one transition into the run's state document.
  *
- * The snapshot fields reuse {@link applyProgressRecord}; the record families
- * that document alone cannot express — jobs, their finalized regions and the
- * actor table — are applied alongside it. This is the whole state machine a
- * run has: there is no second stream to reconcile, and writing the document is
- * the commit.
+ * This is the whole state machine a run has: the counters, the current
+ * invocation, the job table, the actor table and the run's status all live in
+ * one document, and writing it is the commit. The job table is history and a
+ * cursor; whether the run is working, paused, or finished is `status` alone.
+ * Only `execution-started` and `execution-finished` write the status; stage
+ * records touch jobs and counters only.
  *
- * The record maintains the run's status and the job table together. The job
- * table is history and a cursor: whether the run is working, paused, or
- * finished is `status` alone. Only `execution-started` and
- * `execution-finished` write the status; stage records touch jobs only. */
+ * The fold TAKES OWNERSHIP of `previous.invocationTime` and updates it in
+ * place: a per-record copy was measured at 99% of the fold's cost. */
 export function applyRunStatusRecord(
   previous: RunStatus | undefined,
-  record: WorkflowProgressStreamRecord,
+  transition: WorkflowTransition,
 ): RunStatus {
-  const snapshot = applyProgressRecord(previous === undefined ? undefined : snapshotOf(previous), record);
-  const base = previous ?? emptyRunStatus(record.runId, record.timestamp);
-  const next: RunStatus = {
-    ...base,
-    runId: snapshot.runId,
-    updatedAt: snapshot.updatedAt,
-    plannedStages: snapshot.plannedStages,
-    completedStages: snapshot.completedStages,
-    acceptedStages: snapshot.acceptedStages,
-    remainingStages: snapshot.remainingStages,
-    stageCounts: snapshot.stageCounts,
-    ...(snapshot.invocationTime === undefined ? {} : { invocationTime: snapshot.invocationTime }),
-    ...(snapshot.current === undefined ? {} : { current: snapshot.current }),
-    ...(snapshot.error === undefined ? {} : { error: snapshot.error }),
-    ...(snapshot.mnemonic === undefined ? {} : { mnemonic: snapshot.mnemonic }),
-  };
-  const kind = progressRecordKind(record);
-  if (kind === "execution-started") {
-    const started = record as WorkflowProgressExecutionStartRecord;
-    const ordinal = started.jobOrdinal ?? nextJobOrdinal(next.jobs);
-    // A restart closes its predecessor in this same record, so no document
-    // can hold a closed job that was not immediately followed by its
-    // successor.
-    const priorJobs = started.closesJobOrdinal === undefined
-      ? next.jobs
-      : updateJob(next.jobs, started.closesJobOrdinal, (job) => ({ ...job, outcome: "restarted" }));
-    const existing = priorJobs.find((job) => job.jobOrdinal === ordinal);
-    // The job's input is the work it currently stands for: a plain prompt that
-    // continues a one-stage job replaces it, so a later `/restart` re-runs
-    // what the human last asked, not the job's first message.
-    const input = started.prompt ?? existing?.input;
-    const job: RunJob = {
-      jobOrdinal: ordinal,
-      accepted: existing?.accepted ?? [],
-      attempts: existing?.attempts ?? {},
-      ...(input === undefined ? {} : { input }),
-      ...(existing?.regions === undefined ? {} : { regions: existing.regions }),
-    };
-    const jobs = [...priorJobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
-      .sort((left, right) => left.jobOrdinal - right.jobOrdinal);
-    return { ...next, jobs, status: "running" };
-  }
-  if (kind === "stage-started") {
-    const started = record as WorkflowProgressStartRecord;
-    return {
-      ...next,
-      jobs: updateLatestJob(next.jobs, (job) => ({
-        ...job,
-        attempts: bumpAttempt(job.attempts, started.invocationId, started.attempt),
-      })),
-    };
-  }
-  if (kind === "stage-accepted") {
-    const accepted = record as WorkflowProgressRecord;
-    const entry = acceptedInvocationOf(accepted.invocationId);
-    return {
-      ...next,
-      jobs: updateLatestJob(next.jobs, (job) => ({
-        ...job,
-        accepted: job.accepted.some((item) => item.invocationId === entry.invocationId)
-          ? job.accepted
-          : [...job.accepted, entry],
-        attempts: bumpAttempt(job.attempts, accepted.invocationId, accepted.attempt),
-      })),
-    };
-  }
-  if (kind === "region-finalized") {
-    const finalized = record as WorkflowProgressRegionFinalizedRecord;
-    return {
-      ...next,
-      jobs: updateJob(next.jobs, finalized.jobOrdinal, (job) => ({
-        ...job,
-        regions: { ...job.regions, [finalized.instance]: finalized },
-      })),
-    };
-  }
-  if (kind === "actor-turn") {
-    const turn = record as WorkflowProgressActorTurnRecord;
-    return {
-      ...next,
-      actors: {
-        ...next.actors,
-        [turn.actorKey]: {
-          harness: turn.harness,
-          sessionId: turn.sessionId,
-          transcriptPath: turn.transcriptPath,
-          turns: turn.turn,
-          ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
-        },
-      },
-    };
-  }
-  if (kind === "execution-finished") {
-    const finished = record as WorkflowProgressExecutionFinishRecord;
-    if (finished.status === "paused") {
-      return { ...next, status: "paused" };
+  const base = previous ?? emptyRunStatus(transition.runId, transition.timestamp);
+  const next: RunStatus = { ...base, runId: transition.runId, updatedAt: transition.timestamp };
+  switch (transition.kind) {
+    case "execution-started": {
+      const carried = transition.resumed ? next : undefined;
+      const mnemonic = transition.mnemonic ?? carried?.mnemonic;
+      const ordinal = transition.jobOrdinal ?? nextJobOrdinal(next.jobs);
+      // A restart closes its predecessor in this same transition, so no
+      // document can hold a closed job that was not immediately followed by
+      // its successor.
+      const priorJobs = transition.closesJobOrdinal === undefined
+        ? next.jobs
+        : updateJob(next.jobs, transition.closesJobOrdinal, (job) => ({ ...job, outcome: "restarted" }));
+      const existing = priorJobs.find((job) => job.jobOrdinal === ordinal);
+      // The job's input is the work it currently stands for: a plain prompt
+      // that continues a one-stage job replaces it, so a later `/restart`
+      // re-runs what the human last asked, not the job's first message.
+      const input = transition.prompt ?? existing?.input;
+      const job: RunJob = {
+        jobOrdinal: ordinal,
+        accepted: existing?.accepted ?? [],
+        attempts: existing?.attempts ?? {},
+        ...(input === undefined ? {} : { input }),
+        ...(existing?.regions === undefined ? {} : { regions: existing.regions }),
+      };
+      const jobs = [...priorJobs.filter((candidate) => candidate.jobOrdinal !== ordinal), job]
+        .sort((left, right) => left.jobOrdinal - right.jobOrdinal);
+      return {
+        ...next,
+        status: "running",
+        plannedStages: transition.plan.plannedStages,
+        completedStages: carried?.completedStages ?? 0,
+        acceptedStages: carried?.acceptedStages ?? 0,
+        remainingStages: transition.plan.plannedStages - (carried?.acceptedStages ?? 0),
+        stageCounts: carried?.stageCounts ?? emptyStageCounts(transition.plan),
+        ...(mnemonic === undefined ? {} : { mnemonic }),
+        jobs,
+      };
     }
-    // A finished job keeps its verdict as history; the run's status is the
-    // same verdict, set here rather than projected from the job later.
-    const outcome = finished.status;
-    return {
-      ...next,
-      status: outcome,
-      jobs: updateLatestJob(next.jobs, (job) => ({ ...job, outcome })),
-    };
+    case "stage-started": {
+      const invocationTime = accrueInto(next.invocationTime, transition.invocationId, {
+        ...accrueInvocationTime(next.invocationTime?.[transition.invocationId], transition, transition.timestamp),
+        runningSince: transition.timestamp,
+      });
+      return {
+        ...next,
+        invocationTime,
+        current: {
+          status: "running",
+          invocationId: transition.invocationId,
+          stageId: transition.stageId,
+          stage: transition.stage,
+          worker: transition.worker,
+          attempt: transition.attempt,
+          ...(transition.instanceId === undefined ? {} : { instanceId: transition.instanceId }),
+          ...(transition.iteration === undefined ? {} : { iteration: transition.iteration }),
+          ...(transition.mapSlot === undefined ? {} : { mapSlot: transition.mapSlot }),
+          ...(transition.mapSlots === undefined ? {} : { mapSlots: transition.mapSlots }),
+          ...(transition.scope === undefined ? {} : { scope: transition.scope }),
+          ...(transition.error === undefined ? {} : { error: transition.error }),
+        },
+        jobs: updateLatestJob(next.jobs, (job) => ({
+          ...job,
+          attempts: bumpAttempt(job.attempts, transition.invocationId, transition.attempt),
+        })),
+      };
+    }
+    case "stage-accepted": {
+      const projection = transition.progress;
+      const entry = acceptedInvocationOf(transition.invocationId);
+      return {
+        ...next,
+        plannedStages: projection?.plannedStages ?? next.plannedStages,
+        completedStages: projection?.completedStages ?? next.completedStages,
+        acceptedStages: projection?.acceptedStages ?? next.acceptedStages,
+        remainingStages: projection?.remainingStages ?? next.remainingStages,
+        stageCounts: projection?.stageCounts ?? next.stageCounts,
+        invocationTime: accrueInto(next.invocationTime, transition.invocationId, accrueInvocationTime(
+          next.invocationTime?.[transition.invocationId],
+          transition,
+          transition.timestamp,
+        )),
+        current: {
+          status: "accepted",
+          invocationId: transition.invocationId,
+          stageId: transition.stageId,
+          stage: transition.stage,
+          worker: transition.worker,
+          attempt: transition.attempt,
+          ...(transition.instanceId === undefined ? {} : { instanceId: transition.instanceId }),
+          ...(transition.iteration === undefined ? {} : { iteration: transition.iteration }),
+          ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
+          ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
+          ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
+          ...(projection === undefined ? {} : { progress: projection }),
+          ...(transition.projections === undefined ? {} : { projections: transition.projections }),
+        },
+        jobs: updateLatestJob(next.jobs, (job) => ({
+          ...job,
+          accepted: job.accepted.some((item) => item.invocationId === entry.invocationId)
+            ? job.accepted
+            : [...job.accepted, entry],
+          attempts: bumpAttempt(job.attempts, transition.invocationId, transition.attempt),
+        })),
+      };
+    }
+    case "execution-finished": {
+      const common = {
+        ...(next.invocationTime === undefined
+          ? {}
+          : { invocationTime: closeOpenSpans(next.invocationTime, transition.timestamp) }),
+        ...(next.current === undefined ? {} : {
+          current: {
+            ...next.current,
+            // The pointer folds but keeps naming the last active stage, so a
+            // paused run still shows where it stopped.
+            status: transition.status === "failed" ? "failed" as const : "accepted" as const,
+          },
+        }),
+        ...(transition.error === undefined ? {} : { error: transition.error }),
+      };
+      if (transition.status === "paused") {
+        return { ...next, ...common, status: "paused" };
+      }
+      // A finished job keeps its verdict as history; the run's status is the
+      // same verdict.
+      const outcome = transition.status;
+      return {
+        ...next,
+        ...common,
+        status: outcome,
+        jobs: updateLatestJob(next.jobs, (job) => ({ ...job, outcome })),
+      };
+    }
+    case "region-finalized":
+      return {
+        ...next,
+        jobs: updateJob(next.jobs, transition.jobOrdinal, (job) => ({
+          ...job,
+          regions: { ...job.regions, [transition.instance]: transition },
+        })),
+      };
+    case "actor-turn":
+      return {
+        ...next,
+        actors: {
+          ...next.actors,
+          [transition.actorKey]: {
+            harness: transition.harness,
+            sessionId: transition.sessionId,
+            transcriptPath: transition.transcriptPath,
+            turns: transition.turn,
+            ...(transition.continuation === undefined ? {} : { continuation: transition.continuation }),
+          },
+        },
+      };
   }
-  return next;
 }
 
-/** Create the initial snapshot before the first worker turn. This makes a
- * long-running workflow observable even while no stage has validated yet.
+/** Write the run's initial state document before the first worker turn. This
+ * makes a long-running workflow observable even while no stage has validated
+ * yet.
  *
  * `restartOrdinal` is the job this start replaces: the record gives it
  * `outcome: restarted` in the same atomic write, so the close and the
@@ -770,8 +575,7 @@ export function initializeWorkflowProgress(
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return Effect.gen(function* () {
-    yield* appendAndFold(runDir, {
-      version: 1,
+    yield* commitTransition(runDir, {
       kind: "execution-started",
       timestamp: new Date().toISOString(),
       runId,
@@ -786,79 +590,69 @@ export function initializeWorkflowProgress(
   });
 }
 
-/** Apply one record to the run's state document and write it atomically.
+/** Fold one transition into the run's state document and write it atomically.
  *
- * The one path every writer takes. The document is the record: there is no
- * stream beside it to keep in step, and the atomic write makes a crash leave
- * either the previous state or the next one, never a torn line. */
-function appendAndFold(
+ * The one path every writer takes. There is no stream beside the document to
+ * keep in step, and the atomic write makes a crash leave either the previous
+ * state or the next one, never a torn line. */
+function commitTransition(
   runDir: string,
-  record: WorkflowProgressStreamRecord,
+  transition: WorkflowTransition,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const current = yield* readRunStatus(runDir);
-    yield* writeRunStatus(runDir, applyRunStatusRecord(current, record));
+    yield* writeRunStatus(runDir, applyRunStatusRecord(current, transition));
   });
 }
 
 /** Record that a stage/attempt started.
  *
- * The record is applied to the state document and the document is written
+ * The transition is folded into the state document and the document is written
  * atomically: a crash leaves either the previous state or the next one, never
  * a torn line. */
 export function markWorkflowStageStarted(
   runDir: string,
   runId: string,
-  current: Omit<WorkflowProgressCurrent, "status" | "progress">,
+  current: Omit<WorkflowProgressStartRecord, "kind" | "timestamp" | "runId">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return Effect.gen(function* () {
-    yield* appendAndFold(runDir, {
-      version: 1,
+    yield* commitTransition(runDir, {
       kind: "stage-started",
       timestamp: new Date().toISOString(),
       runId,
-      invocationId: current.invocationId,
-      stageId: current.stageId,
-      stage: current.stage,
-      worker: current.worker,
-      attempt: current.attempt,
-      ...(current.instanceId === undefined ? {} : { instanceId: current.instanceId }),
-      ...(current.iteration === undefined ? {} : { iteration: current.iteration }),
-      ...(current.mapSlot === undefined ? {} : { mapSlot: current.mapSlot }),
-      ...(current.mapSlots === undefined ? {} : { mapSlots: current.mapSlots }),
-      ...(current.scope === undefined ? {} : { scope: current.scope }),
-      ...(current.error === undefined ? {} : { error: current.error }),
+      ...current,
     });
     return path;
   });
 }
 
-/** Append one accepted progress record. The file is safe to read while a long
- * workflow loop is still running, so monitors can observe completed iterations. */
+/** Record one accepted stage, one finalized region, or one actor turn. The
+ * document is safe to read while a long workflow loop is still running, so
+ * monitors observe completed iterations. */
 export function appendWorkflowProgress(
   runDir: string,
-  record: Omit<WorkflowProgressRecord, "version" | "timestamp">
-    | Omit<WorkflowProgressRegionFinalizedRecord, "version" | "timestamp">
-    | Omit<WorkflowProgressActorTurnRecord, "version" | "timestamp">,
+  record: Omit<WorkflowProgressRecord, "timestamp">
+    | Omit<WorkflowProgressRegionFinalizedRecord, "timestamp">
+    | Omit<WorkflowProgressActorTurnRecord, "timestamp">,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return Effect.gen(function* () {
-    yield* appendAndFold(runDir, {
-      version: 1,
-      timestamp: new Date().toISOString(),
-      ...record,
-    });
+    const timestamp = new Date().toISOString();
+    // The accepted-stage payload predates the discriminator; the transition
+    // names it explicitly. The other two payloads already carry their kind.
+    yield* commitTransition(runDir, "kind" in record
+      ? { ...record, timestamp }
+      : { kind: "stage-accepted", ...record, timestamp });
     return path;
   });
 }
 
-/** Record that an execution ended on the stream.
+/** Record that an execution ended.
  *
  * Best-effort callers may catch this error so a convenience view never hides
- * the canonical workflow result. The state document is folded from this record
- * like every other; with nothing to correct there, the record above is the
- * outcome. */
+ * the canonical workflow result. The fold is the outcome; a failure to write
+ * it must not replace the worker's result. */
 export function finalizeWorkflowProgress(
   runDir: string,
   runId: string,
@@ -867,8 +661,7 @@ export function finalizeWorkflowProgress(
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return Effect.gen(function* () {
-    yield* appendAndFold(runDir, {
-      version: 1,
+    yield* commitTransition(runDir, {
       kind: "execution-finished",
       timestamp: new Date().toISOString(),
       runId,

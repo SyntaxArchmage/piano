@@ -31,7 +31,7 @@ const PLAN: WorkflowProgressPlan = {
   stageCounts: { tune: { planned: 1, completed: 0 }, measure: { planned: 1, completed: 0 } },
 };
 
-function record(): Omit<WorkflowProgressRecord, "version" | "timestamp"> {
+function record(): Omit<WorkflowProgressRecord, "timestamp"> {
   return {
     runId: "execution",
     invocationId: "tune@root",

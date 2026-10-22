@@ -7,12 +7,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendWorkflowProgress,
-  applyProgressRecord,
   applyRunStatusRecord,
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   markWorkflowStageStarted,
-  progressRecordKind,
   readRunStatus,
   reconcileCrashedRun,
   runStatusPath,
@@ -20,7 +18,7 @@ import {
   type WorkflowError,
   type WorkflowProgressPlan,
   type WorkflowProgressRecord,
-  type WorkflowProgressStreamRecord,
+  type WorkflowTransition,
 } from "../../packages/orchestrator/src/index.js";
 import { emptyRunStatus } from "../../packages/orchestrator/src/run-status.js";
 
@@ -31,7 +29,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowProgressRecord, "version" | "timestamp"> {
+function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowProgressRecord, "timestamp"> {
   return {
     runId: "execution",
     invocationId: "measure",
@@ -53,7 +51,7 @@ const timingPlan: WorkflowProgressPlan = {
   stageCounts: { tune: { planned: 2, completed: 0 }, measure: { planned: 1, completed: 0 } },
 };
 
-interface SnapshotTiming {
+interface StatusTiming {
   readonly invocationTime?: Readonly<Record<string, {
     readonly stageId?: string;
     readonly instanceId?: string;
@@ -78,8 +76,8 @@ function run<A>(effect: Effect.Effect<A, WorkflowError, FileSystem.FileSystem>):
   return Effect.runPromise(effect.pipe(Effect.provide(NodeContext.layer)));
 }
 
-async function readTiming(runDir: string): Promise<SnapshotTiming> {
-  return JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as SnapshotTiming;
+async function readTiming(runDir: string): Promise<StatusTiming> {
+  return JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as StatusTiming;
 }
 
 
@@ -182,11 +180,11 @@ describe("workflow stage time", () => {
       ...measure, invocationId: "measure@root", worker: "worker", attempt: 1,
     }));
 
-    // Root cause 1 pin: a paused snapshot keeps its top-level verdict but
+    // Root cause 1 pin: a paused document keeps its top-level verdict but
     // never claims a running stage; the pointer folds to "accepted" and
     // stageId survives as the resume-view pointer.
     await run(finalizeWorkflowProgress(runDir, "execution", "paused"));
-    const paused = await readTiming(runDir) as SnapshotTiming & {
+    const paused = await readTiming(runDir) as StatusTiming & {
       status?: string;
       current?: { stageId?: string; status?: string };
     };
@@ -195,7 +193,7 @@ describe("workflow stage time", () => {
 
     // Failed finalization still labels the stage "failed".
     await run(finalizeWorkflowProgress(runDir, "execution", "failed", "boom"));
-    const failed = await readTiming(runDir) as SnapshotTiming & {
+    const failed = await readTiming(runDir) as StatusTiming & {
       status?: string;
       current?: { stageId?: string; status?: string };
     };
@@ -222,7 +220,7 @@ describe("workflow stage time", () => {
   });
 });
 
-describe("workflow progress stream", () => {
+describe("workflow progress document", () => {
   beforeEach(() => {
     vi.useRealTimers();
   });
@@ -251,7 +249,7 @@ describe("workflow progress stream", () => {
     expect(status.current).toMatchObject({ invocationId: "tune@tune/iter-0", stageId: "tune", attempt: 1 });
   });
 
-  it("opens the stream with the execution's own start, carrying its plan", async () => {
+  it("opens the state document with the execution's own start, carrying its plan", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", true));
@@ -269,90 +267,15 @@ describe("workflow progress stream", () => {
   it("keeps a run going when its state document is unreadable", async () => {
     at("2026-01-01T00:00:00.000Z");
     const runDir = await newRunDir();
-    // A state document that no longer parses is a damaged view of the stream,
-    // not a reason to refuse the run: the record lands and the fold rewrites
-    // the view from the record it just wrote.
+    // A state document that no longer parses is damaged, not a reason to
+    // refuse the run: the transition folds over an empty document and rewrites
+    // it from scratch.
     await writeFile(runStatusPath(runDir), "{not json\n", "utf8");
 
     await run(initializeWorkflowProgress(runDir, "execution", timingPlan, 1, "do the work", false));
 
     const status = JSON.parse(await readFile(runStatusPath(runDir), "utf8")) as RunStatus;
     expect(status).toMatchObject({ runId: "execution", status: "running", plannedStages: 4 });
-  });
-
-  it("skips an execution marker it cannot read instead of failing the view", () => {
-    // A torn or hand-written line can carry a valid envelope and still lack a
-    // kind's own fields. The reader contract is to skip it, not to take the
-    // whole state document down with it.
-    const shapeless = {
-      version: 1, kind: "execution-started", timestamp: "2026-01-01T00:00:06.000Z",
-      runId: "execution", jobOrdinal: 2, prompt: "second", resumed: false,
-    } as unknown as WorkflowProgressStreamRecord;
-    const before = applyProgressRecord(undefined, {
-      version: 1, kind: "execution-started", timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution", jobOrdinal: 1, prompt: "first", resumed: false,
-      plan: { plannedStages: 1, stageCounts: {} },
-    } as unknown as WorkflowProgressStreamRecord);
-    expect(applyProgressRecord(before, shapeless)).toEqual(before);
-  });
-
-  it("reads a line with a kind it does not recognize as nothing, not as an accepted stage", () => {
-    // A newer writer's record riding the same stream: a valid envelope with a
-    // discriminator this reader has no meaning for. Folding it into the
-    // historical shape would count the marker as accepted work. The name is
-    // deliberately not a candidate for a real kind — this exemplar has twice
-    // been promoted to a known one and taken the test down with it.
-    const marker = {
-      kind: "not-a-kind-this-build-knows",
-      runId: "execution",
-      timestamp: "2026-01-01T00:00:05.000Z",
-      regionId: "sweep",
-    } as unknown as WorkflowProgressStreamRecord;
-    expect(progressRecordKind(marker)).toBeUndefined();
-    // The discriminator-less line stays the historical accepted stage.
-    expect(progressRecordKind(record())).toBe("stage-accepted");
-
-    // The snapshot reducer carries only what it understands: an unknown
-    // record leaves the previous snapshot untouched, byte for byte.
-    const before = applyProgressRecord(undefined, {
-      version: 1,
-      kind: "execution-started",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution",
-      jobOrdinal: 1,
-      resumed: false,
-      plan: timingPlan,
-    } as unknown as WorkflowProgressStreamRecord);
-    expect(applyProgressRecord(before, marker)).toBe(before);
-  });
-
-  it("reads a region-finalized line as region evidence the snapshot echoes", () => {
-    const before = applyProgressRecord(undefined, {
-      version: 1,
-      kind: "execution-started",
-      timestamp: "2026-01-01T00:00:00.000Z",
-      runId: "execution",
-      jobOrdinal: 1,
-      resumed: false,
-      plan: timingPlan,
-    } as unknown as WorkflowProgressStreamRecord);
-    const finalized = {
-      version: 1,
-      kind: "region-finalized",
-      timestamp: "2026-01-01T00:00:05.000Z",
-      runId: "execution",
-      jobOrdinal: 1,
-      instance: "tune",
-      regionId: "tune",
-      regionKind: "loop",
-      outcome: "bound-iterations",
-      iterations: 3,
-    } as unknown as WorkflowProgressStreamRecord;
-    expect(progressRecordKind(finalized)).toBe("region-finalized");
-    // The snapshot has no field for region evidence, so the fold only moves
-    // its clock: no counts or current invocations change.
-    const after = applyProgressRecord(before, finalized);
-    expect(after).toEqual({ ...before, updatedAt: "2026-01-01T00:00:05.000Z" });
   });
 
   it("answers which invocation is in flight, and since when, from the state document", async () => {
@@ -380,10 +303,10 @@ describe("workflow progress stream", () => {
     expect(status.invocationTime?.["tune@tune/iter-0"]?.completedMs).toBe(30_000);
   });
 
-  it("records how an execution ended even when there is no snapshot to fold", async () => {
+  it("records how an execution ended even with no prior document", async () => {
     at("2026-01-01T00:00:00.000Z");
-    // No initialize: the snapshot is the throwaway half of this pair, and the
-    // outcome must not depend on it existing.
+    // No initialize: there is no prior document, and the outcome must not
+    // depend on one existing.
     const runDir = await newRunDir();
     await run(finalizeWorkflowProgress(runDir, "execution", "failed", "boom"));
 
@@ -418,7 +341,6 @@ describe("workflow progress stream", () => {
 
 describe("run status fold", () => {
   const started = (ordinal: number, timestamp: string) => ({
-    version: 1,
     kind: "execution-started",
     timestamp,
     runId: "projection",
@@ -426,14 +348,13 @@ describe("run status fold", () => {
     prompt: `job ${ordinal}`,
     resumed: ordinal > 1,
     plan: timingPlan,
-  }) as unknown as WorkflowProgressStreamRecord;
+  }) as unknown as WorkflowTransition;
   const finished = (status: "completed" | "failed" | "paused", timestamp: string) => ({
-    version: 1,
     kind: "execution-finished",
     timestamp,
     runId: "projection",
     status,
-  }) as unknown as WorkflowProgressStreamRecord;
+  }) as unknown as WorkflowTransition;
 
   it("follows the run status through start and finish", () => {
     // Only the boundary records write status; job rows are history.
@@ -458,7 +379,7 @@ describe("run status fold", () => {
     status = applyRunStatusRecord(status, {
       ...started(2, "2026-01-01T00:00:02.000Z"),
       closesJobOrdinal: 1,
-    } as unknown as WorkflowProgressStreamRecord);
+    } as unknown as WorkflowTransition);
     expect(status.status).toBe("running");
     expect(status.jobs).toMatchObject([
       { jobOrdinal: 1, outcome: "restarted" },
@@ -481,7 +402,6 @@ describe("run status fold", () => {
     // not revive it.
     const cancelled: RunStatus = { ...emptyRunStatus("projection", "2026-01-01T00:00:00.000Z"), status: "cancelled" };
     const regionExit = {
-      version: 1,
       kind: "region-finalized",
       timestamp: "2026-01-01T00:00:01.000Z",
       runId: "projection",
@@ -491,7 +411,7 @@ describe("run status fold", () => {
       regionKind: "loop",
       outcome: "bound-iterations",
       iterations: 1,
-    } as unknown as WorkflowProgressStreamRecord;
+    } as unknown as WorkflowTransition;
     expect(applyRunStatusRecord(cancelled, regionExit).status).toBe("cancelled");
   });
 });

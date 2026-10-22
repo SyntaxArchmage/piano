@@ -22,7 +22,6 @@ function turn(input: {
   continuation?: unknown;
 }) {
   return {
-    version: 1,
     kind: "actor-turn",
     timestamp,
     runId: "run-1",

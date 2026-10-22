@@ -1,9 +1,8 @@
 // Reading a run's progress for display.
 //
-// The run keeps one state document, `status.json`, folded from the ledgers
-// that describe it. That is the file to read: the ledgers behind it are the
-// evidence and the source the document is folded from, not a second way to
-// answer the question.
+// The run keeps one state document, `status.json`, written by the orchestrator
+// as it schedules. That is the file to read; there is no second way to answer
+// the question.
 
 import { readFile } from "node:fs/promises";
 import { parseRunStatus, runStatusPath } from "@piano/orchestrator";
