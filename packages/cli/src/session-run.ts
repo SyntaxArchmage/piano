@@ -18,7 +18,6 @@ import {
   type LoggingError,
   type LoggingService,
   type Session,
-  type SessionError,
   type Source,
   type StagingSession,
   type TrajectoryWriteInput,
@@ -164,7 +163,6 @@ function runSessionBody(
       Effect.tap(() => SESSION_LOG.info("run.created", {
         data: { runDir: session.runDir, promptLength: prompt.length },
       })),
-      Effect.mapError((error) => error as SessionError),
     )
     : undefined;
   return Effect.gen(function* () {
@@ -201,7 +199,7 @@ function runSessionBody(
       session: Session;
       logging: LoggingService;
       /** Present only while the session is still staging. */
-      commit?: (prompt: string) => Effect.Effect<void, SessionError, import("@effect/platform").FileSystem.FileSystem | Logging>;
+      commit?: (prompt: string) => Effect.Effect<void, LoggingError, import("@effect/platform").FileSystem.FileSystem | Logging>;
     } = { session, logging, ...(commitSession === undefined ? {} : { commit: commitSession }) };
     const runsRoot = dirname(session.runDir);
     yield* TRACE(SESSION_SOURCE, Effect.gen(function* () {

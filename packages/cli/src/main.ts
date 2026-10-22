@@ -3,23 +3,16 @@ import { Cause, Effect } from "effect";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { stderr } from "node:process";
-import {
-  createStagingSession,
-  type LoggingError,
-} from "@piano/logging";
-import type { HarnessHomeError } from "@piano/harness";
-import type { WorkflowExecutionError } from "@piano/orchestrator";
+import { createStagingSession } from "@piano/logging";
 import { logsCommand } from "./logs.js";
 import { evalsCommand } from "./evals.js";
 import { resumeCommand } from "./resume.js";
 import { clearAllCommand } from "./clear.js";
 import { doctorCommand } from "./doctor.js";
 import { ensureSystemCaTrust } from "./ca-certs.js";
-import { CliArgumentError, type CliError } from "./errors.js";
+import { CliArgumentError } from "./errors.js";
 import { programName } from "./program-name.js";
-import { runSession, type SessionRunOptions } from "./session-run.js";
-
-export type MainError = CliError | LoggingError | WorkflowExecutionError | HarnessHomeError;
+import { runSession, type SessionRunError, type SessionRunOptions } from "./session-run.js";
 
 type MainOptions = Pick<SessionRunOptions, "workflowPath" | "prompt" | "json" | "mnemonic">;
 
@@ -105,7 +98,7 @@ function parseMainArgs(args: readonly string[]): Effect.Effect<MainOptions, CliA
 /** Start the CLI as a typed Effect program. */
 export function main(
   args: readonly string[] = process.argv.slice(2),
-): Effect.Effect<void, MainError, import("@effect/platform").FileSystem.FileSystem> {
+): Effect.Effect<void, SessionRunError, import("@effect/platform").FileSystem.FileSystem> {
   if (args[0] === "logs") return logsCommand(args.slice(1));
   if (args[0] === "evals") return evalsCommand(args.slice(1));
   if (args[0] === "resume") return resumeCommand(args.slice(1));
