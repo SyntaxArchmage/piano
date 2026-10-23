@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Data, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { writeFileAtomic } from "@piano/base";
-import { appendJsonlLine } from "@piano/logging";
+import { appendJsonlLine, isRecord } from "@piano/logging";
 import type {
   BenchmarkMeasurement,
   CaseResult,
@@ -13,10 +13,6 @@ import type {
   VariantResult,
 } from "./types.js";
 import { historyEntryFromResult, usableBenchmarkValue } from "./evidence.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isBenchmarkMeasurement(value: unknown): value is BenchmarkMeasurement {
   if (!isRecord(value)) return false;
