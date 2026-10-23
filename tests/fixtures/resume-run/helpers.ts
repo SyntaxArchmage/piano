@@ -118,29 +118,6 @@ export async function readLedger(ledgerPath: string): Promise<LedgerRow[]> {
   });
 }
 
-/** Poll the ledger until `predicate` holds for its rows. The guards' only
- * timing hook: the fake worker writes its row before it can wedge, so the row
- * is the deterministic signal that the target turn is open. */
-export async function waitForLedger(
-  ledgerPath: string,
-  predicate: (rows: readonly LedgerRow[]) => boolean,
-  label: string,
-  timeoutMs = 120_000,
-): Promise<LedgerRow[]> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const rows = await readLedger(ledgerPath);
-    if (predicate(rows)) return rows;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `waitForLedger(${label}) timed out after ${timeoutMs}ms; rows:\n`
-        + rows.map((row) => `  ${row.index}: ${row.mode} ${row.stage} ${row.invocation}`).join("\n"),
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
 /** The row where the run was wedged: the first propose of iteration 1. */
 export function pauseRow(rows: readonly LedgerRow[]): LedgerRow {
   const row = rows.find((entry) => entry.stage.endsWith("propose") && entry.invocation.includes("iter-1"));
