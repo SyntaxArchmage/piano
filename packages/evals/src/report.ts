@@ -1021,7 +1021,7 @@ export function formatReport(
       ? " tests=n/a"
       : ` tests=${tests.passed}/${tests.passed + tests.failed} pass=${(tests.passRate * 100).toFixed(1)}% failed=${tests.failed} skipped=${tests.skipped}`;
     lines.push(
-      `  ${`${kase.caseId}#${kase.trial}`.padEnd(24)} ${status}${metric}${verified}${baseline}${improvement}${quality} evidence=${evidenceState}${testState} loc=${kase.codeChanges?.total ?? "n/a"} (+${kase.codeChanges?.additions ?? 0}/-${kase.codeChanges?.deletions ?? 0}) files=${kase.codeChanges?.files ?? "n/a"} test=${kase.codeChanges === undefined ? "n/a" : kase.codeChanges.testIntegrity.cheating ? "CHEAT" : "OK"} tokens=${trajectoryTokens(kase)} rounds=${kase.trace?.messages.rounds ?? 0} messages=${kase.trace?.messages.count ?? 0} tools=${trajectoryToolCalls(kase)} stages=${stageCount}${plannedLabel}${currentLabel} time=${kase.durationMs ?? 0}ms`,
+      `  ${`${kase.caseId}#${kase.trial}`.padEnd(24)} ${status}${metric}${verified}${baseline}${improvement}${quality} evidence=${evidenceState}${testState} loc=${kase.codeChanges?.total ?? "n/a"} (+${kase.codeChanges?.additions ?? 0}/-${kase.codeChanges?.deletions ?? 0}) files=${kase.codeChanges?.files ?? "n/a"} test=${kase.codeChanges === undefined ? "n/a" : kase.codeChanges.testIntegrity.cheating ? "CHEAT" : "OK"} tokens=${trajectoryTokens(kase)} rounds=${kase.trace?.messages.rounds ?? 0} messages=${kase.trace?.messages.count ?? 0} tools=${trajectoryToolCalls(kase)} stages=${stageCount}${plannedLabel}${currentLabel} time=${Math.round(kase.durationMs ?? 0)}ms`,
     );
     const costLine = formatCostLine(kase);
     if (costLine !== undefined) {
@@ -1055,7 +1055,7 @@ export function formatReport(
       const transcript = stage.transcriptPath ?? "n/a";
       const workspace = stage.workspaceCwd ?? "n/a";
       lines.push(
-        `    ${DIM}stage ${stage.stageId}#${stage.invocationId} iter=${stage.iteration ?? "-"} rounds=${stage.transcript?.assistantMessageCount ?? 0} tools=${stage.toolCalls.count} tokens=${stage.tokens.total} time=${stage.durationMs ?? 0}ms model=${model} requestedModel=${requestedModel} thinking=${thinking} requestedThinking=${requestedThinking} cwd=${workspace} transcript=${transcript}${RST}`,
+        `    ${DIM}stage ${stage.stageId}#${stage.invocationId} iter=${stage.iteration ?? "-"} rounds=${stage.transcript?.assistantMessageCount ?? 0} tools=${stage.toolCalls.count} tokens=${stage.tokens.total} time=${Math.round(stage.durationMs ?? 0)}ms model=${model} requestedModel=${requestedModel} thinking=${thinking} requestedThinking=${requestedThinking} cwd=${workspace} transcript=${transcript}${RST}`,
       );
     }
   }

@@ -24,7 +24,7 @@ import {
 } from "./pi-sdk.js";
 export const defaultPiConfigPath = defaultAgentConfigPath;
 import { eventMetadata } from "./event-metadata.js";
-import { bindEvents, isTruncatedStopReason, type TurnAccumulator } from "./pi-session-events.js";
+import { bindEvents, cumulativeUsageFromTranscript, isTruncatedStopReason, type TurnAccumulator } from "./pi-session-events.js";
 import { agentConfigPath, defaultAgentConfigPath, resolveHarnessConfig, type ResolvedHarnessConfig } from "./harness-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, webSearchExtensionFactory } from "./pi-web-search.js";
 import {
@@ -38,6 +38,7 @@ import {
   shouldPersistAgentEvent,
   THINKING_LEVELS,
   type AgentEvent,
+  type AgentUsage,
   type AgentResourceInfo,
   type AgentResourceKind,
   type ThinkingLevel,
@@ -47,6 +48,10 @@ import {
  * reliability floor (issue #45): a stage must survive provider-side storms
  * without surfacing a terminal AgentError. */
 const SDK_API_MAX_RETRIES = 10;
+/** Session-cumulative usage per pi session, kept in memory: the trajectory
+ * recorder expects cumulative snapshots across resumed turns, and the SDK
+ * transcript file may still be buffered when the next turn starts. */
+const sessionUsage = new Map<string, AgentUsage>();
 const AGENT_SOURCE: Source = { module: "harness", file: "pi.ts", function: "executeAgent" };
 const LOAD_SOURCE: Source = { module: "harness", file: "pi.ts", function: "loadSdk" };
 const RUNTIME_SOURCE: Source = { module: "harness", file: "pi.ts", function: "createModelRuntime" };
@@ -645,7 +650,12 @@ function runPiAttempt(
       transcriptPath: artifact.transcriptPath,
     });
     const effectiveThinkingLevel = configuredThinkingLevel(session.session.thinkingLevel) ?? requestedThinkingLevel;
-    const accumulator: TurnAccumulator = { text: "" };
+    const priorUsage = sessionUsage.get(artifact.sessionId)
+      ?? cumulativeUsageFromTranscript(artifact.transcriptPath);
+    const accumulator: TurnAccumulator = {
+      text: "",
+      ...(priorUsage === undefined ? {} : { usage: priorUsage }),
+    };
     const unsubscribeRef: { current?: () => void } = {};
     // Steering v1: bind the live session to the channel when the installed
     // SDK exposes `steer`. Capability probe, not a harness-name branch — an
@@ -726,7 +736,18 @@ function runPiAttempt(
           );
         }),
       );
-    }).pipe(Effect.ensuring(cleanup));
+    }).pipe(Effect.ensuring(Effect.gen(function* () {
+      // The transcript is the durable usage evidence: when it already holds
+      // frames the live event stream missed (compaction, SDK-side retries),
+      // its sum is the session total. Emit it once so the recorder sees it.
+      const transcriptUsage = cumulativeUsageFromTranscript(artifact.transcriptPath);
+      if (transcriptUsage !== undefined) {
+        accumulator.usage = transcriptUsage;
+        eventRequest.onEvent?.({ type: "usage", usage: transcriptUsage });
+      }
+      if (accumulator.usage !== undefined) sessionUsage.set(artifact.sessionId, accumulator.usage);
+      yield* cleanup;
+    })));
     yield* TURN_LOG.info("agent.turn.completed", {
       outcome: "success",
       data: {

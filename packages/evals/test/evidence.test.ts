@@ -251,6 +251,22 @@ describe(" evidence and scorecard", () => {
     expect(assessment.accepted).toBe(false);
   });
 
+  it("accepts a grader-measured metric when the case does not require evidence", () => {
+    // The workflow-perf family measures runtime overhead with the grader's
+    // benchmark command; the workflow itself has no metric contract to record.
+    const graderMeasured = result({
+      artifact: { verified: true, value: 45 },
+      trace: { ...result().trace!, benchmarks: [] },
+    });
+    const assessment = assessCaseEvidence(graderMeasured, {
+      availability: allAvailable,
+      policy: { requireEvidence: false },
+    });
+    expect(assessment.issues.map((issue) => issue.code)).not.toContain("metric-measurement-missing");
+    expect(assessment.evidencePass).toBe(true);
+    expect(assessment.accepted).toBe(true);
+  });
+
   it("rejects a workflow metric whose direction disagrees with the eval case", () => {
     const current = result();
     const mismatched = result({

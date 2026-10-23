@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { AgentRequest } from "./agent-contract.js";
 import { AgentError, agentError } from "./errors.js";
 import {
@@ -61,6 +62,10 @@ interface PiSessionEvent {
 
 export interface TurnAccumulator {
   text: string;
+  /** Session-cumulative usage counters seen so far (prior turns included).
+   * The trajectory recorder expects cumulative snapshots, one stream per
+   * actor session; pi reports usage per API call, so this adapter sums. */
+  usage?: AgentUsage;
   error?: AgentError;
   /** Stop reason of the most recent assistant message. Used to detect a turn
    * that settled with a truncated (output-token-limit) final message. */
@@ -125,6 +130,65 @@ function isAssistantMessage(message: AgentMessage): boolean {
 function extractUsage(value: unknown): AgentUsage | undefined {
   const usage = asRecord(value);
   return usage === undefined ? undefined : usageFromFields(usage);
+}
+
+/** Usage fields that count tokens for one API call, and therefore add up. */
+const ADDITIVE_USAGE_FIELDS = [
+  "input",
+  "output",
+  "cacheRead",
+  "cacheWrite",
+  "cacheWrite1h",
+  "reasoning",
+  "totalTokens",
+] as const;
+
+/** Add one API call's usage to the running session total. Counters add up;
+ * context size, turn count and cost describe the latest call, so they are
+ * carried over rather than summed. */
+function addUsage(current: AgentUsage | undefined, next: AgentUsage): AgentUsage {
+  const total: Record<string, number> = {};
+  for (const field of ADDITIVE_USAGE_FIELDS) {
+    const before = current?.[field];
+    const after = next[field];
+    if (before === undefined && after === undefined) continue;
+    total[field] = (before ?? 0) + (after ?? 0);
+  }
+  const contextTokens = next.contextTokens ?? current?.contextTokens;
+  const turns = next.turns ?? current?.turns;
+  const cost = next.cost ?? current?.cost;
+  return {
+    ...total,
+    ...(contextTokens === undefined ? {} : { contextTokens }),
+    ...(turns === undefined ? {} : { turns }),
+    ...(cost === undefined ? {} : { cost }),
+  };
+}
+
+/** Seed the cumulative counters from a session transcript that a previous turn
+ * already wrote, so a resumed actor reports session totals, not turn totals. */
+export function cumulativeUsageFromTranscript(path: string | undefined): AgentUsage | undefined {
+  if (path === undefined) return undefined;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  let total: AgentUsage | undefined;
+  for (const line of raw.split("\n")) {
+    if (line.trim() === "") continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const message = asRecord(asRecord(record)?.message);
+    const usage = extractUsage(message?.usage) ?? extractUsage(asRecord(record)?.usage);
+    if (usage !== undefined) total = addUsage(total, usage);
+  }
+  return total;
 }
 
 export function bindEvents(
@@ -195,7 +259,13 @@ export function bindEvents(
         }
         emit({ type: "message_end", message });
         const usage = extractUsage(event.usage) ?? extractUsage(message.usage);
-        if (usage !== undefined) emit({ type: "usage", usage });
+        if (usage !== undefined) {
+          // One cumulative snapshot per API call: the recorder keeps the
+          // largest per attempt and differences against the actor's prior
+          // total, which needs running session counters.
+          accumulator.usage = addUsage(accumulator.usage, usage);
+          emit({ type: "usage", usage: accumulator.usage });
+        }
         const failure = messageFailure(message, attribution);
         if (failure !== undefined) {
           accumulator.error = failure;

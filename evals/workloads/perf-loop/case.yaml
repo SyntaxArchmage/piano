@@ -20,6 +20,9 @@ readout:
 metric:
   name: runtime_overhead_ms
   direction: lower
+acceptance:
+  requireEvidence: false
+
 tags:
   - tag: wall-clock
     weight: 3
