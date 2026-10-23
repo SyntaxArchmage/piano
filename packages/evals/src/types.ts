@@ -1,4 +1,5 @@
 import type { Effect as EffectType } from "effect/Effect";
+import type { TurnOutcome } from "@piano/base";
 import type { WorkflowTrajectoryEvaluation } from "./workflow-evaluator.js";
 
 /**
@@ -365,7 +366,7 @@ export interface CaseResult {
   group: string;
   dimensions?: EvalMatrixDimensions;
   /** Launch status for this case. */
-  status: "completed" | "failed" | "cancelled" | "skipped";
+  status: TurnOutcome | "skipped";
   /** Absolute path to the copied workspace mutated by the run. */
   workspaceDir: string;
   /** The real Piano run directory created by this trial. */

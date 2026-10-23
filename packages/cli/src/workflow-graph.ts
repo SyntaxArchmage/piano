@@ -135,6 +135,15 @@ export function parseWorkflowGraphSnapshot(value: unknown): WorkflowGraphSnapsho
 }
 
 type WorkflowGraphSnapshotReader = () => Promise<WorkflowGraphSnapshot | undefined>;
+
+/** Whether the run is at rest because it finished or a human stopped it. An
+ * absent status is treated as live: a partial or legacy snapshot must not put
+ * the graph to sleep. A failed run is deliberately not "at rest" — its graph
+ * shows the failure on the stage that produced it. */
+function isRestingStatus(status: RunLifecycleStatus | undefined): boolean {
+  return status === "completed" || status === "paused" || status === "cancelled";
+}
+
 type WorkflowGraphNodeStatus = "completed" | "running" | "failed" | "pending";
 
 interface PositionedNode {
@@ -361,7 +370,7 @@ function nodeStatus(stage: WorkflowGraphStage, snapshot: WorkflowGraphSnapshot |
   // absent status field (partial/legacy snapshot) is treated as live so the
   // graph behaves the same as before this fix for status-less snapshots.
   // A cancelled run is a human stop like paused: nothing is working anymore.
-  const terminal = snapshotStatus === "completed" || snapshotStatus === "paused" || snapshotStatus === "cancelled";
+  const terminal = isRestingStatus(snapshotStatus);
   const current = snapshot?.current;
   if (!terminal && current?.stageId === stage.id && current.status === "running") return "running";
   if (current?.stageId === stage.id && current.status === "failed") return "failed";
@@ -472,7 +481,7 @@ function displayDefinition(
     // all slots as failed when the map was active, pending otherwise; a live
     // run shows the active map's slots as running, others as pending.
     const snapshotStatus = snapshot?.status;
-    const terminal = snapshotStatus === "completed" || snapshotStatus === "paused" || snapshotStatus === "cancelled";
+    const terminal = isRestingStatus(snapshotStatus);
     const visualStatus: WorkflowGraphNodeStatus = terminal
       ? "completed"
       : snapshotStatus === "failed" && active ? "failed"
