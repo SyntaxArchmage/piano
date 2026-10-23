@@ -19,11 +19,10 @@ import type { AgentContinuation } from "@piano/harness";
  * document; the human-facing labels a monitor used to build from this object
  * had no reader, so they are gone. */
 export interface WorkflowProgressProjection {
-  /** Number of validated stage invocations accepted so far. */
-  readonly acceptedStages: number;
+  /** Number of validated stage invocations accepted so far. Nothing counts
+   * "completed" separately: an acceptance IS the completion. */
   readonly completedStages: number;
   readonly plannedStages: number;
-  readonly remainingStages: number;
   /** Static stage ids are workflow-owned, not worker-owned. Their planned
    * counts include loop/map expansion and completed counts come only from
    * accepted invocations. */
@@ -398,8 +397,6 @@ export function applyRunStatusRecord(
         status: "running",
         plannedStages: transition.plan.plannedStages,
         completedStages: carried?.completedStages ?? 0,
-        acceptedStages: carried?.acceptedStages ?? 0,
-        remainingStages: transition.plan.plannedStages - (carried?.acceptedStages ?? 0),
         stageCounts: carried?.stageCounts ?? emptyStageCounts(transition.plan),
         ...(mnemonic === undefined ? {} : { mnemonic }),
         jobs,
@@ -440,8 +437,6 @@ export function applyRunStatusRecord(
         ...next,
         plannedStages: projection?.plannedStages ?? next.plannedStages,
         completedStages: projection?.completedStages ?? next.completedStages,
-        acceptedStages: projection?.acceptedStages ?? next.acceptedStages,
-        remainingStages: projection?.remainingStages ?? next.remainingStages,
         stageCounts: projection?.stageCounts ?? next.stageCounts,
         invocationTime: accrueInto(next.invocationTime, transition.invocationId, accrueInvocationTime(
           next.invocationTime?.[transition.invocationId],

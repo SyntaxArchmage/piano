@@ -3,9 +3,9 @@
 // has finished, for the three shapes the user hits: one worker, fan-out
 // (multi worker), and a loop. Where the big suite pins per-shape mechanics
 // (ordering, handoffs, iteration actors), these tests pin only the end: the
-// effect settles, every planned worker ran exactly once, and progress.json
-// lands at remainingStages: 0. A workflow that "never ends after all workers
-// finish" fails here.
+// effect settles, every planned worker ran exactly once, and the state
+// document lands at completedStages === plannedStages. A workflow that "never
+// ends after all workers finish" fails here.
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -194,7 +194,7 @@ describe("workflow ends when its scripted workers finish", () => {
       expect(stages).toEqual(["respond"]);
       expect(result.stages.map((stage) => stage.id)).toEqual(["respond@root"]);
       expect(await readFinalProgress(session.runDir)).toMatchObject({
-        status: "completed", plannedStages: 1, completedStages: 1, remainingStages: 0,
+        status: "completed", plannedStages: 1, completedStages: 1,
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -224,7 +224,7 @@ describe("workflow ends when its scripted workers finish", () => {
       }));
       expect(stages).toEqual(["left", "right", "joined"]);
       expect(await readFinalProgress(session.runDir)).toMatchObject({
-        status: "completed", plannedStages: 3, completedStages: 3, remainingStages: 0,
+        status: "completed", plannedStages: 3, completedStages: 3,
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -260,7 +260,7 @@ describe("workflow ends when its scripted workers finish", () => {
         "tune.propose", "tune.report",
       ]);
       expect(await readFinalProgress(session.runDir)).toMatchObject({
-        status: "completed", plannedStages: 7, completedStages: 7, remainingStages: 0,
+        status: "completed", plannedStages: 7, completedStages: 7,
       });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -318,7 +318,6 @@ describe("workflow ends when its scripted workers finish", () => {
         status: "completed",
         plannedStages: 4,
         completedStages: 4,
-        remainingStages: 0,
         stageCounts: {
           "tune.propose": { planned: 1, completed: 1 },
           "tune.report": { planned: 1, completed: 1 },

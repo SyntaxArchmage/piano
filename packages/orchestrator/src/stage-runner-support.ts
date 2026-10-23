@@ -211,10 +211,8 @@ export function workflowProgressProjection(
     }]),
   );
   const base = {
-    acceptedStages,
     completedStages: acceptedStages,
     plannedStages: effectivePlan.plannedStages,
-    remainingStages: Math.max(0, effectivePlan.plannedStages - acceptedStages),
     stageCounts,
   };
   const loopFrame = loopFrames(invocation.frames).at(-1);

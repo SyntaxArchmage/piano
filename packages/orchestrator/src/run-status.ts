@@ -134,9 +134,9 @@ export interface RunStatus {
   readonly turns?: readonly RunTurn[];
   /** The plan this run was given, and how much of it is done. */
   readonly plannedStages: number;
+  /** Accepted invocations so far: acceptance is the completion, so there is
+   * no second counter to keep in step. */
   readonly completedStages: number;
-  readonly acceptedStages: number;
-  readonly remainingStages: number;
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
   /** Invocation id -> cumulative worker time, so the footer can show a stage's
    * accumulated duration without replaying the events. */
@@ -181,8 +181,6 @@ export function emptyRunStatus(runId: string, timestamp: string): RunStatus {
     promptLength: 0,
     plannedStages: 0,
     completedStages: 0,
-    acceptedStages: 0,
-    remainingStages: 0,
     stageCounts: {},
     jobs: [],
     actors: {},

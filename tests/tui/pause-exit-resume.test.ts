@@ -96,8 +96,6 @@ describe("half-way stop: Escape, /exit, and /resume in one UX", () => {
         status: "paused",
         plannedStages: 1,
         completedStages: 0,
-        acceptedStages: 0,
-        remainingStages: 1,
         stageCounts: { agent: { planned: 1, completed: 0 } },
       })}\n`);
       const resumeResult: TuiResumeResult = {
