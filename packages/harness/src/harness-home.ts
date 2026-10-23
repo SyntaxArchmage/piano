@@ -1,8 +1,8 @@
+import { FileSystem } from "@effect/platform";
+import { writeFileAtomic } from "@piano/base";
 import { Data, Effect } from "effect";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   resolveHarnessConfig,
@@ -23,6 +23,14 @@ export class HarnessHomeError extends Data.TaggedError("HarnessHomeError")<{
   readonly message: string;
   readonly cause?: unknown;
 }> {}
+
+/** The one error a failed generation step carries, whatever step failed. */
+function homeError(cause: unknown): HarnessHomeError {
+  return new HarnessHomeError({
+    message: "unable to generate the Piano-owned harness configuration home",
+    cause,
+  });
+}
 
 export interface HarnessHomeOptions {
   readonly configs?: Partial<Record<HarnessName, ResolvedHarnessConfig>>;
@@ -45,18 +53,22 @@ function defaultRoot(): string {
   return process.env.PIANO_HARNESS_HOME_ROOT ?? join(homedir(), ".piano", "harness");
 }
 
-/** Replace a generated file atomically. The directory is fixed and shared, so
- * concurrent missions regenerate the same file at once — including several in one
- * process, which is the normal case for parallel workers. They write identical
- * bytes, because the content is a pure function of Piano's config, and each writes
- * through its own staging name so no writer can rename another's file out from
- * under it. The rename makes the switch atomic, so no harness reads a partial
- * file. */
-async function writeGenerated(directory: string, name: string, contents: string): Promise<void> {
-  const target = join(directory, name);
-  const staging = `${target}.tmp-${randomUUID()}`;
-  await writeFile(staging, contents, { encoding: "utf8", mode: 0o600 });
-  await rename(staging, target);
+/** Replace a generated file atomically, through the repository's one writer.
+ * The directory is fixed and shared, so concurrent missions regenerate the
+ * same file at once — including several in one process, which is the normal case
+ * for parallel workers. They write identical bytes, because the content is a
+ * pure function of Piano's config, and each write gets its own staging name, so
+ * no writer can rename another's file out from under it. `auth.json` is a
+ * credential-bearing file, so its staging bytes are created `0o600`. */
+function writeGenerated(
+  directory: string,
+  name: string,
+  contents: string,
+): Effect.Effect<void, HarnessHomeError, FileSystem.FileSystem> {
+  return writeFileAtomic(join(directory, name), contents, {
+    mode: 0o600,
+    mapError: homeError,
+  });
 }
 
 /** The dsh plugin Piano ships, read from beside this module.
@@ -66,8 +78,14 @@ async function writeGenerated(directory: string, name: string, contents: string)
  * instead of generating them keeps the plugin ordinary, lintable JavaScript
  * with syntax highlighting and a real module graph, which a string template in
  * this file would not be. */
-async function readDshResumeRunner(): Promise<string> {
-  return readFile(fileURLToPath(new URL("./dsh-resume-runner.mjs", import.meta.url)), "utf8");
+function readDshResumeRunner(): Effect.Effect<string, HarnessHomeError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = fileURLToPath(new URL("./dsh-resume-runner.mjs", import.meta.url));
+    return yield* fileSystem.readFileString(path, "utf8").pipe(
+      Effect.mapError(homeError),
+    );
+  });
 }
 
 /** Build Pi's model registry from Piano's config alone, so every id Piano claims
@@ -250,81 +268,91 @@ function dshCatalog(config: ResolvedHarnessConfig, models: readonly string[]): r
   return [...new Set([...models, ...(config.model === undefined ? [] : [config.model])])];
 }
 
-async function prepare(options: HarnessHomeOptions): Promise<HarnessHomes> {
-  const root = options.rootDir ?? defaultRoot();
-  const paths = {
-    pi: join(root, "pi"),
-    claude: join(root, "claude"),
-    dsh: join(root, "dsh"),
-  } as const;
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  for (const directory of Object.values(paths)) {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-  }
-  const models = options.models ?? resolveSupportedModels();
-  const piConfig = options.configs?.pi ?? resolveHarnessConfig("pi");
-  // Pi resolves an auth path out of its config directory. Piano applies its own
-  // credential — in-process for the SDK adapter, on argv for `pi-cli` — so the
-  // file exists only to keep that lookup from hitting a missing path.
-  await writeGenerated(paths.pi, "auth.json", "{}\n");
-  await writeGenerated(paths.pi, "models.json", piRegistry(piConfig, models));
-  const dshConfig = options.configs?.dsh ?? resolveHarnessConfig("dsh");
-  const codexConfig = options.configs?.codex ?? resolveHarnessConfig("codex");
-  await writeGenerated(paths.dsh, "settings.yaml", dshSettings(dshConfig, models));
-  const patchDirectory = join(paths.dsh, "patches");
-  await mkdir(patchDirectory, { recursive: true, mode: 0o700 });
-  await writeGenerated(
-    patchDirectory,
-    basename(dshWebSearchOffPatchPath(paths.dsh)),
-    dshWebSearchOffPatch(),
-  );
-  // DSH resolves the overlay's relative module name from the patch directory;
-  // the reference points back into the profile tree where dependencies live.
-  await writeGenerated(
-    patchDirectory,
-    basename(dshResumeOverlayPath(paths.dsh)),
-    dshResumeOverlay(),
-  );
-  const resumeRunner = dshResumeRunnerPath(paths.dsh);
-  await mkdir(dirname(resumeRunner), { recursive: true, mode: 0o700 });
-  await writeGenerated(
-    dirname(resumeRunner),
-    basename(resumeRunner),
-    await readDshResumeRunner(),
-  );
-  // One selection overlay per reachable model. Stale files from a shrunken model
-  // list are left alone rather than swept: the catalog in settings.yaml is what
-  // makes a model resolvable, so a leftover overlay selects a model dsh then
-  // rejects, while deleting the directory could pull a file out from under a
-  // concurrently starting mission.
-  if (dshConfig.provider !== undefined) {
-    for (const model of dshCatalog(dshConfig, models)) {
-      await writeGenerated(
-        patchDirectory,
-        // Derived from the shared helper, because the launcher argument the
-        // subprocess adapter builds must name exactly this file.
-        basename(dshModelPatchPath(paths.dsh, model)),
-        dshModelPatch(dshConfig.provider, model),
+function prepare(
+  options: HarnessHomeOptions,
+): Effect.Effect<HarnessHomes, HarnessHomeError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const root = options.rootDir ?? defaultRoot();
+    const paths = {
+      pi: join(root, "pi"),
+      claude: join(root, "claude"),
+      dsh: join(root, "dsh"),
+    } as const;
+    const directories = [
+      root,
+      ...Object.values(paths),
+      join(paths.dsh, "patches"),
+      dirname(dshResumeRunnerPath(paths.dsh)),
+    ];
+    for (const directory of directories) {
+      yield* fileSystem.makeDirectory(directory, { recursive: true, mode: 0o700 }).pipe(
+        Effect.mapError(homeError),
       );
     }
-  }
-  // `claude` needs no generated file yet, but it still gets a directory: the
-  // point is to keep the harness away from the user's install, not to configure
-  // it. Everything Piano sets for Claude already travels as environment.
-  return {
-    env: {
-      PI_CODING_AGENT_DIR: paths.pi,
-      CLAUDE_CONFIG_DIR: paths.claude,
-      DSH_HOME: paths.dsh,
-      ...(dshConfig.toolsMode === undefined ? {} : { DSH_TOOLS_MODE: dshConfig.toolsMode }),
-      // Codex stores authentication and model-provider configuration in
-      // CODEX_HOME. Preserve the native home by default; an explicit override
-      // is still forwarded without copying or rewriting that directory.
-      ...(codexConfig.homePath === undefined ? {} : { CODEX_HOME: codexConfig.homePath }),
-    },
-    agentOptions: { agentDir: paths.pi },
-    paths,
-  };
+    const models = options.models ?? resolveSupportedModels();
+    const piConfig = options.configs?.pi ?? resolveHarnessConfig("pi");
+    // Pi resolves an auth path out of its config directory. Piano applies its own
+    // credential — in-process for the SDK adapter, on argv for `pi-cli` — so the
+    // file exists only to keep that lookup from hitting a missing path.
+    yield* writeGenerated(paths.pi, "auth.json", "{}\n");
+    yield* writeGenerated(paths.pi, "models.json", piRegistry(piConfig, models));
+    const dshConfig = options.configs?.dsh ?? resolveHarnessConfig("dsh");
+    const codexConfig = options.configs?.codex ?? resolveHarnessConfig("codex");
+    yield* writeGenerated(paths.dsh, "settings.yaml", dshSettings(dshConfig, models));
+    const patchDirectory = join(paths.dsh, "patches");
+    yield* writeGenerated(
+      patchDirectory,
+      basename(dshWebSearchOffPatchPath(paths.dsh)),
+      dshWebSearchOffPatch(),
+    );
+    // DSH resolves the overlay's relative module name from the patch directory;
+    // the reference points back into the profile tree where dependencies live.
+    yield* writeGenerated(
+      patchDirectory,
+      basename(dshResumeOverlayPath(paths.dsh)),
+      dshResumeOverlay(),
+    );
+    const resumeRunner = dshResumeRunnerPath(paths.dsh);
+    yield* writeGenerated(
+      dirname(resumeRunner),
+      basename(resumeRunner),
+      yield* readDshResumeRunner(),
+    );
+    // One selection overlay per reachable model. Stale files from a shrunken model
+    // list are left alone rather than swept: the catalog in settings.yaml is what
+    // makes a model resolvable, so a leftover overlay selects a model dsh then
+    // rejects, while deleting the directory could pull a file out from under a
+    // concurrently starting mission.
+    if (dshConfig.provider !== undefined) {
+      for (const model of dshCatalog(dshConfig, models)) {
+        yield* writeGenerated(
+          patchDirectory,
+          // Derived from the shared helper, because the launcher argument the
+          // subprocess adapter builds must name exactly this file.
+          basename(dshModelPatchPath(paths.dsh, model)),
+          dshModelPatch(dshConfig.provider, model),
+        );
+      }
+    }
+    // `claude` needs no generated file yet, but it still gets a directory: the
+    // point is to keep the harness away from the user's install, not to configure
+    // it. Everything Piano sets for Claude already travels as environment.
+    return {
+      env: {
+        PI_CODING_AGENT_DIR: paths.pi,
+        CLAUDE_CONFIG_DIR: paths.claude,
+        DSH_HOME: paths.dsh,
+        ...(dshConfig.toolsMode === undefined ? {} : { DSH_TOOLS_MODE: dshConfig.toolsMode }),
+        // Codex stores authentication and model-provider configuration in
+        // CODEX_HOME. Preserve the native home by default; an explicit override
+        // is still forwarded without copying or rewriting that directory.
+        ...(codexConfig.homePath === undefined ? {} : { CODEX_HOME: codexConfig.homePath }),
+      },
+      agentOptions: { agentDir: paths.pi },
+      paths,
+    };
+  });
 }
 
 /** Generate the harness configuration Piano owns, and hand back the pointers that
@@ -347,12 +375,6 @@ async function prepare(options: HarnessHomeOptions): Promise<HarnessHomes> {
  * missing, `doctor` reports it rather than silently inheriting. */
 export function prepareHarnessHomes(
   options: HarnessHomeOptions = {},
-): Effect.Effect<HarnessHomes, HarnessHomeError> {
-  return Effect.tryPromise({
-    try: () => prepare(options),
-    catch: (cause) => new HarnessHomeError({
-      message: "unable to generate the Piano-owned harness configuration home",
-      cause,
-    }),
-  });
+): Effect.Effect<HarnessHomes, HarnessHomeError, FileSystem.FileSystem> {
+  return prepare(options);
 }

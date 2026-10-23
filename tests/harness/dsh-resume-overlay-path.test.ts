@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,7 +14,9 @@ describe("dsh resume overlay module resolution", () => {
   it("resolves the relative plugin name to the generated resume runner", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-dsh-resume-overlay-"));
     try {
-      const homes = await Effect.runPromise(prepareHarnessHomes({ rootDir: root, models: [] }));
+      const homes = await Effect.runPromise(
+        prepareHarnessHomes({ rootDir: root, models: [] }).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
       const overlayPath = dshResumeOverlayPath(homes.paths.dsh);
       const overlay = await readFile(overlayPath, "utf8");
       const moduleName = /^\s+name:\s+(\S+)\s*$/mu.exec(overlay)?.[1];

@@ -34,7 +34,8 @@ describe.skipIf(!runReal)(" real pi steering", () => {
       // resolves the model from Piano's own registry, regenerated from this
       // config, instead of the developer's native ~/.pi install.
       const homes = await Effect.runPromise(
-        prepareHarnessHomes({ rootDir: join(root, "harness"), configs: { pi: config } }),
+        prepareHarnessHomes({ rootDir: join(root, "harness"), configs: { pi: config } })
+          .pipe(Effect.provide(NodeFileSystem.layer)),
       );
       const channel = createSteeringChannel();
       const events: AgentEvent[] = [];

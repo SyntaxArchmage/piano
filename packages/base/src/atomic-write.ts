@@ -96,6 +96,10 @@ export function writeFileAtomic<E>(
      * the staging file freshly would otherwise turn a leftover from a crashed
      * run into a failure. */
     readonly exclusiveStaging?: boolean;
+    /** Permission bits for the staging file, so a credential-bearing document
+     * never exists world-readable even for the instant between write and
+     * rename. Omitted means the platform default. */
+    readonly mode?: number;
     /** Install through {@link installStagingFile} rather than a bare rename. */
     readonly installWithBackup?: boolean;
   },
@@ -111,7 +115,13 @@ export function writeFileAtomic<E>(
         "write",
       ));
     }
-    const writeOptions = options.exclusiveStaging === true ? { flag: "wx" as const } : undefined;
+    // Both flags are optional; when neither is set the platform defaults apply.
+    const writeOptions = options.exclusiveStaging === true || options.mode !== undefined
+      ? {
+        ...(options.exclusiveStaging === true ? { flag: "wx" as const } : {}),
+        ...(options.mode === undefined ? {} : { mode: options.mode }),
+      }
+      : undefined;
     yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
       Effect.mapError((cause) => options.mapError(cause, "mkdir")),
     );

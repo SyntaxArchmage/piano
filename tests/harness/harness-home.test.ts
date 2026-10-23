@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
@@ -75,9 +76,10 @@ describe("Piano-owned harness configuration home", () => {
           dsh: await readFile(join(homes.paths.dsh, "settings.yaml"), "utf8"),
           claudeEntries: await readdir(homes.paths.claude),
           mode: (await stat(homes.paths.pi)).mode & 0o777,
+          authMode: (await stat(join(homes.paths.pi, "auth.json"))).mode & 0o777,
         }),
         catch: (cause) => cause,
-      }))));
+      }))).pipe(Effect.provide(NodeFileSystem.layer)));
 
       // Every harness is aimed at Piano's home through its own documented
       // pointer: an option for the in-process SDK, environment for the rest.
@@ -87,6 +89,9 @@ describe("Piano-owned harness configuration home", () => {
       expect(observed.env.DSH_HOME).toBe(observed.paths.dsh);
       expect(observed.env.CODEX_HOME).toBe(join(root, "user-codex"));
       expect(observed.mode).toBe(0o700);
+      // The generated credential file keeps the restrictive mode the
+      // hand-rolled writer set before it went through base's atomic writer.
+      expect(observed.authMode).toBe(0o600);
 
       // Pi's registry is Piano's list under Piano's endpoint, in config order.
       const registry = JSON.parse(observed.registry) as {
@@ -149,7 +154,7 @@ describe("Piano-owned harness configuration home", () => {
           },
         },
         models: ["deepseek-v4-flash", "vendor/namespaced-model"],
-      }));
+      }).pipe(Effect.provide(NodeFileSystem.layer)));
       const settings = await readFile(join(homes.paths.dsh, "settings.yaml"), "utf8");
 
       // One credential serves every model on a pi-ai route, so the catalog is
@@ -198,7 +203,8 @@ describe("Piano-owned harness configuration home", () => {
     const root = await mkdtemp(join(tmpdir(), "piano-harness-home-resume-"));
     const homeRoot = join(root, "home");
     try {
-      const homes = await Effect.runPromise(prepareHarnessHomes({ rootDir: homeRoot, models: [] }));
+      const homes = await Effect.runPromise(prepareHarnessHomes({ rootDir: homeRoot, models: [] })
+        .pipe(Effect.provide(NodeFileSystem.layer)));
 
       // Replaces exactly one row: the runner that mints the session id. The
       // startup row stays mounted, so the task still arrives through the app's
@@ -233,7 +239,7 @@ describe("Piano-owned harness configuration home", () => {
           try: () => readFile(join(homes.paths.pi, "models.json"), "utf8"),
           catch: (cause) => cause,
         })),
-      ));
+      ).pipe(Effect.provide(NodeFileSystem.layer)));
     try {
       const configured = await read({
         rootDir: homeRoot,
@@ -280,7 +286,9 @@ describe("Piano-owned harness configuration home", () => {
     };
     try {
       const homes = await Promise.all(
-        Array.from({ length: 4 }, () => Effect.runPromise(prepareHarnessHomes(options))),
+        Array.from({ length: 4 }, () => Effect.runPromise(
+          prepareHarnessHomes(options).pipe(Effect.provide(NodeFileSystem.layer)),
+        )),
       );
       // A fixed home means every mission resolves to the same directory, and
       // repeated preparation converges instead of accumulating.
