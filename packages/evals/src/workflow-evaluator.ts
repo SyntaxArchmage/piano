@@ -1,7 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
 import { Effect } from "effect";
+import { contractSnapshotPath, evalMetricsDir, evalMetricsPath } from "@piano/base";
 import {
   BenchmarkRecorder,
   DurationRecorder,
@@ -58,7 +58,7 @@ export interface WorkflowTrajectoryEvaluation {
 
 export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluationInput, WorkflowTrajectoryEvaluation> {
   evaluate(input: WorkflowEvaluationInput) {
-    const metricsDir = join(input.runDir, "eval-metrics");
+    const metricsDir = evalMetricsDir(input.runDir);
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       // The recorder streams are the evidence. A run that never opened the
@@ -91,7 +91,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
       // The selection stream is tournament-only: its absence is normal, but a
       // declared stream that fails to read is an evidence issue like the rest.
       const selectionRecorder = new SelectionRecorder(input.runDir);
-      const selectionPath = join(input.runDir, "eval-metrics", "selection.jsonl");
+      const selectionPath = evalMetricsPath(input.runDir, "selection.jsonl");
       const hasSelectionStream = yield* fileSystem.exists(selectionPath).pipe(
         Effect.mapError((cause) => new TrajectoryEvaluationError(selectionPath, String(cause))),
       );
@@ -121,7 +121,7 @@ export class WorkflowEvaluator implements TrajectoryEvaluator<WorkflowEvaluation
         if (mismatches > 0) issues.push(`${stream}: ${mismatches} record(s) belong to another execution`);
       }
       for (const digest of new Set(benchmarks.map((record) => record.contract.digest))) {
-        const snapshotPath = join(input.runDir, "contracts", `${digest}.json`);
+        const snapshotPath = contractSnapshotPath(input.runDir, digest);
         const snapshot = yield* fileSystem.readFileString(snapshotPath).pipe(Effect.either);
         if (snapshot._tag === "Left") {
           issues.push(`benchmark: contract snapshot ${digest} is missing or unreadable`);

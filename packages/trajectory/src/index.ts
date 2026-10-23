@@ -23,7 +23,6 @@ export {
   defaultTrajectoryRecorders,
   WorkflowTrajectory,
   type WorkflowTrajectorySnapshot,
-  type WorkflowTrajectoryStatus,
   type WorkflowTrajectoryStream,
 } from "./workflow-trajectory.js";
 export type {

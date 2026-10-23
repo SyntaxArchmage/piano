@@ -29,6 +29,7 @@
 //     attempts, and the run's own terminal comes from outside the stream
 //     through `markTerminal`.
 
+import type { TurnOutcome } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
 
 /** Cumulative statistics for one run. Token fields keep the LATEST provider
@@ -50,7 +51,7 @@ export interface RunStats {
   /** The prompt's own outcome, folded in by `markTerminal` — never inferred
    * from a turn ending, which says nothing about the run. Absent while the run
    * is live, so this is also what "the run is over" reads off. */
-  readonly terminal?: "completed" | "failed" | "cancelled";
+  readonly terminal?: TurnOutcome;
 }
 
 /** Initial run state: everything zero, nothing terminal. */
@@ -117,7 +118,7 @@ export function applyRunStat(input: RunStats, event: AgentEvent): RunStats {
  * outcome taps; success comes the same way, so all three land in one field. */
 export function markTerminal(
   input: RunStats,
-  terminal: "completed" | "failed" | "cancelled",
+  terminal: TurnOutcome,
 ): RunStats {
   return { ...input, terminal };
 }

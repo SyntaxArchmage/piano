@@ -35,7 +35,7 @@ describe("WorkflowEvaluator", () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-evaluator-"));
     await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await writeFile(join(runDir, "status.json"), JSON.stringify({ version: 1, runId: "eval-run", status: "completed", updatedAt: "2026-09-02T00:00:00.000Z" }));
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ runId: "eval-run", status: "completed", updatedAt: "2026-09-02T00:00:00.000Z" }));
     const snapshot = '{"version":1,"id":"metric"}\n';
     const digest = createHash("sha256").update(snapshot).digest("hex");
     await mkdir(join(runDir, "contracts"), { recursive: true });
@@ -84,7 +84,7 @@ describe("WorkflowEvaluator", () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-evaluator-series-"));
     await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await writeFile(join(runDir, "status.json"), JSON.stringify({ version: 1, runId: "eval-run", status: "completed", updatedAt: "2026-09-02T00:00:00.000Z" }));
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ runId: "eval-run", status: "completed", updatedAt: "2026-09-02T00:00:00.000Z" }));
     const snapshot = '{"version":1,"id":"metric"}\n';
     const digest = createHash("sha256").update(snapshot).digest("hex");
     await mkdir(join(runDir, "contracts"), { recursive: true });
@@ -125,7 +125,7 @@ describe("WorkflowEvaluator", () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-workflow-evaluator-selection-"));
     await mkdir(join(runDir, "system-log"), { recursive: true });
     roots.push(runDir);
-    await writeFile(join(runDir, "status.json"), JSON.stringify({ version: 1, runId: "eval-run", status: "completed", updatedAt: "2026-09-02T00:00:00.000Z" }));
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ runId: "eval-run", status: "completed", updatedAt: "2026-09-02T00:00:00.000Z" }));
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.observe({
       type: "selection",

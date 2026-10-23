@@ -21,7 +21,6 @@ async function writeRun(root: string, runId: string, state?: Record<string, unkn
 
 function state(fields: Record<string, unknown>): Record<string, unknown> {
   return {
-    version: 1,
     updatedAt: "2026-09-01T00:00:00.000Z",
     status: "completed",
     ...fields,

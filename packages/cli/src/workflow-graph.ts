@@ -9,6 +9,7 @@ import { RST, type PianoTheme } from "./theme.js";
 import { detectSixelSupport, encodeSixelPng } from "./sixel.js";
 import { formatCompactDuration } from "./duration.js";
 import { isRecord } from "@piano/logging";
+import { RUN_LIFECYCLE_STATUSES, type InvocationStatus, type RunLifecycleStatus } from "@piano/base";
 
 interface WorkflowGraphStage {
   readonly id: string;
@@ -59,10 +60,10 @@ interface WorkflowGraphInvocationTime {
 export interface WorkflowGraphSnapshot {
   readonly plannedStages?: number;
   readonly completedStages?: number;
-  readonly status?: "running" | "completed" | "failed" | "paused" | "cancelled";
+  readonly status?: RunLifecycleStatus;
   readonly current?: {
     readonly stageId?: string;
-    readonly status?: "running" | "accepted" | "failed";
+    readonly status?: InvocationStatus;
   };
   readonly stageCounts?: Readonly<Record<string, {
     readonly planned?: number;
@@ -72,8 +73,8 @@ export interface WorkflowGraphSnapshot {
   readonly invocationTime?: Readonly<Record<string, WorkflowGraphInvocationTime>>;
 }
 
-const GRAPH_STATUSES = new Set(["running", "completed", "failed", "paused", "cancelled"]);
-const CURRENT_STATUSES = new Set(["running", "accepted", "failed"]);
+const GRAPH_STATUSES: ReadonlySet<string> = RUN_LIFECYCLE_STATUSES;
+const CURRENT_STATUSES: ReadonlySet<string> = new Set<InvocationStatus>(["running", "accepted", "failed"]);
 
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -134,6 +135,15 @@ export function parseWorkflowGraphSnapshot(value: unknown): WorkflowGraphSnapsho
 }
 
 type WorkflowGraphSnapshotReader = () => Promise<WorkflowGraphSnapshot | undefined>;
+
+/** Whether the run is at rest because it finished or a human stopped it. An
+ * absent status is treated as live: a partial or legacy snapshot must not put
+ * the graph to sleep. A failed run is deliberately not "at rest" — its graph
+ * shows the failure on the stage that produced it. */
+function isRestingStatus(status: RunLifecycleStatus | undefined): boolean {
+  return status === "completed" || status === "paused" || status === "cancelled";
+}
+
 type WorkflowGraphNodeStatus = "completed" | "running" | "failed" | "pending";
 
 interface PositionedNode {
@@ -360,7 +370,7 @@ function nodeStatus(stage: WorkflowGraphStage, snapshot: WorkflowGraphSnapshot |
   // absent status field (partial/legacy snapshot) is treated as live so the
   // graph behaves the same as before this fix for status-less snapshots.
   // A cancelled run is a human stop like paused: nothing is working anymore.
-  const terminal = snapshotStatus === "completed" || snapshotStatus === "paused" || snapshotStatus === "cancelled";
+  const terminal = isRestingStatus(snapshotStatus);
   const current = snapshot?.current;
   if (!terminal && current?.stageId === stage.id && current.status === "running") return "running";
   if (current?.stageId === stage.id && current.status === "failed") return "failed";
@@ -471,7 +481,7 @@ function displayDefinition(
     // all slots as failed when the map was active, pending otherwise; a live
     // run shows the active map's slots as running, others as pending.
     const snapshotStatus = snapshot?.status;
-    const terminal = snapshotStatus === "completed" || snapshotStatus === "paused" || snapshotStatus === "cancelled";
+    const terminal = isRestingStatus(snapshotStatus);
     const visualStatus: WorkflowGraphNodeStatus = terminal
       ? "completed"
       : snapshotStatus === "failed" && active ? "failed"

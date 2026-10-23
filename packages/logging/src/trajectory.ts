@@ -1,6 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { join } from "node:path";
+import { streamPathCandidates, trajectoryStreamPath } from "@piano/base";
+import type { TurnOutcome } from "@piano/base";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
 import { appendJsonlLine, parseRunStreamLines } from "./jsonl.js";
 
@@ -8,7 +9,7 @@ import { appendJsonlLine, parseRunStreamLines } from "./jsonl.js";
  * conversation turn by turn instead of as one flat event stream. */
 export interface TrajectoryTurn {
   readonly prompt: string;
-  readonly status: "completed" | "failed" | "cancelled";
+  readonly status: TurnOutcome;
   /** Cumulative `events` length after this turn, measured on the merged and
    * compacted array, so replay slices `[turns[i-1].eventCount, turns[i].eventCount)`.
    * Per-turn deltas would not be stable: `compactTrajectoryEvents` dedups `usage`
@@ -21,7 +22,7 @@ export interface TrajectoryDocument {
   readonly version: 1;
   readonly runId: string;
   readonly updatedAt: string;
-  readonly status: "completed" | "failed" | "cancelled";
+  readonly status: TurnOutcome;
   readonly promptLength: number;
   readonly events: readonly unknown[];
   readonly sessionId?: string;
@@ -72,7 +73,7 @@ export interface TrajectoryStreamRecord {
   readonly timestamp: string;
   /** Prompt text, when this write closed a turn. */
   readonly prompt?: string;
-  readonly status?: "completed" | "failed" | "cancelled";
+  readonly status?: TurnOutcome;
   readonly promptLength?: number;
   readonly events: readonly unknown[];
   readonly sessionId?: string;
@@ -83,15 +84,12 @@ export interface TrajectoryStreamRecord {
   readonly workspaceCwd?: string;
 }
 
-/** The run's trajectory stream, beside the state document that describes it. */
-export function trajectoryStreamPath(runDir: string): string {
-  return join(runDir, "system-log", "trajectory.jsonl");
-}
+export { trajectoryStreamPath };
 
 /** Read candidates for the trajectory stream: current layout first, legacy
  * second, so runs recorded before the directory split stay replayable. */
 export function trajectoryStreamPathCandidates(runDir: string): readonly string[] {
-  return [trajectoryStreamPath(runDir), join(runDir, "trajectory.jsonl")];
+  return streamPathCandidates(runDir, "trajectory.jsonl");
 }
 
 /** Append one record to the trajectory stream beside a document path.

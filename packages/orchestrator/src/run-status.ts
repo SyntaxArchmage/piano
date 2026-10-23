@@ -15,9 +15,14 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { join } from "node:path";
 import { parseJsonRecord, parseTrajectory, trajectoryStreamPathCandidates, type TrajectoryDocument } from "@piano/logging";
-import { writeFileAtomic } from "./atomic-write.js";
+import {
+  runStatusPath,
+  writeFileAtomic,
+  type JobOutcome,
+  type RunLifecycleStatus,
+  type TurnOutcome,
+} from "@piano/base";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 
 import {
@@ -72,7 +77,7 @@ export interface RunJob {
   /** The verdict of a job that ended, kept for history and for finding the
    * slots a restart abandoned. Absent while the job is the run's live or
    * paused one. */
-  readonly outcome?: "completed" | "failed" | "restarted";
+  readonly outcome?: JobOutcome;
   /** Invocations accepted across every span of this job — what a continue of
    * this job skips. */
   readonly accepted: readonly RunAcceptedInvocation[];
@@ -100,16 +105,15 @@ export function nextJobOrdinal(jobs: readonly RunJob[]): number {
  * what the replay does. The view does not carry it. */
 export interface RunTurn {
   readonly prompt: string;
-  readonly status: "completed" | "failed" | "cancelled";
+  readonly status: TurnOutcome;
 }
 
 /** The run's state: identity, lifecycle status, error, and the job/actor
  * tables — everything a reader asks for, in one document. */
 export interface RunStatus {
-  readonly version: 1;
   readonly runId: string;
   readonly updatedAt: string;
-  readonly status: "running" | "completed" | "failed" | "paused" | "cancelled";
+  readonly status: RunLifecycleStatus;
   readonly error?: unknown;
   /** Human-assigned run name (set via the TUI `/rename` command). */
   readonly name?: string;
@@ -128,9 +132,9 @@ export interface RunStatus {
   readonly turns?: readonly RunTurn[];
   /** The plan this run was given, and how much of it is done. */
   readonly plannedStages: number;
+  /** Accepted invocations so far: acceptance is the completion, so there is
+   * no second counter to keep in step. */
   readonly completedStages: number;
-  readonly acceptedStages: number;
-  readonly remainingStages: number;
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
   /** Invocation id -> cumulative worker time, so the footer can show a stage's
    * accumulated duration without replaying the events. */
@@ -146,9 +150,7 @@ export interface RunStatus {
   readonly actors: Readonly<Record<string, ResumeActorState>>;
 }
 
-export function runStatusPath(runDir: string): string {
-  return join(runDir, "status.json");
-}
+export { runStatusPath };
 
 /** The state document's trajectory-derived fields. One projection, so the
  * bootstrap fold and the per-write refresh cannot drift. */
@@ -170,15 +172,12 @@ function trajectoryStatusFields(trajectory: TrajectoryDocument): Partial<RunStat
  * invocations, stage counts) is written as the run schedules. */
 export function emptyRunStatus(runId: string, timestamp: string): RunStatus {
   return {
-    version: 1,
     runId,
     updatedAt: timestamp,
     status: "running",
     promptLength: 0,
     plannedStages: 0,
     completedStages: 0,
-    acceptedStages: 0,
-    remainingStages: 0,
     stageCounts: {},
     jobs: [],
     actors: {},
@@ -277,7 +276,6 @@ export function writeRunStatus(
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return writeFileAtomic(path, `${JSON.stringify(status, null, 2)}\n`, {
-    temporaryPath: () => `${path}.tmp-${process.pid}`,
     mapError: (cause, step) => workflowError("schedule", path, `status ${step}: ${errorMessage(cause)}`),
   });
 }

@@ -91,9 +91,9 @@ import type { TrajectoryRecordContext, WorkflowObservation, WorkflowTrajectory }
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 
 /** The mutable slice of an execution the runner advances. Kept as an object
- * because the runner mutates it and the executor reads the totals back. */
+ * because the runner mutates it and the executor seeds it on a continue. The
+ * per-stage counts are the only counter: their sum is the accepted total. */
 export interface StageRunnerCounters {
-  acceptedStageCount: number;
   readonly completedByStage: Map<string, number>;
 }
 
@@ -607,11 +607,6 @@ export function executeStage(
     while (true) {
       const attemptObservations: WorkflowObservation[] = [];
       const loopFrame = loopFrames(frames).at(-1);
-      const mapFrame = mapFrames(frames).at(-1);
-      const mapRegion = mapFrame === undefined
-        ? undefined
-        : compiled.regions.find((region) => region.id === mapFrame.regionId);
-      const currentScope = frames.at(-1)?.regionId;
       const instanceId = runtimeInstanceId(frames);
       // This snapshot is a convenience monitor view. A filesystem issue
       // must not hide a real worker result; the canonical stage evidence
@@ -627,9 +622,6 @@ export function executeStage(
         // apart while still summing a loop's sequential iterations.
         ...(instanceId === undefined ? {} : { instanceId }),
         ...(loopFrame === undefined ? {} : { iteration: loopFrame.iteration }),
-        ...(mapFrame === undefined ? {} : { mapSlot: mapFrame.slot }),
-        ...(mapRegion?.count === undefined ? {} : { mapSlots: mapRegion.count }),
-        ...(currentScope === undefined ? {} : { scope: currentScope }),
         ...(repairError === undefined ? {} : { error: repairError }),
       })).pipe(Effect.catchAll(() => Effect.void));
       const resultPath = validation === undefined
@@ -1076,12 +1068,10 @@ export function executeStage(
       // Keep the counter update and append under the same lock. Map slots
       // may finish concurrently; accepted counts must not
       // jump backwards or include an unappended sibling.
-      counters.acceptedStageCount += 1;
       counters.completedByStage.set(node.id, (counters.completedByStage.get(node.id) ?? 0) + 1);
       const progress = workflowProgressProjection(
         compiled,
         invocation,
-        counters.acceptedStageCount,
         progressPlan,
         counters.completedByStage,
         knownLoopIterations,
@@ -1098,20 +1088,7 @@ export function executeStage(
           return loop === undefined ? {} : { iteration: loop.iteration };
         })(),
         attempt: result.attempts,
-        workspace: result.workspace,
-        actorKey,
-        harness: node.stage.harness,
-        sessionId: result.sessionId,
-        transcriptPath: result.transcriptPath,
-        ...(result.resultPath === undefined ? {} : { resultPath: result.resultPath }),
-        ...(result.requestedModel === undefined ? {} : { requestedModel: result.requestedModel }),
-        ...(result.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: result.requestedThinkingLevel }),
-        ...(result.model === undefined ? {} : { model: result.model }),
-        ...(result.thinkingLevel === undefined ? {} : { thinkingLevel: result.thinkingLevel }),
         progress,
-        ...(result.resultPayload === undefined ? {} : { resultPayload: result.resultPayload }),
-        ...(result.projections === undefined ? {} : { projections: result.projections }),
-        ...(result.contract === undefined ? {} : { contract: result.contract }),
       });
       // The actor table needs no second write here: this stage's turn already
       // appended its own `actor-turn` row, which is what a resume folds.

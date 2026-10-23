@@ -39,19 +39,10 @@ function record(): Omit<WorkflowProgressRecord, "timestamp"> {
     stage: "tune",
     worker: "basic",
     attempt: 1,
-    workspace: { key: "shared-root", cwd: "/workspace", kind: "shared" },
-    actorKey: "tune",
-    harness: "pi",
-    sessionId: "session",
-    transcriptPath: "/tmp/transcript.jsonl",
     progress: {
-      status: "accepted",
-      acceptedStages: 1,
       completedStages: 1,
       plannedStages: 2,
-      remainingStages: 1,
       stageCounts: PLAN.stageCounts,
-      hint: "1/2",
     },
   };
 }

@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { hyperbolicScore } from "@piano/trajectory";
+import { isRecord } from "@piano/logging";
 import type {
   AcceptancePolicy,
   BenchmarkMeasurement,
@@ -27,10 +28,6 @@ export interface TranscriptRange {
 export interface TranscriptValidationResult {
   readonly issues: readonly TranscriptValidationIssue[];
   readonly messageCount: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function timestampInRange(value: unknown, range: TranscriptRange): boolean {

@@ -59,7 +59,6 @@ async function writeStateRun(root: string, runId: string, status: unknown): Prom
 /** The state a finished two-turn run records: the fields the row projects. */
 function stateFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    version: 1,
     runId: "r",
     updatedAt: "2026-09-01T00:00:00.000Z",
     status: "completed",

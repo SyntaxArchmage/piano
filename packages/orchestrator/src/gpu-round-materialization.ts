@@ -22,7 +22,7 @@ import {
   rejectPathAliases,
   workspaceArtifactPath,
 } from "./artifact-paths.js";
-import { installStagingFile, writeFileAtomic } from "./atomic-write.js";
+import { installStagingFile, writeFileAtomic } from "@piano/base";
 import { gpuRoundMaterializationProtocol, replaceProjectedValue } from "./gpu-round-protocol.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { sha256Bytes } from "./handoff.js";

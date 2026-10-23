@@ -1,12 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentEvent } from "@piano/harness";
+import { errorMessage, isRecord } from "@piano/logging";
 import { evaluateTrajectory } from "./trajectory-evaluator.js";
 import type { WorkflowBenchmarkPoint, WorkflowTrajectoryEvaluation } from "./workflow-evaluator.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function benchmarkEvidence(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
@@ -65,10 +62,6 @@ interface LegacyEvents {
 interface LegacyDuration {
   readonly score: WorkflowTrajectoryEvaluation["duration"];
   readonly issues: readonly string[];
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
 
 function progressRecords(runDir: string): LegacyRecords {

@@ -44,7 +44,7 @@
  │      validate (contract) → repair turn on failure                         │
  │    · handoff.ts        immutable producer records → consumer contexts     │
  │    · workspace.ts      shared root | lane branch worktrees (source/store) │
- │    · progress.ts       status.json state document + progress records      │
+ │    · progress.ts       status.json state document: the one run state      │
  │    · CUDA promotion    KEEP/DISCARD materialization (non-monotonic)       │
  │    · workflow-resume.ts reopens actor continuations across prompts        │
  └────────────────────────────┬──────────────────────────────────────────────┘
@@ -86,6 +86,16 @@
  │   sessions/trajectory-<harness>-<worker>-<lane>/session/*.jsonl            │
  │   <run>/git/workspaces.git  (baselines)                                    │
  │   <run>/workspaces/worktree-<key>/  (lanes on tuna/<ns>/lane-<n>)          │
+ └────────────────────────────────────────────────────────────────────────────┘
+
+ ┌────────────────  BASE  (packages/base)  ───────────────────────────────────┐
+ │  run-layout.ts  the run directory's only spelling: system-log/ status.json │
+ │                 eval-metrics/ results/ context/ contracts/ sessions/ …     │
+ │  lifecycle.ts   RunLifecycleStatus · TurnOutcome · ExecutionOutcome ·      │
+ │                 JobOutcome · InvocationStatus                              │
+ │  errors.ts      errorMessage · failureDetails · isCancellation             │
+ │  atomic-write.ts  writeFileAtomic (opt. mode/exclusive/backup) · install   │
+ │  Zero @piano/* dependencies: every package above may import it.            │
  └────────────────────────────────────────────────────────────────────────────┘
 
  ┌────────────────  CONTRACT (packages/contract)  ─┐   ┌────────────────────┐

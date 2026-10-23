@@ -2942,14 +2942,12 @@ workflow:
               status: string;
               plannedStages: number;
               completedStages: number;
-              remainingStages: number;
               current?: { status?: string; stageId?: string; attempt?: number };
             };
             expect(running).toMatchObject({
               status: "running",
               plannedStages: 7,
               completedStages: 0,
-              remainingStages: 7,
               current: { status: "running", stageId: "seed", attempt: 1 },
             });
           }
@@ -3028,19 +3026,7 @@ workflow:
         status: string;
         plannedStages: number;
         completedStages: number;
-        remainingStages: number;
-        current?: { status?: string; stageId?: string; instanceId?: string; progress?: {
-          iteration?: number;
-          stageIndex?: number;
-          stageCount?: number;
-          acceptedStages?: number;
-          completedStages?: number;
-          plannedStages?: number;
-          remainingStages?: number;
-          hint?: string;
-          stageCounts?: Record<string, { planned: number; completed: number }>;
-        } };
-        latest?: { progress?: { hint?: string } };
+        current?: { status?: string; stageId?: string; instanceId?: string };
         stageCounts: Record<string, { planned: number; completed: number }>;
         invocationTime?: Record<string, { stageId?: string; instanceId?: string; completedMs?: number }>;
       };
@@ -3048,7 +3034,6 @@ workflow:
         status: "completed",
         plannedStages: 7,
         completedStages: 7,
-        remainingStages: 0,
         stageCounts: {
           seed: { planned: 1, completed: 1 },
           "tune.profile": { planned: 3, completed: 3 },
@@ -3058,15 +3043,6 @@ workflow:
           status: "accepted",
           stageId: "tune.measure",
           instanceId: "tune/iter-2",
-          progress: {
-            iteration: 2,
-            stageIndex: 2,
-            stageCount: 2,
-            acceptedStages: 7,
-            completedStages: 7,
-            plannedStages: 7,
-            remainingStages: 0,
-          },
         },
       });
       // Each loop iteration is timed as its own invocation, so a reader (the
@@ -3077,8 +3053,6 @@ workflow:
       // An accepted invocation closes its span; a live one stays open instead.
       expect(Object.values(snapshot.invocationTime ?? {})
         .every((time) => time.completedMs === undefined || Number.isSafeInteger(time.completedMs))).toBe(true);
-      expect(snapshot.current?.progress?.hint).toContain("iter-3/3");
-            expect(snapshot.current?.progress?.hint).toContain("7/7 stages completed");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3270,7 +3244,6 @@ workflow:
         status: string;
         plannedStages: number;
         completedStages: number;
-        remainingStages: number;
         stageCounts: Record<string, { planned: number; completed: number }>;
         invocationTime?: Record<string, { stageId?: string; instanceId?: string }>;
       };
@@ -3278,7 +3251,6 @@ workflow:
         status: "completed",
         plannedStages: 6,
         completedStages: 6,
-        remainingStages: 0,
         stageCounts: {
           propose: { planned: 1, completed: 1 },
           "tournament.implement": { planned: 2, completed: 2 },

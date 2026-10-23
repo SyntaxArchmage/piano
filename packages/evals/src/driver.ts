@@ -22,9 +22,7 @@ import { FileSystem } from "@effect/platform";
 import {
   acceptedInvocations,
   iterationOfInvocationId,
-  invocationStreamPath,
   parseInvocationRecords,
-  runStatusPath,
 } from "@piano/orchestrator";
 import { execFile, spawn } from "node:child_process";
 import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
@@ -52,6 +50,7 @@ import type {
   StageTrajectoryMetrics,
   TrajectoryMetrics,
 } from "./types.js";
+import { evalMetricsDir, evalMetricsPath, invocationStreamPath, runStatusPath, sessionsRoot } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
 import {
   logStreamPathCandidates,
@@ -529,7 +528,7 @@ export function runCase(
       : yield* workflowEvaluator.evaluate({ runDir }).pipe(Effect.either);
     const workflowTrajectoryPath = runDir === undefined
       ? undefined
-      : join(runDir, "eval-metrics");
+      : evalMetricsDir(runDir);
     const workflowTrajectoryEvidence = workflowTrajectoryOutcome === undefined
       ? {}
       : workflowTrajectoryOutcome._tag === "Right"
@@ -1110,7 +1109,7 @@ export function progressTickLine(label: string, runDir: string, startedAt: numbe
   let best: string | undefined;
   try {
     const records: { iteration?: number; metric?: { name?: string; best?: number } }[] = [];
-    for (const line of readFileSync(join(runDir, "eval-metrics", "benchmark.jsonl"), "utf8").split("\n")) {
+    for (const line of readFileSync(evalMetricsPath(runDir, "benchmark.jsonl"), "utf8").split("\n")) {
       if (line.trim() === "") continue;
       try {
         records.push(JSON.parse(line) as { iteration?: number; metric?: { name?: string; best?: number } });
@@ -1194,7 +1193,7 @@ export function findTranscriptPath(runDir: string): string | undefined {
   try {
     // The run's state document says where its transcript lives. The scan below
     // is for a run that failed before it recorded one.
-    const raw = readFileSync(join(runDir, "status.json"), "utf8");
+    const raw = readFileSync(runStatusPath(runDir), "utf8");
     const status = JSON.parse(raw) as { transcriptPath?: unknown };
     if (typeof status.transcriptPath === "string" && existsSync(status.transcriptPath)) {
       return status.transcriptPath;
@@ -1222,7 +1221,7 @@ export function findTranscriptPath(runDir: string): string | undefined {
   // `sessions/`. Runs that fail before the top-level `transcriptPath` is
   // persisted (and every multi-stage run, which has no single root
   // transcript) rely on this fallback, so it must cover every layout.
-  return find(join(runDir, "sessions")) ?? find(join(runDir, "actors")) ?? find(join(runDir, "executions"));
+  return find(sessionsRoot(runDir)) ?? find(join(runDir, "actors")) ?? find(join(runDir, "executions"));
 }
 
 export interface RunDirectoryAssociation {

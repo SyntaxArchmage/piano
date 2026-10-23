@@ -1,14 +1,23 @@
+// The one way a file is replaced whole.
+//
+// A reader must see either the previous bytes or the next ones, never a half
+// written file: the contents land in a staging sibling and are renamed over the
+// target. Every package that rewrites a document goes through this, so the
+// rename fallback for filesystems that refuse to replace in place exists once.
+
 import { FileSystem } from "@effect/platform";
 import { Effect, Either } from "effect";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { errorMessage, type WorkflowError } from "./errors.js";
+import { errorMessage } from "./errors.js";
 
 /** One step of an atomic write, named so a caller can keep its own error
  * wording per step rather than settling for one message for all three. */
-type AtomicWriteStep = "mkdir" | "write" | "rename";
+export type AtomicWriteStep = "mkdir" | "write" | "rename";
 
-type AtomicWriteErrorMapper = (cause: unknown, step: AtomicWriteStep) => WorkflowError;
+/** A caller's mapping from a filesystem cause and the step that produced it to
+ * the error type its own Effect signature declares. */
+export type AtomicWriteErrorMapper<E> = (cause: unknown, step: AtomicWriteStep) => E;
 
 /** Whether a rename was refused because the destination is in the way rather
  * than because something else went wrong. */
@@ -26,12 +35,12 @@ function isReplaceConflict(cause: unknown): boolean {
  * random sibling first and puts it back if the install then fails. The
  * fallback is recoverable rather than a silent delete. Exported for the callers
  * that stage, adjust and install in steps of their own. */
-export function installStagingFile(
+export function installStagingFile<E>(
   fileSystem: FileSystem.FileSystem,
   staging: string,
   path: string,
-  mapError: AtomicWriteErrorMapper,
-): Effect.Effect<void, WorkflowError> {
+  mapError: AtomicWriteErrorMapper<E>,
+): Effect.Effect<void, E> {
   return Effect.gen(function* () {
     const direct = yield* Effect.either(fileSystem.rename(staging, path));
     if (Either.isRight(direct)) return;
@@ -69,27 +78,35 @@ export function installStagingFile(
 
 /** Write `contents` to `path` so a reader sees either the previous file or the
  * new one and never a half-written document: the bytes land in a staging file
- * that is renamed over the target. The staging name is asked for on every run,
- * so re-running one effect value does not reuse it, and the staging file is
+ * renamed over the target. The staging name is asked for on every run, so
+ * re-running one effect value does not reuse it, and the staging file is
  * removed whichever way the write ends, so a failure leaves no residue. */
-export function writeFileAtomic(
+export function writeFileAtomic<E>(
   path: string,
   contents: string | Uint8Array,
   options: {
-    readonly temporaryPath: () => string;
-    readonly mapError: AtomicWriteErrorMapper;
+    /** A fresh staging sibling per call. Two writes to one path can be in
+     * flight together, and a shared name would let one cleanup delete the
+     * other's staged bytes. Defaults to a random sibling of the target; pass a
+     * name only when the staging file needs a particular shape. */
+    readonly temporaryPath?: () => string;
+    readonly mapError: AtomicWriteErrorMapper<E>;
     /** Create the staging file exclusively, so a pre-created predictable name
      * cannot be followed through a symlink. Off by default: callers that name
      * the staging file freshly would otherwise turn a leftover from a crashed
      * run into a failure. */
     readonly exclusiveStaging?: boolean;
+    /** Permission bits for the staging file, so a credential-bearing document
+     * never exists world-readable even for the instant between write and
+     * rename. Omitted means the platform default. */
+    readonly mode?: number;
     /** Install through {@link installStagingFile} rather than a bare rename. */
     readonly installWithBackup?: boolean;
   },
-): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
+): Effect.Effect<void, E, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const staging = options.temporaryPath();
+    const staging = options.temporaryPath?.() ?? `${path}.${randomUUID()}.tmp`;
     // A staging name equal to the target would rewrite the file and then let
     // the cleanup delete it, reporting success over lost bytes.
     if (staging === path) {
@@ -98,7 +115,13 @@ export function writeFileAtomic(
         "write",
       ));
     }
-    const writeOptions = options.exclusiveStaging === true ? { flag: "wx" as const } : undefined;
+    // Both flags are optional; when neither is set the platform defaults apply.
+    const writeOptions = options.exclusiveStaging === true || options.mode !== undefined
+      ? {
+        ...(options.exclusiveStaging === true ? { flag: "wx" as const } : {}),
+        ...(options.mode === undefined ? {} : { mode: options.mode }),
+      }
+      : undefined;
     yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
       Effect.mapError((cause) => options.mapError(cause, "mkdir")),
     );

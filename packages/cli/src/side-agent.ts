@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { actorSessionDir } from "@piano/base";
 import type { AgentContinuation, AgentEvent, AgentRequest, SteeringChannel } from "@piano/harness";
 
 /** The side agent's tool grant, matching `recipes/workflows/coding-pi.yml`.
@@ -51,7 +51,7 @@ export function sideAgentRequest(turn: SideAgentTurn): AgentRequest {
     cwd: turn.cwd,
     prompt: turn.prompt,
     tools: [...SIDE_AGENT_TOOLS],
-    sessionDir: join(turn.runDir, "sessions", SIDE_AGENT_DIR),
+    sessionDir: actorSessionDir(turn.runDir, SIDE_AGENT_DIR),
     ...(turn.continuation === undefined ? {} : { continuation: turn.continuation }),
     ...(turn.signal === undefined ? {} : { signal: turn.signal }),
     ...(turn.steering === undefined ? {} : { steering: turn.steering }),

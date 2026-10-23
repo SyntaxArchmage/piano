@@ -37,11 +37,7 @@ function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowP
     stage: "measure",
     worker: "legacy-worker",
     attempt: 1,
-    workspace: { key: "shared-root", cwd: "/workspace", kind: "shared" },
-    actorKey: "measure",
-    harness: "pi",
-    sessionId: "session",
-    transcriptPath: "/tmp/transcript.jsonl",
+    progress: { completedStages: 0, plannedStages: 4, stageCounts: timingPlan.stageCounts },
     ...overrides,
   };
 }

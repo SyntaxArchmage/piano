@@ -1,3 +1,4 @@
+import type { TurnOutcome } from "@piano/base";
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
 import {
@@ -822,7 +823,7 @@ export function executeWorkflow(
       ...(request.restartOrdinal === undefined ? [] : [request.restartOrdinal]),
     ]);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
-    const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
+    const closeWorkflowTrajectory = (status: TurnOutcome) =>
       Effect.gen(function* () {
         yield* workflowTrajectory.close(status);
         yield* Effect.forEach(
@@ -863,7 +864,7 @@ export function executeWorkflow(
     // the reason an interrupt pauses a conversation instead of abandoning it.
     const announcedContinuations = new Map<string, AgentContinuation>();
     const actorContexts = new Map<string, ActorExecutionContext>();
-    const counters: StageRunnerCounters = { acceptedStageCount: 0, completedByStage: new Map<string, number>() };
+    const counters: StageRunnerCounters = { completedByStage: new Map<string, number>() };
     /** Shared with the scope walker: it records a workspace that must survive a
      * failed run for recovery, and the finalizer here honors it. */
     const workspaceState: WalkerWorkspaceState = { preserve: false };
@@ -876,7 +877,6 @@ export function executeWorkflow(
     // again and the run's counts would restart from the continue instead.
     if (continueJob !== undefined) {
       for (const invocationId of continueJob.accepted) {
-        counters.acceptedStageCount += 1;
         const stageId = invocationId.split("@", 1)[0] ?? invocationId;
         counters.completedByStage.set(stageId, (counters.completedByStage.get(stageId) ?? 0) + 1);
       }

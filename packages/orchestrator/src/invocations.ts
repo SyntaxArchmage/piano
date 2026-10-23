@@ -14,8 +14,12 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { join } from "node:path";
 import { appendJsonlLine, parseRunStreamLines } from "@piano/logging";
+import {
+  invocationContextDir,
+  invocationResultPath,
+  invocationStreamPath,
+} from "@piano/base";
 import { z } from "zod";
 import type { ContractMetric, ContractProjection } from "@piano/contract";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
@@ -108,22 +112,9 @@ const invocationReadSchema = z.discriminatedUnion("kind", [
   invocationAcceptedObject.passthrough(),
 ]);
 
-export function invocationStreamPath(runDir: string): string {
-  return join(runDir, "system-log", "invocations.jsonl");
-}
-
-/** The agent-written validation result of one attempt, flat under `results/`.
- * The `inv-<serial>` name is the invocation's evidence name, so a reader who
- * has the stream never walks a dotted stage id and a slash-joined instance. */
-export function invocationResultPath(runDir: string, ref: string, attempt: number): string {
-  return join(runDir, "results", `${ref}-attempt-${attempt}.json`);
-}
-
-/** The directory of orchestrator-written context files injected into one
- * invocation (handoff payloads, map item), flat under `context/`. */
-export function invocationContextDir(runDir: string, ref: string): string {
-  return join(runDir, "context", ref);
-}
+/** The path rules are the run layout's, re-exported so this module stays the
+ * one import for an invocation's evidence paths. */
+export { invocationContextDir, invocationResultPath, invocationStreamPath };
 
 /** Append one record to the run's invocation stream. A row its schema refuses
  * is a writer bug and fails the write — evidence that does not fit its

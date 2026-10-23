@@ -1,5 +1,5 @@
-import { join } from "node:path";
 import { Effect } from "effect";
+import { actorSessionDir } from "@piano/base";
 import type { AgentHarnessOptions, AgentRequest, AgentRunner } from "@piano/harness";
 import type { FileSystem } from "@effect/platform";
 import type { Logging } from "@piano/logging";
@@ -40,7 +40,7 @@ export function summarizeTaskMnemonic(input: {
     cwd: input.cwd,
     prompt: `${SUMMARY_INSTRUCTION}\n\nTask:\n${excerpt}`,
     tools: [],
-    sessionDir: join(input.runDir, "sessions", TASK_MNEMONIC_DIR),
+    sessionDir: actorSessionDir(input.runDir, TASK_MNEMONIC_DIR),
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   };
   return input.runAgent(request, input.options ?? {}).pipe(

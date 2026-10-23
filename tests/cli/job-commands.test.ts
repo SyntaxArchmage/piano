@@ -29,7 +29,14 @@ const started = (
 });
 
 const accepted = (timestamp: string, invocationId: string, attempt = 1): WorkflowTransition =>
-  ({ kind: "stage-accepted", timestamp, runId: "run-1", invocationId, attempt } as unknown as WorkflowTransition);
+  ({
+    kind: "stage-accepted",
+    timestamp,
+    runId: "run-1",
+    invocationId,
+    attempt,
+    progress: { completedStages: 1, plannedStages: 2, stageCounts: {} },
+  } as unknown as WorkflowTransition);
 
 const finished = (
   timestamp: string,

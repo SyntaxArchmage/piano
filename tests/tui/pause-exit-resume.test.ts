@@ -90,14 +90,11 @@ describe("half-way stop: Escape, /exit, and /resume in one UX", () => {
       // rather than reject the snapshot (an unknown status hid the whole graph).
       const snapshotPath = join(runsRoot, "status.json");
       await writeFile(snapshotPath, `${JSON.stringify({
-        version: 1,
         updatedAt: new Date().toISOString(),
         runId: "run-1",
         status: "paused",
         plannedStages: 1,
         completedStages: 0,
-        acceptedStages: 0,
-        remainingStages: 1,
         stageCounts: { agent: { planned: 1, completed: 0 } },
       })}\n`);
       const resumeResult: TuiResumeResult = {

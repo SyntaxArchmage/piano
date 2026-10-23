@@ -12,35 +12,22 @@ import {
   type RunStatus,
 } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
-import type { WorkflowWorkspaceBinding } from "./workspace.js";
-import type { WorkerContractReference } from "./contract-snapshot.js";
 import type { AgentContinuation } from "@piano/harness";
-import type { ContractProjection } from "@piano/contract";
+import type { ExecutionOutcome, InvocationStatus } from "@piano/base";
 
-/** Orchestrator-owned, worker-neutral progress projection. Iteration is
- * zero-based to match runtime invocation records; stageIndex is one-based for
- * human-facing `n/m` displays. */
+/** Orchestrator-owned, worker-neutral progress counters. The fold takes the
+ * counts from here and writes them to the run document; the labels and lane
+ * coordinates a monitor used to build from this object had no reader, so they
+ * are gone. */
 export interface WorkflowProgressProjection {
-  readonly status: "accepted";
-  /** Number of validated stage invocations accepted so far. Kept for
-   * consumers that sum accepted work; use completedStages and plannedStages
-   * for a user-facing progress bar. */
-  readonly acceptedStages: number;
+  /** Number of validated stage invocations accepted so far. Nothing counts
+   * "completed" separately: an acceptance IS the completion. */
   readonly completedStages: number;
   readonly plannedStages: number;
-  readonly remainingStages: number;
   /** Static stage ids are workflow-owned, not worker-owned. Their planned
    * counts include loop/map expansion and completed counts come only from
    * accepted invocations. */
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
-  readonly stageIndex?: number;
-  readonly stageCount?: number;
-  readonly iteration?: number;
-  readonly iterations?: number;
-  readonly scope?: string;
-  readonly mapSlot?: number;
-  readonly mapSlots?: number;
-  readonly hint: string;
 }
 
 export interface WorkflowProgressStageCount {
@@ -73,8 +60,11 @@ export interface WorkflowProgressPlan {
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
 }
 
+/** The invocation in flight, or the last one accepted. Readers use it to say
+ * where a run is: `stageId` and `status` for the workflow graph, `invocationId`
+ * for the evidence, `iteration` for a loop's iteration. */
 export interface WorkflowProgressCurrent {
-  readonly status: "running" | "accepted" | "failed";
+  readonly status: InvocationStatus;
   readonly invocationId: string;
   readonly stageId: string;
   readonly stage: string;
@@ -84,18 +74,19 @@ export interface WorkflowProgressCurrent {
    * map lane from a loop iteration without re-deriving the runtime frames. */
   readonly instanceId?: string;
   readonly iteration?: number;
-  readonly mapSlot?: number;
-  readonly mapSlots?: number;
-  readonly scope?: string;
   readonly error?: string;
-  readonly progress?: WorkflowProgressProjection;
-  readonly projections?: readonly ContractProjection[];
 }
 
 /** One accepted stage's payload, folded into the state document's counters
  * and current pointer. This is separate from the agent transcript: the
  * transcript explains how the worker reasoned, while this states what the
- * orchestrator accepted and what evidence downstream stages may consume. */
+ * orchestrator accepted.
+ *
+ * It carries what the fold reads and nothing else. The rest of an acceptance
+ * — the workspace binding, the harness and session, the result file and its
+ * content pin, the metrics, the projections, the requested and effective
+ * model, the contract — is evidence the `invocation-accepted` row and the
+ * result file already hold, and the fold never asks this record for it. */
 export interface WorkflowProgressRecord {
   readonly timestamp: string;
   readonly runId: string;
@@ -106,34 +97,8 @@ export interface WorkflowProgressRecord {
   readonly instanceId?: string;
   readonly iteration?: number;
   readonly attempt: number;
-  readonly workspace: WorkflowWorkspaceBinding;
-  /** Actor this turn belongs to, as produced by `workflowActorKey`. Stored
-   * rather than derived: the key's lane covers map frames only, while
-   * `instanceId` also covers loop frames, so the two are not interchangeable
-   * and a resume cannot reconstruct the key from this record's other fields. */
-  readonly actorKey: string;
-  /** Harness that owns `sessionId`/`transcriptPath`, so a resume can rebuild an
-   * `AgentContinuation` without guessing which harness wrote them. */
-  readonly harness: string;
-  /** Harness session used for this accepted turn; repeated loop invocations
-   * of the same actor keep the same value when continuation is supported. */
-  readonly sessionId: string;
-  readonly transcriptPath: string;
-  readonly resultPath?: string;
-  /** Configuration requested by the workflow before provider capability
-   * resolution. Keep it separate from the effective harness values below. */
-  readonly requestedModel?: string;
-  readonly requestedThinkingLevel?: string;
-  readonly model?: string;
-  readonly thinkingLevel?: string;
-  /** Stable aggregate hint for monitors; the full payload remains below. */
-  readonly progress?: WorkflowProgressProjection;
-  /** Accepted validator payload retained verbatim as stage evidence. */
-  readonly resultPayload?: unknown;
-  /** Contract-declared values available to workflow consumers. */
-  readonly projections?: readonly ContractProjection[];
-  /** Immutable worker contract used to accept this result. */
-  readonly contract?: WorkerContractReference;
+  /** The counters the fold writes into the document. */
+  readonly progress: WorkflowProgressProjection;
 }
 
 /** One invocation starting.
@@ -152,11 +117,6 @@ export interface WorkflowProgressStartRecord {
   readonly attempt: number;
   readonly instanceId?: string;
   readonly iteration?: number;
-  /** Fan-out coordinates, carried so a start record names its own lane rather
-   * than leaving a reader to derive it from the invocation id. */
-  readonly mapSlot?: number;
-  readonly mapSlots?: number;
-  readonly scope?: string;
   /** Why this attempt is running: set when a failed validation reopened the
    * actor for a repair turn. */
   readonly error?: string;
@@ -200,7 +160,7 @@ export interface WorkflowProgressExecutionFinishRecord {
   readonly kind: "execution-finished";
   readonly timestamp: string;
   readonly runId: string;
-  readonly status: "completed" | "failed" | "paused";
+  readonly status: ExecutionOutcome;
   readonly error?: string;
 }
 
@@ -427,8 +387,6 @@ export function applyRunStatusRecord(
         status: "running",
         plannedStages: transition.plan.plannedStages,
         completedStages: carried?.completedStages ?? 0,
-        acceptedStages: carried?.acceptedStages ?? 0,
-        remainingStages: transition.plan.plannedStages - (carried?.acceptedStages ?? 0),
         stageCounts: carried?.stageCounts ?? emptyStageCounts(transition.plan),
         ...(mnemonic === undefined ? {} : { mnemonic }),
         jobs,
@@ -451,9 +409,6 @@ export function applyRunStatusRecord(
           attempt: transition.attempt,
           ...(transition.instanceId === undefined ? {} : { instanceId: transition.instanceId }),
           ...(transition.iteration === undefined ? {} : { iteration: transition.iteration }),
-          ...(transition.mapSlot === undefined ? {} : { mapSlot: transition.mapSlot }),
-          ...(transition.mapSlots === undefined ? {} : { mapSlots: transition.mapSlots }),
-          ...(transition.scope === undefined ? {} : { scope: transition.scope }),
           ...(transition.error === undefined ? {} : { error: transition.error }),
         },
         jobs: updateLatestJob(next.jobs, (job) => ({
@@ -467,11 +422,9 @@ export function applyRunStatusRecord(
       const entry = acceptedInvocationOf(transition.invocationId);
       return {
         ...next,
-        plannedStages: projection?.plannedStages ?? next.plannedStages,
-        completedStages: projection?.completedStages ?? next.completedStages,
-        acceptedStages: projection?.acceptedStages ?? next.acceptedStages,
-        remainingStages: projection?.remainingStages ?? next.remainingStages,
-        stageCounts: projection?.stageCounts ?? next.stageCounts,
+        plannedStages: projection.plannedStages,
+        completedStages: projection.completedStages,
+        stageCounts: projection.stageCounts,
         invocationTime: accrueInto(next.invocationTime, transition.invocationId, accrueInvocationTime(
           next.invocationTime?.[transition.invocationId],
           transition,
@@ -486,11 +439,6 @@ export function applyRunStatusRecord(
           attempt: transition.attempt,
           ...(transition.instanceId === undefined ? {} : { instanceId: transition.instanceId }),
           ...(transition.iteration === undefined ? {} : { iteration: transition.iteration }),
-          ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
-          ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
-          ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
-          ...(projection === undefined ? {} : { progress: projection }),
-          ...(transition.projections === undefined ? {} : { projections: transition.projections }),
         },
         jobs: updateLatestJob(next.jobs, (job) => ({
           ...job,
@@ -656,7 +604,7 @@ export function appendWorkflowProgress(
 export function finalizeWorkflowProgress(
   runDir: string,
   runId: string,
-  status: "completed" | "failed" | "paused",
+  status: ExecutionOutcome,
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);

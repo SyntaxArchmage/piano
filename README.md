@@ -465,17 +465,21 @@ Key files:
 
 - **`status.json`** — the run's single state document, written by the
   orchestrator as it schedules: `status` (`running` | `completed` | `failed` |
-  `paused` | `cancelled`), the per-prompt `turns`, planned/completed/accepted
-  stage counts, the currently running or last accepted invocation (loop
-  iteration, tournament slot, validation attempt), the job list with each job's
-  accepted invocations (structured entries: `invocationId`, `stageId`, `frames`,
-  `iteration`), attempts and finalized regions, and the actor table —
-  the session id and transcript path per conversation, plus
+  `paused` | `cancelled`), the per-prompt `turns`, the plan's `plannedStages`
+  and `completedStages` plus the per-stage `stageCounts` (acceptance is
+  completion: there is no separate accepted counter), the currently running or
+  last accepted invocation (loop iteration, validation attempt), the job list
+  with each job's accepted invocations (structured entries: `invocationId`,
+  `stageId`, `frames`, `iteration`), attempts and finalized regions, and the
+  actor table — the session id and transcript path per conversation, plus
   `runId`/`workflowPath`/`workspaceCwd`, a `name` once you `/rename` the
   run, and the `mnemonic` namespace (`<task-slug>-<runId>`) that names its lane
   branches. Every reader — the TUI graph, the pickers, the logs picker, the headless
   `status_path`, the evals — reads this one document; a monitor never has to
   infer progress from a worker name or count accepted lines by hand.
+  The vocabulary every package shares — the lifecycle unions, the run-directory
+  paths, the cause-reading helpers and the atomic writer — lives in
+  `packages/base`, so a reader and the writer name the same field the same way.
 - **`system-log/trajectory.jsonl`** — the append-only record each write
   appends: one line carrying that write's prompt and events, or the single
   field a rename touched. The state document's narrative fields are refreshed

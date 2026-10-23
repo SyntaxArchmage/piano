@@ -1,0 +1,13 @@
+{
+  "name": "@piano/base",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@effect/platform": "0.97.1",
+    "effect": "3.22.1"
+  }
+}
