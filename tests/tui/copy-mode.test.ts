@@ -35,21 +35,30 @@ const WHEEL_UP_OVER_CHAT = "\x1b[<64;20;5M";
 
 const settle = (): Promise<unknown> => new Promise((resolve) => setTimeout(resolve, 20));
 
+/** Poll until `check` holds. The TUI paints the footer on its own schedule, and
+ * a fixed sleep is a race on a loaded machine: the first render can land after
+ * the window closes. */
+async function waitForOutput(terminal: FakeTerminal, check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`output never matched; saw:\n${terminal.output}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe("copy mode", () => {
   it("hands the mouse to the terminal on Alt+C and takes it back", async () => {
     const kittyWasActive = isKittyProtocolActive();
     setKittyProtocolActive(false);
     const terminal = new FakeTerminal();
     const running = Effect.runPromise(runTui({ terminal }));
-    await settle();
     // Piano owns the mouse at startup, and the footer advertises the binding.
-    expect(terminal.output).toContain(MOUSE_ON);
-    expect(terminal.output).toContain("Alt+C");
+    await waitForOutput(terminal, () => terminal.output.includes(MOUSE_ON) && terminal.output.includes("Alt+C"));
     expect(terminal.output).not.toContain("COPY MODE");
 
     const beforeEnter = terminal.output.length;
     terminal.onInput?.(ALT_C);
-    await settle();
+    await waitForOutput(terminal, () => terminal.output.slice(beforeEnter).includes("COPY MODE"));
     const entered = terminal.output.slice(beforeEnter);
     expect(entered).toContain(MOUSE_OFF);
     expect(entered).not.toContain(MOUSE_ON);
@@ -58,7 +67,7 @@ describe("copy mode", () => {
 
     const beforeExit = terminal.output.length;
     terminal.onInput?.(ALT_C);
-    await settle();
+    await waitForOutput(terminal, () => terminal.output.slice(beforeExit).includes("copy mode"));
     const exited = terminal.output.slice(beforeExit);
     expect(exited).toContain(MOUSE_ON);
     expect(exited).not.toContain(MOUSE_OFF);
