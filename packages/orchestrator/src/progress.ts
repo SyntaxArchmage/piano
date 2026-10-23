@@ -15,14 +15,12 @@ import type { SelectionIncumbent } from "./selection.js";
 import type { AgentContinuation } from "@piano/harness";
 import type { ContractProjection } from "@piano/contract";
 
-/** Orchestrator-owned, worker-neutral progress projection. Iteration is
- * zero-based to match runtime invocation records; stageIndex is one-based for
- * human-facing `n/m` displays. */
+/** Orchestrator-owned, worker-neutral progress counters. The fold takes the
+ * counts and the lane coordinates from here and writes them to the run
+ * document; the human-facing labels a monitor used to build from this object
+ * had no reader, so they are gone. */
 export interface WorkflowProgressProjection {
-  readonly status: "accepted";
-  /** Number of validated stage invocations accepted so far. Kept for
-   * consumers that sum accepted work; use completedStages and plannedStages
-   * for a user-facing progress bar. */
+  /** Number of validated stage invocations accepted so far. */
   readonly acceptedStages: number;
   readonly completedStages: number;
   readonly plannedStages: number;
@@ -31,14 +29,9 @@ export interface WorkflowProgressProjection {
    * counts include loop/map expansion and completed counts come only from
    * accepted invocations. */
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
-  readonly stageIndex?: number;
-  readonly stageCount?: number;
-  readonly iteration?: number;
-  readonly iterations?: number;
   readonly scope?: string;
   readonly mapSlot?: number;
   readonly mapSlots?: number;
-  readonly hint: string;
 }
 
 export interface WorkflowProgressStageCount {
@@ -71,6 +64,9 @@ export interface WorkflowProgressPlan {
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
 }
 
+/** The invocation in flight, or the last one accepted. Readers use it to say
+ * where a run is: `stageId` and `status` for the workflow graph, `invocationId`
+ * for the evidence, `iteration`/`mapSlot` for a loop or map lane. */
 export interface WorkflowProgressCurrent {
   readonly status: "running" | "accepted" | "failed";
   readonly invocationId: string;
@@ -86,8 +82,6 @@ export interface WorkflowProgressCurrent {
   readonly mapSlots?: number;
   readonly scope?: string;
   readonly error?: string;
-  readonly progress?: WorkflowProgressProjection;
-  readonly projections?: readonly ContractProjection[];
 }
 
 /** One accepted stage's payload, folded into the state document's counters
@@ -469,8 +463,6 @@ export function applyRunStatusRecord(
           ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
           ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
           ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
-          ...(projection === undefined ? {} : { progress: projection }),
-          ...(transition.projections === undefined ? {} : { projections: transition.projections }),
         },
         jobs: updateLatestJob(next.jobs, (job) => ({
           ...job,

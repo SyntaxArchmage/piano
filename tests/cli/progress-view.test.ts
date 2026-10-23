@@ -40,13 +40,11 @@ function record(): Omit<WorkflowProgressRecord, "timestamp"> {
     worker: "basic",
     attempt: 1,
     progress: {
-      status: "accepted",
       acceptedStages: 1,
       completedStages: 1,
       plannedStages: 2,
       remainingStages: 1,
       stageCounts: PLAN.stageCounts,
-      hint: "1/2",
     },
   };
 }

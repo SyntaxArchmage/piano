@@ -175,9 +175,9 @@ export function ensureResultDirectory(
   });
 }
 
-/** Build a worker-neutral progress label from the compiled graph and runtime
- * frames. Domain payloads remain untouched; monitors can use this projection
- * without knowing whether the worker is CUDA, Triton, basic, or a plugin. */
+/** Build a worker-neutral progress projection from the compiled graph and
+ * runtime frames. Domain payloads remain untouched; the fold writes these
+ * counters and lane coordinates into the run document. */
 export function workflowProgressProjection(
   compiled: CompiledWorkflow,
   invocation: WorkflowRuntimeInvocation,
@@ -186,9 +186,6 @@ export function workflowProgressProjection(
   completedByStage: ReadonlyMap<string, number>,
   knownLoopIterations: ReadonlyMap<string, number> = new Map(),
 ): WorkflowProgressProjection {
-  const loopFrame = loopFrames(invocation.frames).at(-1);
-  const mapFrame = mapFrames(invocation.frames).at(-1);
-  const innermostFrame = invocation.frames.at(-1);
   const regionsById = regionIndex(compiled.regions);
   // A duration-bound loop's denominator is only knowable from the run itself,
   // so the plan is re-derived whenever this invocation sits inside one. The
@@ -207,24 +204,6 @@ export function workflowProgressProjection(
   const effectivePlan = effectiveLoopIterations.size === 0
     ? plan
     : workflowProgressPlan(compiled, effectiveLoopIterations);
-  const innermostRegion = innermostFrame === undefined
-    ? undefined
-    : regionsById.get(innermostFrame.regionId);
-  const stageIds = innermostRegion === undefined
-    ? compiled.stages
-      .filter((stage) => stage.parentId === undefined)
-      .map((stage) => stage.id)
-    : compiled.stages
-      // Only direct leaves belong to this scope. Nested regions report their
-      // own stage ordinal when they become the innermost frame.
-      .filter((stage) => stage.parentId === innermostRegion.id)
-      .map((stage) => stage.id);
-  const stageIndex = stageIds.indexOf(invocation.stageId) + 1;
-  const stageCount = stageIds.length;
-  const stageLabel = stageIndex > 0 && stageCount > 0
-    ? `${invocation.stageName} ${stageIndex}/${stageCount}`
-    : invocation.stageName;
-  const completedLabel = `${acceptedStages}/${effectivePlan.plannedStages} stages completed`;
   const stageCounts: Readonly<Record<string, WorkflowProgressStageCount>> = Object.fromEntries(
     Object.entries(effectivePlan.stageCounts).map(([stageId, count]) => [stageId, {
       planned: count.planned,
@@ -232,56 +211,38 @@ export function workflowProgressProjection(
     }]),
   );
   const base = {
-    status: "accepted" as const,
     acceptedStages,
     completedStages: acceptedStages,
     plannedStages: effectivePlan.plannedStages,
     remainingStages: Math.max(0, effectivePlan.plannedStages - acceptedStages),
     stageCounts,
-    ...(stageIndex > 0 ? { stageIndex } : {}),
-    ...(stageCount > 0 ? { stageCount } : {}),
   };
+  const loopFrame = loopFrames(invocation.frames).at(-1);
+  const mapFrame = mapFrames(invocation.frames).at(-1);
+  const innermostFrame = invocation.frames.at(-1);
   if (innermostFrame?.kind === "loop" && loopFrame !== undefined) {
     const region = regionsById.get(loopFrame.regionId);
     const outerMap = mapFrame === undefined
       ? undefined
       : regionsById.get(mapFrame.regionId);
-    const iterationLabel = region?.iterations === undefined
-      ? `iter-${loopFrame.iteration + 1}`
-      : `iter-${loopFrame.iteration + 1}/${region.iterations}`;
     return {
       ...base,
-      iteration: loopFrame.iteration,
-      ...(region?.iterations === undefined ? {} : { iterations: region.iterations }),
       ...(mapFrame === undefined ? {} : { mapSlot: mapFrame.slot }),
       ...(outerMap?.count === undefined ? {} : { mapSlots: outerMap.count }),
       scope: region?.name ?? loopFrame.regionId,
-      hint: `${iterationLabel} · ${stageLabel} · ${completedLabel}`,
     };
   }
   if (innermostFrame?.kind === "map" && mapFrame !== undefined) {
     const region = regionsById.get(mapFrame.regionId);
-    const loopRegion = loopFrame === undefined
-      ? undefined
-      : regionsById.get(loopFrame.regionId);
     const regionName = region?.name ?? mapFrame.regionId;
-    const slots = region?.count;
     return {
       ...base,
       mapSlot: mapFrame.slot,
-      ...(slots === undefined ? {} : { mapSlots: slots }),
-      ...(loopFrame === undefined ? {} : { iteration: loopFrame.iteration }),
-      ...(loopRegion?.iterations === undefined ? {} : { iterations: loopRegion.iterations }),
+      ...(region?.count === undefined ? {} : { mapSlots: region.count }),
       scope: regionName,
-      hint: slots === undefined
-        ? `${regionName}/slot-${mapFrame.slot + 1} · ${stageLabel} · ${completedLabel}`
-        : `${regionName}/slot-${mapFrame.slot + 1}/${slots} · ${stageLabel} · ${completedLabel}`,
     };
   }
-  return {
-    ...base,
-    hint: `${stageLabel} · ${completedLabel}`,
-  };
+  return base;
 }
 
 /** Expand the statically compiled leaf table into a worker-neutral work plan.
