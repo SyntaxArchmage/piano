@@ -1,4 +1,5 @@
 import { Effect } from "effect";
+import { readFileSync } from "node:fs";
 import { hyperbolicScore } from "@piano/trajectory";
 import { isRecord } from "@piano/logging";
 import type {
@@ -104,6 +105,35 @@ function numberValue(value: unknown): number {
 }
 
 /** Analyze already-loaded transcript text without performing I/O. */
+/** A transcript that could not be read still yields a shaped result: the case
+ * keeps its outcome and the report renders the evidence gap. */
+const UNREADABLE_TRANSCRIPT: TranscriptMetrics = {
+  messageCount: 0,
+  userMessageCount: 0,
+  assistantMessageCount: 0,
+  toolResultCount: 0,
+  toolCallCount: 0,
+  toolNames: [],
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  totalTokens: 0,
+  finalText: "",
+  fullText: "",
+  valid: false,
+  issues: [{ kind: "structure", line: 0, message: "transcript could not be read" }],
+};
+
+/** Analyze one persisted transcript file (evidence boundary: sync read). */
+export function analyzeTranscriptFile(path: string): TranscriptMetrics {
+  try {
+    return analyzeTranscriptText(path, readFileSync(path, "utf8"), {});
+  } catch {
+    return UNREADABLE_TRANSCRIPT;
+  }
+}
+
 export function analyzeTranscriptText(
   path: string,
   raw: string,
@@ -238,26 +268,19 @@ export function usableBenchmarkValue(measurement: BenchmarkMeasurement | undefin
 }
 
 export function summarizeTiming(
-  result: Pick<CaseResult, "durationMs" | "stageTrajectories" | "workflowTrajectory">,
+  result: Pick<CaseResult, "durationMs" | "trace">,
 ): TimingSummary {
-  const durations = (result.stageTrajectories ?? [])
-    .map((stage) => stage.durationMs)
-    .filter((duration): duration is number => duration !== undefined && Number.isFinite(duration) && duration >= 0);
-  const recorded = result.workflowTrajectory?.duration;
+  const recorded = result.trace?.duration;
   return {
     wallClockMs: result.durationMs ?? 0,
-    stageTotalMs: recorded !== undefined && recorded.count > 0
-      ? recorded.totalMs
-      : durations.reduce((sum, duration) => sum + duration, 0),
-    maxStageMs: recorded !== undefined && recorded.count > 0
-      ? recorded.maxMs
-      : durations.length === 0 ? 0 : Math.max(...durations),
-    completedStageCount: recorded !== undefined && recorded.count > 0 ? recorded.count : durations.length,
+    stageTotalMs: recorded !== undefined && recorded.count > 0 ? recorded.totalMs : 0,
+    maxStageMs: recorded !== undefined && recorded.count > 0 ? recorded.maxMs : 0,
+    completedStageCount: result.trace?.stages.length ?? 0,
   };
 }
 
 export function assessCaseEvidence(
-  result: Pick<CaseResult, "status" | "artifact" | "runDir" | "trajectoryPath" | "workflowTrajectoryPath" | "workflowTrajectory" | "workflowTrajectoryError" | "logPath" | "tracePath" | "transcriptPath" | "transcript" | "stageTrajectories" | "progressPath" | "runStatusPath" | "baseline" | "metric" | "codeChanges">,
+  result: Pick<CaseResult, "status" | "artifact" | "runDir" | "trajectoryPath" | "evalMetricsDir" | "trace" | "traceError" | "logPath" | "tracePath" | "transcriptPath" | "transcript" | "baseline" | "metric" | "codeChanges">,
   options: {
     readonly policy?: AcceptancePolicy;
     readonly availability?: EvidenceAvailability;
@@ -267,27 +290,26 @@ export function assessCaseEvidence(
   const availability = options.availability ?? {
     run: result.runDir !== undefined,
     trajectory: result.trajectoryPath !== undefined,
-    workflowTrajectory: result.workflowTrajectory !== undefined,
+    evalMetrics: result.trace !== undefined,
     log: result.logPath !== undefined,
     trace: result.tracePath !== undefined,
     transcript: result.transcriptPath !== undefined,
-    progress: result.progressPath !== undefined || result.runStatusPath !== undefined,
   };
   const issues: EvidenceIssue[] = [];
   if (result.status !== "skipped") {
     if (!availability.run) issues.push({ code: "run-missing", message: "run directory is not linked to this eval result" });
     if (!availability.trajectory) issues.push({ code: "trajectory-missing", message: "trajectory evidence is missing", path: result.trajectoryPath });
-    if (!availability.workflowTrajectory) {
+    if (!availability.evalMetrics) {
       issues.push({
-        code: "workflow-trajectory-missing",
-        message: result.workflowTrajectoryError ?? "recorder-backed workflow trajectory evidence is missing",
-        path: result.workflowTrajectoryPath,
+        code: "eval-metrics-missing",
+        message: result.traceError ?? "recorder metrics evidence is missing",
+        path: result.evalMetricsDir,
       });
-    } else if (result.workflowTrajectory?.complete !== true) {
+    } else if (result.trace?.complete !== true) {
       issues.push({
-        code: "workflow-trajectory-incomplete",
-        message: result.workflowTrajectory?.issues.join("; ") || "workflow trajectory is incomplete",
-        path: result.workflowTrajectoryPath,
+        code: "eval-metrics-incomplete",
+        message: result.trace?.issues.join("; ") || "run trace is incomplete",
+        path: result.evalMetricsDir,
       });
     }
     if (!availability.log) issues.push({ code: "log-missing", message: "log evidence is missing", path: result.logPath });
@@ -309,50 +331,48 @@ export function assessCaseEvidence(
         issues.push({ code: "transcript-tool-result-missing", message: "transcript contains tool calls without tool results", path: result.transcriptPath });
       }
     }
-    for (const stage of result.stageTrajectories ?? []) {
+    for (const stage of result.trace?.stages ?? []) {
       if (stage.transcriptPath === undefined) {
         issues.push({ code: "stage-transcript-missing", message: `stage transcript for ${stage.invocationId} is not linked` });
       }
       if (stage.stageId === "unknown" || stage.worker === "unknown") {
         issues.push({ code: "stage-metadata-missing", message: `stage metadata for ${stage.invocationId} is incomplete` });
       }
-      if (stage.transcriptPath !== undefined && (stage.transcriptValid !== true || (stage.transcriptIssues?.length ?? 0) > 0)) {
+      const transcript = stage.transcript;
+      if (stage.transcriptPath !== undefined && (transcript?.valid !== true || (transcript?.issues?.length ?? 0) > 0)) {
         issues.push({
           code: "transcript-invalid",
-          message: stage.transcriptValid === undefined
+          message: transcript === undefined
             ? `stage transcript for ${stage.invocationId} was not validated`
             : `stage transcript for ${stage.invocationId} contains invalid or malformed records`,
           path: stage.transcriptPath,
         });
       }
-      if (stage.transcriptPath !== undefined && stage.transcriptValid === true) {
-        if ((stage.transcriptUserMessageCount ?? 0) === 0) {
+      if (stage.transcriptPath !== undefined && transcript?.valid === true) {
+        if (transcript.userMessageCount === 0) {
           issues.push({ code: "transcript-user-missing", message: `stage transcript for ${stage.invocationId} contains no user task message`, path: stage.transcriptPath });
         }
-        if (stage.assistantMessageCount === 0) {
+        if (transcript.assistantMessageCount === 0) {
           issues.push({ code: "transcript-assistant-missing", message: `stage transcript for ${stage.invocationId} contains no assistant response`, path: stage.transcriptPath });
         }
-        if (stage.toolCallCount > 0 && (stage.transcriptToolResultCount ?? 0) === 0) {
+        if (transcript.toolCallCount > 0 && transcript.toolResultCount === 0) {
           issues.push({ code: "transcript-tool-result-missing", message: `stage transcript for ${stage.invocationId} contains tool calls without tool results`, path: stage.transcriptPath });
         }
       }
     }
-    if ((result.stageTrajectories?.length ?? 0) === 0) {
+    if ((result.trace?.stages.length ?? 0) === 0) {
       issues.push({ code: "stage-evidence-missing", message: "no stage-level trajectory evidence was linked" });
     }
     if (result.metric !== undefined) {
-      if (!availability.progress) {
-        issues.push({ code: "progress-missing", message: "workflow progress evidence is missing", path: result.progressPath });
-      }
-      const measurements = (result.workflowTrajectory?.benchmarks ?? [])
-        .filter((measurement) => measurement.accepted &&
+      const measurements = (result.trace?.benchmarks ?? [])
+        .filter((measurement) =>
           measurement.name === result.metric?.name &&
           measurement.direction === result.metric.direction);
       if (measurements.length === 0) {
         issues.push({
-          code: "progress-measurement-missing",
-          message: `workflow trajectory contains no accepted ${result.metric.direction}-is-better ${result.metric.name} measurement`,
-          path: result.workflowTrajectoryPath,
+          code: "metric-measurement-missing",
+          message: `run trace contains no accepted ${result.metric.direction}-is-better ${result.metric.name} measurement`,
+          path: result.evalMetricsDir,
         });
       }
     }

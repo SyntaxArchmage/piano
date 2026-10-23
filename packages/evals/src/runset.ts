@@ -1,19 +1,38 @@
 // Offline access to persisted eval run sets.
 //
 // Every full `piano evals` run writes `<root>/<runSetId>/report.json` (the same
-// EvalReport the run prints). This module reads those back so the report can be
-// re-rendered or compared between run sets without running anything — the
-// analysis phase is one pure renderer (`formatReport`) over a persisted value.
+// EvalReport the run prints). This module persists and reads those back, mints
+// run-set ids, and assembles the offline `--report` board, all without running
+// anything.
 
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { join } from "node:path";
-import type { EvalReport } from "./types.js";
+import { matchesSelectionKeyword } from "./case-loader.js";
+import { DEFAULT_EVAL_HISTORY_ROOT } from "./history.js";
+import { formatDeltaTables, formatReport, type DeltaRecord } from "./report.js";
+import { buildReport } from "./scorer.js";
+import type { CaseResult, EvalReport } from "./types.js";
 
-/** The shape `defaultRunSetId()` in the CLI produces: `eval-` + UTC-ish local
- * timestamp. Filtering by shape keeps hand-made workspace dirs (and legacy
- * `eval-single-*` scratch dirs) out of the list. */
+/** The canonical run-set id shape this module's `defaultRunSetId()` produces:
+ * `eval-` + UTC-ish local timestamp. Filtering by shape keeps hand-made
+ * workspace dirs (and legacy `eval-single-*` scratch dirs) out of the list. */
 const RUN_SET_ID_RE = /^eval-\d{8}T\d{6}\.\d{3}$/;
+
+/** Where one run set's report is persisted. Single spelling for every reader
+ * and writer of `report.json`. */
+export function runSetReportPath(root: string, runSetId: string): string {
+  return join(root, runSetId, "report.json");
+}
+
+/** Mint a new run-set id: `eval-` plus a sortable local timestamp. The single
+ * source for both id creation and shape matching. */
+export function defaultRunSetId(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const millis = String(now.getMilliseconds()).padStart(3, "0");
+  return `eval-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}T${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.${millis}`;
+}
 
 /** Run set ids newest first. Run set ids embed their creation timestamp, so
  * lexicographic order is chronological order. Missing or unreadable roots
@@ -26,7 +45,7 @@ export function listRunSetIds(root: string): Effect.Effect<string[], never, File
     );
     const candidates = entries.filter((entry) => RUN_SET_ID_RE.test(entry));
     const present = yield* Effect.forEach(candidates, (id) =>
-      fileSystem.exists(join(root, id, "report.json")).pipe(
+      fileSystem.exists(runSetReportPath(root, id)).pipe(
         Effect.map((exists) => (exists ? id : undefined)),
         Effect.catchAll(() => Effect.succeed(undefined)),
       ),
@@ -42,7 +61,7 @@ export function readRunSetReport(
   root: string,
   runSetId: string,
 ): Effect.Effect<EvalReport, Error, FileSystem.FileSystem> {
-  const path = join(root, runSetId, "report.json");
+  const path = runSetReportPath(root, runSetId);
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const raw = yield* fileSystem.readFileString(path).pipe(
@@ -58,5 +77,113 @@ export function readRunSetReport(
       },
       catch: (cause) => new Error(`cannot parse ${path}: ${String(cause)}`),
     });
+  });
+}
+
+/** Every readable persisted report, newest first. A run set whose report is
+ * absent or malformed is skipped: "one unreadable run" is not a reason to
+ * refuse the board the others can render. */
+export function readPersistedRunSets(
+  root: string,
+): Effect.Effect<readonly EvalReport[], never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const ids = yield* listRunSetIds(root);
+    const reports = yield* Effect.forEach(ids, (id) =>
+      readRunSetReport(root, id).pipe(Effect.catchAll(() => Effect.succeed(undefined))));
+    return reports.filter((report): report is EvalReport => report !== undefined);
+  });
+}
+
+export interface RunSetReportOptions {
+  readonly group?: string;
+  readonly caseId?: string;
+  readonly runSet?: string;
+  readonly details: boolean;
+  readonly delta: boolean;
+}
+
+/**
+ * `--report` assembly: the text of a persisted run set's board, without
+ * running anything. With no selection it renders the stored report verbatim;
+ * with `--group`/`--case` it gathers every persisted case matching the
+ * keyword — a group family name (`tuning` covers `tuning-cuda` too) or a
+ * grader tag — taking each case's newest occurrence across run sets, so
+ * `--group tflops` shows all tagged cases even when they live in different
+ * groups and were run in different sessions. Each case keeps its own group: a
+ * keyword selects cases, it does not re-label them, and a case's group is what
+ * decides how that case is displayed. A selection whose keyword is a family
+ * name therefore renders each group in that family with its own family's
+ * columns. `delta` appends the Δ board next to that matrix: every metric the
+ * case's own matrix reports, as a `Δvalue`/`Δ%` cell pair between the case's
+ * latest record and its previous one.
+ */
+export function reportRunSet(
+  opts: RunSetReportOptions,
+  historyRoot = DEFAULT_EVAL_HISTORY_ROOT,
+): Effect.Effect<string, Error, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const selection = [
+      opts.group === undefined ? undefined : `--group ${opts.group}`,
+      opts.caseId === undefined ? undefined : `--case ${opts.caseId}`,
+    ].filter((part): part is string => part !== undefined).join(" ");
+    if (selection === "") {
+      // No selection: render the newest (or explicit) stored report verbatim.
+      // `delta` cannot reach here — it requires a selection.
+      const currentId = opts.runSet ?? (yield* listRunSetIds(historyRoot))[0];
+      if (currentId === undefined) {
+        return yield* Effect.fail(new Error(`no persisted eval reports under ${historyRoot}`));
+      }
+      const current = yield* readRunSetReport(historyRoot, currentId);
+      return formatReport(current, { details: opts.details }) + "\n";
+    }
+    // Selection: assemble a board of every persisted case matching the
+    // keyword, each row taken from its newest occurrence (or pinned to
+    // `--runset`). `skipped` stub rows are dry-run leftovers and never count.
+    const matches = (kase: CaseResult) => kase.status !== "skipped"
+      && (opts.group === undefined || matchesSelectionKeyword(kase.group, kase.tags, opts.group))
+      && (opts.caseId === undefined || kase.caseId === opts.caseId);
+    type Occurrence = { readonly id: string; readonly at: string; readonly kase: CaseResult };
+    const reports = yield* readPersistedRunSets(historyRoot);
+    const occurrences = new Map<string, Occurrence[]>();
+    for (const report of reports) {
+      for (const kase of report.cases) {
+        if (!matches(kase)) continue;
+        const key = `${kase.caseId}#${kase.trial}`;
+        const list = occurrences.get(key);
+        const occurrence = { id: report.runSetId, at: report.createdAt, kase };
+        if (list === undefined) occurrences.set(key, [occurrence]);
+        else list.push(occurrence);
+      }
+    }
+    const chosen = [...occurrences.values()].flatMap((list) => {
+      const current = opts.runSet === undefined ? list[0] : list.find((o) => o.id === opts.runSet);
+      return current === undefined ? [] : [{ current, prior: list.find((o) => o.id < current.id) }];
+    });
+    if (chosen.length === 0) {
+      return yield* Effect.fail(new Error(opts.runSet !== undefined
+        ? `run set "${opts.runSet}" contains no case for ${selection}`
+        : `no persisted run set contains ${selection}`));
+    }
+    const currentEntries = chosen.map((row) => row.current);
+    const used = [...new Set(currentEntries.map((o) => o.id))].sort();
+    const currentReport = buildReport(
+      used.length === 1 ? used[0]! : `gathered ${used[0]}..${used[used.length - 1]}`,
+      currentEntries.reduce((newest, o) => (o.at > newest ? o.at : newest), ""),
+      currentEntries.map((o) => o.kase),
+    );
+    const text = formatReport(currentReport, { minMatrixCases: 1, details: opts.details }) + "\n";
+    if (!opts.delta) return text;
+    // Each row diffs against its own previous occurrence, so a case that was
+    // run twice in different sessions still compares against the right
+    // baseline. The records keep their own group, so the Δ board is grouped
+    // and columned exactly like the matrix printed above it.
+    const records: DeltaRecord[] = chosen.map((row) => ({
+      current: row.current.kase,
+      currentRunSet: row.current.id,
+      ...(row.prior === undefined
+        ? {}
+        : { previous: row.prior.kase, previousRunSet: row.prior.id }),
+    }));
+    return text + formatDeltaTables(records) + "\n";
   });
 }

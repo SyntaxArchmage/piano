@@ -1,13 +1,21 @@
 import type { Effect as EffectType } from "effect/Effect";
 import type { TurnOutcome } from "@piano/base";
-import type { WorkflowTrajectoryEvaluation } from "./workflow-evaluator.js";
+import type {
+  BenchmarkScore,
+  DurationScore,
+  SelectionScore,
+  StageAttemptOutcome,
+  TokenUsage,
+  TokenUsageScore,
+  ToolCallScore,
+} from "@piano/trajectory";
 
 /**
  * Shared types for the Piano evals system.
  *
- * This is the single contract surface every evals module — the runner/driver,
- * trajectory evaluator, artifact evaluator, scorer, and the `piano evals` CLI —
- * imports from. It defines the canonical shape (decision 0034/0037) and
+ * This is the single contract surface every evals module — the run pipeline,
+ * case runner, evidence reader, scorer, and the `piano evals` CLI — imports
+ * from. It defines the canonical shape (decision 0034/0037) and
  * targets the run artifacts produced by `/orchestrator`.
  *
  * Keep this file type-only where possible so no module accidentally pulls
@@ -123,51 +131,83 @@ export interface CaseConfig extends EvalCase {
   version: 1;
 }
 
-// ── Run artifacts (produced by the driver) ──────────────────────────────────
+// ── Run artifacts (assembled from a run directory) ──────────────────────────
 
-/** Structured transcript analysis derived from a run's transcript/trace. */
-export interface TrajectoryMetrics {
+/** Conversation counts folded from the per-stage transcript analyses. */
+export interface MessageCounts {
   /** Total message events (user + assistant). */
-  messageCount: number;
-  /** Assistant message count (one per agent turn). */
-  assistantMessageCount: number;
-  /** Number of rounds (agent turns that produced an assistant reply). */
-  rounds: number;
-  /** Tool invocations observed (count + names). */
-  toolCallCount: number;
-  toolNames: string[];
-  /** Summed token counts from usage events (0 when absent). */
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
+  readonly count: number;
+  /** Agent turns that produced an assistant reply (one per assistant message). */
+  readonly rounds: number;
 }
 
-/** Metrics for one concrete workflow stage invocation. Loop iterations keep
- * their invocation id even when the same stage actor resumes its session. */
-export interface StageTrajectoryMetrics extends TrajectoryMetrics {
-  stageId: string;
-  invocationId: string;
-  worker: string;
-  transcriptPath?: string;
-  /** Strict validation result for this invocation's transcript, when linked. */
-  transcriptValid?: boolean;
-  transcriptIssues?: readonly TranscriptValidationIssue[];
-  /** Message roles and tool-result linkage observed in the persisted transcript. */
-  transcriptUserMessageCount?: number;
-  transcriptToolResultCount?: number;
+/** One recorder-backed benchmark point, attributed to its stage invocation. */
+export interface WorkflowBenchmarkPoint {
+  readonly name: string;
+  readonly unit?: string;
+  readonly direction: "higher" | "lower";
+  readonly value: number;
+  readonly samples?: readonly number[];
+  readonly iteration?: number;
+  readonly invocationId?: string;
+  readonly stageId?: string;
+  readonly worker?: string;
+  readonly contractDigest?: string;
+}
+
+/** One trial's canonical evaluation result: the whole system's only metric
+ * model, assembled by run-reader from the recorder streams, the invocation
+ * stream, and transcript analyses. */
+export interface RunTrace {
+  readonly complete: boolean;
+  readonly issues: readonly string[];
+  /** Transcript analyses folded into one conversation summary. */
+  readonly messages: MessageCounts;
+  readonly tokens: TokenUsageScore;
+  readonly tools: ToolCallScore;
+  readonly duration: DurationScore;
+  readonly benchmarks: readonly WorkflowBenchmarkPoint[];
+  readonly benchmarkScore?: BenchmarkScore;
+  /** Tournament referee decisions; only runs with a selection stream have one. */
+  readonly selection?: SelectionScore;
+  /** Per-invocation stage observations. */
+  readonly stages: readonly StageObservation[];
+}
+
+/** What one concrete stage invocation did, assembled from recorder records
+ * (grouped by invocationId), the invocation accepted row, and its transcript.
+ * Loop iterations keep their invocation id even when the same stage actor
+ * resumes its session. */
+export interface StageObservation {
+  readonly invocationId: string;
+  readonly stageId: string;
+  readonly worker: string;
+  readonly iteration?: number;
+  readonly attempt?: number;
+  readonly outcome?: StageAttemptOutcome;
+  readonly transcriptPath?: string;
+  /** Transcript validation and counts; the evidence stage loop and the report
+   * stage rows read this object instead of flat fields. */
+  readonly transcript?: StageTranscriptMetrics;
   /** Requested workflow configuration, before provider capability clamping. */
-  requestedModel?: string;
-  requestedThinkingLevel?: string;
-  requestedTools?: readonly string[];
+  readonly requestedModel?: string;
+  readonly requestedThinkingLevel?: string;
   /** Effective values reported by the harness. */
-  model?: string;
-  thinkingLevel?: string;
-  workspaceCwd?: string;
-  iteration?: number;
-  /** Wall-clock duration of this invocation from orchestrator log events. */
-  durationMs?: number;
+  readonly model?: string;
+  readonly thinkingLevel?: string;
+  readonly workspaceCwd?: string;
+  readonly tokens: TokenUsage;
+  readonly toolCalls: { readonly count: number; readonly failures: number };
+  readonly durationMs?: number;
+}
+
+/** The 3-field snapshot the report's per-case status label needs. Derived
+ * from the run's state document; the full snapshot does not live on
+ * CaseResult. */
+export interface RunStatusSummary {
+  readonly completedStages: number;
+  readonly plannedStages: number;
+  readonly currentStageId?: string;
 }
 
 /** A grader-owned or worker-produced benchmark measurement retained for
@@ -175,13 +215,9 @@ export interface StageTrajectoryMetrics extends TrajectoryMetrics {
 export interface BenchmarkMeasurement {
   value?: number;
   metric?: string;
-  unit?: string;
   direction?: "higher" | "lower";
   rawOutput: string;
   passed: boolean;
-  source: "baseline" | "trajectory" | "progress" | "final";
-  iteration?: number;
-  invocationId?: string;
 }
 
 export interface BenchmarkComparison {
@@ -207,8 +243,6 @@ export interface ArtifactMetrics {
   rawOutput?: string;
   /** Test-run summary parsed from the verifier output when available. */
   testSummary?: TestRunSummary;
-  baseline?: BenchmarkMeasurement;
-  measurements?: readonly BenchmarkMeasurement[];
 }
 
 export interface TestRunSummary {
@@ -253,8 +287,8 @@ export interface EvidenceIssue {
   code:
     | "run-missing"
     | "trajectory-missing"
-    | "workflow-trajectory-missing"
-    | "workflow-trajectory-incomplete"
+    | "eval-metrics-missing"
+    | "eval-metrics-incomplete"
     | "log-missing"
     | "trace-missing"
     | "transcript-missing"
@@ -265,8 +299,7 @@ export interface EvidenceIssue {
     | "stage-evidence-missing"
     | "stage-transcript-missing"
     | "stage-metadata-missing"
-    | "progress-missing"
-    | "progress-measurement-missing"
+    | "metric-measurement-missing"
     | "baseline-missing"
     | "baseline-invalid"
     | "final-metric-missing"
@@ -278,11 +311,10 @@ export interface EvidenceIssue {
 export interface EvidenceAvailability {
   run: boolean;
   trajectory: boolean;
-  workflowTrajectory: boolean;
+  evalMetrics: boolean;
   log: boolean;
   trace: boolean;
   transcript: boolean;
-  progress: boolean;
 }
 
 export interface EvidenceAssessment {
@@ -350,11 +382,18 @@ export interface CaseScorecard {
   timing: TimingSummary;
 }
 
-/** Heat-map scale for rendering a numeric scorecard cell. */
-export interface HeatScale {
-  readonly min: number;
-  readonly max: number;
-  readonly good: "high" | "low" | number;
+/** The stage slice of a transcript analysis: enough to validate the stage and
+ * render its row, without copying the whole conversation into every stage. */
+export interface StageTranscriptMetrics {
+  readonly messageCount: number;
+  readonly userMessageCount: number;
+  readonly assistantMessageCount: number;
+  readonly toolResultCount: number;
+  readonly toolCallCount: number;
+  /** Strict structural validity of the persisted transcript. */
+  readonly valid?: boolean;
+  /** Non-fatal parser diagnostics retained as evidence. */
+  readonly issues?: readonly TranscriptValidationIssue[];
 }
 
 /** A complete single-case evaluation result. */
@@ -375,26 +414,17 @@ export interface CaseResult {
   tags: readonly string[];
   metric?: { name: string; direction: "higher" | "lower" };
   variant?: string;
-  trajectory: TrajectoryMetrics;
-  /** Recorder-backed workflow trajectory evaluation. This is separate from
-   * the retained legacy agent-event trajectory above. */
-  workflowTrajectory?: WorkflowTrajectoryEvaluation;
-  workflowTrajectoryPath?: string;
-  workflowTrajectoryError?: string;
+  /** The run's canonical trace; absent when evidence could not be assembled. */
+  trace?: RunTrace;
+  traceError?: string;
   artifact: ArtifactMetrics;
   /** Absolute path to the session transcript, when present. */
   transcriptPath?: string;
   transcript?: TranscriptMetrics;
-  /** All stage-level trajectories, not only the terminal worker transcript. */
-  stageTrajectories?: readonly StageTrajectoryMetrics[];
-  /** Legacy accepted-stage progress stream, present only for runs that
-   * predate `runStatusPath`. */
-  progressPath?: string;
-  progress?: readonly Record<string, unknown>[];
-  /** The run's single state document. It replaced the progress snapshot
-   * (progress.json), the progress stream and the trajectory/resume documents. */
-  runStatusPath?: string;
-  runStatus?: Record<string, unknown>;
+  /** 3-field snapshot of the run's stage progress (report status label),
+   * derived from the state document. The full snapshot does not live on
+   * CaseResult. */
+  runStatus?: RunStatusSummary;
   baseline?: BenchmarkMeasurement;
   baselineComparison?: BenchmarkComparison;
   evidence?: EvidenceAssessment;
@@ -403,13 +433,13 @@ export interface CaseResult {
   trajectoryPath?: string;
   logPath?: string;
   tracePath?: string;
+  /** The recorder-metrics directory (`runDir/eval-metrics`) produced by the run. */
+  evalMetricsDir?: string;
   durationMs?: number;
   /** Grader-owned diff from the pristine copied workspace to the delivered artifact. */
   codeChanges?: CodeChangeMetrics;
   /** Error detail when status !== completed. */
   error?: string;
-  /** Exit code and captured process output for the declared case launch. */
-  launch?: LaunchEvidence;
 }
 
 export interface LaunchEvidence {
@@ -514,10 +544,6 @@ export interface VariantComparison {
 
 /** Options controlling a full evals run. */
 export interface EvalRunOptions {
-  /** Only evaluate cases in this group. */
-  group?: string;
-  /** Root dir holding read-only evals material (defaults to the package's own source `workloads/`). */
-  root?: string;
   /** Where workspace templates get copied and executed (defaults to ~/.piano/evals). */
   workspaceRoot?: string;
   /** Parent run-set id used to isolate every copied workspace. */
@@ -540,6 +566,3 @@ export interface EvalRunOptions {
 
 /** A reducer that folds a set of case results into a score group. */
 export type ScoreReducer = (cases: CaseResult[]) => ScoreGroup;
-
-/** A filter that selects cases (e.g. by tag, by model, by worker). */
-export type CaseFilter = (cases: CaseResult[]) => CaseResult[];

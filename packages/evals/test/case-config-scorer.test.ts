@@ -104,9 +104,15 @@ function makeResult(overrides: Partial<CaseResult> & { caseId: string }): CaseRe
     tags: ["correctness"],
     status: "completed",
     workspaceDir: "/tmp/ws",
-    trajectory: {
-      messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
-      toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0,
+    trace: {
+      complete: true,
+      issues: [],
+      messages: { count: 0, rounds: 0 },
+      tokens: { count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      tools: { count: 0, failures: 0, names: [], totalDurationMs: 0 },
+      duration: { count: 0, totalMs: 0, maxMs: 0 },
+      benchmarks: [],
+      stages: [],
     },
     artifact: { verified: false },
     ...overrides,
@@ -162,14 +168,19 @@ describe("scorer", () => {
   });
 
   it("scores efficiency against the group's cheapest verified run", () => {
-    const withTokens = (totalTokens: number) => ({
-      messageCount: 0, assistantMessageCount: 0, rounds: 0, toolCallCount: 0,
-      toolNames: [], inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
-      cacheWriteTokens: 0, totalTokens,
+    const withTokens = (total: number): NonNullable<CaseResult["trace"]> => ({
+      complete: true,
+      issues: [],
+      messages: { count: 0, rounds: 0 },
+      tokens: { count: 1, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total },
+      tools: { count: 0, failures: 0, names: [], totalDurationMs: 0 },
+      duration: { count: 0, totalMs: 0, maxMs: 0 },
+      benchmarks: [],
+      stages: [],
     });
     const group = reduceCaseGroup([
-      makeResult({ caseId: "cheap", artifact: { verified: true }, trajectory: withTokens(100) }),
-      makeResult({ caseId: "costly", artifact: { verified: true }, trajectory: withTokens(200) }),
+      makeResult({ caseId: "cheap", artifact: { verified: true }, trace: withTokens(100) }),
+      makeResult({ caseId: "costly", artifact: { verified: true }, trace: withTokens(200) }),
     ]);
     // Cheapest sits at parity 0.5, the 2x-cost case at hyper(1/2)=1/3; the
     // old verified/(tokens/1000) formula collapsed both toward 0.

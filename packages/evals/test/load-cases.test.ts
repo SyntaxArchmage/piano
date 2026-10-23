@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
-import { loadCases } from "../src/driver.js";
+import { loadCases } from "../src/case-loader.js";
 
 function caseYaml(id: string, group: string, tags: readonly string[]): string {
   const tagLines = tags.map((tag) => `  - tag: ${tag}\n    weight: 1`).join("\n");

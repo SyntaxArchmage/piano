@@ -27,20 +27,8 @@ function result(variant: string): CaseResult {
     status: "completed",
     workspaceDir: "/tmp/workspace",
     runDir: "/tmp/run",
-    baseline: { value: 1, rawOutput: "1", passed: true, source: "baseline" },
+    baseline: { value: 1, rawOutput: "1", passed: true },
     artifact: { verified: true, value: 2 },
-    trajectory: {
-      messageCount: 1,
-      assistantMessageCount: 1,
-      rounds: 1,
-      toolCallCount: 0,
-      toolNames: [],
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 0,
-    },
     scorecard: {
       caseId: "case-a",
       correctness: 1,
@@ -84,13 +72,13 @@ describe(" eval history", () => {
     expect(comparison?.variants[0]?.acceptedRate).toBe(1);
   });
 
-  it("rejects a benchmark measurement with an unsafe iteration", async () => {
+  it("rejects a benchmark measurement with a non-finite value", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-eval-history-invalid-"));
     const entry = historyEntryFromResult(result("candidate"), "run-1");
     if (entry.baseline === undefined) throw new Error("expected a baseline");
     await Effect.runPromise(appendEvalHistory(root, {
       ...entry,
-      baseline: { ...entry.baseline, iteration: Number.MAX_SAFE_INTEGER + 1 },
+      baseline: { ...entry.baseline, value: Number.POSITIVE_INFINITY },
     }).pipe(Effect.provide(NodeFileSystem.layer)));
 
     const exit = await Effect.runPromiseExit(readEvalHistory(root, "case-a").pipe(Effect.provide(NodeFileSystem.layer)));

@@ -11,7 +11,6 @@
  */
 
 import type {
-  CaseFilter,
   CaseResult,
   EvalReport,
   EvalSummary,
@@ -62,10 +61,10 @@ export const reduceCaseGroup: ScoreReducer = (cases) => {
   if (withValue.length > 0) {
     const normalized = withValue.map((c) =>
       (() => {
-        const baseline = c.artifact.baseline ?? c.baseline;
+        const baseline = c.baseline;
         const direction = c.metric?.direction ?? baseline?.direction ?? "higher";
         const comparable = withValue
-          .filter((candidate) => (candidate.metric?.direction ?? (candidate.artifact.baseline ?? candidate.baseline)?.direction ?? "higher") === direction)
+          .filter((candidate) => (candidate.metric?.direction ?? candidate.baseline?.direction ?? "higher") === direction)
           .map((candidate) => candidate.artifact.value ?? 0);
         const reference = direction === "higher" ? Math.max(...comparable) : Math.min(...comparable);
         return normalizeMetric(
@@ -83,10 +82,11 @@ export const reduceCaseGroup: ScoreReducer = (cases) => {
   // against the group's cheapest verified run (parity = 0.5 at the cheapest).
   // The old verified/(tokens/1000) proxy was an unscaled rate that saturated
   // to ~0 for any real tuning task.
-  const costCases = cases.filter((c) => c.artifact.verified && c.trajectory.totalTokens > 0);
-  const cheapest = costCases.length === 0 ? 0 : Math.min(...costCases.map((c) => c.trajectory.totalTokens));
-  const efficiency = costCases.length === 0 ? 0
-    : costCases.reduce((sum, c) => sum + normalizeMetric(c.trajectory.totalTokens, "lower", cheapest), 0) / costCases.length;
+  const costTokens = cases.flatMap((c) =>
+    c.artifact.verified && c.trace !== undefined && c.trace.tokens.total > 0 ? [c.trace.tokens.total] : []);
+  const cheapest = costTokens.length === 0 ? 0 : Math.min(...costTokens);
+  const efficiency = costTokens.length === 0 ? 0
+    : costTokens.reduce((sum, tokens) => sum + normalizeMetric(tokens, "lower", cheapest), 0) / costTokens.length;
   scores.push({ name: "efficiency", value: efficiency, direction: "higher", weight: 0.5 });
 
   const weightSum = scores.reduce((a, s) => a + s.weight, 0);
@@ -179,9 +179,9 @@ function summarize(cases: CaseResult[]): EvalSummary {
       passRate: passed / trials.length,
       passAtK: passed > 0 ? 1 : 0,
       firstPass: trials.find((trial) => trial.trial === 1)?.artifact.verified ? 1 : 0,
-      averageTokens: average(trials.map((trial) => trial.trajectory.totalTokens)),
-      averageRounds: average(trials.map((trial) => trial.trajectory.rounds)),
-      averageToolCalls: average(trials.map((trial) => trial.trajectory.toolCallCount)),
+      averageTokens: average(trials.map((trial) => trial.trace?.tokens.total ?? 0)),
+      averageRounds: average(trials.map((trial) => trial.trace?.messages.rounds ?? 0)),
+      averageToolCalls: average(trials.map((trial) => trial.trace?.tools.count ?? 0)),
       averageDurationMs: average(trials.map((trial) => trial.durationMs ?? 0)),
       accepted: trials.filter((trial) => trial.scorecard?.accepted === true).length,
       evidencePassRate: trials.filter((trial) => trial.evidence?.evidencePass === true).length / trials.length,
@@ -192,9 +192,9 @@ function summarize(cases: CaseResult[]): EvalSummary {
     trials: cases.length,
     passed,
     passRate: cases.length === 0 ? 0 : passed / cases.length,
-    averageTokens: average(cases.map((kase) => kase.trajectory.totalTokens)),
-    averageRounds: average(cases.map((kase) => kase.trajectory.rounds)),
-    averageToolCalls: average(cases.map((kase) => kase.trajectory.toolCallCount)),
+    averageTokens: average(cases.map((kase) => kase.trace?.tokens.total ?? 0)),
+    averageRounds: average(cases.map((kase) => kase.trace?.messages.rounds ?? 0)),
+    averageToolCalls: average(cases.map((kase) => kase.trace?.tools.count ?? 0)),
     averageDurationMs: average(cases.map((kase) => kase.durationMs ?? 0)),
     accepted: cases.filter((kase) => kase.scorecard?.accepted === true).length,
     evidencePassRate: cases.length === 0 ? 0 : cases.filter((kase) => kase.evidence?.evidencePass === true).length / cases.length,
@@ -219,14 +219,4 @@ function groupByTags(cases: CaseResult[]): { key: string; cases: CaseResult[] }[
 /** Label a score group with a key prefix. */
 function labelGroup(key: string, group: ScoreGroup): ScoreGroup {
   return { ...group, key };
-}
-
-/** Build a simple selector-based reducer (used by filters). */
-export function byTagReducer(tag: string): ScoreReducer {
-  return (cases) => labelGroup(`tag:${tag}`, reduceCaseGroup(cases));
-}
-
-/** Filter cases by group name. */
-export function byGroupFilter(group: string): CaseFilter {
-  return (cases) => cases.filter((c) => c.group === group);
 }
