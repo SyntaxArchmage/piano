@@ -61,7 +61,7 @@
 | 类别 | 文件 | 写入者 | 时机 | 用途 |
 |---|---|---|---|---|
 | 观测三件套 ⑨⑩⑪ | logging包（session.ts:81-83） | CLI创建session时开、全程写 | TUI面板、`piano logs` |
-| 进度 ⑫⑬ | progress.ts | 每accepted stage append jsonl；状态文档在每次append后重写 | watch/监控；**jsonl是证据源，status.json只是投影** |
+| 进度 ⑫ | progress.ts | 每 accepted stage / region finalize / actor turn 折进 `status.json` 并原子重写；`progress.jsonl` 已退休，不再有 jsonl | watch/监控；**status.json 是唯一状态文档，不是任何 jsonl 的投影** |
 | 恢复 ⑭ | resume-state.ts:22-35 | 每轮prompt后重写 | `piano resume`：靠sessionId+transcriptPath续内层harness会话 |
 | 契约溯源 ⑮ | contract-snapshot.ts | worker启动前写一次 | evals回读时重算sha256验证 |
 | 会话转录 ㉔ | harness subprocess adapter | 子进程每行stdout原样落盘 | 唯一的"全量原始对话"存档；解析后的事件不另存文件 |
@@ -69,7 +69,7 @@
 | handoff链 ㉖㉗㉘ | handoff.ts:88-162 | stage验收后/消费者启动前 | 跨stage传证据的不可变JSON |
 | 轨迹流 ⑱-㉓ | @piano/trajectory recorders | 观测事件驱动，append | evals评分优先读这里，缺index.json才回退读⑫⑨⑪（legacy-run-adapter；⑪现为 trajectory.jsonl） |
 | workspace ⑯⑰㉙㉚ | workspace.ts | slot创建/record原子写；tournament边界冻结 | 恢复/回滚/合并winner |
-| 共享home ②-⑤ | harness-home `writeGenerated`（.tmp+rename） | **每次run都会再生成覆盖** | 非run私有，不属runDir |
+| 共享home ②-⑤ | `@piano/base` 的 `writeFileAtomic`（`mode: 0o600`） | **每次run都会再生成覆盖** | 非run私有，不属runDir |
 
 ## "多少个"——以 canonical gpu-cuda-tuning.yml（10轮、单lane、validate:true）粗算
 
@@ -78,6 +78,6 @@
 ## 几个容易误解的点
 
 - **stream-json 解析结果不落独立文件**：claude 的每行 JSON 只原样进 ㉔；归一化后走内存事件 → ⑪/⑨/⑱-㉒。
-- **⑫ progress.jsonl 是 append-only 证据源**，⑬ progress.json 可随意替换——注释明说（progress.ts:137-139）。
+- **⑫ 只有一份状态**：`progress.jsonl` 与 `progress.json` 都已退休，每条 progress 记录由 `applyRunStatusRecord` 直接折进 `status.json`；证据仍在 `system-log/` 的三条流里，`status.json` 是它们的折叠结果而不是第二份真相。
 - **agent 生成的非代码文件**（workspace 内，recipe 规定）：如 `reports/verify.json` 与 benchmark 原始输出由 agent 写；**`rounds/iter-NNN.json` 与 `state/tuning-state.json` 由 orchestrator 写**（`materializeGpuPromotion`，workflow-execution.ts:870,894），agent 被告知不许碰。另外 winner 自动 commit 进的是 workspace 的 git 历史，不是 run 文件。
 - **evals 的分数不在 runDir 里**：run 内只有轨迹，评分发生在读取侧，只有 `~/.piano/evals/<case>/history.jsonl`、`baseline.json` 和 `report.json`（cli/src/evals.ts:180-181）落盘。
