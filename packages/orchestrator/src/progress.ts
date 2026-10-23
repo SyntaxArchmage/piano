@@ -13,7 +13,6 @@ import {
 } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
 import type { AgentContinuation } from "@piano/harness";
-import type { ContractProjection } from "@piano/contract";
 
 /** Orchestrator-owned, worker-neutral progress counters. The fold takes the
  * counts and the lane coordinates from here and writes them to the run
@@ -91,9 +90,9 @@ export interface WorkflowProgressCurrent {
  *
  * It carries what the fold reads and nothing else. The rest of an acceptance
  * — the workspace binding, the harness and session, the result file and its
- * content pin, the metrics, the requested and effective model, the contract —
- * is evidence the `invocation-accepted` row and the result file already hold,
- * and the fold never asks this record for it. */
+ * content pin, the metrics, the projections, the requested and effective
+ * model, the contract — is evidence the `invocation-accepted` row and the
+ * result file already hold, and the fold never asks this record for it. */
 export interface WorkflowProgressRecord {
   readonly timestamp: string;
   readonly runId: string;
@@ -104,10 +103,8 @@ export interface WorkflowProgressRecord {
   readonly instanceId?: string;
   readonly iteration?: number;
   readonly attempt: number;
-  /** Stable aggregate hint for monitors. */
+  /** The counters and lane coordinates the fold writes into the document. */
   readonly progress?: WorkflowProgressProjection;
-  /** Contract-declared values available to workflow consumers. */
-  readonly projections?: readonly ContractProjection[];
 }
 
 /** One invocation starting.

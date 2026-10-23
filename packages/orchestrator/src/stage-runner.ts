@@ -1099,7 +1099,6 @@ export function executeStage(
         })(),
         attempt: result.attempts,
         progress,
-        ...(result.projections === undefined ? {} : { projections: result.projections }),
       });
       // The actor table needs no second write here: this stage's turn already
       // appended its own `actor-turn` row, which is what a resume folds.
