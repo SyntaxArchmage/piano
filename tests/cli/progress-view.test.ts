@@ -39,7 +39,6 @@ function record(): Omit<WorkflowProgressRecord, "timestamp"> {
     stage: "tune",
     worker: "basic",
     attempt: 1,
-    harness: "pi",
     progress: {
       status: "accepted",
       acceptedStages: 1,

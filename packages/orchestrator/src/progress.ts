@@ -96,10 +96,10 @@ export interface WorkflowProgressCurrent {
  * orchestrator accepted.
  *
  * It carries what the fold reads and nothing else. The rest of an acceptance
- * — the workspace binding, the result file and its content pin, the metrics,
- * the requested and effective model, the contract — is evidence the
- * `invocation-accepted` row and the result file already hold, and the fold
- * never asks this record for it. */
+ * — the workspace binding, the harness and session, the result file and its
+ * content pin, the metrics, the requested and effective model, the contract —
+ * is evidence the `invocation-accepted` row and the result file already hold,
+ * and the fold never asks this record for it. */
 export interface WorkflowProgressRecord {
   readonly timestamp: string;
   readonly runId: string;
@@ -110,15 +110,8 @@ export interface WorkflowProgressRecord {
   readonly instanceId?: string;
   readonly iteration?: number;
   readonly attempt: number;
-  /** Harness that ran the turn. The fold does not read it — the actor table is
-   * written from `actor-turn` — so it is kept only because the two records are
-   * still one write path; it is a removal candidate. */
-  readonly harness: string;
   /** Stable aggregate hint for monitors. */
   readonly progress?: WorkflowProgressProjection;
-  /** Accepted validator payload, carried beside the acceptance. The fold does
-   * not read it; the stage's trajectory is written from the stage result. */
-  readonly resultPayload?: unknown;
   /** Contract-declared values available to workflow consumers. */
   readonly projections?: readonly ContractProjection[];
 }

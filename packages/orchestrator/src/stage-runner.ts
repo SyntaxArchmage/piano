@@ -1098,9 +1098,7 @@ export function executeStage(
           return loop === undefined ? {} : { iteration: loop.iteration };
         })(),
         attempt: result.attempts,
-        harness: node.stage.harness,
         progress,
-        ...(result.resultPayload === undefined ? {} : { resultPayload: result.resultPayload }),
         ...(result.projections === undefined ? {} : { projections: result.projections }),
       });
       // The actor table needs no second write here: this stage's turn already

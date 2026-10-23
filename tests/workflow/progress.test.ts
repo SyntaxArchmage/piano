@@ -37,7 +37,6 @@ function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowP
     stage: "measure",
     worker: "legacy-worker",
     attempt: 1,
-    harness: "pi",
     ...overrides,
   };
 }
