@@ -137,7 +137,6 @@ describe("parallel presentation", () => {
     await mkdir(join(root, id, "eval-metrics"));
     await writeFile(join(root, id, "log.jsonl"), JSON.stringify({ type: "run.started", workspace }) + "\n");
     await writeFile(join(root, id, "status.json"), JSON.stringify({
-      version: 1,
       runId: id,
       status: "running",
       completedStages: progress.completed,

@@ -90,7 +90,6 @@ describe("half-way stop: Escape, /exit, and /resume in one UX", () => {
       // rather than reject the snapshot (an unknown status hid the whole graph).
       const snapshotPath = join(runsRoot, "status.json");
       await writeFile(snapshotPath, `${JSON.stringify({
-        version: 1,
         updatedAt: new Date().toISOString(),
         runId: "run-1",
         status: "paused",

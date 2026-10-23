@@ -111,7 +111,6 @@ export interface RunTurn {
 /** The run's state: identity, lifecycle status, error, and the job/actor
  * tables — everything a reader asks for, in one document. */
 export interface RunStatus {
-  readonly version: 1;
   readonly runId: string;
   readonly updatedAt: string;
   readonly status: RunLifecycleStatus;
@@ -173,7 +172,6 @@ function trajectoryStatusFields(trajectory: TrajectoryDocument): Partial<RunStat
  * invocations, stage counts) is written as the run schedules. */
 export function emptyRunStatus(runId: string, timestamp: string): RunStatus {
   return {
-    version: 1,
     runId,
     updatedAt: timestamp,
     status: "running",

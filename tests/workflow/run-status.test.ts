@@ -58,7 +58,6 @@ describe("run status", () => {
     ]);
 
     expect(status).toMatchObject({
-      version: 1,
       runId: "run-1",
       updatedAt: timestamp,
       status: "running",
