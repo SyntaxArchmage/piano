@@ -57,6 +57,10 @@ export interface RunPipelineDeps {
    * the persistence path can be pointed at fixtures. Defaults to the
    * user-level evals root. */
   readonly historyRoot?: string;
+  /** Where workspace templates get copied and executed; injectable so a run
+   * can keep its workspaces outside the user-level evals root. Defaults to
+   * `~/.piano/evals`. */
+  readonly workspaceRoot?: string;
   /** Case-execution seam (defaults to the real `runCase`); injectable so the
    * per-case persistence path is testable without running a harness. */
   readonly runCase?: RunCaseFn;
@@ -166,6 +170,7 @@ export function runEvalPipeline(
           trial,
           ...(pinned === undefined ? {} : { baseline: pinned }),
           ...(options.variant === undefined ? {} : { variant: options.variant }),
+          ...(deps.workspaceRoot === undefined ? {} : { workspaceRoot: deps.workspaceRoot }),
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
           // Live progress goes to the caller's sink (stderr in the CLI).
           ...(deps.onProgress === undefined ? {} : { onProgress: deps.onProgress }),

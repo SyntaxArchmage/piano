@@ -16,16 +16,32 @@ if (!existsSync(runsRoot)) {
   process.exit(0);
 }
 
+// The run's streams live under system-log/; older runs kept them at the root.
+const logPathOf = (dir) => [
+  join(dir, "system-log", "log.jsonl"),
+  join(dir, "log.jsonl"),
+].find((path) => existsSync(path));
+
 const ids = readdirSync(runsRoot).filter((d) => {
-  try { return existsSync(join(runsRoot, d, "log.jsonl")); } catch { return false; }
+  try { return logPathOf(join(runsRoot, d)) !== undefined; } catch { return false; }
 }).sort();
+
+// Prefer the run this workspace belongs to: concurrent eval cases create
+// their own runs, and "newest" would measure another case's work.
+const statusOf = (dir) => {
+  try { return JSON.parse(readFileSync(join(dir, "status.json"), "utf8")); } catch { return undefined; }
+};
+const owned = (id) => {
+  const workspaceCwd = statusOf(join(runsRoot, id))?.workspaceCwd;
+  return typeof workspaceCwd === "string" && workspaceCwd === process.cwd();
+};
 
 if (ids.length === 0) {
   console.log("runtime_overhead_ms: 0");
   process.exit(0);
 }
 
-const runDir = join(runsRoot, ids[ids.length - 1]);
+const runDir = join(runsRoot, ids.findLast(owned) ?? ids[ids.length - 1]);
 
 function parseJsonl(path) {
   try {
@@ -35,8 +51,11 @@ function parseJsonl(path) {
   } catch { return []; }
 }
 
-const traceLines = parseJsonl(join(runDir, "trace.jsonl"));
-const logLines = parseJsonl(join(runDir, "log.jsonl"));
+const traceLines = parseJsonl(
+  [join(runDir, "system-log", "trace.jsonl"), join(runDir, "trace.jsonl")]
+    .find((path) => existsSync(path)) ?? join(runDir, "trace.jsonl"),
+);
+const logLines = parseJsonl(logPathOf(runDir) ?? join(runDir, "log.jsonl"));
 
 // --- bucket 1: LLM inference (sendPrompt spans) ---
 let llmMs = 0;

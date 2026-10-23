@@ -37,13 +37,25 @@ import type {
 
 /** Fold per-invocation message counts from the stage transcripts. */
 function foldMessages(stages: readonly StageObservation[]): MessageCounts {
-  let count = 0;
-  let rounds = 0;
+  // Stages that resume one session share its transcript; the same
+  // conversation must not be counted once per stage. Keep the largest
+  // snapshot per transcript (counts only grow as the session does).
+  const byTranscript = new Map<string, { count: number; rounds: number }>();
   for (const stage of stages) {
     const transcript = stage.transcript;
     if (transcript === undefined) continue;
-    count += transcript.messageCount;
-    rounds += transcript.assistantMessageCount;
+    const key = stage.transcriptPath ?? stage.invocationId;
+    const prior = byTranscript.get(key);
+    byTranscript.set(key, {
+      count: Math.max(prior?.count ?? 0, transcript.messageCount),
+      rounds: Math.max(prior?.rounds ?? 0, transcript.assistantMessageCount),
+    });
+  }
+  let count = 0;
+  let rounds = 0;
+  for (const entry of byTranscript.values()) {
+    count += entry.count;
+    rounds += entry.rounds;
   }
   return { count, rounds };
 }
@@ -217,7 +229,6 @@ export function readRunTrace(
       stageId: record.stageId,
       worker: record.worker,
       contractDigest: record.contract.digest,
-      accepted: true,
     }));
 
     return {

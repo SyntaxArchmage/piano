@@ -363,7 +363,10 @@ export function assessCaseEvidence(
     if ((result.trace?.stages.length ?? 0) === 0) {
       issues.push({ code: "stage-evidence-missing", message: "no stage-level trajectory evidence was linked" });
     }
-    if (result.metric !== undefined) {
+    // A case that does not require evidence is scored by the grader-owned
+    // benchmark instead of an in-run recorder stream (the workflow-perf
+    // family): the run itself has no metric contract to record.
+    if (result.metric !== undefined && policy.requireEvidence) {
       const measurements = (result.trace?.benchmarks ?? [])
         .filter((measurement) =>
           measurement.name === result.metric?.name &&
