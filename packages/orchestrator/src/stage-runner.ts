@@ -1098,20 +1098,10 @@ export function executeStage(
           return loop === undefined ? {} : { iteration: loop.iteration };
         })(),
         attempt: result.attempts,
-        workspace: result.workspace,
-        actorKey,
         harness: node.stage.harness,
-        sessionId: result.sessionId,
-        transcriptPath: result.transcriptPath,
-        ...(result.resultPath === undefined ? {} : { resultPath: result.resultPath }),
-        ...(result.requestedModel === undefined ? {} : { requestedModel: result.requestedModel }),
-        ...(result.requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel: result.requestedThinkingLevel }),
-        ...(result.model === undefined ? {} : { model: result.model }),
-        ...(result.thinkingLevel === undefined ? {} : { thinkingLevel: result.thinkingLevel }),
         progress,
         ...(result.resultPayload === undefined ? {} : { resultPayload: result.resultPayload }),
         ...(result.projections === undefined ? {} : { projections: result.projections }),
-        ...(result.contract === undefined ? {} : { contract: result.contract }),
       });
       // The actor table needs no second write here: this stage's turn already
       // appended its own `actor-turn` row, which is what a resume folds.

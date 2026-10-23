@@ -12,8 +12,6 @@ import {
   type RunStatus,
 } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
-import type { WorkflowWorkspaceBinding } from "./workspace.js";
-import type { WorkerContractReference } from "./contract-snapshot.js";
 import type { AgentContinuation } from "@piano/harness";
 import type { ContractProjection } from "@piano/contract";
 
@@ -95,7 +93,13 @@ export interface WorkflowProgressCurrent {
 /** One accepted stage's payload, folded into the state document's counters
  * and current pointer. This is separate from the agent transcript: the
  * transcript explains how the worker reasoned, while this states what the
- * orchestrator accepted and what evidence downstream stages may consume. */
+ * orchestrator accepted.
+ *
+ * It carries what the fold reads and nothing else. The rest of an acceptance
+ * — the workspace binding, the result file and its content pin, the metrics,
+ * the requested and effective model, the contract — is evidence the
+ * `invocation-accepted` row and the result file already hold, and the fold
+ * never asks this record for it. */
 export interface WorkflowProgressRecord {
   readonly timestamp: string;
   readonly runId: string;
@@ -106,34 +110,17 @@ export interface WorkflowProgressRecord {
   readonly instanceId?: string;
   readonly iteration?: number;
   readonly attempt: number;
-  readonly workspace: WorkflowWorkspaceBinding;
-  /** Actor this turn belongs to, as produced by `workflowActorKey`. Stored
-   * rather than derived: the key's lane covers map frames only, while
-   * `instanceId` also covers loop frames, so the two are not interchangeable
-   * and a resume cannot reconstruct the key from this record's other fields. */
-  readonly actorKey: string;
-  /** Harness that owns `sessionId`/`transcriptPath`, so a resume can rebuild an
-   * `AgentContinuation` without guessing which harness wrote them. */
+  /** Harness that ran the turn. The fold does not read it — the actor table is
+   * written from `actor-turn` — so it is kept only because the two records are
+   * still one write path; it is a removal candidate. */
   readonly harness: string;
-  /** Harness session used for this accepted turn; repeated loop invocations
-   * of the same actor keep the same value when continuation is supported. */
-  readonly sessionId: string;
-  readonly transcriptPath: string;
-  readonly resultPath?: string;
-  /** Configuration requested by the workflow before provider capability
-   * resolution. Keep it separate from the effective harness values below. */
-  readonly requestedModel?: string;
-  readonly requestedThinkingLevel?: string;
-  readonly model?: string;
-  readonly thinkingLevel?: string;
-  /** Stable aggregate hint for monitors; the full payload remains below. */
+  /** Stable aggregate hint for monitors. */
   readonly progress?: WorkflowProgressProjection;
-  /** Accepted validator payload retained verbatim as stage evidence. */
+  /** Accepted validator payload, carried beside the acceptance. The fold does
+   * not read it; the stage's trajectory is written from the stage result. */
   readonly resultPayload?: unknown;
   /** Contract-declared values available to workflow consumers. */
   readonly projections?: readonly ContractProjection[];
-  /** Immutable worker contract used to accept this result. */
-  readonly contract?: WorkerContractReference;
 }
 
 /** One invocation starting.
