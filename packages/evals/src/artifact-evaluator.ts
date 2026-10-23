@@ -86,7 +86,6 @@ export function evaluateBaseline(
       ...(kase.metric === undefined ? {} : { metric: kase.metric.name, direction: kase.metric.direction }),
       rawOutput,
       passed: result.code === 0 && value !== undefined,
-      source: "baseline" as const,
     };
   }));
 }

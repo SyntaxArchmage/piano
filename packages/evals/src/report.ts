@@ -70,25 +70,26 @@ function rateColor(rate: number): string {
   return RED;
 }
 
-function formatCompactTokens(tokens: number): string {
+/** Byte-compact token count shared by the matrix and the live progress line. */
+export function formatCompactTokens(tokens: number): string {
   return tokens >= 1_000_000 ? `${(tokens / 1_000_000).toFixed(2)}M` : String(tokens);
 }
 
 function trajectoryTokens(kase: CaseResult): number {
-  return kase.workflowTrajectory?.tokens.total ?? kase.trajectory.totalTokens;
+  return kase.trace?.tokens.total ?? 0;
 }
 
 function trajectoryToolCalls(kase: CaseResult): number {
-  return kase.workflowTrajectory?.tools.count ?? kase.trajectory.toolCallCount;
+  return kase.trace?.tools.count ?? 0;
 }
 
 /** Whole-run cost scores for a native trajectory. Both numbers are
  * intrinsic ratios needing no reference: tool-ok is the share of opened
  * calls that did not fail, first-pass the share of finished stage
  * invocations accepted on attempt 1. Renders only what the streams
- * provide; returns undefined (no line at all) for legacy runs. */
+ * provide; returns undefined (no line at all) for runs without a trace. */
 function formatCostLine(kase: CaseResult): string | undefined {
-  const trajectory = kase.workflowTrajectory;
+  const trajectory = kase.trace;
   if (trajectory === undefined) return undefined;
   const parts: string[] = [`tokens=${formatCompactTokens(trajectory.tokens.total)}`];
   const toolRate = toolSuccessRate(trajectory.tools);
@@ -106,7 +107,7 @@ function formatCostLine(kase: CaseResult): string | undefined {
 /** The intrinsic trajectory score for the case's metric (the benchmark
  * series matching `metric.name`, else the only/first series key). */
 function trajectoryScore(kase: CaseResult): number | undefined {
-  const scores = kase.workflowTrajectory?.benchmarkScore?.score;
+  const scores = kase.trace?.benchmarkScore?.score;
   if (scores === undefined) return undefined;
   const keys = Object.keys(scores);
   if (keys.length === 0) return undefined;
@@ -158,7 +159,7 @@ function testIntegrityColor(kase: CaseResult): string | undefined {
  * (e.g. tuning-protocol deviations); the report only shows both numbers. */
 function runBest(kase: CaseResult): number | undefined {
   const name = kase.metric?.name;
-  const best = name === undefined ? undefined : kase.workflowTrajectory?.benchmarkScore?.best;
+  const best = name === undefined ? undefined : kase.trace?.benchmarkScore?.best;
   if (best === undefined) return undefined;
   const match = Object.entries(best).find(([key]) => key.split(String.fromCharCode(0))[0] === name);
   const value = match?.[1];
@@ -384,9 +385,9 @@ const TUNING_MATRIX_FAMILY: MatrixFamily = {
     {
       header: "base",
       width: 8,
-      text: (kase) => numberText((kase.artifact.baseline ?? kase.baseline)?.value, 4),
+      text: (kase) => numberText(kase.baseline?.value, 4),
       delta: {
-        of: (kase) => (kase.artifact.baseline ?? kase.baseline)?.value,
+        of: (kase) => kase.baseline?.value,
         scale: "value",
         digits: 4,
         better: metricDirection,
@@ -431,12 +432,12 @@ const TUNING_MATRIX_FAMILY: MatrixFamily = {
       header: "sel",
       pad: 2,
       width: 6,
-      text: (kase) => rateText(selectionApplyRate(kase.workflowTrajectory?.selection)),
+      text: (kase) => rateText(selectionApplyRate(kase.trace?.selection)),
       color: (kase) => {
-        const rate = selectionApplyRate(kase.workflowTrajectory?.selection);
+        const rate = selectionApplyRate(kase.trace?.selection);
         return rate === undefined ? undefined : rateColor(rate);
       },
-      delta: { of: (kase) => selectionApplyRate(kase.workflowTrajectory?.selection), scale: "points", better: "higher" },
+      delta: { of: (kase) => selectionApplyRate(kase.trace?.selection), scale: "points", better: "higher" },
     },
     {
       header: "quality",
@@ -453,12 +454,12 @@ const TUNING_MATRIX_FAMILY: MatrixFamily = {
       header: "tool-ok",
       pad: 2,
       width: 7,
-      text: (kase) => rateText(toolSuccessRate(kase.workflowTrajectory?.tools)),
+      text: (kase) => rateText(toolSuccessRate(kase.trace?.tools)),
       color: (kase) => {
-        const rate = toolSuccessRate(kase.workflowTrajectory?.tools);
+        const rate = toolSuccessRate(kase.trace?.tools);
         return rate === undefined ? undefined : rateColor(rate);
       },
-      delta: { of: (kase) => toolSuccessRate(kase.workflowTrajectory?.tools), scale: "points", better: "higher" },
+      delta: { of: (kase) => toolSuccessRate(kase.trace?.tools), scale: "points", better: "higher" },
     },
     {
       header: "1st-pass",
@@ -665,7 +666,7 @@ const DEVELOP_MATRIX_FAMILY: MatrixFamily = {
   note: (kase) => {
     const dimensions = kase.dimensions;
     if (dimensions === undefined) return undefined;
-    const effective = kase.stageTrajectories?.find((stage) => stage.thinkingLevel !== undefined)?.thinkingLevel;
+    const effective = kase.trace?.stages.find((stage) => stage.thinkingLevel !== undefined)?.thinkingLevel;
     if (effective === undefined || effective === dimensions.effort) return undefined;
     return `${YELLOW}  ! thinking: ${dimensions.model} ${dimensions.effort}#${kase.trial}`
       + ` requested=${dimensions.effort} effective=${effective}${RST}`;
@@ -737,12 +738,12 @@ const AGENTIC_MATRIX_FAMILY: MatrixFamily = {
       header: "tool-ok",
       width: 7,
       pad: 2,
-      text: (kase) => rateText(toolSuccessRate(kase.workflowTrajectory?.tools)),
+      text: (kase) => rateText(toolSuccessRate(kase.trace?.tools)),
       color: (kase) => {
-        const rate = toolSuccessRate(kase.workflowTrajectory?.tools);
+        const rate = toolSuccessRate(kase.trace?.tools);
         return rate === undefined ? undefined : rateColor(rate);
       },
-      delta: { of: (kase) => toolSuccessRate(kase.workflowTrajectory?.tools), scale: "points", better: "higher" },
+      delta: { of: (kase) => toolSuccessRate(kase.trace?.tools), scale: "points", better: "higher" },
     },
     {
       header: "1st-pass",
@@ -996,21 +997,15 @@ export function formatReport(
       ? ` metric=${kase.artifact.value.toFixed(4)}`
       : kase.metric === undefined ? "" : " metric=n/a";
     const verified = kase.artifact.verified ? "" : ` ${RED}(unverified)${RST}`;
-    const stageCount = kase.stageTrajectories?.length ?? 0;
-    const progressCount = kase.progress?.length ?? 0;
-    const snapshot = kase.runStatus;
-    const completedStages = typeof snapshot?.completedStages === "number" ? snapshot.completedStages : undefined;
-    const plannedStages = typeof snapshot?.plannedStages === "number" ? snapshot.plannedStages : undefined;
-    const current = typeof snapshot?.current === "object" && snapshot.current !== null
-      ? snapshot.current as Record<string, unknown>
-      : undefined;
-    const currentLabel = typeof current?.stageId === "string"
-      ? ` current=${current.stageId}${typeof current.invocationId === "string" ? `@${current.invocationId.split("@")[1] ?? "root"}` : ""}`
-      : "";
-    const plannedLabel = completedStages === undefined || plannedStages === undefined
+    const stageCount = kase.trace?.stages.length ?? 0;
+    const summary = kase.runStatus;
+    const currentLabel = summary?.currentStageId === undefined
       ? ""
-      : ` completed=${completedStages}/${plannedStages}`;
-    const baselineMeasurement = kase.artifact.baseline ?? kase.baseline;
+      : ` current=${summary.currentStageId}`;
+    const plannedLabel = summary === undefined
+      ? ""
+      : ` completed=${summary.completedStages}/${summary.plannedStages}`;
+    const baselineMeasurement = kase.baseline;
     const baseline = baselineMeasurement?.value === undefined
       ? kase.metric === undefined ? "" : " baseline=n/a"
       : ` baseline=${baselineMeasurement.value.toFixed(4)}`;
@@ -1026,48 +1021,41 @@ export function formatReport(
       ? " tests=n/a"
       : ` tests=${tests.passed}/${tests.passed + tests.failed} pass=${(tests.passRate * 100).toFixed(1)}% failed=${tests.failed} skipped=${tests.skipped}`;
     lines.push(
-      `  ${`${kase.caseId}#${kase.trial}`.padEnd(24)} ${status}${metric}${verified}${baseline}${improvement}${quality} evidence=${evidenceState}${testState} loc=${kase.codeChanges?.total ?? "n/a"} (+${kase.codeChanges?.additions ?? 0}/-${kase.codeChanges?.deletions ?? 0}) files=${kase.codeChanges?.files ?? "n/a"} test=${kase.codeChanges === undefined ? "n/a" : kase.codeChanges.testIntegrity.cheating ? "CHEAT" : "OK"} tokens=${trajectoryTokens(kase)} rounds=${kase.trajectory.rounds} messages=${kase.trajectory.messageCount} tools=${trajectoryToolCalls(kase)} stages=${stageCount} progress=${progressCount}${plannedLabel}${currentLabel} time=${kase.durationMs ?? 0}ms`,
+      `  ${`${kase.caseId}#${kase.trial}`.padEnd(24)} ${status}${metric}${verified}${baseline}${improvement}${quality} evidence=${evidenceState}${testState} loc=${kase.codeChanges?.total ?? "n/a"} (+${kase.codeChanges?.additions ?? 0}/-${kase.codeChanges?.deletions ?? 0}) files=${kase.codeChanges?.files ?? "n/a"} test=${kase.codeChanges === undefined ? "n/a" : kase.codeChanges.testIntegrity.cheating ? "CHEAT" : "OK"} tokens=${trajectoryTokens(kase)} rounds=${kase.trace?.messages.rounds ?? 0} messages=${kase.trace?.messages.count ?? 0} tools=${trajectoryToolCalls(kase)} stages=${stageCount}${plannedLabel}${currentLabel} time=${kase.durationMs ?? 0}ms`,
     );
     const costLine = formatCostLine(kase);
     if (costLine !== undefined) {
       lines.push(`    ${DIM}${costLine}${RST}`);
     }
-    const measurements = kase.artifact.measurements ?? [];
+    const points = kase.trace?.benchmarks ?? [];
     // A native multi-iteration trajectory renders the collapsed per-iteration
     // series (iteration best, vs-previous delta) with both score tracks;
     // everything else keeps the raw measurement chain line exactly as before.
-    const benchmarkScore = kase.workflowTrajectory?.benchmarkScore;
+    const benchmarkScore = kase.trace?.benchmarkScore;
     const seriesEntries = Object.entries(benchmarkScore?.series ?? {})
-      .filter(([, points]) => points.length >= 2)
+      .filter(([, series]) => series.length >= 2)
       .filter(([key]) => kase.metric === undefined || seriesName(key) === kase.metric.name);
     if (seriesEntries.length > 0) {
-      for (const [key, points] of seriesEntries) {
-        lines.push(`    ${DIM}${formatSeriesLine(key, points, benchmarkScore?.score?.[key], kase.scorecard?.performance)}${RST}`);
+      for (const [key, series] of seriesEntries) {
+        lines.push(`    ${DIM}${formatSeriesLine(key, series, benchmarkScore?.score?.[key], kase.scorecard?.performance)}${RST}`);
       }
-    } else if (measurements.length > 0) {
-      lines.push(`    ${DIM}metrics: ${measurements.map((measurement) => `iter${measurement.iteration ?? "?"} ${measurement.metric ?? "metric"}=${measurement.value ?? "?"}${measurement.unit === undefined ? "" : ` ${measurement.unit}`}`).join(" → ")}${RST}`);
+    } else if (points.length > 0) {
+      lines.push(`    ${DIM}metrics: ${points.map((point) => `iter${point.iteration ?? "?"} ${point.name}=${point.value}${point.unit === undefined ? "" : ` ${point.unit}`}`).join(" → ")}${RST}`);
     } else if (kase.metric !== undefined) {
       lines.push(`    ${RED}progress: no recognized benchmark measurements${RST}`);
     }
     for (const issue of kase.evidence?.issues ?? []) {
       lines.push(`    ${RED}evidence issue=${issue.code}: ${issue.message}${issue.path === undefined ? "" : ` [${issue.path}]`}${RST}`);
     }
-    for (const stage of kase.stageTrajectories ?? []) {
+    for (const stage of kase.trace?.stages ?? []) {
       const model = stage.model ?? "configured";
       const thinking = stage.thinkingLevel ?? "configured";
       const requestedModel = stage.requestedModel ?? "default";
       const requestedThinking = stage.requestedThinkingLevel ?? "default";
-      const requestedTools = stage.requestedTools?.join(",") ?? "default";
       const transcript = stage.transcriptPath ?? "n/a";
       const workspace = stage.workspaceCwd ?? "n/a";
       lines.push(
-        `    ${DIM}stage ${stage.stageId}#${stage.invocationId} iter=${stage.iteration ?? "-"} rounds=${stage.rounds} tools=${stage.toolCallCount} tokens=${stage.totalTokens} time=${stage.durationMs ?? 0}ms model=${model} requestedModel=${requestedModel} thinking=${thinking} requestedThinking=${requestedThinking} requestedTools=${requestedTools} cwd=${workspace} transcript=${transcript}${RST}`,
-      );
-    }
-    const progressRecords = kase.progress ?? [];
-    for (const record of progressRecords) {
-      lines.push(
-        `    ${DIM}progress ${String(record.stageId ?? record.stage ?? "stage")} invocation=${String(record.invocationId ?? "n/a")} iter=${record.iteration ?? "-"} transcript=${String(record.transcriptPath ?? "n/a")}${RST}`,
+        `    ${DIM}stage ${stage.stageId}#${stage.invocationId} iter=${stage.iteration ?? "-"} rounds=${stage.transcript?.assistantMessageCount ?? 0} tools=${stage.toolCalls.count} tokens=${stage.tokens.total} time=${stage.durationMs ?? 0}ms model=${model} requestedModel=${requestedModel} thinking=${thinking} requestedThinking=${requestedThinking} cwd=${workspace} transcript=${transcript}${RST}`,
       );
     }
   }
@@ -1106,7 +1094,7 @@ export function formatReport(
 
 /** First-pass acceptance rate for a case's native trajectory, if recorded. */
 function firstPassRate(kase: CaseResult): number | undefined {
-  const attempts = kase.workflowTrajectory?.duration.attempts ?? kase.workflowTrajectory?.tokens.attempts;
+  const attempts = kase.trace?.duration.attempts ?? kase.trace?.tokens.attempts;
   return attempts !== undefined && attempts.total > 0 ? attempts.firstPass / attempts.total : undefined;
 }
 

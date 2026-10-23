@@ -24,17 +24,25 @@ function resultFor(kase: EvalCase, status: CaseResult["status"] = "skipped"): Ca
     tags: kase.tags.map(({ tag }) => tag),
     status,
     workspaceDir: "/tmp/develop-eval",
-    trajectory: {
-      messageCount: 1,
-      assistantMessageCount: 1,
-      rounds: 1,
-      toolCallCount: 2,
-      toolNames: ["read", "edit"],
-      inputTokens: 100,
-      outputTokens: 50,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 150,
+    trace: {
+      complete: true,
+      issues: [],
+      messages: { count: 1, rounds: 1 },
+      tokens: { count: 1, input: 100, output: 50, cacheRead: 0, cacheWrite: 0, total: 150 },
+      tools: { count: 2, failures: 0, names: ["read", "edit"], totalDurationMs: 0 },
+      duration: { count: 0, totalMs: 0, maxMs: 0 },
+      benchmarks: [],
+      stages: status === "completed" && kase.dimensions !== undefined
+        ? [{
+            invocationId: "coding@root",
+            stageId: "coding",
+            worker: "basic",
+            requestedThinkingLevel: kase.dimensions.effort,
+            thinkingLevel: "off",
+            tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, total: 150 },
+            toolCalls: { count: 2, failures: 0 },
+          }]
+        : [],
     },
     artifact: status === "completed"
       ? {
@@ -42,27 +50,6 @@ function resultFor(kase: EvalCase, status: CaseResult["status"] = "skipped"): Ca
           testSummary: { passed: 1264, failed: 3, skipped: 21, total: 1288, passRate: 1264 / 1267 },
         }
       : { verified: false },
-    ...(status === "completed" && kase.dimensions !== undefined
-      ? {
-          stageTrajectories: [{
-            stageId: "coding",
-            invocationId: "coding@root",
-            worker: "basic",
-            messageCount: 1,
-            assistantMessageCount: 1,
-            rounds: 1,
-            toolCallCount: 2,
-            toolNames: ["read", "edit"],
-            inputTokens: 100,
-            outputTokens: 50,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
-            totalTokens: 150,
-            requestedThinkingLevel: kase.dimensions.effort,
-            thinkingLevel: "off",
-          }],
-        }
-      : {}),
     codeChanges: { files: 1, additions: 4, deletions: 2, total: 6, testIntegrity: { cheating: false, addedFiles: 0, modifiedFiles: 0, deletedFiles: 0 } },
     durationMs: 1000,
   };

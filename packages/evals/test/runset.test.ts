@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { NodeFileSystem } from "@effect/platform-node";
-import { listRunSetIds, readRunSetReport } from "../src/runset.js";
+import { listRunSetIds, readRunSetReport, runSetReportPath } from "../src/runset.js";
 
 async function makeRunSet(root: string, id: string, body: string): Promise<void> {
   await mkdir(join(root, id), { recursive: true });
-  await writeFile(join(root, id, "report.json"), body, "utf8");
+  await writeFile(runSetReportPath(root, id), body, "utf8");
 }
 
 describe("persisted eval run sets", () => {

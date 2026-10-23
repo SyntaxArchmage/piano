@@ -7,13 +7,11 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { execFile } from "node:child_process";
 import {
   copyWorkspaceTemplate,
-  DEFAULT_EVALS_ROOT,
   DEFAULT_WORKSPACE_ROOT,
-  loadCase,
   measureWorkspaceChanges,
   prepareWorkspaceDiffBaseline,
-  progressTickLine,
-} from "../src/driver.js";
+} from "../src/workspace.js";
+import { DEFAULT_EVALS_ROOT, loadCase } from "../src/case-loader.js";
 import type { EvalCase } from "../src/types.js";
 
 // A global module-level constant is evaluated once; cache the observed default
@@ -155,35 +153,5 @@ describe("eval workspace destination (ISSUE-016)", () => {
       modifiedFiles: 1,
       deletedFiles: 0,
     });
-  });
-
-  it("renders a live progress tick from the run directory files", async () => {
-    const runDir = await mkdtemp(join(tmpdir(), "piano-eval-tick-"));
-    temporaryRoots.push(runDir);
-    await writeFile(join(runDir, "status.json"), JSON.stringify({
-      runId: "piano-eval-tick",
-      status: "running",
-      completedStages: 12,
-      plannedStages: 82,
-      current: { stageId: "tune.race.implement" },
-    }));
-    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
-    await writeFile(join(runDir, "eval-metrics", "benchmark.jsonl"), [
-      JSON.stringify({ iteration: 0, metric: { name: "tflops", best: 5.5 } }),
-      JSON.stringify({ iteration: 1, metric: { name: "tflops", best: 6.5 } }),
-      // A later iteration that measured worse (reverted idea) must not drag
-      // the displayed all-time best down.
-      JSON.stringify({ iteration: 2, metric: { name: "tflops", best: 4.2 } }),
-      "{torn-partial-line",
-    ].join("\n"));
-    const tick = progressTickLine("case#1", runDir, Date.now() - 120_000);
-    expect(tick).toContain("  case#1");
-    expect(tick).toContain("elapsed=2m");
-    expect(tick).toContain("stages=12/82");
-    expect(tick).toContain("current=tune.race.implement");
-    expect(tick).toContain("iter=2");
-    expect(tick).toContain("best=6.5000 tflops");
-    // A directory with nothing readable yet yields no tick line.
-    expect(progressTickLine("case#1", await mkdtemp(join(tmpdir(), "piano-eval-empty-")), Date.now())).toBeUndefined();
   });
 });

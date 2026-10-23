@@ -1,5 +1,4 @@
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { Data, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
@@ -12,7 +11,7 @@ import type {
   VariantComparison,
   VariantResult,
 } from "./types.js";
-import { historyEntryFromResult, usableBenchmarkValue } from "./evidence.js";
+import { usableBenchmarkValue } from "./evidence.js";
 
 function isBenchmarkMeasurement(value: unknown): value is BenchmarkMeasurement {
   if (!isRecord(value)) return false;
@@ -21,8 +20,7 @@ function isBenchmarkMeasurement(value: unknown): value is BenchmarkMeasurement {
     (value.metric === undefined || typeof value.metric === "string") &&
     (value.direction === undefined || value.direction === "higher" || value.direction === "lower") &&
     typeof value.rawOutput === "string" &&
-    typeof value.passed === "boolean" &&
-    (value.source === "baseline" || value.source === "progress" || value.source === "final");
+    typeof value.passed === "boolean";
 }
 
 export const DEFAULT_EVAL_HISTORY_ROOT = join(homedir(), ".piano", "evals");
@@ -55,7 +53,6 @@ export function readBaseline(
       const entry: unknown = JSON.parse(source);
       if (!isRecord(entry) ||
         !isBenchmarkMeasurement(entry.baseline) ||
-        entry.baseline.source !== "baseline" ||
         usableBenchmarkValue(entry.baseline) === undefined) {
         throw new Error("pinned baseline must contain a valid benchmark measurement");
       }
@@ -135,7 +132,7 @@ export function recordBaseline(
   runSetId: string,
   recordedAt = new Date().toISOString(),
 ): Effect.Effect<EvalHistoryEntry, EvalHistoryError, FileSystem.FileSystem> {
-  if (result.baseline?.source !== "baseline" || usableBenchmarkValue(result.baseline) === undefined) {
+  if (result.baseline === undefined || usableBenchmarkValue(result.baseline) === undefined) {
     return Effect.fail(new EvalHistoryError({
       path: evalBaselinePath(root, result.caseId),
       message: "cannot record a baseline without a parsed baseline measurement",
@@ -157,7 +154,6 @@ export function recordBaseline(
   const path = evalBaselinePath(root, result.caseId);
   return Effect.gen(function* () {
     yield* writeFileAtomic(path, `${JSON.stringify(entry, null, 2)}\n`, {
-      temporaryPath: () => `${path}.${randomUUID()}.tmp`,
       mapError: (cause) => mapFsError(path, cause),
     });
     yield* appendEvalHistory(root, entry);
@@ -193,8 +189,4 @@ export function compareHistoryVariants(
     };
   });
   return { caseId, variants };
-}
-
-export function runHistoryEntry(result: CaseResult, runSetId: string): EvalHistoryEntry {
-  return historyEntryFromResult(result, runSetId);
 }

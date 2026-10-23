@@ -17,19 +17,6 @@ function performanceResult(): CaseResult {
       direction: "higher",
       rawOutput: "TFLOPS: 10",
       passed: true,
-      source: "baseline",
-    },
-    trajectory: {
-      messageCount: 2,
-      assistantMessageCount: 1,
-      rounds: 1,
-      toolCallCount: 1,
-      toolNames: ["bash"],
-      inputTokens: 1,
-      outputTokens: 1,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 2,
     },
     artifact: { verified: true, value: 12 },
     metric: { name: "tflops", direction: "higher" },
@@ -54,27 +41,6 @@ function performanceResult(): CaseResult {
       valid: true,
       issues: [],
     },
-    stageTrajectories: [{
-      stageId: "tune",
-      invocationId: "tune@root",
-      worker: "worker",
-      transcriptPath: "/tmp/run/stage.jsonl",
-      transcriptValid: true,
-      transcriptUserMessageCount: 1,
-      transcriptToolResultCount: 1,
-      messageCount: 2,
-      assistantMessageCount: 1,
-      rounds: 1,
-      toolCallCount: 1,
-      toolNames: ["bash"],
-      inputTokens: 1,
-      outputTokens: 1,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 2,
-    }],
-    progressPath: "/tmp/run/progress.jsonl",
-    progress: [{ iteration: 0, resultPayload: { decision: "KEEP", benchmark: { best: 11 } } }],
   };
 }
 
@@ -92,14 +58,15 @@ describe(" eval report", () => {
     const seriesKey = `tflops${String.fromCharCode(0)}TFLOP/s`;
     const withSeries: CaseResult = {
       ...base,
-      workflowTrajectory: {
-        source: "native",
+      trace: {
         complete: true,
         issues: [],
+        messages: { count: 0, rounds: 0 },
+        stages: [],
         benchmarks: [{
           name: "tflops", unit: "TFLOP/s", direction: "higher", value: 14, samples: [14],
           iteration: 1, invocationId: "tune@root/iter-1", stageId: "tune.race.measure",
-          worker: "store", contractDigest: "0".repeat(64), accepted: true,
+          worker: "store", contractDigest: "0".repeat(64),
         }],
         duration: { count: 0, totalMs: 0, maxMs: 0 },
         tokens: { count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -134,10 +101,11 @@ describe(" eval report", () => {
     const base = performanceResult();
     const withCost: CaseResult = {
       ...base,
-      workflowTrajectory: {
-        source: "native",
+      trace: {
         complete: true,
         issues: [],
+        messages: { count: 0, rounds: 0 },
+        stages: [],
         benchmarks: [],
         duration: { count: 43, totalMs: 4_000_000, maxMs: 500_000, attempts: { total: 42, accepted: 42, firstPass: 40 } },
         tokens: { count: 43, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 2_128_551 },
@@ -167,10 +135,11 @@ describe(" eval report", () => {
         ...base.artifact,
         testSummary: { passed: 1264, failed: 3, skipped: 21, total: 1288, passRate: 1264 / 1267 },
       },
-      workflowTrajectory: {
-        source: "native",
+      trace: {
         complete: true,
         issues: [],
+        messages: { count: 0, rounds: 0 },
+        stages: [],
         benchmarks: [],
         duration: { count: 43, totalMs: 4_000_000, maxMs: 500_000, attempts: { total: 42, accepted: 42, firstPass: 40 } },
         tokens: { count: 43, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 2_128_551 },
@@ -233,10 +202,11 @@ describe(" eval report", () => {
       return {
         ...kase,
         artifact: { verified: true, value: final },
-        workflowTrajectory: {
-          source: "native",
+        trace: {
           complete: true,
           issues: [],
+          messages: { count: 0, rounds: 0 },
+          stages: [],
           benchmarks: [],
           duration: { count: 1, totalMs: 1000, maxMs: 1000 },
           tokens: { count: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },
@@ -322,10 +292,11 @@ describe(" eval report", () => {
       baseline: undefined,
       baselineComparison: undefined,
       artifact: { verified: true },
-      workflowTrajectory: {
-        source: "native",
+      trace: {
         complete: true,
         issues: [],
+        messages: { count: 0, rounds: 0 },
+        stages: [],
         benchmarks: [],
         duration: { count: 1, totalMs: 15_000, maxMs: 15_000, attempts: { total: 1, accepted: 1, firstPass: 1 } },
         tokens: { count: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 6_463 },
@@ -339,8 +310,8 @@ describe(" eval report", () => {
       durationMs: 6_089,
       status: "failed",
       artifact: { verified: false },
-      workflowTrajectory: {
-        ...probe({}).workflowTrajectory!,
+      trace: {
+        ...probe({}).trace!,
         tools: { count: 4, failures: 1, names: ["bash"], totalDurationMs: 1 },
       },
     });
@@ -441,14 +412,15 @@ describe(" eval report", () => {
         taskPass: true,
         executionPass: true,
         evidencePass: false,
-        accepted: true,
+        accepted: false,
         issues: [{ code: "trajectory-missing", message: "no trajectory file" }],
         policy: { requireExecution: true, requireArtifact: true, requireEvidence: true, requireBaseline: false, requireImprovement: false },
       },
-      workflowTrajectory: {
-        source: "native",
+      trace: {
         complete: true,
         issues: ["minor"],
+        messages: { count: 0, rounds: 0 },
+        stages: [],
         benchmarks: [],
         duration: { count: 1, totalMs: 1000, maxMs: 1000 },
         tokens: { count: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2 },

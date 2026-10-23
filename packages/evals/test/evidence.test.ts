@@ -10,7 +10,52 @@ import {
   summarizeTiming,
   validateTranscriptText,
 } from "../src/evidence.js";
-import type { CaseResult } from "../src/types.js";
+import type { CaseResult, RunTrace, TranscriptMetrics } from "../src/types.js";
+
+const transcript: TranscriptMetrics = {
+  messageCount: 2,
+  userMessageCount: 1,
+  assistantMessageCount: 1,
+  toolResultCount: 1,
+  toolCallCount: 1,
+  toolNames: ["bash"],
+  inputTokens: 10,
+  outputTokens: 5,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  totalTokens: 15,
+  finalText: "done",
+  fullText: "done",
+  valid: true,
+  issues: [],
+};
+
+const trace: RunTrace = {
+  complete: true,
+  issues: [],
+  messages: { count: 2, rounds: 1 },
+  tokens: { count: 1, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 },
+  tools: { count: 1, failures: 0, names: ["bash"], totalDurationMs: 5 },
+  duration: { count: 1, totalMs: 40, maxMs: 40 },
+  benchmarks: [{
+    name: "tflops",
+    unit: "TFLOP/s",
+    direction: "higher",
+    value: 11,
+    iteration: 0,
+    invocationId: "tune@root/iter-0",
+  }],
+  stages: [{
+    invocationId: "tune@root",
+    stageId: "tune",
+    worker: "optimizer",
+    transcriptPath: "/tmp/run/stage.jsonl",
+    transcript,
+    tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 },
+    toolCalls: { count: 1, failures: 0 },
+    durationMs: 40,
+  }],
+};
 
 function result(overrides: Partial<CaseResult> = {}): CaseResult {
   return {
@@ -22,98 +67,16 @@ function result(overrides: Partial<CaseResult> = {}): CaseResult {
     status: "completed",
     workspaceDir: "/tmp/matmul",
     runDir: "/tmp/run",
-    trajectoryPath: "/tmp/run/trajectory.json",
-    workflowTrajectoryPath: "/tmp/run/trajectories/index.json",
+    trajectoryPath: "/tmp/run/trajectory.jsonl",
+    evalMetricsDir: "/tmp/run/eval-metrics",
     logPath: "/tmp/run/log.jsonl",
     tracePath: "/tmp/run/trace.jsonl",
     transcriptPath: "/tmp/run/session.jsonl",
-    progressPath: "/tmp/run/progress.jsonl",
     metric: { name: "tflops", direction: "higher" },
-    workflowTrajectory: {
-      source: "native",
-      complete: true,
-      issues: [],
-      benchmarks: [{
-        name: "tflops",
-        unit: "TFLOP/s",
-        direction: "higher",
-        value: 11,
-        iteration: 0,
-        invocationId: "tune@root/iter-0",
-        accepted: true,
-      }],
-      duration: { count: 1, totalMs: 40, maxMs: 40 },
-      tokens: { count: 1, input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 },
-      tools: { count: 1, failures: 0, names: ["bash"], totalDurationMs: 5 },
-    },
-    baseline: { value: 10, metric: "tflops", direction: "higher", rawOutput: "TFLOPS: 10", passed: true, source: "baseline" },
-    artifact: {
-      verified: true,
-      value: 12,
-      measurements: [{
-        value: 11,
-        metric: "tflops",
-        direction: "higher",
-        rawOutput: "TFLOPS: 11",
-        passed: true,
-        source: "progress",
-        iteration: 0,
-        invocationId: "tune@root/iter-0",
-      }],
-    },
-    progress: [{
-      iteration: 0,
-      resultPayload: { decision: "KEEP", benchmark: { metric: "tflops", best: 11, direction: "higher" } },
-    }],
-    stageTrajectories: [{
-      stageId: "tune",
-      invocationId: "tune@root",
-      worker: "optimizer",
-      transcriptPath: "/tmp/run/stage.jsonl",
-      transcriptValid: true,
-      transcriptUserMessageCount: 1,
-      transcriptToolResultCount: 1,
-      messageCount: 2,
-      assistantMessageCount: 1,
-      rounds: 1,
-      toolCallCount: 1,
-      toolNames: ["bash"],
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 15,
-      durationMs: 40,
-    }],
-    trajectory: {
-      messageCount: 2,
-      assistantMessageCount: 1,
-      rounds: 1,
-      toolCallCount: 1,
-      toolNames: ["bash"],
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 15,
-    },
-    transcript: {
-      messageCount: 2,
-      userMessageCount: 1,
-      assistantMessageCount: 1,
-      toolResultCount: 1,
-      toolCallCount: 1,
-      toolNames: ["bash"],
-      inputTokens: 10,
-      outputTokens: 5,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      totalTokens: 15,
-      finalText: "done",
-      fullText: "done",
-      valid: true,
-      issues: [],
-    },
+    trace,
+    baseline: { value: 10, metric: "tflops", direction: "higher", rawOutput: "TFLOPS: 10", passed: true },
+    artifact: { verified: true, value: 12 },
+    transcript,
     evidence: {
       taskPass: true,
       executionPass: true,
@@ -131,6 +94,8 @@ function result(overrides: Partial<CaseResult> = {}): CaseResult {
     ...overrides,
   };
 }
+
+const allAvailable = { run: true, trajectory: true, evalMetrics: true, log: true, trace: true, transcript: true };
 
 describe(" transcript evidence", () => {
   it("continues after malformed NDJSON and reports strict diagnostics", () => {
@@ -183,17 +148,10 @@ describe(" evidence and scorecard", () => {
     expect(compareBenchmark(10, 8, "lower")).toMatchObject({ absoluteImprovement: 2, relativeImprovement: 0.2 });
   });
 
-  it("counts the run's state document as progress evidence", () => {
-    // Current runs write status.json instead of the retired progress stream.
-    const current = { ...result(), progressPath: undefined, runStatusPath: "/tmp/run/status.json" };
-    const assessed = assessCaseEvidence(current);
-    expect(assessed.issues.map((issue) => issue.code)).not.toContain("progress-missing");
-  });
-
   it("separates task, execution, and durable evidence acceptance", () => {
     const complete = result();
     const accepted = assessCaseEvidence(complete, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
       policy: { requireBaseline: true, requireImprovement: true },
     });
     expect(accepted).toMatchObject({ taskPass: true, executionPass: true, evidencePass: true, accepted: true });
@@ -208,39 +166,48 @@ describe(" evidence and scorecard", () => {
         testIntegrity: { cheating: true, addedFiles: 0, modifiedFiles: 1, deletedFiles: 0 },
       },
     }, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
     expect(cheated).toMatchObject({ taskPass: false, evidencePass: false, accepted: false });
     expect(cheated.issues.map((issue) => issue.code)).toContain("test-cheating");
 
     const incomplete = assessCaseEvidence({ ...complete, transcript: { ...complete.transcript!, valid: false } }, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
     expect(incomplete.evidencePass).toBe(false);
     expect(incomplete.issues.map((issue) => issue.code)).toContain("transcript-invalid");
 
+    const stage = complete.trace!.stages[0]!;
     const stageIncomplete = assessCaseEvidence({
       ...complete,
-      transcript: { ...complete.transcript!, valid: true, issues: [] },
-      stageTrajectories: [{ ...complete.stageTrajectories![0]!, transcriptValid: false, transcriptIssues: [{ kind: "syntax", line: 2, message: "bad json" }] }],
+      trace: {
+        ...complete.trace!,
+        stages: [{ ...stage, transcript: { ...stage.transcript!, valid: false, issues: [{ kind: "syntax", line: 2, message: "bad json" }] } }],
+      },
     }, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
     expect(stageIncomplete.issues.map((issue) => issue.code)).toContain("transcript-invalid");
 
     const unlinkedStage = assessCaseEvidence({
       ...complete,
-      stageTrajectories: [{ ...complete.stageTrajectories![0]!, transcriptPath: undefined, transcriptValid: undefined }],
+      trace: {
+        ...complete.trace!,
+        stages: [{ ...stage, transcriptPath: undefined, transcript: undefined }],
+      },
     }, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
     expect(unlinkedStage.issues.map((issue) => issue.code)).toContain("stage-transcript-missing");
 
     const unvalidatedStage = assessCaseEvidence({
       ...complete,
-      stageTrajectories: [{ ...complete.stageTrajectories![0]!, transcriptValid: undefined, transcriptIssues: undefined }],
+      trace: {
+        ...complete.trace!,
+        stages: [{ ...stage, transcript: undefined }],
+      },
     }, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
     expect(unvalidatedStage.issues.map((issue) => issue.code)).toContain("transcript-invalid");
   });
@@ -251,7 +218,7 @@ describe(" evidence and scorecard", () => {
       baseline: { ...result().baseline!, passed: false },
     };
     const assessment = assessCaseEvidence(invalidBaseline, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
       policy: { requireBaseline: true },
     });
     expect(assessment.issues.map((issue) => issue.code)).toEqual(["baseline-invalid", "baseline-missing"]);
@@ -267,8 +234,6 @@ describe(" evidence and scorecard", () => {
       logPath: undefined,
       tracePath: undefined,
       transcriptPath: undefined,
-      progressPath: undefined,
-      stageTrajectories: [],
     });
     expect(assessment.evidencePass).toBe(false);
     expect(assessment.accepted).toBe(false);
@@ -277,28 +242,27 @@ describe(" evidence and scorecard", () => {
   it("reports a performance workflow with an empty measurement stream", () => {
     const incomplete = result({
       artifact: { verified: true, value: 12 },
-      workflowTrajectory: { ...result().workflowTrajectory!, benchmarks: [] },
+      trace: { ...result().trace!, benchmarks: [] },
     });
     const assessment = assessCaseEvidence(incomplete, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
-    expect(assessment.issues.filter((issue) => issue.code === "progress-measurement-missing")).toHaveLength(1);
+    expect(assessment.issues.filter((issue) => issue.code === "metric-measurement-missing")).toHaveLength(1);
     expect(assessment.accepted).toBe(false);
   });
 
   it("rejects a workflow metric whose direction disagrees with the eval case", () => {
     const current = result();
     const mismatched = result({
-      workflowTrajectory: {
-        ...current.workflowTrajectory!,
-        benchmarks: current.workflowTrajectory!.benchmarks.map((point) => ({ ...point, direction: "lower" as const })),
+      trace: {
+        ...current.trace!,
+        benchmarks: current.trace!.benchmarks.map((point) => ({ ...point, direction: "lower" as const })),
       },
     });
     const assessment = assessCaseEvidence(mismatched, {
-      availability: { run: true, trajectory: true, workflowTrajectory: true, log: true, trace: true, transcript: true, progress: true },
+      availability: allAvailable,
     });
-
-    expect(assessment.issues.map((issue) => issue.code)).toContain("progress-measurement-missing");
+    expect(assessment.issues.map((issue) => issue.code)).toContain("metric-measurement-missing");
     expect(assessment.accepted).toBe(false);
   });
 
