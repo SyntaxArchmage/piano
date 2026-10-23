@@ -5,7 +5,7 @@ import type { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { writeFileAtomic } from "../../packages/orchestrator/src/atomic-write.js";
+import { writeFileAtomic } from "@piano/base";
 import { workflowError } from "../../packages/orchestrator/src/errors.js";
 
 const mapError = (path: string) => (cause: unknown) => workflowError("schedule", path, String(cause));

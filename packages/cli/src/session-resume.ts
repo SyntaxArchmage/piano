@@ -17,6 +17,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import type { TurnOutcome } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
 import { parseTrajectory, trajectoryStreamPathCandidates, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
 import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrator";
@@ -25,7 +26,7 @@ import { LogsStorageError } from "./errors.js";
 /** One replayable prompt and the events it produced. */
 interface ResumeTurn {
   readonly prompt: string;
-  readonly status: "completed" | "failed" | "cancelled";
+  readonly status: TurnOutcome;
   readonly events: readonly AgentEvent[];
   /** Recorded failure. Only the final turn can carry one: the trajectory
    * records a single `error`, overwritten each turn. */

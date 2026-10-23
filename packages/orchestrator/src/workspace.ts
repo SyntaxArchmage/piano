@@ -7,6 +7,13 @@ import { promisify } from "node:util";
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { isRecord, TRACE, type Logging, type Source } from "@piano/logging";
+import {
+  workspaceRecordPath,
+  workspaceRecordRoot,
+  workspaceRoot as workspaceRootPath,
+  workspaceStorePath,
+  workspaceWorktreePath as workspacePath,
+} from "@piano/base";
 import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import { isWorkflowIdentifier } from "./workflow.js";
@@ -234,14 +241,6 @@ async function assertSafeWorkspacePathAncestors(root: string, candidate: string)
       throw workflowError("schedule", current, "workspace path ancestor realpath changed");
     }
   }
-}
-
-function workspacePath(runDir: string, key: string): string {
-  return join(runDir, "workspaces", `worktree-${encodeURIComponent(key)}`);
-}
-
-function workspaceRecordPath(runDir: string, key: string): string {
-  return join(runDir, "workspace-records", encodeURIComponent(key), "record.json");
 }
 
 /** The run's lane namespace: `<task-slug>-<runId>`. The run id carries the
@@ -741,7 +740,7 @@ export function allocateMapWorkspace(
       const source = sourceIdentity.canonical;
       const runRoot = await canonicalRunRoot(runDir, true);
       const run = runRoot.canonical;
-      const workspaceRoot = join(run, "workspaces");
+      const workspaceRoot = workspaceRootPath(run);
       if (pathWithin(run, source) && !pathWithin(workspaceRoot, source)) {
         throw workflowError(
           "schedule",
@@ -904,7 +903,7 @@ async function readWorkspaceRecords(
 ): Promise<readonly { readonly path: string; readonly record: WorkflowWorkspaceRecord }[]> {
   await assertCanonicalRunRoot(runRoot);
   const run = runRoot.canonical;
-  const recordsRoot = join(run, "workspace-records");
+  const recordsRoot = workspaceRecordRoot(run);
   try {
     await lstat(recordsRoot);
   } catch (error) {
@@ -1750,7 +1749,7 @@ const PIANO_GIT_IDENTITY_ARGS = ["-c", "user.name=Piano", "-c", "user.email=pian
 /** The run-owned baseline store. Bare, so it never becomes part of a
  * workspace's content and never touches a host repository. */
 async function workspaceBaselineStore(runDir: string): Promise<string> {
-  const storeDir = join(runDir, "git", "workspaces.git");
+  const storeDir = workspaceStorePath(runDir);
   if (!existsSync(join(storeDir, "HEAD"))) {
     await mkdir(dirname(storeDir), { recursive: true });
     await execFileAsync("git", ["init", "--bare", "--quiet", storeDir]);

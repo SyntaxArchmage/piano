@@ -88,6 +88,16 @@
  │   <run>/workspaces/worktree-<key>/  (lanes on tuna/<ns>/lane-<n>)          │
  └────────────────────────────────────────────────────────────────────────────┘
 
+ ┌────────────────  BASE  (packages/base)  ───────────────────────────────────┐
+ │  run-layout.ts  the run directory's only spelling: system-log/ status.json │
+ │                 eval-metrics/ results/ context/ contracts/ sessions/ …     │
+ │  lifecycle.ts   RunLifecycleStatus · TurnOutcome · ExecutionOutcome ·      │
+ │                 JobOutcome · InvocationStatus                              │
+ │  errors.ts      errorMessage · failureDetails · isCancellation             │
+ │  atomic-write.ts  writeFileAtomic · installStagingFile                     │
+ │  Zero @piano/* dependencies: every package above may import it.            │
+ └────────────────────────────────────────────────────────────────────────────┘
+
  ┌────────────────  CONTRACT (packages/contract)  ─┐   ┌────────────────────┐
  │  zod schemas: text-response · profile-report ·  │   │  RECIPES (recipes/)│
  │  optimization-proposal · cuda-round-result ·    │   │  workflows/*.yml   │

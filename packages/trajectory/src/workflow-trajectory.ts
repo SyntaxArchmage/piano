@@ -1,3 +1,4 @@
+import type { TurnOutcome } from "@piano/base";
 import { Effect } from "effect";
 import {
   BenchmarkRecorder,
@@ -12,7 +13,7 @@ import type {
   WorkflowObservationRecorder,
 } from "./types.js";
 
-export type WorkflowTrajectoryStatus = "completed" | "failed" | "cancelled";
+export type WorkflowTrajectoryStatus = TurnOutcome;
 
 /** One recorder stream's health while the run is live. Nothing is persisted:
  * the stream files are the evidence, and a reader derives their health by

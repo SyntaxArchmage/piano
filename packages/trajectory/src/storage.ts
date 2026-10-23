@@ -1,6 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { evalMetricsPath } from "@piano/base";
 import { z } from "zod";
 import {
   TrajectoryReadError,
@@ -13,7 +14,7 @@ function detail(cause: unknown): string {
 }
 
 export function streamPath(runDir: string, descriptor: TrajectoryStreamDescriptor): string {
-  return join(runDir, "eval-metrics", descriptor.path);
+  return evalMetricsPath(runDir, descriptor.path);
 }
 
 export function appendRecord<T>(

@@ -1,8 +1,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
+import { contractSnapshotPath, writeFileAtomic } from "@piano/base";
 import type { CompiledWorkerContract } from "@piano/contract";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 
@@ -19,10 +18,10 @@ function snapshotError(path: string, operation: string, cause: unknown): Workflo
 
 const snapshotSemaphore = Effect.unsafeMakeSemaphore(1);
 
-/** The digest-addressed path a contract's snapshot lives at — the writer's own
+/** The digest-addressed path a contract's snapshot lives at — the run layout's
  * rule, exposed so a rebuilt invocation can list it without rewriting it. */
 export function workerContractSnapshotPath(runDir: string, contract: CompiledWorkerContract): string {
-  return join(runDir, "contracts", `${contract.digest}.json`);
+  return contractSnapshotPath(runDir, contract.digest);
 }
 
 /** Persist the exact declarative contract before a validating worker starts. */

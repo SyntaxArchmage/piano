@@ -1,3 +1,4 @@
+import type { TurnOutcome } from "@piano/base";
 import { Duration, Effect, Fiber } from "effect";
 import { stdin, stdout } from "node:process";
 import { homedir } from "node:os";
@@ -155,7 +156,7 @@ interface TuiReplayTurn {
   readonly events: readonly AgentEvent[];
   /** Terminal state the turn reached. An interrupted turn is `cancelled` and
    * must replay as "interrupted", not as a failed run. */
-  readonly status?: "completed" | "failed" | "cancelled";
+  readonly status?: TurnOutcome;
   /** Failure recorded for this turn, replayed as the same error box the live
    * run showed. */
   readonly error?: FailureDetails;
@@ -1212,7 +1213,7 @@ export function runTui(
           screen.active = promptState;
           deps.onTaskEvent?.({ type: "input.accepted", prompt });
           deps.onTaskEvent?.({ type: "agentic.task.started", prompt });
-          let outcome: "completed" | "failed" | "cancelled" = "completed";
+          let outcome: TurnOutcome = "completed";
           let completion: TuiPromptResult | undefined;
           let failure: FailureDetails | undefined;
           if (!alreadyEchoed) screen.transcript.renderUserMessage(prompt);

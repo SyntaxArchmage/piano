@@ -16,9 +16,14 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 import { parseJsonRecord, parseTrajectory, trajectoryStreamPathCandidates, type TrajectoryDocument } from "@piano/logging";
-import { writeFileAtomic } from "./atomic-write.js";
+import {
+  runStatusPath,
+  writeFileAtomic,
+  type JobOutcome,
+  type RunLifecycleStatus,
+  type TurnOutcome,
+} from "@piano/base";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 
 import {
@@ -73,7 +78,7 @@ export interface RunJob {
   /** The verdict of a job that ended, kept for history and for finding the
    * slots a restart abandoned. Absent while the job is the run's live or
    * paused one. */
-  readonly outcome?: "completed" | "failed" | "restarted";
+  readonly outcome?: JobOutcome;
   /** Invocations accepted across every span of this job — what a continue of
    * this job skips. */
   readonly accepted: readonly RunAcceptedInvocation[];
@@ -101,7 +106,7 @@ export function nextJobOrdinal(jobs: readonly RunJob[]): number {
  * what the replay does. The view does not carry it. */
 export interface RunTurn {
   readonly prompt: string;
-  readonly status: "completed" | "failed" | "cancelled";
+  readonly status: TurnOutcome;
 }
 
 /** The run's state: identity, lifecycle status, error, and the job/actor
@@ -110,7 +115,7 @@ export interface RunStatus {
   readonly version: 1;
   readonly runId: string;
   readonly updatedAt: string;
-  readonly status: "running" | "completed" | "failed" | "paused" | "cancelled";
+  readonly status: RunLifecycleStatus;
   readonly error?: unknown;
   /** Human-assigned run name (set via the TUI `/rename` command). */
   readonly name?: string;
@@ -147,9 +152,7 @@ export interface RunStatus {
   readonly actors: Readonly<Record<string, ResumeActorState>>;
 }
 
-export function runStatusPath(runDir: string): string {
-  return join(runDir, "status.json");
-}
+export { runStatusPath };
 
 /** The state document's trajectory-derived fields. One projection, so the
  * bootstrap fold and the per-write refresh cannot drift. */

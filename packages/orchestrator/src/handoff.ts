@@ -2,7 +2,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { writeFileAtomic } from "./atomic-write.js";
+import { writeFileAtomic } from "@piano/base";
 import { type WorkflowError, workflowError } from "./errors.js";
 import {
   acceptedInvocations,

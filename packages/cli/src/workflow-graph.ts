@@ -9,6 +9,7 @@ import { RST, type PianoTheme } from "./theme.js";
 import { detectSixelSupport, encodeSixelPng } from "./sixel.js";
 import { formatCompactDuration } from "./duration.js";
 import { isRecord } from "@piano/logging";
+import { RUN_LIFECYCLE_STATUSES, type InvocationStatus, type RunLifecycleStatus } from "@piano/base";
 
 interface WorkflowGraphStage {
   readonly id: string;
@@ -59,10 +60,10 @@ interface WorkflowGraphInvocationTime {
 export interface WorkflowGraphSnapshot {
   readonly plannedStages?: number;
   readonly completedStages?: number;
-  readonly status?: "running" | "completed" | "failed" | "paused" | "cancelled";
+  readonly status?: RunLifecycleStatus;
   readonly current?: {
     readonly stageId?: string;
-    readonly status?: "running" | "accepted" | "failed";
+    readonly status?: InvocationStatus;
   };
   readonly stageCounts?: Readonly<Record<string, {
     readonly planned?: number;
@@ -72,8 +73,8 @@ export interface WorkflowGraphSnapshot {
   readonly invocationTime?: Readonly<Record<string, WorkflowGraphInvocationTime>>;
 }
 
-const GRAPH_STATUSES = new Set(["running", "completed", "failed", "paused", "cancelled"]);
-const CURRENT_STATUSES = new Set(["running", "accepted", "failed"]);
+const GRAPH_STATUSES: ReadonlySet<string> = RUN_LIFECYCLE_STATUSES;
+const CURRENT_STATUSES: ReadonlySet<string> = new Set<InvocationStatus>(["running", "accepted", "failed"]);
 
 function nonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

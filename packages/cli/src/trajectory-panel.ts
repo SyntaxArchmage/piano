@@ -5,6 +5,7 @@
 // `emptyTrajectoryState`, `applyTrajectoryEvent`) live in trajectory.ts;
 // this module renders that reduced state. It depends on pi-tui and the CLI theme.
 
+import type { TurnOutcome } from "@piano/base";
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { formatCompactDuration } from "./duration.js";
 import { RST, type PianoTheme } from "./theme.js";
@@ -247,7 +248,7 @@ export class TrajectoryPanel implements Component {
   private state: TrajectoryState = emptyTrajectoryState();
   private sessionId: string | undefined;
   private transcriptPath: string | undefined;
-  private status: "completed" | "failed" | "cancelled" | undefined;
+  private status: TurnOutcome | undefined;
   private error: FailureDetails | undefined;
   private completedAt: number | undefined;
   private scrollTop = 0; // 0-based index into the ledger body (0 = oldest)
@@ -352,7 +353,7 @@ export class TrajectoryPanel implements Component {
   }
 
   complete(result: {
-    status: "completed" | "failed" | "cancelled";
+    status: TurnOutcome;
     sessionId?: string;
     transcriptPath?: string;
     error?: FailureDetails;

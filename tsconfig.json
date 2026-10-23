@@ -3,6 +3,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
+      "@piano/base": ["packages/base/src/index.ts"],
       "@piano/logging": ["packages/logging/src/index.ts"],
       "@piano/orchestrator": ["packages/orchestrator/src/index.ts"],
       "@piano/harness": ["packages/harness/src/index.ts"],

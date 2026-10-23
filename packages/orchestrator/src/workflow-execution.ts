@@ -1,3 +1,4 @@
+import type { TurnOutcome } from "@piano/base";
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
 import {
@@ -822,7 +823,7 @@ export function executeWorkflow(
       ...(request.restartOrdinal === undefined ? [] : [request.restartOrdinal]),
     ]);
     const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
-    const closeWorkflowTrajectory = (status: "completed" | "failed" | "cancelled") =>
+    const closeWorkflowTrajectory = (status: TurnOutcome) =>
       Effect.gen(function* () {
         yield* workflowTrajectory.close(status);
         yield* Effect.forEach(

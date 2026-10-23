@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@effect/platform": "0.97.1",
+    "@piano/base": "0.1.0",
     "effect": "3.22.1"
   }
 }
