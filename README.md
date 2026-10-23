@@ -465,9 +465,9 @@ Key files:
 
 - **`status.json`** — the run's single state document, written by the
   orchestrator as it schedules: `status` (`running` | `completed` | `failed` |
-  `paused` | `cancelled`), the per-prompt `turns`, planned/completed/accepted
-  stage counts, the currently running or last accepted invocation (loop
-  iteration, tournament slot, validation attempt), the job list with each job's
+  `paused` | `cancelled`), the per-prompt `turns`, planned/completed stage
+  counts, the currently running or last accepted invocation (loop iteration,
+  validation attempt), the job list with each job's
   accepted invocations (structured entries: `invocationId`, `stageId`, `frames`,
   `iteration`), attempts and finalized regions, and the actor table —
   the session id and transcript path per conversation, plus

@@ -8,8 +8,8 @@
 // the writer and every reader.
 
 export {
-  EVAL_METRICS_DIR,
-  SYSTEM_LOG_DIR,
+  actorSessionDir,
+  contractSnapshotPath,
   evalMetricsDir,
   evalMetricsPath,
   invocationContextDir,
@@ -18,12 +18,9 @@ export {
   logStreamPath,
   runStatusPath,
   sessionsRoot,
-  actorSessionDir,
   streamPathCandidates,
-  systemLogDir,
   traceStreamPath,
   trajectoryStreamPath,
-  contractSnapshotPath,
   workspaceRecordPath,
   workspaceRecordRoot,
   workspaceRoot,
@@ -32,7 +29,6 @@ export {
 } from "./run-layout.js";
 
 export {
-  RESTING_RUN_STATUSES,
   RUN_LIFECYCLE_STATUSES,
   type ExecutionOutcome,
   type InvocationStatus,
@@ -43,9 +39,4 @@ export {
 
 export { errorMessage, failureDetails, isCancellation, type FailureDetails } from "./errors.js";
 
-export {
-  installStagingFile,
-  writeFileAtomic,
-  type AtomicWriteErrorMapper,
-  type AtomicWriteStep,
-} from "./atomic-write.js";
+export { installStagingFile, writeFileAtomic } from "./atomic-write.js";

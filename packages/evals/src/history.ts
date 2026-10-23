@@ -1,8 +1,10 @@
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { Data, Effect } from "effect";
 import { FileSystem } from "@effect/platform";
+import { writeFileAtomic } from "@piano/base";
+import { appendJsonlLine } from "@piano/logging";
 import type {
   BenchmarkMeasurement,
   CaseResult,
@@ -81,16 +83,11 @@ export function appendEvalHistory(
   const path = evalHistoryPath(root, entry.caseId);
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => mapFsError(path, cause)),
-    );
     const line = yield* Effect.try({
       try: () => `${JSON.stringify(entry)}\n`,
       catch: (cause) => mapFsError(path, cause),
     });
-    yield* fs.writeFileString(path, line, { flag: "a" }).pipe(
-      Effect.mapError((cause) => mapFsError(path, cause)),
-    );
+    yield* appendJsonlLine(fs, path, line, (_step, cause) => mapFsError(path, cause));
   });
 }
 
@@ -163,19 +160,10 @@ export function recordBaseline(
   };
   const path = evalBaselinePath(root, result.caseId);
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => mapFsError(path, cause)),
-    );
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    yield* Effect.gen(function* () {
-      yield* fs.writeFileString(temporary, `${JSON.stringify(entry, null, 2)}\n`).pipe(
-        Effect.mapError((cause) => mapFsError(path, cause)),
-      );
-      yield* fs.rename(temporary, path).pipe(
-        Effect.mapError((cause) => mapFsError(path, cause)),
-      );
-    }).pipe(Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)));
+    yield* writeFileAtomic(path, `${JSON.stringify(entry, null, 2)}\n`, {
+      temporaryPath: () => `${path}.${randomUUID()}.tmp`,
+      mapError: (cause) => mapFsError(path, cause),
+    });
     yield* appendEvalHistory(root, entry);
     return entry;
   });

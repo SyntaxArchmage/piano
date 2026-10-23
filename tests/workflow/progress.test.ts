@@ -37,6 +37,7 @@ function record(overrides: Partial<WorkflowProgressRecord> = {}): Omit<WorkflowP
     stage: "measure",
     worker: "legacy-worker",
     attempt: 1,
+    progress: { completedStages: 0, plannedStages: 4, stageCounts: timingPlan.stageCounts },
     ...overrides,
   };
 }

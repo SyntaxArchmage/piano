@@ -22,7 +22,6 @@ import { FileSystem } from "@effect/platform";
 import {
   acceptedInvocations,
   iterationOfInvocationId,
-  invocationStreamPath,
   parseInvocationRecords,
 } from "@piano/orchestrator";
 import { execFile, spawn } from "node:child_process";
@@ -51,7 +50,7 @@ import type {
   StageTrajectoryMetrics,
   TrajectoryMetrics,
 } from "./types.js";
-import { evalMetricsDir, evalMetricsPath, runStatusPath as baseRunStatusPath, sessionsRoot } from "@piano/base";
+import { evalMetricsDir, evalMetricsPath, invocationStreamPath, runStatusPath, sessionsRoot } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
 import {
   logStreamPathCandidates,
@@ -517,7 +516,7 @@ export function runCase(
     const stageTrajectories = runDir === undefined ? [] : collectStageTrajectories(runDir);
     const progress = runDir === undefined ? [] : progressRecords(runDir);
     const progressPath = runDir === undefined ? undefined : join(runDir, "progress.jsonl");
-    const statusFilePath = runDir === undefined ? undefined : baseRunStatusPath(runDir);
+    const statusFilePath = runDir === undefined ? undefined : runStatusPath(runDir);
     const progressEvidence = {
       ...(progressPath !== undefined && existsSync(progressPath) ? { progressPath, progress } : {}),
       ...(statusFilePath !== undefined && existsSync(statusFilePath)
@@ -1083,7 +1082,7 @@ function progressRecords(runDir: string): Record<string, unknown>[] {
 
 function readStatus(runDir: string): Record<string, unknown> | undefined {
   try {
-    const value = JSON.parse(readFileSync(baseRunStatusPath(runDir), "utf8")) as unknown;
+    const value = JSON.parse(readFileSync(runStatusPath(runDir), "utf8")) as unknown;
     return typeof value === "object" && value !== null && !Array.isArray(value)
       ? value as Record<string, unknown>
       : undefined;
@@ -1194,7 +1193,7 @@ export function findTranscriptPath(runDir: string): string | undefined {
   try {
     // The run's state document says where its transcript lives. The scan below
     // is for a run that failed before it recorded one.
-    const raw = readFileSync(baseRunStatusPath(runDir), "utf8");
+    const raw = readFileSync(runStatusPath(runDir), "utf8");
     const status = JSON.parse(raw) as { transcriptPath?: unknown };
     if (typeof status.transcriptPath === "string" && existsSync(status.transcriptPath)) {
       return status.transcriptPath;

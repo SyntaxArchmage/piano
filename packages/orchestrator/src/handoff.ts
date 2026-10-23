@@ -1,6 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { writeFileAtomic } from "@piano/base";
 import { type WorkflowError, workflowError } from "./errors.js";
@@ -105,7 +105,6 @@ function writeJsonAtomic(
   value: unknown,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   return writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
-    temporaryPath: () => `${path}.${randomUUID()}.tmp`,
     mapError: (cause) => mapFsError(path, cause),
   });
 }

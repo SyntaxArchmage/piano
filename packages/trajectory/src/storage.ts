@@ -1,17 +1,13 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname } from "node:path";
-import { evalMetricsPath } from "@piano/base";
+import { errorMessage, evalMetricsPath } from "@piano/base";
 import { z } from "zod";
 import {
   TrajectoryReadError,
   TrajectoryRecordError,
   type TrajectoryStreamDescriptor,
 } from "./types.js";
-
-function detail(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 export function streamPath(runDir: string, descriptor: TrajectoryStreamDescriptor): string {
   return evalMetricsPath(runDir, descriptor.path);
@@ -34,10 +30,10 @@ export function appendRecord<T>(
     }
     const fileSystem = yield* FileSystem.FileSystem;
     yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
-      Effect.mapError((cause) => new TrajectoryRecordError(path, `mkdir: ${detail(cause)}`)),
+      Effect.mapError((cause) => new TrajectoryRecordError(path, `mkdir: ${errorMessage(cause)}`)),
     );
     yield* fileSystem.writeFileString(path, `${JSON.stringify(parsed.data)}\n`, { flag: "a" }).pipe(
-      Effect.mapError((cause) => new TrajectoryRecordError(path, `append: ${detail(cause)}`)),
+      Effect.mapError((cause) => new TrajectoryRecordError(path, `append: ${errorMessage(cause)}`)),
     );
   });
 }
@@ -51,11 +47,11 @@ export function readRecords<T>(
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const exists = yield* fileSystem.exists(path).pipe(
-      Effect.mapError((cause) => new TrajectoryReadError(path, `exists: ${detail(cause)}`)),
+      Effect.mapError((cause) => new TrajectoryReadError(path, `exists: ${errorMessage(cause)}`)),
     );
     if (!exists) return [];
     const source = yield* fileSystem.readFileString(path).pipe(
-      Effect.mapError((cause) => new TrajectoryReadError(path, `read: ${detail(cause)}`)),
+      Effect.mapError((cause) => new TrajectoryReadError(path, `read: ${errorMessage(cause)}`)),
     );
     const records: T[] = [];
     for (const [index, line] of source.split("\n").entries()) {
@@ -64,7 +60,7 @@ export function readRecords<T>(
       try {
         value = JSON.parse(line);
       } catch (cause) {
-        return yield* Effect.fail(new TrajectoryReadError(path, `line ${index + 1} is not JSON: ${detail(cause)}`));
+        return yield* Effect.fail(new TrajectoryReadError(path, `line ${index + 1} is not JSON: ${errorMessage(cause)}`));
       }
       const parsed = schema.safeParse(value);
       if (!parsed.success) {

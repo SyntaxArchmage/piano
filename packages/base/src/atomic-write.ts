@@ -87,8 +87,9 @@ export function writeFileAtomic<E>(
   options: {
     /** A fresh staging sibling per call. Two writes to one path can be in
      * flight together, and a shared name would let one cleanup delete the
-     * other's staged bytes. */
-    readonly temporaryPath: () => string;
+     * other's staged bytes. Defaults to a random sibling of the target; pass a
+     * name only when the staging file needs a particular shape. */
+    readonly temporaryPath?: () => string;
     readonly mapError: AtomicWriteErrorMapper<E>;
     /** Create the staging file exclusively, so a pre-created predictable name
      * cannot be followed through a symlink. Off by default: callers that name
@@ -101,7 +102,7 @@ export function writeFileAtomic<E>(
 ): Effect.Effect<void, E, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const staging = options.temporaryPath();
+    const staging = options.temporaryPath?.() ?? `${path}.${randomUUID()}.tmp`;
     // A staging name equal to the target would rewrite the file and then let
     // the cleanup delete it, reporting success over lost bytes.
     if (staging === path) {

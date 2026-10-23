@@ -15,7 +15,7 @@ import {
   type WorkerContractValidationError,
 } from "@piano/contract";
 import { regionAncestors, regionIndex, type CompiledWorkflow, type WorkflowRetry } from "./workflow.js";
-import { loopFrames, mapFrames, type WorkflowRuntimeInvocation } from "./workflow-runtime.js";
+import type { WorkflowRuntimeInvocation } from "./workflow-runtime.js";
 import { VALIDATE_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
 import { validateStagePayload } from "./stage-validation.js";
@@ -177,11 +177,10 @@ export function ensureResultDirectory(
 
 /** Build a worker-neutral progress projection from the compiled graph and
  * runtime frames. Domain payloads remain untouched; the fold writes these
- * counters and lane coordinates into the run document. */
+ * counters into the run document. */
 export function workflowProgressProjection(
   compiled: CompiledWorkflow,
   invocation: WorkflowRuntimeInvocation,
-  acceptedStages: number,
   plan: WorkflowProgressPlan,
   completedByStage: ReadonlyMap<string, number>,
   knownLoopIterations: ReadonlyMap<string, number> = new Map(),
@@ -210,37 +209,13 @@ export function workflowProgressProjection(
       completed: completedByStage.get(stageId) ?? 0,
     }]),
   );
-  const base = {
-    completedStages: acceptedStages,
+  return {
+    // The per-stage counts are the totals: a stage cannot be accepted without
+    // being counted, so summing them is the same number kept in one place.
+    completedStages: [...completedByStage.values()].reduce((sum, count) => sum + count, 0),
     plannedStages: effectivePlan.plannedStages,
     stageCounts,
   };
-  const loopFrame = loopFrames(invocation.frames).at(-1);
-  const mapFrame = mapFrames(invocation.frames).at(-1);
-  const innermostFrame = invocation.frames.at(-1);
-  if (innermostFrame?.kind === "loop" && loopFrame !== undefined) {
-    const region = regionsById.get(loopFrame.regionId);
-    const outerMap = mapFrame === undefined
-      ? undefined
-      : regionsById.get(mapFrame.regionId);
-    return {
-      ...base,
-      ...(mapFrame === undefined ? {} : { mapSlot: mapFrame.slot }),
-      ...(outerMap?.count === undefined ? {} : { mapSlots: outerMap.count }),
-      scope: region?.name ?? loopFrame.regionId,
-    };
-  }
-  if (innermostFrame?.kind === "map" && mapFrame !== undefined) {
-    const region = regionsById.get(mapFrame.regionId);
-    const regionName = region?.name ?? mapFrame.regionId;
-    return {
-      ...base,
-      mapSlot: mapFrame.slot,
-      ...(region?.count === undefined ? {} : { mapSlots: region.count }),
-      scope: regionName,
-    };
-  }
-  return base;
 }
 
 /** Expand the statically compiled leaf table into a worker-neutral work plan.

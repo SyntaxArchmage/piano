@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { actorSessionDir } from "@piano/base";
 import type { WorkflowRegionPlan } from "./workflow.js";
 
 /** One loop expansion frame: identifies evidence only. */
@@ -189,9 +189,8 @@ export function actorSessionDirectory(
 ): string {
   // One flat, human-readable name per conversation: the lane rides as the
   // worker name's suffix (`tuning-slot-0`), never as nested directories.
-  return join(
+  return actorSessionDir(
     runDir,
-    "sessions",
     `trajectory-${harness}-${worker}-${actorLane(invocation.frames).join("-")}`,
   );
 }

@@ -13,11 +13,12 @@ import {
 } from "./run-status.js";
 import type { SelectionIncumbent } from "./selection.js";
 import type { AgentContinuation } from "@piano/harness";
+import type { ExecutionOutcome, InvocationStatus } from "@piano/base";
 
 /** Orchestrator-owned, worker-neutral progress counters. The fold takes the
- * counts and the lane coordinates from here and writes them to the run
- * document; the human-facing labels a monitor used to build from this object
- * had no reader, so they are gone. */
+ * counts from here and writes them to the run document; the labels and lane
+ * coordinates a monitor used to build from this object had no reader, so they
+ * are gone. */
 export interface WorkflowProgressProjection {
   /** Number of validated stage invocations accepted so far. Nothing counts
    * "completed" separately: an acceptance IS the completion. */
@@ -27,9 +28,6 @@ export interface WorkflowProgressProjection {
    * counts include loop/map expansion and completed counts come only from
    * accepted invocations. */
   readonly stageCounts: Readonly<Record<string, WorkflowProgressStageCount>>;
-  readonly scope?: string;
-  readonly mapSlot?: number;
-  readonly mapSlots?: number;
 }
 
 export interface WorkflowProgressStageCount {
@@ -64,9 +62,9 @@ export interface WorkflowProgressPlan {
 
 /** The invocation in flight, or the last one accepted. Readers use it to say
  * where a run is: `stageId` and `status` for the workflow graph, `invocationId`
- * for the evidence, `iteration`/`mapSlot` for a loop or map lane. */
+ * for the evidence, `iteration` for a loop's iteration. */
 export interface WorkflowProgressCurrent {
-  readonly status: "running" | "accepted" | "failed";
+  readonly status: InvocationStatus;
   readonly invocationId: string;
   readonly stageId: string;
   readonly stage: string;
@@ -76,9 +74,6 @@ export interface WorkflowProgressCurrent {
    * map lane from a loop iteration without re-deriving the runtime frames. */
   readonly instanceId?: string;
   readonly iteration?: number;
-  readonly mapSlot?: number;
-  readonly mapSlots?: number;
-  readonly scope?: string;
   readonly error?: string;
 }
 
@@ -102,8 +97,8 @@ export interface WorkflowProgressRecord {
   readonly instanceId?: string;
   readonly iteration?: number;
   readonly attempt: number;
-  /** The counters and lane coordinates the fold writes into the document. */
-  readonly progress?: WorkflowProgressProjection;
+  /** The counters the fold writes into the document. */
+  readonly progress: WorkflowProgressProjection;
 }
 
 /** One invocation starting.
@@ -122,11 +117,6 @@ export interface WorkflowProgressStartRecord {
   readonly attempt: number;
   readonly instanceId?: string;
   readonly iteration?: number;
-  /** Fan-out coordinates, carried so a start record names its own lane rather
-   * than leaving a reader to derive it from the invocation id. */
-  readonly mapSlot?: number;
-  readonly mapSlots?: number;
-  readonly scope?: string;
   /** Why this attempt is running: set when a failed validation reopened the
    * actor for a repair turn. */
   readonly error?: string;
@@ -170,7 +160,7 @@ export interface WorkflowProgressExecutionFinishRecord {
   readonly kind: "execution-finished";
   readonly timestamp: string;
   readonly runId: string;
-  readonly status: "completed" | "failed" | "paused";
+  readonly status: ExecutionOutcome;
   readonly error?: string;
 }
 
@@ -419,9 +409,6 @@ export function applyRunStatusRecord(
           attempt: transition.attempt,
           ...(transition.instanceId === undefined ? {} : { instanceId: transition.instanceId }),
           ...(transition.iteration === undefined ? {} : { iteration: transition.iteration }),
-          ...(transition.mapSlot === undefined ? {} : { mapSlot: transition.mapSlot }),
-          ...(transition.mapSlots === undefined ? {} : { mapSlots: transition.mapSlots }),
-          ...(transition.scope === undefined ? {} : { scope: transition.scope }),
           ...(transition.error === undefined ? {} : { error: transition.error }),
         },
         jobs: updateLatestJob(next.jobs, (job) => ({
@@ -435,9 +422,9 @@ export function applyRunStatusRecord(
       const entry = acceptedInvocationOf(transition.invocationId);
       return {
         ...next,
-        plannedStages: projection?.plannedStages ?? next.plannedStages,
-        completedStages: projection?.completedStages ?? next.completedStages,
-        stageCounts: projection?.stageCounts ?? next.stageCounts,
+        plannedStages: projection.plannedStages,
+        completedStages: projection.completedStages,
+        stageCounts: projection.stageCounts,
         invocationTime: accrueInto(next.invocationTime, transition.invocationId, accrueInvocationTime(
           next.invocationTime?.[transition.invocationId],
           transition,
@@ -452,9 +439,6 @@ export function applyRunStatusRecord(
           attempt: transition.attempt,
           ...(transition.instanceId === undefined ? {} : { instanceId: transition.instanceId }),
           ...(transition.iteration === undefined ? {} : { iteration: transition.iteration }),
-          ...(projection?.mapSlot === undefined ? {} : { mapSlot: projection.mapSlot }),
-          ...(projection?.mapSlots === undefined ? {} : { mapSlots: projection.mapSlots }),
-          ...(projection?.scope === undefined ? {} : { scope: projection.scope }),
         },
         jobs: updateLatestJob(next.jobs, (job) => ({
           ...job,
@@ -620,7 +604,7 @@ export function appendWorkflowProgress(
 export function finalizeWorkflowProgress(
   runDir: string,
   runId: string,
-  status: "completed" | "failed" | "paused",
+  status: ExecutionOutcome,
   error?: string,
 ): Effect.Effect<string, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);

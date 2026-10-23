@@ -15,7 +15,6 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { randomUUID } from "node:crypto";
 import { parseJsonRecord, parseTrajectory, trajectoryStreamPathCandidates, type TrajectoryDocument } from "@piano/logging";
 import {
   runStatusPath,
@@ -279,10 +278,6 @@ export function writeRunStatus(
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
   return writeFileAtomic(path, `${JSON.stringify(status, null, 2)}\n`, {
-    // The staging name must be unique per write, not per process: a rename
-    // refresh and a scheduling write can be in flight together, and a shared
-    // name lets one cleanup delete the other's staged bytes.
-    temporaryPath: () => `${path}.${randomUUID()}.tmp`,
     mapError: (cause, step) => workflowError("schedule", path, `status ${step}: ${errorMessage(cause)}`),
   });
 }

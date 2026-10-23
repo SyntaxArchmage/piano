@@ -13,8 +13,6 @@ import type {
   WorkflowObservationRecorder,
 } from "./types.js";
 
-export type WorkflowTrajectoryStatus = TurnOutcome;
-
 /** One recorder stream's health while the run is live. Nothing is persisted:
  * the stream files are the evidence, and a reader derives their health by
  * reading them. */
@@ -24,7 +22,7 @@ export interface WorkflowTrajectoryStream extends TrajectoryStreamDescriptor {
 }
 
 export interface WorkflowTrajectorySnapshot {
-  readonly status: WorkflowTrajectoryStatus | "running";
+  readonly status: TurnOutcome | "running";
   readonly streams: readonly WorkflowTrajectoryStream[];
 }
 
@@ -37,7 +35,7 @@ export interface WorkflowTrajectorySnapshot {
  * record that can disagree with it.
  */
 export class WorkflowTrajectory {
-  private status: WorkflowTrajectoryStatus | "running" = "running";
+  private status: TurnOutcome | "running" = "running";
   private readonly streams: WorkflowTrajectoryStream[];
   private readonly semaphore = Effect.unsafeMakeSemaphore(1);
 
@@ -81,7 +79,7 @@ export class WorkflowTrajectory {
   }
 
   close(
-    status: WorkflowTrajectoryStatus,
+    status: TurnOutcome,
   ): Effect.Effect<void, never, import("@effect/platform").FileSystem.FileSystem> {
     return this.semaphore.withPermits(1)(Effect.sync(() => {
       this.status = status;

@@ -35,6 +35,7 @@ describe("run status", () => {
         stage: "tune",
         worker: "basic",
         attempt: 1,
+        progress: { completedStages: 1, plannedStages: 2, stageCounts: { tune: { planned: 2, completed: 1 } } },
         workspace: { key: "shared", cwd: "/work", kind: "shared" },
         sessionId: "session-1",
         transcriptPath: "/t.jsonl",
@@ -62,7 +63,7 @@ describe("run status", () => {
       updatedAt: timestamp,
       status: "running",
       plannedStages: 2,
-      stageCounts: { tune: { planned: 2, completed: 0 } },
+      stageCounts: { tune: { planned: 2, completed: 1 } },
       actors: { "run-1/basic/root": { harness: "pi", sessionId: "s", transcriptPath: "/t.jsonl", turns: 1 } },
     });
     expect(status?.jobs).toHaveLength(1);

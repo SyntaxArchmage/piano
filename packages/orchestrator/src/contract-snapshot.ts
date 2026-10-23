@@ -1,6 +1,5 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { randomUUID } from "node:crypto";
 import { contractSnapshotPath, writeFileAtomic } from "@piano/base";
 import type { CompiledWorkerContract } from "@piano/contract";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
@@ -48,7 +47,6 @@ export function snapshotWorkerContract(
       }
     } else {
       yield* writeFileAtomic(snapshotPath, contract.source, {
-        temporaryPath: () => `${snapshotPath}.tmp-${process.pid}-${randomUUID()}`,
         mapError: (cause, step) => snapshotError(snapshotPath, `contract snapshot ${step}`, cause),
       });
     }
