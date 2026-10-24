@@ -35,6 +35,35 @@ describe("SelectionRecorder.score", () => {
     });
   });
 
+  it("accepts both the current and the legacy carry kinds when reading", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-selection-"));
+    try {
+      const recorder = new SelectionRecorder(runDir);
+      await Effect.runPromise(recorder.observe({
+        type: "selection",
+        runId: "run-1",
+        timestamp: "2026-10-24T00:00:00.000Z",
+        outcome: "carried",
+        winnerKey: "job-1/race/slot-1",
+        carrying: { kind: "delta-applied" },
+      }).pipe(Effect.provide(NodeFileSystem.layer)));
+      // Older runs recorded a worker-consolidated carry; the additive schema
+      // still reads them, so historical trajectories keep loading.
+      await Effect.runPromise(recorder.observe({
+        type: "selection",
+        runId: "run-1",
+        timestamp: "2026-09-04T00:00:00.000Z",
+        outcome: "carried",
+        winnerKey: "job-1/race/slot-1",
+        carrying: { kind: "worker-consolidated", sourceState: "known" },
+      }).pipe(Effect.provide(NodeFileSystem.layer)));
+      const records = await readRecords(recorder, runDir);
+      expect(records.map((record) => record.carrying?.kind)).toEqual(["delta-applied", "worker-consolidated"]);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
   it("reads an empty list when the selection file was never written", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-selection-"));
     try {

@@ -188,9 +188,8 @@ export async function listRunIds(home: ResumeRunHome): Promise<ReadonlySet<strin
  *    (attempt 1 interrupted, attempt 2 after `/continue`), iteration 0's
  *    tournament region finalized exactly once, and the run stayed ONE job;
  *  - the WORKER side (the fake's ledger): no iteration-0 turn after the pause
- *    row, every actor's conversation was reopened rather than restarted
- *    (`resumed` + prior turns on every row after the actor's first), and the
- *    consolidation turns reused the winning slot's thread. */
+ *    row, and every actor's conversation was reopened rather than restarted
+ *    (`resumed` + prior turns on every row after the actor's first). */
 export async function assertResumeEvidence(input: {
   runDir: string;
   runId: string;
@@ -219,12 +218,12 @@ export async function assertResumeEvidence(input: {
     context("iteration 0 re-ran after the pause"),
   ).toEqual([]);
   // After the pause the run only finished iteration 1: the wedged propose
-  // (attempt 2), two implements, two benches, one consolidation.
+  // (attempt 2), two implements and two benches. The winner carry is program
+  // work, so it adds no worker turn.
   expect(
     after.map((row) => row.stage).sort(),
     context("unexpected post-pause turn set"),
   ).toEqual([
-    "$consolidate/job-1/tune/iter-1/tune.race/slot-1",
     "tune.propose",
     "tune.race.bench",
     "tune.race.bench",
@@ -300,33 +299,20 @@ export async function assertResumeEvidence(input: {
   expect(proposeActor, context("propose actor missing from status.json")).toBeDefined();
   expect(proposeActor?.turns, context("propose actor turn count")).toBe(2);
   expect(proposeActor?.sessionId, context("propose actor session drifted")).toBe(proposeRows[0]!.threadId);
-  // The winner's bench actor also carried both consolidations on its own
-  // conversation: 2 bench turns + 2 consolidation turns.
+  // The winner's bench actor ran exactly its two bench turns; the carry is not
+  // a worker turn.
   const winnerActor = status.actors?.[`v2/${input.runId}/codex/triton-benchmark-store/tune.race/slot-1`];
-  expect(winnerActor?.turns, context("winner bench actor turn count")).toBe(4);
+  expect(winnerActor?.turns, context("winner bench actor turn count")).toBe(2);
   // Every actor the ledger saw is in the engine's table under its thread id.
   const actorSessionIds = Object.values(status.actors ?? {}).map((actor) => actor.sessionId);
   for (const threadId of byThread.keys()) {
     expect(actorSessionIds, context(`thread ${threadId} missing from the actor table`)).toContain(threadId);
   }
 
-  // ——— Consolidation reused the winner's conversation: each $consolidate
-  // turn ran on the thread of the same iteration's winning bench slot
-  // (slot-1 wins every race by construction).
-  const consolidateRows = rows.filter((row) => row.stage.startsWith("$consolidate/"));
-  expect(consolidateRows, context("consolidation turns")).toHaveLength(2);
-  for (const [iteration, row] of consolidateRows.entries()) {
-    const winnerBench = rows.find((entry) => entry.stage.endsWith(".bench")
-      && entry.invocation.includes(`iter-${iteration}`)
-      && entry.invocation.includes("slot-1"));
-    expect(winnerBench, context(`no winning bench row for iter-${iteration}`)).toBeDefined();
-    expect(row.threadId, context(`consolidation of iter-${iteration} left the winner's thread`))
-      .toBe(winnerBench!.threadId);
-    expect(row.mode, context(`consolidation of iter-${iteration} restarted the winner's thread`)).toBe("resumed");
-  }
+  expect(rows.some((row) => row.stage.startsWith("$consolidate/")), context("no consolidation turns")).toBe(false);
 
   // ——— Business outcome identical to the tournament guards': the winner was
-  // consolidated into the shared source and both iterations carried.
+  // applied into the shared source and both iterations carried.
   expect((await readFile(join(input.workspace, "kernel.py"), "utf8")).trim()).toBe("kernel-1");
   const selections = (await readFile(join(input.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
     .trim().split("\n").map((line) => JSON.parse(line) as { outcome?: string });

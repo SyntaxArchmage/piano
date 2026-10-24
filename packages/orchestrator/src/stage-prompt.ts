@@ -2,8 +2,8 @@
 // followed by this stage's context — its identity, workspace, injected files,
 // reviewer guidance, and the contract it must satisfy.
 //
-// `wholeWorkflowTask` is shared with the consolidation turn, which speaks the
-// same task framing; the rest is the stage runner's.
+// Stage prompts are the only prompt writer; the rest of the file is the stage
+// runner's.
 
 import type { ThinkingLevel } from "@piano/harness";
 import type {
@@ -18,9 +18,7 @@ export function wholeWorkflowTask(userPrompt: string): readonly string[] {
   return ["## User task (whole workflow)", userPrompt, ""];
 }
 
-/** The guard rails under every stage-shaped prompt's context header. The
- * stage prompt and the winner-consolidation turn speak these verbatim, so the
- * rules exist once. */
+/** The guard rails under every stage prompt's context header. */
 export const STAGE_CONTEXT_GUARD_RAILS: readonly string[] = [
   "The user task above is the complete task for the whole workflow. Use this stage only to advance that task.",
   "Do not replace, broaden, or reinterpret it as a repository review, an autonomous development loop, or duration-based work session unless the user explicitly asks for that.",

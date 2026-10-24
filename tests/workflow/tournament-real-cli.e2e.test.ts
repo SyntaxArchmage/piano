@@ -3,8 +3,8 @@
 // workflow with genuine subprocess worker turns. The model is replaced by the
 // deterministic pi-cli stand-in (tests/fixtures/tournament-real-run/) so the
 // guard is credential-free and CI-stable; everything else — CLI process,
-// engine, subprocess protocol, consolidation turn, workspace cleanup — is the
-// real stack. The unit-level twin lives in workflow-execution.test.ts
+// engine, subprocess protocol, deterministic winner carry, workspace cleanup —
+// is the real stack. The unit-level twin lives in workflow-execution.test.ts
 // ("decides a loop-nested tournament at every region exit"); this is the
 // end-to-end proof of the same ordering.
 import { describe, expect, it } from "vitest";
@@ -31,7 +31,7 @@ import {
 const RUN_TIMEOUT_MS = 180_000;
 
 describe("tournament region-exit through the real CLI (non-TUI)", () => {
-  it("consolidates each iteration's winner at the race exit, before the next iteration runs", async () => {
+  it("carries each iteration's winner at the race exit, before the next iteration runs", async () => {
     const home = await createFakeHarnessHome();
     const workspace = await mkdtemp(join(tmpdir(), "piano-tournament-guard-ws-"));
     // The trace lives in the evidence home, not the workspace: slot cleanup

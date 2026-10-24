@@ -15,10 +15,7 @@ import {
   type SteeringChannel,
   type ThinkingLevel,
 } from "@piano/harness";
-import {
-  executeWorker,
-  WorkerError,
-} from "@piano/workers";
+import { WorkerError } from "@piano/workers";
 import {
   ContractValidationError,
   WorkerContractValidationError,
@@ -53,7 +50,6 @@ import {
   WORKFLOW_LOG,
   WORKFLOW_SOURCE,
 } from "./execution-logs.js";
-import { STAGE_CONTEXT_GUARD_RAILS, wholeWorkflowTask } from "./stage-prompt.js";
 import { type StageRunnerContext, type StageRunnerCounters } from "./stage-runner.js";
 import {
   createScopeWalker,
@@ -63,14 +59,10 @@ import {
   projectionNumber,
   projectionString,
   resultProjectionValue,
-  VALIDATE_REPAIR_ATTEMPTS,
   workflowProgressPlan,
 } from "./stage-runner-support.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
-import {
-  actorSessionDirectory,
-  runId as normalizeExecutionId,
-} from "./workflow-runtime.js";
+import { runId as normalizeExecutionId } from "./workflow-runtime.js";
 import {
   type HandoffMapItem,
 } from "./handoff.js";
@@ -81,17 +73,8 @@ import {
   cleanupMapWorkspaces,
   mnemonicNamespace,
   sharedWorkspaceBinding,
-  type WorkspaceBaseline,
-  type WorkspaceContentChange,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
-import {
-  ConsolidationEvidencePreparationError,
-  prepareConsolidationEvidence,
-  runConsolidationTransaction,
-  type ConsolidationCarrying,
-  type PreparedConsolidationEvidence,
-} from "./consolidation-transaction.js";
 import {
   appendWorkflowProgress,
   finalizeWorkflowProgress,
@@ -494,158 +477,6 @@ function validateTournamentExitMetricArity(
     offenders.join("\n") +
     `\nTrim each deciding exit to one declared output metric, or move extras to an inner report stage.`,
   ));
-}
-
-export interface ConsolidateAndGateRequest {
-  readonly request: WorkflowExecutionRequest;
-  readonly winnerKey: string;
-  /** The winner's live content, re-materialized against the baseline. */
-  readonly winnerContentDir: string;
-  readonly winnerWorker: string;
-  readonly winnerHarness: string;
-  readonly sourceCwd: string;
-  readonly excludeUnder: readonly string[];
-  /** The declared baseline-relative delta (paths and kinds). The transaction
-   * re-materialises the canonical frozen files outside source/runDir. */
-  readonly changes: readonly WorkspaceContentChange[];
-  /** The baseline the winner delta is measured against, so the transaction
-   * can re-derive and verify the declared change list. */
-  readonly winnerBaseline: WorkspaceBaseline;
-  readonly winnerActor?: ActorExecutionContext & {
-    readonly continuation?: AgentContinuation;
-    readonly onTurn: (worker: {
-      readonly sessionId: string;
-      readonly transcriptPath: string;
-      readonly continuation?: AgentContinuation;
-    }) => void;
-  };
-  readonly persistAfterCarry?: () => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
-}
-
-/**
- * Worker-specific adapter for the unified consolidation transaction. The
- * transaction core owns external evidence, integrity checks, the read-only
- * delta gate, Git metadata, rollback, and source-state classification.
- */
-function runPreparedConsolidation(
-  args: ConsolidateAndGateRequest,
-  evidence: PreparedConsolidationEvidence,
-): Effect.Effect<ConsolidationCarrying, never, FileSystem.FileSystem | Logging> {
-  const {
-    request,
-    winnerKey,
-    winnerWorker,
-    winnerHarness,
-    winnerActor,
-    persistAfterCarry,
-  } = args;
-  const consolidationAgentOptions: AgentHarnessOptions = {
-    ...(request.agentOptions ?? {}),
-    additionalWritableDirs: [
-      ...new Set([
-        ...(request.agentOptions?.additionalWritableDirs ?? []),
-        request.runDir,
-      ]),
-    ],
-  };
-  let continuation = winnerActor?.memory === false ? undefined : winnerActor?.continuation;
-  return runConsolidationTransaction<FileSystem.FileSystem | Logging>({
-    evidence,
-    repairAttempts: VALIDATE_REPAIR_ATTEMPTS,
-    runTurn: (repair) => Effect.gen(function* () {
-      const sourceCwd = evidence.sourceCwd;
-      const changes = evidence.changeSet.changes
-        .map((change) => "- " + change.kind + ": " + change.path)
-        .join("\n");
-      const instruction = [
-        ...wholeWorkflowTask(request.prompt),
-        repair === undefined
-          ? "Apply your winning change from `" + evidence.winnerChangeDir + "` to the tournament parent at `" + sourceCwd +
-            "`. This is the frozen file delta; change only these paths:\n" + (changes || "(no file changes)") +
-            "\nPreserve every other parent file, then reply when done."
-          : "The tournament parent still differs from your frozen file delta at `" +
-            evidence.winnerChangeDir +
-            "`. Continue from where you were and resolve every point below without changing unrelated paths, then reply when done." +
-            "\n\nStill differing:\n" + repair.join("\n") +
-            "\n\nRe-apply those paths from the frozen delta with permission-preserving copies (for example `cp -p`); the gate also compares file modes, so a copied file whose mode differs from the delta (such as a world-executable bit added by `install`) still counts as differing.",
-        "",
-        "## Workflow stage context",
-        ...STAGE_CONTEXT_GUARD_RAILS,
-        "You are executing workflow stage `$consolidate/" + winnerKey + "` (winner consolidation).",
-        "Treat the tournament parent `" + sourceCwd + "` as the only mutable target; your frozen file delta is saved at `" + evidence.winnerChangeDir + "`.",
-        "Apply only the frozen file delta listed above through normal file-editing tools. Copy files so their permission bits match the delta (for example `cp -p`); the acceptance gate compares content and file modes. Leave Git metadata untouched: do not change HEAD, refs, index, locks, or operation state.",
-      ].join("\n");
-      const stageTimeoutSeconds = winnerActor?.timeout;
-      const stageSignal = stageTimeoutSeconds === undefined
-        ? request.signal
-        : request.signal === undefined
-          ? AbortSignal.timeout(stageTimeoutSeconds * 1000)
-          : AbortSignal.any([request.signal, AbortSignal.timeout(stageTimeoutSeconds * 1000)]);
-      const winner = yield* executeWorker({
-        stage: "$consolidate/" + winnerKey,
-        worker: winnerWorker,
-        harness: winnerHarness,
-        prompt: instruction,
-        cwd: sourceCwd,
-        ...(stageSignal === undefined ? {} : { signal: stageSignal }),
-        ...(request.steering === undefined ? {} : { steering: request.steering }),
-        ...(winnerActor?.resources.systemPromptPath === undefined ? {} : { systemPromptPath: winnerActor.resources.systemPromptPath }),
-        contextFilePaths: winnerActor?.contextFilePaths ?? [],
-        skillPaths: winnerActor?.resources.skillPaths ?? [],
-        ...(winnerActor?.tools === undefined ? {} : { tools: winnerActor.tools }),
-        ...(winnerActor?.model === undefined ? request.model === undefined ? {} : { model: request.model } : { model: winnerActor.model }),
-        ...(winnerActor?.thinkingLevel === undefined ? {} : { thinkingLevel: winnerActor.thinkingLevel }),
-        ...(winnerActor?.invocation === undefined ? {} : { sessionDir: actorSessionDirectory(request.runDir, winnerActor.invocation, winnerHarness, winnerWorker) }),
-        onEvent: request.onEvent,
-        ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
-        ...(continuation === undefined ? {} : { continuation }),
-      }, consolidationAgentOptions).pipe(
-        Effect.mapError((error) => workflowError(
-          "schedule",
-          sourceCwd,
-          "winner consolidation agent failed: " + errorMessage(error),
-        )),
-      );
-      continuation = winnerActor?.memory === false ? undefined : winner.continuation;
-      winnerActor?.onTurn(winner);
-      yield* WORKFLOW_LOG.info("workspace.winner.consolidation.turn", {
-        outcome: "success",
-        data: { winnerKey, worker: winnerWorker, transcriptPath: winner.transcriptPath },
-      }).pipe(Effect.catchAll(() => Effect.void));
-    }),
-    persistAfterCarry,
-  });
-}
-
-export function consolidateAndGate(
-  args: ConsolidateAndGateRequest,
-): Effect.Effect<ConsolidationCarrying, never, FileSystem.FileSystem | Logging> {
-  const prepare = Effect.tryPromise({
-    try: () => prepareConsolidationEvidence({
-      sourceCwd: args.sourceCwd,
-      runDir: args.request.runDir,
-      winnerContentDir: args.winnerContentDir,
-      baseline: args.winnerBaseline,
-      changes: args.changes,
-      excludeUnder: args.excludeUnder,
-    }),
-    catch: (cause) => cause instanceof ConsolidationEvidencePreparationError
-      ? cause
-      : new ConsolidationEvidencePreparationError(
-        "cannot prepare external consolidation evidence: " + errorMessage(cause),
-      ),
-  });
-  return prepare.pipe(
-    Effect.flatMap((evidence) => runPreparedConsolidation(args, evidence)),
-    Effect.catchAll((cause) => Effect.succeed({
-      kind: "carry-failed" as const,
-      sourceState: "unknown" as const,
-      reason: errorMessage(cause),
-      ...(cause instanceof ConsolidationEvidencePreparationError && cause.externalEvidenceRoot !== undefined
-        ? { externalEvidenceRoot: cause.externalEvidenceRoot }
-        : {}),
-    })),
-  );
 }
 
 /** Execute one already-loaded workflow. This is the core runtime boundary: it
@@ -1125,7 +956,6 @@ export function executeWorkflow(
         workspaceState,
         commitRoundWinner: (stages, iteration, prompt, dirty, cwd) =>
           commitRoundWinner(stages, iteration, prompt, dirty, cwd),
-        consolidate: (args) => consolidateAndGate(args),
       });
       const completed = yield* walker.executeScope(
         compiled.nodes,

@@ -1,6 +1,5 @@
-// One `actor-turn` row per conversation-state change. The stage path and the
-// consolidation path share the writer, so they cannot spell the same row
-// differently.
+// One `actor-turn` row per conversation-state change; the stage runner is its
+// only writer.
 import { describe, expect, it } from "vitest";
 import { actorTurnRow } from "../../packages/orchestrator/src/resume-state.js";
 

@@ -58,6 +58,7 @@ export { iterationOfInvocationId, runtimeRegionInstanceId } from "./workflow-run
 export {
   allocateMapWorkspace,
   applyWinnerWorkspace,
+  applyWorkspaceChangeSet,
   cleanupMapWorkspaces,
   freezeWorkspaceBaseline,
   mnemonicNamespace,
@@ -65,7 +66,6 @@ export {
   sharedWorkspaceBinding,
   workspaceBaselineChanges,
   workspaceRefName,
-  captureWorkspaceBaselineChanges,
   type MapLaneFork,
   type WorkspaceBaseline,
   type WorkflowCarrying,
@@ -77,7 +77,6 @@ export {
   type WorkflowWorkspaceStrategy,
 } from "./workspace.js";
 export {
-  consolidateAndGate,
   executeWorkflow,
   loadAndExecuteWorkflow,
   type LoadAndExecuteWorkflowRequest,
@@ -100,16 +99,6 @@ export {
   VALIDATE_REPAIR_ATTEMPTS,
 } from "./stage-runner-support.js";
 export { type WorkflowStageExecutionResult } from "./execution-types.js";
-export {
-  ConsolidationEvidencePreparationError,
-  prepareConsolidationEvidence,
-  runConsolidationTransaction,
-  type ConsolidationCarrying,
-  type ConsolidationDirectoryIdentity,
-  type ConsolidationEvidenceInput,
-  type ConsolidationTransactionInput,
-  type PreparedConsolidationEvidence,
-} from "./consolidation-transaction.js";
 export {
   readWorkflowExecutionContinuation,
   type WorkflowActorContinuation,

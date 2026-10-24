@@ -1,6 +1,6 @@
 // The shapes shared across the workflow executor: what one stage invocation
-// produces (and what the scope walker and consolidation consume), and the
-// internal state a running execution keeps about its actors.
+// produces (and what the scope walker consumes), and the internal state a
+// running execution keeps about its actors.
 //
 // Type-only module: extracted verbatim from workflow-execution.ts so the
 // eventual stage-runner and scope-walker extractions import one substrate

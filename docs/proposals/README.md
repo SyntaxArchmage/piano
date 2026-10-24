@@ -19,7 +19,7 @@ PIANO 现有工作流逐维度对照，按**模块**拆成 7 篇文档，每篇�
 | **lane / branch / slot** | 锦标赛的一条并行分支，每个 lane 一个独立 workspace（git worktree 或目录快照） |
 | **referee / 裁判** | region **exit stage** 契约声明的唯一 metric；2 个及以上视为 load 期 validate error |
 | **admission / 准入** | 跨轮闸门：候选必须**严格改进同一 metric 身份**才被 carry，否则 `admitted-not-carried` |
-| **carry / consolidation** | 引擎只排序；由 winner **自己的 worker** 在父 scope 应用冻结 delta，引擎只做一次只读 diff gate |
+| **carry / consolidation** | 引擎排序后用确定式程序应用 winner 的冻结 delta（git lane fast-forward，store lane 复制并回滚校验）；不再有 agent turn |
 | **referee 身份** | `name + unit + direction` 三元组；身份变了直接拒（`metric-identity-changed`） |
 | **SOL** | Speed-of-Light，硬件理论上限（roofline）。CUDA 锦标赛还没有利用它 |
 

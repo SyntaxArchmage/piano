@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -604,67 +604,6 @@ async function strategySlot(request: AgentRequest): Promise<number> {
   const matched = /[-/]slot-(\d+)(\/|$)/.exec(lane);
   if (matched?.[1] === undefined) throw new Error(`missing map slot lane: ${lane}`);
   return Number(matched[1]);
-}
-
-/** The frozen winner content directory a `$consolidate/<winnerKey>` turn is
- * told to apply, recovered from the standard instruction template. */
-function consolidationSourceDir(request: AgentRequest): string {
-  const matched = /saved at `([^`]+)`/.exec(request.prompt);
-  if (matched?.[1] === undefined) throw new Error(`missing consolidation winner dir: ${request.prompt}`);
-  return matched[1];
-}
-
-function consolidationChanges(request: AgentRequest): Array<{
-  readonly kind: "added" | "modified" | "deleted";
-  readonly path: string;
-}> {
-  return request.prompt.split("\n").flatMap((line) => {
-    const matched = /^- (added|modified|deleted): (.+)$/u.exec(line);
-    return matched?.[1] === undefined || matched[2] === undefined
-      ? []
-      : [{ kind: matched[1] as "added" | "modified" | "deleted", path: matched[2] }];
-  });
-}
-
-const INFRA_NAMES = new Set([".git", ".piano-run.lock", ".piano"]);
-
-/** Recursively make `target` content-equal to `source` the way a consolidation
- * coding agent would, mirroring the read-only directory gate: copy each winner
- * file under `source` to the same relative path under `target`, creating
- * directories as needed, ignoring run-infrastructure names. */
-async function mergeTree(source: string, target: string, memo: string[] = []): Promise<void> {
-  for (const entry of await readdir(source, { withFileTypes: true })) {
-    if (INFRA_NAMES.has(entry.name) || entry.name.startsWith("runs-") || entry.name.startsWith("workspaces-")) continue;
-    const from = join(source, entry.name);
-    const to = join(target, entry.name);
-    if (entry.isDirectory()) {
-      if (memo.includes(to)) continue; // guard against symlink cycles
-      await mkdir(to, { recursive: true });
-      await mergeTree(from, to, memo);
-    } else if (!(await stat(from)).isSymbolicLink()) {
-      await mkdir(dirname(to), { recursive: true });
-      await copyFile(from, to);
-    }
-  }
-}
-
-/** Apply exactly the delta listed for a `$consolidate/<winnerKey>` test turn. */
-async function consolidateInto(request: AgentRequest): Promise<void> {
-  const source = consolidationSourceDir(request);
-  const changes = consolidationChanges(request);
-  if (changes.length === 0) {
-    await mergeTree(source, request.cwd);
-    return;
-  }
-  for (const change of changes) {
-    await rm(join(request.cwd, change.path), { recursive: true, force: true });
-  }
-  for (const change of changes) {
-    if (change.kind === "deleted") continue;
-    const target = join(request.cwd, change.path);
-    await mkdir(dirname(target), { recursive: true });
-    await copyFile(join(source, change.path), target);
-  }
 }
 
 function fakeSdk(): PiModule {
@@ -3519,15 +3458,6 @@ workflow:
         },
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
-          if (stage.startsWith("$consolidate/")) {
-            await consolidateInto(request);
-            return {
-              sessionId: stage,
-              transcriptPath: `/tmp/${stage.replaceAll("/", "-")}.jsonl`,
-              text: stage,
-              continuation: continuation(stage),
-            };
-          }
           if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
@@ -5261,15 +5191,6 @@ workflow:
           agentRunner: (request) => Effect.promise(async () => {
             calls.push(request);
             const stage = stageId(request);
-            if (stage.startsWith("$consolidate/")) {
-              await consolidateInto(request);
-              return {
-                sessionId: `${stage}-${invocationId(request).replaceAll("/", "-")}`,
-                transcriptPath: `/tmp/consolidate-${stage.replaceAll("/", "-")}.jsonl`,
-                text: `${stage}:${invocationId(request)}`,
-                continuation: continuation(`${stage}-${invocationId(request).replaceAll("/", "-")}`),
-              };
-            }
             if (stage === "propose") {
               const path = validationPath(request);
               await mkdir(dirname(path), { recursive: true });
@@ -5327,21 +5248,11 @@ workflow:
 
       expect(calls.length).toBeGreaterThan(0);
       for (const call of calls) expectWholeWorkflowTask(call, "race two kernels");
-      expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(true);
-      const winnerExitCall = calls.find((call) =>
-        stageId(call) === "race.bench" && invocationId(call).includes("slot-1"));
-      const consolidationCall = calls.find((call) => stageId(call).startsWith("$consolidate/"));
-      expect(winnerExitCall).toBeDefined();
-      expect(consolidationCall).toMatchObject({
-        continuation: { sessionId: `race.bench-${invocationId(winnerExitCall!).replaceAll("/", "-")}` },
-        sessionDir: winnerExitCall?.sessionDir,
-        skillPaths: winnerExitCall?.skillPaths,
-        contextFilePaths: winnerExitCall?.contextFilePaths,
-      });
-      expect(consolidationCall?.systemPromptPath).toBe(winnerExitCall?.systemPromptPath);
+      // The engine applies the winner itself: no worker turn carries it.
+      expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
 
       // Winner reference rendered into a trajectory record + the actual winner's
-      // kernel materialized into the shared source by the worker consolidation.
+      // kernel materialized into the shared source by the delta apply.
       const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
       const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
         outcome: string; winnerKey?: string; commit?: string; carrying?: { kind: string; reason?: string }; referee?: { name: string; unit: string; direction: string };
@@ -5365,10 +5276,10 @@ workflow:
         outcome: "carried",
         winnerInstanceId: "race/slot-1",
       });
-      // Worker-consolidation carries no git commit but the stored provenance is
-      // how the winning higher-tflops kernel reached the shared source.
+      // A delta carry produces no git commit; the stored provenance is how the
+      // winning higher-tflops kernel reached the shared source.
       expect(records[0]?.commit).toBeUndefined();
-      expect(records[0]?.carrying?.kind).toBe("worker-consolidated");
+      expect(records[0]?.carrying?.kind).toBe("delta-applied");
       const sourceKernel = await readFile(join(root, "kernel.py"), "utf8");
       expect(sourceKernel.trim()).toBe("kernel-1");
       await expect(readFile(join(root, "user-notes.md"), "utf8")).resolves.toBe("keep my dirty note\n");
@@ -5413,9 +5324,7 @@ workflow:
           })));
         }
         return Effect.promise(async () => {
-          if (stage.startsWith("$consolidate/")) {
-            await consolidateInto(request);
-          } else if (stage === "propose") {
+          if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({
@@ -5512,19 +5421,9 @@ workflow:
       const winnerExit = runs[0]!.find((call) =>
         stageId(call) === "race.bench" && invocationId(call).includes("slot-1"));
       expect(winnerExit).toBeDefined();
-      const consolidationCall = secondCalls.find((call) => stageId(call).startsWith("$consolidate/"));
-      expect(consolidationCall).toBeDefined();
-      // The rebuilt exit's actor identity is what makes the carry runnable —
-      // same chat, same context files, same system prompt as its live turn.
-      // The continuation is the winner's own, carried across the pause by the
-      // run's resume evidence.
-      expect(consolidationCall).toMatchObject({
-        continuation: continuation(`race.bench-${invocationId(winnerExit!).replaceAll("/", "-").replaceAll("@", "-")}`),
-        sessionDir: winnerExit?.sessionDir,
-        skillPaths: winnerExit?.skillPaths,
-        contextFilePaths: winnerExit?.contextFilePaths,
-      });
-      expect(consolidationCall?.systemPromptPath).toBe(winnerExit?.systemPromptPath);
+      // No worker turn runs: the rebuilt exit's own slot content is all the
+      // carry needs, so rebuilding the boundary is enough.
+      expect(secondCalls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
 
       // One decision, one selection: the re-entered region finalized once.
       const selection = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
@@ -5541,7 +5440,7 @@ workflow:
     }
   }, 30_000);
 
-  it("merges a git-worktree winner into the parent branch instead of consolidating", async () => {
+  it("merges a git-worktree winner into the parent branch instead of applying a delta", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-git-carry-"));
     try {
       // A clean git repo: the lane workspaces are real worktrees of it, so the
@@ -5785,8 +5684,6 @@ workflow:
                 }));
               } else if (stage === "summary") {
                 summaryKernel = await readFile(join(request.cwd, "kernel.py"), "utf8");
-              } else if (stage.startsWith("$consolidate/")) {
-                await consolidateInto(request);
               }
               const id = `${stage}-${invocationId(request).replaceAll("/", "-")}`;
               return {
@@ -5816,7 +5713,7 @@ workflow:
       expect(records[0]).toMatchObject({
         outcome: "carried",
         winnerKey: "job-1/race/slot-0",
-        carrying: { kind: "worker-consolidated" },
+        carrying: { kind: "delta-applied" },
       });
       expect(exit.value.terminalStages).toHaveLength(1);
       expect(exit.value.terminalStages[0]).toMatchObject({ stageId: "summary" });
@@ -5825,7 +5722,7 @@ workflow:
     }
   });
 
-  it("rejects an explicitly selected stopped slot before winner consolidation", async () => {
+  it("rejects an explicitly selected stopped slot before winner carry", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-explicit-blocked-winner-"));
     try {
       await writeFile(join(root, "race.yml"), METRIC_TOURNAMENT);
@@ -5849,9 +5746,6 @@ workflow:
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
-          if (stage.startsWith("$consolidate/")) {
-            throw new Error("stopped winner must not reach consolidation");
-          }
           if (stage === "propose") {
             await writeFile(validationPath(request), JSON.stringify({
               strategies: [
@@ -5889,7 +5783,6 @@ workflow:
         }),
       }));
 
-      expect(calls.filter((call) => stageId(call).startsWith("$consolidate/")).length).toBe(0);
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
       const records = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as { outcome: string; skipped?: string });
@@ -5988,9 +5881,6 @@ workflow:
           agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
-          if (stage.startsWith("$consolidate/")) {
-            throw new Error("blocked tournament must not consolidate");
-          }
           if (stage === "tune.propose") {
             await writeFile(validationPath(request), JSON.stringify({
               strategies: [{ id: "slot-0" }, { id: "slot-1" }],
@@ -6062,10 +5952,8 @@ workflow:
         prompt: "carry only the winning source change",
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
-          if (stage.startsWith("$consolidate/")) {
-            consolidationPrompts.push(request.prompt);
-            await consolidateInto(request);
-          } else if (stage === "propose") {
+          if (stage.startsWith("$consolidate/")) consolidationPrompts.push(request.prompt);
+          if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({
@@ -6110,7 +5998,7 @@ workflow:
       // an ancestor of the parent's HEAD.
       const winnerCommit = (await runFile("git", ["-C", root, "rev-parse", "tuna/metric-tournament-git-delta-race/lane-1"], { encoding: "utf8" })).stdout.trim();
       await runFile("git", ["-C", root, "merge-base", "--is-ancestor", winnerCommit, "HEAD"], { encoding: "utf8" });
-      // A git lane is merged, not consolidated: no worker turn applies files.
+      // A git lane is merged: no worker turn applies files.
       expect(consolidationPrompts).toHaveLength(0);
       const records = new Map(result.stages
         .filter((stage) => stage.workspace.recordPath !== undefined)
@@ -6183,147 +6071,10 @@ workflow:
     }
   });
 
-  it("resumes the same winner session on a consolidation repair turn so the agent converges like a validation failure {continuation threading}", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-consolidation-repair-"));
-    try {
-      await writeFile(join(root, "race.yml"), METRIC_TOURNAMENT);
-      await writeFile(join(root, "kernel.py"), "baseline\n");
-      await mkdir(join(root, "state"), { recursive: true });
-      await writeFile(join(root, "state", "current-best.py"), "baseline\n");
-      await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
-        current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
-        history: [],
-      }));
-      const session = await Effect.runPromise(
-        createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
-      );
-
-      // Force the FIRST consolidation gate pass to leave the shared source
-      // different (the worker "misses" equalising it), so the engine must issue
-      // a repair turn. That repair must reopen THIS winner session — carry the
-      // first turn's continuation — and converge, the canonical validate/repair
-      // shape applied to consolidation (never a disconnected fresh agent).
-      const consolidateSessionIds: string[] = [];
-      const consolidationContinuations: Array<{ from: string; to: string }> = [];
-      const consolidationPrompts: string[] = [];
-      const outcome = await Effect.runPromiseExit(
-        loadAndExecuteWorkflow({
-          root,
-          workflowPath: join(root, "race.yml"),
-          runDir: session.runDir,
-          runId: "metric-consolidation-repair",
-          cwd: root,
-          prompt: "race two kernels",
-          agentRunner: (request) => Effect.promise(async () => {
-            const stage = stageId(request);
-            if (stage.startsWith("$consolidate/")) {
-              consolidationPrompts.push(request.prompt);
-              const sessionId = `consolidate-${request.prompt.includes("Still differing") ? "repair" : "first"}-${Math.random().toString(36).slice(2)}`;
-              consolidateSessionIds.push(sessionId);
-              // The first consolidation turn resumes the accepted winner exit
-              // actor; the repair then resumes the first consolidation turn.
-              if (request.continuation !== undefined) consolidationContinuations.push({ from: request.continuation.sessionId, to: sessionId });
-              if (!request.prompt.includes("Still differing")) {
-                // First pass: leave the source different so the gate reports
-                // inequality and the engine has a repair to drive.
-                return {
-                  sessionId,
-                  transcriptPath: `/tmp/consolidate-${sessionId}.jsonl`,
-                  text: `${stage}:first`,
-                  continuation: { harness: "pi", sessionId, transcriptPath: `/tmp/consolidate-${sessionId}.jsonl` },
-                };
-              }
-              await consolidateInto(request);
-              return {
-                sessionId,
-                transcriptPath: `/tmp/consolidate-${sessionId}.jsonl`,
-                text: `${stage}:repair`,
-                continuation: { harness: "pi", sessionId, transcriptPath: `/tmp/consolidate-${sessionId}.jsonl` },
-              };
-            }
-            if (stage === "propose") {
-              const path = validationPath(request);
-              await mkdir(dirname(path), { recursive: true });
-              await writeFile(path, JSON.stringify({
-                strategies: [
-                  { id: "slot-0", bottleneck: "memory", technique: "warp", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
-                  { id: "slot-1", bottleneck: "compute", technique: "tile", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
-                ],
-              }));
-            } else if (stage === "race.implement") {
-              const slot = await strategySlot(request);
-              await writeFile(join(request.cwd, "kernel.py"), `kernel-${slot}\n`);
-            } else if (stage === "race.bench") {
-              const slot = await strategySlot(request);
-              const best = slot === 0 ? 4 : 9;
-              const path = validationPath(request);
-              await mkdir(dirname(path), { recursive: true });
-              await writeFile(path, JSON.stringify({
-                iteration: 0,
-                decision: "KEEP",
-                candidate: { path: "kernel.py" },
-                current_best: { path: "state/current-best.py" },
-                verification: { compile_passed: true, verify_passed: true },
-                benchmark: {
-                  name: "tflops",
-                  unit: "TFLOP/s",
-                  direction: "higher",
-                  samples: [best],
-                  best,
-                  median: best,
-                  runs: 1,
-                  warmup: 0,
-                },
-                promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
-                records: { round_path: `rounds/iter-000.json`, state_path: "state/tuning-state.json" },
-              }));
-            }
-            return {
-              sessionId: `${stage}-${invocationId(request).replaceAll("/", "-")}`,
-              transcriptPath: `/tmp/race-${stage}.jsonl`,
-              text: `${stage}:${invocationId(request)}`,
-              continuation: continuation(`${stage}-${invocationId(request).replaceAll("/", "-")}`),
-            };
-          }),
-        }).pipe(
-          Effect.provideService(Logging, loggingService(session.log, session.trace)),
-          Effect.provide(NodeFileSystem.layer),
-        ),
-      );
-      if (Exit.isFailure(outcome)) {
-        throw new Error(Cause.pretty(outcome.cause));
-      }
-
-      // Both consolidation turns stay on the winner actor: first from its
-      // accepted exit turn, then from the failed consolidation attempt.
-      expect(consolidateSessionIds).toHaveLength(2);
-      expect(consolidationContinuations).toHaveLength(2);
-      expect(consolidationContinuations[0]?.from).toContain("race.bench@race-slot-1");
-      expect(consolidationContinuations[1]?.from).toBe(consolidateSessionIds[0]);
-      // Both turns must warn that the gate compares file modes: a shell copy
-      // that only equalises content (e.g. `install -D`, which stamps 0755)
-      // still fails the gate, so the worker has to preserve permission bits.
-      expect(consolidationPrompts).toHaveLength(2);
-      for (const prompt of consolidationPrompts) {
-        expect(prompt).toContain("cp -p");
-        expect(prompt).toContain("file modes");
-      }
-      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
-      const records = (await readFile(selectionPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as {
-        outcome: string; carrying?: { kind: string; reason?: string };
-      });
-      // The engine converged to an honest "carried" after one genuine repair.
-      expect(records.at(-1)?.outcome).toBe("carried");
-      expect(records.at(-1)?.carrying?.kind).toBe("worker-consolidated");
-      const sourceKernel = await readFile(join(root, "kernel.py"), "utf8");
-      expect(sourceKernel.trim()).toBe("kernel-1");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rolls back a failed winner carry, stops downstream work, and preserves every slot for recovery", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-consolidation-rollback-"));
+  it("rolls back a failed delta carry, stops downstream work, and preserves every slot for recovery", async () => {
+    if (process.getuid?.() === 0) return; // root bypasses the directory mode
+    const root = await mkdtemp(join(tmpdir(), "piano-delta-carry-rollback-"));
+    const locked = join(root, "locked");
     try {
       const workflow = `${METRIC_TOURNAMENT}    - stage:
         name: summary
@@ -6333,6 +6084,8 @@ workflow:
       await writeFile(join(root, "race.yml"), workflow);
       await writeFile(join(root, "kernel.py"), "baseline\n");
       await writeFile(join(root, "user-notes.md"), "untouched\n");
+      await mkdir(locked, { recursive: true });
+      await writeFile(join(locked, "kept.txt"), "must survive\n");
       await mkdir(join(root, "state"), { recursive: true });
       await writeFile(join(root, "state", "current-best.py"), "baseline\n");
       await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
@@ -6345,22 +6098,13 @@ workflow:
         root,
         workflowPath: join(root, "race.yml"),
         runDir: session.runDir,
-        runId: "metric-consolidation-rollback",
+        runId: "delta-carry-rollback",
         cwd: root,
         prompt: "race two kernels",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
-          if (stage.startsWith("$consolidate/")) {
-            await writeFile(join(root, "kernel.py"), "half-applied\n");
-            if (calls.filter((call) => stageId(call).startsWith("$consolidate/")).length === 1) {
-              await writeFile(join(root, "unexpected.txt"), "must roll back\n");
-            } else {
-              await rm(join(root, "unexpected.txt"), { force: true });
-              await symlink(tmpdir(), join(root, "external-directory.link"));
-              await runFile("mkfifo", [join(root, "worker-created.fifo")]);
-            }
-          } else if (stage === "propose") {
+          if (stage === "propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({
@@ -6372,6 +6116,12 @@ workflow:
           } else if (stage === "race.implement") {
             const slot = await strategySlot(request);
             await writeFile(join(request.cwd, "kernel.py"), `kernel-${slot}\n`);
+            if (slot === 1) {
+              // The winner adds a file under a parent directory the operator
+              // makes read-only while the race runs: the delta cannot land.
+              await writeFile(join(request.cwd, "locked", "new.txt"), "cannot land\n");
+              await chmod(locked, 0o500);
+            }
           } else if (stage === "race.bench") {
             const slot = await strategySlot(request);
             const best = slot === 0 ? 4 : 9;
@@ -6397,13 +6147,11 @@ workflow:
       ));
 
       expect(Exit.isFailure(exit)).toBe(true);
-      expect(calls.filter((call) => stageId(call).startsWith("$consolidate/"))).toHaveLength(2);
       expect(calls.some((call) => stageId(call) === "summary")).toBe(false);
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
       await expect(readFile(join(root, "user-notes.md"), "utf8")).resolves.toBe("untouched\n");
-      await expect(stat(join(root, "unexpected.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(lstat(join(root, "external-directory.link"))).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(lstat(join(root, "worker-created.fifo"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(locked, "kept.txt"), "utf8")).resolves.toBe("must survive\n");
+      await expect(stat(join(locked, "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
 
       const recordRoot = join(session.runDir, "workspace-records");
       const records = await Promise.all((await readdir(recordRoot)).map(async (entry) =>
@@ -6417,98 +6165,7 @@ workflow:
         .trim().split("\n").map((line) => JSON.parse(line) as { outcome: string; carrying?: { kind: string } });
       expect(selections.at(-1)).toMatchObject({ outcome: "no-winner", carrying: { kind: "carry-failed" } });
     } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("rolls back the parent and preserves slots when actor persistence fails after carry", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-consolidation-persist-rollback-"));
-    try {
-      const workflow = `${METRIC_TOURNAMENT}    - stage:
-        name: summary
-        worker: basic
-        from: [race]
-`;
-      await writeFile(join(root, "race.yml"), workflow);
-      await writeFile(join(root, "kernel.py"), "baseline\n");
-      await mkdir(join(root, "state"), { recursive: true });
-      await writeFile(join(root, "state", "current-best.py"), "baseline\n");
-      await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
-        current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
-        history: [],
-      }));
-      const session = await testSession(root);
-      const calls: AgentRequest[] = [];
-      const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "race.yml"),
-        runDir: session.runDir,
-        runId: "metric-consolidation-persist-rollback",
-        cwd: root,
-        prompt: "race two kernels",
-        agentRunner: (request) => Effect.promise(async () => {
-          calls.push(request);
-          const stage = stageId(request);
-          if (stage.startsWith("$consolidate/")) {
-            await consolidateInto(request);
-            // Replace the ledger after the worker mutates the parent, making
-            // the actor-state persistence (an `actor-turn` append) fail
-            // deterministically.
-            await rm(join(session.runDir, "status.json"), { force: true });
-            await mkdir(join(session.runDir, "status.json"));
-          } else if (stage === "propose") {
-            const path = validationPath(request);
-            await mkdir(dirname(path), { recursive: true });
-            await writeFile(path, JSON.stringify({
-              strategies: [
-                { id: "slot-0", bottleneck: "memory", technique: "warp", rationale: "test", predicted_speedup: 1.1, risk_level: "low" },
-                { id: "slot-1", bottleneck: "compute", technique: "tile", rationale: "test", predicted_speedup: 1.2, risk_level: "medium" },
-              ],
-            }));
-          } else if (stage === "race.implement") {
-            const slot = await strategySlot(request);
-            await writeFile(join(request.cwd, "kernel.py"), `kernel-${slot}\n`);
-          } else if (stage === "race.bench") {
-            const slot = await strategySlot(request);
-            const best = slot === 0 ? 4 : 9;
-            const path = validationPath(request);
-            await mkdir(dirname(path), { recursive: true });
-            await writeFile(path, JSON.stringify({
-              iteration: 0,
-              decision: "KEEP",
-              candidate: { path: "kernel.py" },
-              current_best: { path: "state/current-best.py" },
-              verification: { compile_passed: true, verify_passed: true },
-              benchmark: { name: "tflops", unit: "TFLOP/s", direction: "higher", samples: [best], best, median: best, runs: 1, warmup: 0 },
-              promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
-              records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
-            }));
-          }
-          const id = `${stage}-${invocationId(request).replaceAll("/", "-")}`;
-          return { sessionId: id, transcriptPath: `/tmp/${id}.jsonl`, text: id, continuation: continuation(id) };
-        }),
-      }).pipe(
-        Effect.provideService(Logging, loggingService(session.log, session.trace)),
-        Effect.provide(NodeFileSystem.layer),
-      ));
-
-      expect(Exit.isFailure(exit)).toBe(true);
-      expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(true);
-      expect(calls.some((call) => stageId(call) === "summary")).toBe(false);
-      await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("baseline\n");
-      const recordRoot = join(session.runDir, "workspace-records");
-      const records = await Promise.all((await readdir(recordRoot)).map(async (entry) =>
-        JSON.parse(await readFile(join(recordRoot, entry, "record.json"), "utf8")) as { phase: string; cwd: string }));
-      expect(records).toHaveLength(2);
-      for (const record of records) {
-        expect(record.phase).toBe("preserved");
-        expect((await stat(record.cwd)).isDirectory()).toBe(true);
-      }
-      const selections = (await readFile(join(session.runDir, "eval-metrics", "selection.jsonl"), "utf8"))
-        .trim().split("\n").map((line) => JSON.parse(line) as { outcome: string; carrying?: { kind: string; reason?: string } });
-      expect(selections.at(-1)).toMatchObject({ outcome: "no-winner", carrying: { kind: "carry-failed" } });
-      expect(selections.at(-1)?.carrying?.reason).toContain("actor/resume-state persistence failed");
-    } finally {
+      await chmod(locked, 0o700).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -6605,7 +6262,7 @@ workflow:
       );
 
       // The shared source observed on entry to each iteration's propose proves
-      // the ordering: the winner consolidated at iteration N's region exit is
+      // the ordering: the winner carried at iteration N's region exit is
       // already in the source when iteration N+1 begins — selection and carry
       // happen at the tournament's exit, not at run end.
       const sourceAtPropose: string[] = [];
@@ -6618,15 +6275,6 @@ workflow:
           prompt: "race kernels each iteration",
           agentRunner: (request) => Effect.promise(async () => {
             const stage = stageId(request);
-            if (stage.startsWith("$consolidate/")) {
-              await consolidateInto(request);
-              return {
-                sessionId: `${stage}-${invocationId(request).replaceAll("/", "-")}`,
-                transcriptPath: `/tmp/consolidate-${stage.replaceAll("/", "-")}.jsonl`,
-                text: `${stage}:${invocationId(request)}`,
-                continuation: continuation(`${stage}-${invocationId(request).replaceAll("/", "-")}`),
-              };
-            }
             if (stage === "tune.propose") {
               sourceAtPropose.push((await readFile(join(request.cwd, "kernel.py"), "utf8")).trim());
               const path = validationPath(request);
@@ -6694,9 +6342,9 @@ workflow:
       expect(records).toHaveLength(3);
       expect(records.map((record) => record.outcome)).toEqual(["carried", "no-winner", "carried"]);
       expect(records.map((record) => record.carrying?.kind)).toEqual([
-        "worker-consolidated",
+        "delta-applied",
         "admitted-not-carried",
-        "worker-consolidated",
+        "delta-applied",
       ]);
       const [first, second, third] = records;
       expect(first?.winnerKey).toContain("iter-0");
@@ -6708,7 +6356,7 @@ workflow:
       expect(third?.winnerKey).toContain("slot-1");
 
       // Ordering: the shared source was still the baseline entering iteration 0
-      // and already held iteration 0's consolidated winner entering iteration 1.
+      // and already held iteration 0's carried winner entering iteration 1.
       expect(sourceAtPropose).toEqual(["baseline", "kernel-0-1", "kernel-0-1"]);
       expect(outcome.value.stages.filter((stage) => stage.stageId === "tune.race.bench")).toHaveLength(6);
       const sourceKernel = await readFile(join(root, "kernel.py"), "utf8");
@@ -6725,7 +6373,7 @@ workflow:
     }
   });
 
-  it("uses the exact nested exit metric, consolidates into the direct parent, and cleans only that region", async () => {
+  it("uses the exact nested exit metric, carries into the direct parent, and cleans only that region", async () => {
     const workflow = `version: 3
 workflow:
   name: nested-metric-races
@@ -6799,7 +6447,7 @@ workflow:
         history: [],
       }));
       const session = await testSession(root);
-      const consolidationTargets: Array<{ stage: string; cwd: string }> = [];
+      const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "nested.yml"),
@@ -6808,12 +6456,10 @@ workflow:
         cwd: root,
         prompt: "pick by the final nested race",
         agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
           const stage = stageId(request);
           const invocation = invocationId(request);
-          if (stage.startsWith("$consolidate/")) {
-            consolidationTargets.push({ stage, cwd: request.cwd });
-            await consolidateInto(request);
-          } else if (stage === "propose" || stage === "outer.seed-a" || stage === "outer.seed-b") {
+          if (stage === "propose" || stage === "outer.seed-a" || stage === "outer.seed-b") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({
@@ -6866,13 +6512,10 @@ workflow:
       expect(outerStages).toHaveLength(2);
       const outerCwds = new Set(outerStages.map((stage) => stage.workspace.cwd));
       // Inner winners are clean worktrees of the run's store: git fast-forwards
-      // each one into its direct parent slot, so no `$consolidate` worker turn
-      // runs for them. Only the outer winner — a store worktree of the non-Git
-      // root — consolidates through a worker, and into the root.
-      const innerCarries = consolidationTargets.filter(({ stage }) =>
-        stage.includes("/outer.race-a/") || stage.includes("/outer.race-b/"));
-      expect(innerCarries).toHaveLength(0);
-      expect(consolidationTargets).toContainEqual({ stage: "$consolidate/job-1/outer/slot-1", cwd: root });
+      // each one into its direct parent slot, and the outer winner — a store
+      // worktree of the non-Git root — has its delta applied into the root.
+      // Neither route runs a worker turn.
+      expect(calls.some((call) => stageId(call).startsWith("$consolidate/"))).toBe(false);
       expect(outerCwds.size).toBe(2);
 
       await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("outer-1-race-b-1\n");
@@ -6889,7 +6532,7 @@ workflow:
         });
       expect(selections).toContainEqual(expect.objectContaining({
         winnerKey: "job-1/outer/slot-1",
-        carrying: expect.objectContaining({ kind: "worker-consolidated" }),
+        carrying: expect.objectContaining({ kind: "delta-applied" }),
       }));
       const innerMerges = selections.filter((selection) =>
         selection.winnerKey?.includes("/outer.race-a/") === true

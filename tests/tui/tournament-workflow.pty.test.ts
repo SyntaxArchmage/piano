@@ -1,8 +1,8 @@
 // Real-run guard (TUI): the same fixture tournament through a real `piano`
 // interactive shell on a pseudo-terminal. The point is not the model turns —
 // those are deterministic and covered by the non-TUI guard and the unit twin
-// in workflow-execution.test.ts — but that the region-exit finalization,
-// consolidation, and cleanup complete under the real interactive UI, the run
+// in workflow-execution.test.ts — but that the region-exit carry and cleanup
+// complete under the real interactive UI, the run
 // reaches `completed`, and the TUI survives to accept `/exit`. Driven exactly
 // like basic-workflow-parity.e2e.test.ts (`script -qefc`, banner marker,
 // stdin prompt, run-directory polling), so it tracks the shipped TUI surface
@@ -101,7 +101,7 @@ async function runTui(workspace: string, home: string, tracePath: string, before
 }
 
 describe("tournament region-exit through the real TUI", () => {
-  it("completes every per-iteration consolidation under the interactive shell", async () => {
+  it("completes every per-iteration winner carry under the interactive shell", async () => {
     const home = await createFakeHarnessHome();
     const workspace = await mkdtemp(join(tmpdir(), "piano-tournament-guard-tui-"));
     // The trace lives in the evidence home, not the workspace: slot cleanup
