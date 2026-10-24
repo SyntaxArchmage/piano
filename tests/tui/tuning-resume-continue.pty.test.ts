@@ -55,7 +55,7 @@ describe("tuning run paused half-way, resumed in a new process, continued from i
       // 1's propose has announced its thread and is sleeping (row 7). The
       // ledger row is written before the fake can wedge, so it is the
       // deterministic signal that the target turn is open.
-      await waitForLedgerRows(paths.ledger, 7);
+      await waitForLedgerRows(paths.ledger, 6);
       const runDir = await findNewRun(paths, before);
       first.key("Escape");
       await waitForStatus(runDir, "paused", "run paused after Escape", 60_000);

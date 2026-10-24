@@ -17,16 +17,16 @@
 // against what the workers themselves saw.
 //
 // Like the tournament fake it acts purely on what the stage prompt tells it
-// (stage id, invocation, validation result path, consolidation source and
-// winner paths) plus its own cwd (the slot lane encodes `slot-N`), so the
-// engine cannot tell it apart from a compliant agent.
+// (stage id, invocation, validation result path) plus its own cwd (the slot
+// lane encodes `slot-N`), so the engine cannot tell it apart from a compliant
+// agent.
 //
 // PIANO_FAKE_PAUSE_AT="<stage-suffix>:<invocation-substring>" wedges the FIRST
 // matching invocation (a user record and the ledger row are already down, and
 // `thread.started` is already out, so the engine holds a resumable native id):
 // the guard interrupts the run there and later proves `/continue` picked the
 // job up from that exact point.
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout } from "node:timers";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -154,30 +154,6 @@ if (stage.endsWith("propose")) {
     promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
     records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
   });
-} else if (stage.startsWith("$consolidate/")) {
-  const delta = /Apply your winning change from `([^`]+)` to the tournament parent at `([^`]+)`/.exec(prompt);
-  if (delta?.[1] !== undefined && delta[2] !== undefined) {
-    // Apply only the baseline-relative winner delta so unrelated files
-    // already present in the parent remain untouched.
-    const winner = delta[1];
-    const parent = delta[2];
-    const changes = [...prompt.matchAll(/^- (added|modified|deleted): (.+)$/gm)];
-    for (const change of changes) {
-      const kind = change[1];
-      const path = change[2];
-      if (path === undefined) continue;
-      const target = join(parent, path);
-      if (kind === "deleted") {
-        rmSync(target, { recursive: true, force: true });
-      } else {
-        mkdirSync(dirname(target), { recursive: true });
-        cpSync(join(winner, path), target, { recursive: true });
-      }
-    }
-  } else {
-    process.stderr.write(`missing consolidation paths for stage ${stage}\n`);
-    process.exit(5);
-  }
 }
 
 // The codex `exec --json` dialect the subprocess adapter reads

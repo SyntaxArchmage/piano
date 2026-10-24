@@ -11,8 +11,7 @@ export interface ResumeActorState {
 
 /** One `actor-turn` row from an actor's state, or `undefined` when the state
  * is not durable (no session to reopen). The one place a writer turns actor
- * state into a ledger row, so the stage path and the consolidation path cannot
- * spell the same row differently. */
+ * state into a ledger row. */
 export function actorTurnRow(input: {
   readonly runId: string;
   readonly jobOrdinal: number;

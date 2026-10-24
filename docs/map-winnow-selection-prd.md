@@ -1,23 +1,19 @@
 # Tournament Map Selection and Winnow Consolidation — PRD
 
-Status: **Implemented-baseline / worker-consolidates revision**
-Date: 2026-09-03 (revision: 2026-09-04 — canonical worker behaviour)
+Status: **Implemented-baseline / deterministic-carry revision**
+Date: 2026-09-03 (revision: 2026-10-24 — the winner carry is program work)
 Stakeholders / agreed framing: the last work item before the preview release.
 It turns the workflow `map` primitive from *fan-out without harvest* into a
 `tournament`: branches compete, one metric-driven winner is chosen, and the
 winner's work is carried back into the parent scope so downstream stages — and
 later loop iterations — see the winning code.
 
-Piano is its own loop optimiser (W4 invariant): the engine is thin. The merge
-back is therefore **not** an engine git operation. The orchestrator only **ranks**
-the winner (in-process, pure). It then **hands the consolidation back to the
-winner's own coding-agent worker** as a follow-on in the same scope, and the
-engine merely **checks** the resulting shared state with a read-only gate —
-rejecting and telling the worker what is wrong when it is not, exactly like a
-human reviewer. See §6, this page is the canonical statement of that design.
-The unified path does not perform Git merge or cherry-pick; its consolidation
-transaction protects and observes Git metadata and restores that metadata when
-the carry or gate fails.
+Piano is its own loop optimiser (W4 invariant): the engine is thin. The
+orchestrator **ranks** the winner (in-process, pure) and then **carries** it with
+one deterministic program route per container: a Git lane is fast-forwarded, a
+store lane has its frozen baseline-relative delta copied into the parent. No
+worker turn decides or performs a carry, and no agent is asked to "apply
+carefully". See §6, this page is the canonical statement of that design.
 
 The voice is implementation-ready. The decision ledger records what is still open.
 
@@ -36,19 +32,15 @@ the referee is the exit stage's single declared benchmark metric. All the
 plumbing (contract-declared normalized metrics, workspace bindings, trajectory
 recorders) already exists.
 
-The merge-back is **canonical worker behaviour**, NOT engine git:
+The merge-back is **deterministic program work**:
 - The **orchestrator ranks** the winner only (pure, in-process, `selection.ts`).
-- The **winner worker consolidates**: the orchestrator re-activates that
-  worker's harness in the parent scope with a one-sentence delta-application
-  instruction, and the worker — which is a coding agent with real git/fs tools
-  — applies the frozen winning delta to the shared checkout. The unified path
-  does not perform Git merge or cherry-pick, and the engine does not use a
-  content-copy helper as the delivery mechanism. A consolidation transaction
-  protects and observes the target's Git metadata and restores it when the
-  carry or gate fails.
-- The **engine checks once** with a read-only directory-diff gate after the
-  worker says it is done, and if the state is not right it rejects like a
-  validate failure and sends the worker a precise "what is still wrong".
+- The **orchestrator carries** it: a `git-worktree` lane is committed on its
+  branch and fast-forwarded onto the source; a `store-worktree` lane has the
+  frozen baseline-relative delta copied into the parent, preserving modes and
+  symlink targets. No worker turn is involved on either route.
+- The **engine verifies once**: each declared path must equal the winner's
+  content and no undeclared path may change. Any failure restores the pre-apply
+  snapshot and reports `carry-failed`.
 
 Each map-slot worker already runs in a per-slot workspace allocated once for the
 whole race by source-cleanliness (a clean git source → detached worktrees; a
@@ -91,11 +83,12 @@ and — if a winner is configured — calls `applyWinnerWorkspace`. But:
   promotion that demonstrates the KEEP/DISCARD semantics offline.
 - `applyWinnerWorkspace` (workspace.ts) carries a winner by its lane's owner:
   a `git-worktree` lane is committed on its `tuna/<mnemonic>/lane-<n>` branch
-  and fast-forwarded onto the source checkout; a `store-worktree` lane copies
-  the validated content through `applyWorkspaceContents`.
-- The automatic tournament path uses that carry: git lanes merge, store lanes
-  consolidate through the winner worker and the baseline-relative delta gate
-  (§6).
+  and fast-forwarded onto the source checkout; a `store-worktree` lane has its
+  baseline-relative delta applied by `applyWorkspaceChangeSet` and verified
+  against the pre-apply snapshot.
+- The automatic tournament path uses that carry directly: git lanes merge,
+  store lanes apply their delta. Both are program work; neither runs a worker
+  turn (§6).
 
 ### 2.3 Requirements from the driving scenario
 
@@ -108,11 +101,10 @@ commit of the prior iteration*, not from the shared checkout.
 These five decisions are agreed framing for this PRD (see also the decision
 ledger in §20 of the unification PRD):
 
-1. Letting Piano put a winning change into the user's repository is approved. The
-   mechanism is the winner worker applying the frozen delta into the parent
-   scope (A1 §15); the unified path does not perform Git merge or cherry-pick.
-   The consolidation transaction observes the target's Git metadata and must
-   restore it when the carry or gate fails (§6).
+1. Letting Piano put a winning change into the user's repository is approved.
+   The mechanism is the engine applying the baseline-relative winner delta into
+   the parent scope (A1 §15). It touches only the delta's paths, refuses when
+   the parent changed a winner path, and rolls the parent back on failure (§6).
 2. Exactly one metric is allowed on the **deciding** (exit) stage; two or more
    is a workflow **validate error**, not a silent pick.
 3. Regression guard: supported, generically and extensibly.
@@ -128,18 +120,17 @@ We rename `map` → `tournament` where the DSL literal is a node kind.
 
 | Legacy | Proposed | Meaning |
 |---|---|---|
-| `map:` | `tournament:` | fan-out + worker winnow (selective consolidation) at region exit |
+| `map:` | `tournament:` | fan-out + metric winnow (selective carry) at region exit |
 | slot / mapSlot | branch / tournamentBranch | one independent actor workspace per item |
 | `over` field of `from` | unchanged | the name of the parent producer to fan on |
 | the region's single `exit` metrics | the referee | the exit stage must declare exactly 1 metric that is the basis |
 | map-style result (slot outputs) | winner result | region boundary returns only the winning branch's terminal result to downstream |
 | candidate / workspace | branch / workspace | one concrete producer state to compare |
-| parent scope = the user's repo | the consolidation target | the winner worker applies the winner's complete slot-baseline-relative delta while preserving unrelated parent files (§6) |
+| parent scope = the user's repo | the carry target | the engine applies the winner's complete slot-baseline-relative delta while preserving unrelated parent files (§6) |
 
-Terminology note: The old engine emitted/drove a `workspace` copy. Under the new
-shape the **winner worker** is the one that consolidates into the parent scope;
-the engine only ranks (§6.0) and gate-checks (§6.2). Branches are candidate
-states, not objects the engine copies.
+Terminology note: The old engine emitted/drove a `workspace` copy. Under the
+current shape the engine both ranks (§6.0) and applies+verifies the winner delta
+(§6.2); no worker turn carries the winner. Branches are candidate states.
 
 ---
 
@@ -196,7 +187,7 @@ Arity is enforced at load/schedule time, where the worker contract (and its
 only sees the DSL. The check is a **validate error, not a silent runtime
 guard**: a multi-metric competing exit refuses to begin. Metric-less fan-out is
 not a promotion path and never carries; enforcement of that is at the region
-exit in the execution engine (no referee → no winner → no worker-consolidation).
+exit in the execution engine (no referee → no winner → no carry).
 See D3/D4 and §12.
 
 At exit the runtime ranks `metrics` by the winning contract's declared
@@ -271,157 +262,112 @@ this stays loud and the map does not run. A tournament never partially merges.
 
 ---
 
-## 6. Winner consolidation — worker-invariant, engine checks only
+## 6. Winner carry — deterministic, program-applied
 
 This is the canonical behaviour of a tournament winner's carry-back. It is the
-heart of this PRD and supersedes the earlier "engine ff-merge into a commit
-frontier" design.
+heart of this PRD and supersedes both the earlier "engine ff-merge into a commit
+frontier" design and the interim "worker consolidates" revision.
 
 ### 6.0 Player roles (invariant)
 
 - **The engine ranks** — a pure in-process decision in `selection.ts`, no git,
   no file IO. Given the branches' terminal results and the deciding metric, it
   returns the winner (or no-winner on metric-less). That is ALL the engine does
-  to "choose".
-- **The winner worker consolidates** — the orchestrator re-activates the
-  winner's *own* coding-agent worker in the parent scope and gives it a
-  one-sentence, human-review-style instruction: *"apply your complete
-  slot-baseline-relative winning delta to the shared checkout, preserve
-  unrelated parent files, then confirm it."* The worker applies that frozen
-  delta with its ordinary workspace tools until the shared checkout contains
-  exactly that delta. The unified path does not perform Git merge or
-  cherry-pick, and the engine does no winner content-copy. Git metadata is
-  protected and observed by the consolidation transaction, which restores it
-  if the worker carry or the gate fails.
-- **The engine checks once** — after the worker reports done, the engine runs a
-  single **read-only directory-diff gate** (below) and, if the state is not
-  right, rejects like a `validation_failed`, sends the worker a precise
-  "what is still wrong", and lets it fix (reusing the existing
-  `VALIDATE_REPAIR_ATTEMPTS` loop). On pass it records the `selection`
-  trajectory row. Nothing in the gate mutates state.
+  to "choose". The `workspace.winner` option is the extension point a future
+  decision model (or any host plugin) plugs into; it changes *who wins*, never
+  *how the winner is carried*.
+- **The engine carries** — the winner's work reaches the parent by one of two
+  program routes, chosen by the lane's container:
+  - a `git-worktree` lane commits its worktree on the lane branch and
+    fast-forwards the source (`git merge --ff-only`). Git is the delta, the
+    record, and the verification.
+  - a `store-worktree` lane (non-Git source, or a source that is a Git
+    subdirectory, or a source that embeds the run directory) has the winner's
+    baseline-relative delta (added / modified / deleted paths against the lane's
+    fork commit) copied into the parent, preserving file modes and symlink
+    targets.
 
-Container note: strategy (git-worktree vs directory-snapshot) is chosen once per
-source at `allocateMapWorkspace` (workspace.ts ~319–392) and is a **whole-race**
-property — a tournament's slots are never a mix. Because the engine's only
-"delivery" is this worker + gate, and that gate is strategy-agnostic (below),
-the container's git-ness never leaks into the merge path. A tournament worker is
-therefore behaviourally invariant regardless of which container it ran in.
+  Neither route runs a worker turn. The carry is program work in both cases.
+- **The engine verifies once** — after applying the delta it re-reads the
+  parent: every declared path must equal the winner's content and no other path
+  may have changed. On any failure the pre-apply snapshot is restored and the
+  carry reports `carry-failed`, which stops the run and preserves every slot.
 
-### 6.1 The one-sentence consolidation prompt and its target
+Container note: strategy (git-worktree vs store-worktree) is chosen once per
+source at `allocateMapWorkspace` and is a **whole-race** property — a
+tournament's slots are never a mix. Both routes report the same landed kinds
+(`git-merged` / `delta-applied`), so downstream consumers are
+strategy-independent.
 
-The engine holds `winnerKey` and the winner's *continuation* from its last
-accepted stage turn. It issues a short instruction to that same worker identity,
-in the parent/shared scope:
+### 6.1 The carry delta
 
-```
-apply your winning change to the tournament parent workspace and confirm —
-before you are done, make sure it contains your complete slot-baseline-relative
-delta, preserves unrelated parent files, and has no changes outside that delta;
-leave nothing half-applied.
-```
+The lane record stores the commit it forked from (`baseCommit`). The winner
+delta is the Git tree difference between that commit and the winner slot's live
+content, excluding the run directory. Deleted paths are represented only in the
+change list; added and modified paths are copied from the slot with
+`copyContentNode`, which preserves the executable and permission bits and the
+raw symlink target.
 
-No injected rule grammar and no engine merge/cherry-pick. The worker applies the
-listed delta in the shared root; the consolidation transaction observes Git
-metadata changes and restores the protected metadata on failure. The read-only
-gate remains the authority for whether the resulting workspace is correct.
+The same fork commit is the parent's drift reference (every sibling forked from
+it). The engine computes the parent's changes against it too, and **refuses the
+carry** when the parent changed any path the winner also changed. This is the
+loud failure that protects a user edit made mid-run; the winner's content stays
+in its preserved slot instead of silently overwriting the parent.
 
-### 6.2 The read-only gate (avoid false positives only)
+### 6.2 Apply and verification
 
-After the worker says it is done, the engine checks the target workspace with one
-baseline-relative delta gate and one cleanliness note:
+The store route applies the delta as one fail-closed step
+(`applyWorkspaceChangeSet` in `workspace.ts`):
 
-- **Complete delta equality**: before the branch runs, the engine freezes the
-  winner slot's baseline. It computes the winner delta (added, modified, and
-  deleted paths) against that baseline, and compares it with the target's
-  changes against a target-before snapshot. The target must contain exactly the
-  winner delta: every winner change is present, no delta path is missing, and
-  consolidation adds no path outside that delta. Files in the parent workspace
-  unrelated to the winner delta are preserved.
+1. snapshot the parent (lstat inventory plus content) into a sibling scratch
+   directory — the rollback anchor;
+2. apply deletions first (a winner may replace a directory with a file), then
+   copies in path-depth order, refusing symlink or non-directory ancestors and
+   any protected name (`.git`, `.piano-run.lock`);
+3. verify with a declared-path comparison (bytes plus full mode, or the raw
+   symlink target) **and** an undeclared-change inventory: relative to the
+   pre-apply snapshot, only the declared paths may differ. Directories are
+   outside the delta model on purpose — Git trees never record empty
+   directories or directory modes;
+4. on any failure, restore the snapshot (`restoreWorkspaceLstat`, which
+   verifies its own result) and report the carry as failed, naming the kept
+   snapshot when even the restore could not be proven.
 
-  The implementation obtains the snapshots with a Node filesystem walker and
-  applies the baseline-relative delta comparison above. The business predicate
-  is that delta comparison.
-- **Cleanliness (informational)**: `git status --porcelain` on the target
-  workspace. This is **not** a pass/fail member; it is a report line so an
-  operator sees leftover untracked/half-applied files. (Making it a hard gate
-  would reject a correct result for a stray untracked file — a pure operative
-  false negative.) To be non-surprising it runs with the engine's own
-  untracked policy rather than default-git's.
+There is no repair loop and no worker feedback: the copy is deterministic, so
+"the worker did it slightly wrong" is not a possible state. Verification exists
+to catch engine defects and concurrent mutation, not agent mistakes.
 
-The gate is read-only and idempotent; re-running it after a failed attempt is
-safe *provided the winner-content reference is captured at ranking time and
-frozen* — never re-derived from a live worktree that a repair loop may have
-cleaned.
+### 6.3 Failure handling and safety boundaries
 
-**Why not ancestry/”commit reached”?** Whether the winner’s commit id is an
-ancestor of the target HEAD is a *lineage* fact, not a delta-equality fact. The
-target HEAD therefore is not the consolidation contract: the sound predicate is
-the complete winner delta relative to its frozen slot baseline, with no
-unexpected target changes. Any Git metadata change made during the worker turn
-is separately observed by the consolidation transaction and restored on failure.
+- A failed apply throws; the scope walker records `carry-failed`, preserves
+  every tournament slot, writes no `region-finalized` record, and fails the run.
+  A later `/continue` re-enters the region and re-applies the same delta, which
+  is idempotent by construction (each declared path is removed before it is
+  copied).
+- Git metadata is never touched on the store route: the engine only copies
+  files, never runs a Git command inside the source. The former
+  Git-metadata observation/rollback transaction existed solely to police a
+  worker turn and is gone with it.
+- The check/use boundary still has a same-UID TOCTOU limitation inherent to
+  path-based filesystem work; the identity check around the apply narrows but
+  cannot eliminate it.
 
-**Failure handling** = the existing validate→reject→feed-back→repair loop
-(`workflow-execution.ts` ~1290–1501, gate at the `validateStageResult` seam).
-On inequality the engine returns one precise defect (“winner delta is missing or
-incomplete” / “consolidation changed paths outside the winner delta”), capped by
-`VALIDATE_REPAIR_ATTEMPTS`, then re-gates.
+### 6.4 Why not worker-consolidation (decision record)
 
-The worker turn and gate must be enclosed by one consolidation transaction.
-Before the turn, it snapshots the target repository's semantic Git metadata
-(HEAD, refs, index, and in-progress-operation markers) and rejects an
-already-active unsafe Git operation. After the worker turn it observes metadata
-changes; on a carry failure, gate failure, or persistence failure it restores
-the protected metadata and the target workspace before reporting `carry-failed`.
-A concurrent or incomplete metadata restore is itself a failed carry and must
-not be treated as success. Git objects and reflogs may remain as diagnostic
-residue; they are not evidence that the consolidation succeeded.
+The interim revision handed the frozen delta to the winner's own coding-agent
+worker and policed it with a Git-metadata transaction, evidence manifests,
+sentinels, a read-only directory gate, and a bounded repair loop. That design
+made the carry non-deterministic in three ways: the worker could apply the
+delta differently (or touch nearby files), the outcome depended on a live model
+turn, and the evidence machinery existed only to detect worker tampering.
 
-This is a compensating transaction, not a filesystem/Git atomicity or sandbox
-security guarantee. The current check/use boundary still has a same-UID TOCTOU
-limitation; eliminating that requires descriptor-based operations, `openat2`, or
-an equivalent sandbox boundary. If source restoration cannot be proven, the
-result is `sourceState: "unknown"`, downstream carry is blocked, and the
-canonical external evidence is preserved for recovery.
-
-### 6.3 Why this shape, not engine ff-merge
-
-engine-ff (the earlier §6.x): the orchestrator itself ran `git merge --ff-only`
-/ content-copy. Problems the review dissolved:
-
-- it forced the engine to know the container (commit for worktree, copy for
-  snapshot), the very split that made winner consolidation strategy-dependent;
-- content-copy deleted things; a “merge” that is really a copy mislabels
-  itself and can destroy unsaved user edits in a shared checkout;
-- it reinvented, in engine code, git that the worker harness already has.
-
-Worker-consolidates removes all three by *moving* delta application into the one
-place with real tools (the worker), while the engine keeps only a thin metadata
-transaction and read-only gate. It is the W4 “thin engine” invariant applied to
-consolidation.
-
-(Retired framing: the old §6.1 “scope commit frontier / ff-merge into the parent
-HEAD” and §6.2 “why a commit not a copy” described the engine doing the merge;
-the current §6.3 inherits their *goals* — lineage, don’t destroy, loop-carry —
-but transfers the mechanism to the worker. Those goals are preserved here.)
-
-### 6.4 Non-git / directory-snapshot winners: still worker-consolidated
-
-A directory-snapshot winner (the whole-race fallback for a dirty/non-git source)
-has **no commit** for an engine or a git-based rule to merge. Under this design
-that is not a special case — it is the same §6.0 flow with one wording change:
-
-- the prompt does not say “merge your commit”; it says *“apply the complete
-  winner delta and preserve unrelated parent files”*;
-- the gate §6.2 is identical: the winner slot baseline and target-before
-  snapshot are both directories, and whole-tree comparison remains only the
-  underlying snapshot primitive.
-
-There is no separate “engine content-copy fallback” any more: the engine did the
-content copy in the old design precisely because snapshot winners had no commit
-for an ff-merge. Now neither ff nor content-copy exists in the engine; the worker
-reconciles, and the directory-gate validates. This is what makes snapshot winners
-behaviourally identical to git winners — the canonicalisation the whole race
-needs.
+The current design keeps the worker out of the carry entirely. The engine
+already knows the exact delta (it derives it from Git trees), so applying it is
+a program operation; verification is a program assertion; rollback is a program
+snapshot. The 2026-10 revision removed `consolidation-transaction.ts` and
+`git-metadata-transaction.ts` in full, and added the `delta-applied` carry kind.
+`worker-consolidated` remains readable in persisted Trajectory records as a
+legacy value written by older runs.
 
 ---
 
@@ -488,10 +434,9 @@ single pass:
   the deciding key (Exclusion, above), (2) rank the survivors by direction and by
   lowest index on `best` ties (Direction/Tie), (3) admit the best (winner of the
   iteration), (4) regression-gate that winner against a prior repetition's
-  incumbent when one exists, (5) hand the winner to its worker with the §6.1
-  one-sentence consolidation prompt, gate the resulting state with the read-only
-  §6.2 directory diff, and repair on failure (the admission outcome of the winner
-  is recorded regardless).
+  incumbent when one exists, (5) apply and verify the winner's delta (§6.2);
+  a failed apply rolls the parent back and fails the run (the admission outcome
+  of the winner is recorded regardless).
 
 Because the guards are policy functions in `selection.ts`, future guards
 (significance on `samples`, minimum lift, per-name thresholds) plug into the
@@ -523,15 +468,15 @@ workflow:
 
 Iteration mechanics under the winnow view:
 
-- Iteration i starts from iteration i-1's **result of the winnow** (the winner
-  worker's consolidated state in the parent scope), so the inner branches that
-  iteration i runs diverge from the real post-win parent state, not the shared
-  checkout copy that the runner mutated. This is the reason map-slot workspaces
-  were introduced at all; until now they were deleted.
+- Iteration i starts from iteration i-1's **result of the winnow** (the carried
+  winner state in the parent scope), so the inner branches that iteration i runs
+  diverge from the real post-win parent state, not the shared checkout copy
+  that the runner mutated. This is the reason map-slot workspaces were
+  introduced at all; until now they were deleted.
 - The loop-carry value of the winner was the gap in the old run-end `finalize`
-  winner plugin. The implemented tournament finalization consolidates at region
-  exit via the winner worker, so the NEXT inner implementation begins with
-  iteration i-1's resulting parent state.
+  winner plugin. The implemented tournament finalization carries the winner at
+  region exit, so the NEXT inner implementation begins with iteration i-1's
+  resulting parent state.
 
 ---
 
@@ -560,20 +505,21 @@ Each tournament invocation records the actual region-level selection shape:
   commit?,
   skipped?,
   carrying?: {
-    kind: "worker-consolidated" | "admitted-not-carried" | "carry-failed",
-    commit?, reason?, sourceState?, externalEvidenceRoot?
+    kind: "git-merged" | "delta-applied" | "admitted-not-carried" | "carry-failed",
+    commit?, reason?
   }
 }
 ```
 
-`carried` means the winner worker applied the frozen delta and the delta gate
-passed; `merged` remains a legacy compatibility outcome. The record does not
-claim an engine merge method.
+`carried` means the winner's delta reached the parent (`git-merged` for a
+fast-forwarded lane, `delta-applied` for the store route). `merged` remains a
+legacy compatibility outcome, and `worker-consolidated` is a legacy carrying
+kind written by runs from before the carry became deterministic; both stay
+readable so old Trajectory streams still load.
 
-The stream documents *why a branch won* (metric value, tie-break), *that its
-worker consolidated it into the parent* (agent action), and *that the engine's
-read-only directory gate passed or why not*. It does not record an engine merge
-method, because the engine never merges. Evals can recompute the winner from
+The stream documents *why a branch won* (metric value, tie-break), *how the
+winner reached the parent*, and *that verification passed or why not*. Evals
+can recompute the winner from
 `benchmark.jsonl` (tagged `instanceId`/`mapSlot`/`map-item`) and compare against
 the decision record — a cross-check that matters once tournaments feed code
 changes.
@@ -594,10 +540,8 @@ the current seams and the remaining compatibility boundaries.
 | Module | Responsibility | Existing code / new |
 |---|---|---|
 | `workflow.ts` | DSL rename `map`→`tournament`; scope/lowering rules; the exit boundary used by runtime selection | implemented in parsing and compilation; the 2+ metric guard is load-time validation where worker contracts are available |
-| `workflow-execution.ts` | tournament region exit: rank survivors by the deciding metric (Exclusion + Direction/Tie), collapse the region boundary to the winner result, **re-activate the winner worker with the §6.1 prompt**, run the baseline-relative delta gate with bounded repair, and emit the selection observation | implemented by `automaticTournamentOutcome`, `finalizeTournament`, and `consolidateAndGate`; no automatic engine merge |
-| `workspace.ts` | lane branch allocation, frozen winner change sets, and the read-only baseline-relative delta gate | implemented by `captureWorkspaceBaselineChanges`/`diffWorkspaceChangeSet`; `applyWinnerWorkspace` carries a git lane by commit and fast-forward |
-| `git-metadata-transaction.ts` | protect, observe, and conditionally restore semantic Git metadata around consolidation; fail closed on unsafe or concurrent mutation | required consolidation boundary; never the winner merge/cherry-pick mechanism |
-| `harness/pi.ts` (or the worker seam) | the winner-consolidate invocation: continue the winner worker on its continuation with the §6.1 sentence | reuse existing continuation/injection seams (no new subsystem) |
+| `workflow-execution.ts` | tournament region exit: rank survivors by the deciding metric (Exclusion + Direction/Tie), collapse the region boundary to the winner result, and emit the selection observation | implemented by `automaticTournamentOutcome` and `finalizeTournament`; the carry itself is delegated to `workspace.ts` |
+| `workspace.ts` | lane branch allocation, the winner delta, delta apply and verification | implemented by `workspaceBaselineChanges`/`applyWorkspaceChangeSet`/`diffWorkspaceChangeSet`; `applyWinnerWorkspace` fast-forwards a git lane and applies the delta of a store lane |
 | `workflow-runtime.ts` | runtime lane identity and compatibility evidence fields | `slot`/`mapSlot` protocol names remain stable for the current evidence schema |
 | `handoff.ts` | carry worker-contract-declared handoff projections and winning producer references; loser lanes remain in `records`/`allStages` but are not handed to the join | generic projection transport; no worker-specific payload semantics |
 | `progress.ts` | record generic stage/progress observations and per-branch progress; region count unchanged | projection-driven recording; no worker-specific payload semantics |
@@ -634,8 +578,8 @@ Tests must prove DSL correctness AND a real git selection:
    error; a fixture using `tournament` compiles.
 3. Exit stage `validate: true` whose worker contract declares **0** benchmark
    metrics → the tournament is a legal report/fan-out: it runs, carries
-   text/JSON downstream, and records no carry at exit (no referee, no
-   consolidation; see A2/D4).
+   text/JSON downstream, and records no carry at exit (no referee, no carry;
+   see A2/D4).
 4. Exit stage contract declaring **2+** benchmark metrics → workflow load/compile
    error listing the metric ids (decision 2). This is the "refined DSL"
    regression test.
@@ -650,14 +594,14 @@ Tests must prove DSL correctness AND a real git selection:
 
 **real git e2e (the hard requirement)**
 8. Seed a temp git repo (toplevel clean). A stub runner makes slot branches
-   write, commit, and produce exit metrics. A stub winner worker then runs the
-   §6.1 consolidation against the parent workspace. Assert:
+   write, commit, and produce exit metrics. The engine then carries the winner
+   into the parent workspace. Assert:
    - the parent workspace now *really contains* the winner's complete
      baseline-relative delta — the new file is present, a deleted file is gone,
      and an unrelated parent file remains (verified by the §6.2 delta gate, not
      by assuming a git ff);
    - losing branches are retained under `refs/piano/...` and `git show <ref>` works;
-   - `selection.jsonl` attributes the winner, the agent carry, and the gate result;
+   - `selection.jsonl` attributes the winner, the carry kind, and the verification result;
    - every slot is cleaned afterward and the run leaves no stray workspace dir.
 
 **regression guard e2e (decision 3)**
@@ -665,16 +609,14 @@ Tests must prove DSL correctness AND a real git selection:
    strictly better than every branch: workflow completes, the parent workspace does
    **not** change, decision marks `admitted-not-carried`, and the reason records the
    incumbent value.
-10. **Gate-repair loop**: the winner worker initially consolidates incorrectly
-    (winner delta is missing or target has an extra path). Assert the
-    validate-fail→feed-back→repair cycle re-runs the winner worker and, on the
-    successful attempt, the delta gate passes; a worker that never converges is
-    eventually stopped by `VALIDATE_REPAIR_ATTEMPTS` without corrupting the
-    parent workspace.
+10. **Carry failure and rollback**: a delta path that cannot be written (for
+    example a read-only parent directory) fails the carry; assert the parent is
+    restored to its pre-apply snapshot, the run reports `carry-failed`, every
+    slot is preserved, and no downstream stage runs.
 
 **loop-tournament carry (the key scene)**
 11. A `loop { tournament }` of ≥2 iterations where iteration-2's entry runs on
-    iteration-1's consolidated winner; assert iteration-2's branches fork from
+    iteration-1's carried winner; assert iteration-2's branches fork from
     iteration-1's resulting tree, i.e. the loop really saw the winner code (no
     shared-copy mutation).
 12. A two-metric error on the deciding exit stage aborts the whole workflow
@@ -725,10 +667,9 @@ fanning out.
   generic executor boundary.
 - Winner carry follows the lane's owner: a `git-worktree` lane is merged by git
   (`applyWinnerWorkspace` commits the lane branch and fast-forwards the source
-  checkout), a `store-worktree` lane is consolidated by the winner worker
-  through the baseline-relative delta gate. The engine ranks, protects Git
-  metadata transactionally, and gate-checks the store path (§6.0–§6.2). Every
-  consolidation runs through the same transaction core.
+  checkout), a `store-worktree` lane has its frozen delta applied and verified
+  against a pre-apply snapshot (`applyWorkspaceChangeSet`). The engine ranks,
+  applies, and verifies; both routes are program work (§6.0–§6.2).
 - A metric-less code-competition fan-out that silently keeps a winner without a
   referee is not a promotion path: it never carries and records no winner (A2/D4).
   A metric-less `tournament` is nevertheless a legal report/fan-out (carries
@@ -741,10 +682,9 @@ fanning out.
 ### Accepted
 - **A1. Piano may write a winner's change into the user repo (decision 1).** The
   carry happens at region exit, into the *parent workspace* binding, performed by
-  the **winner worker** (§6.0), not by an engine merge. The user asked for this;
-  it is the conservative, lineage-preserving arrangement — and it does not
-  force the engine to implement Git merge or cherry-pick. A generic transaction
-  still protects, observes, and restores Git metadata.
+  the **engine's deterministic apply** (§6.0): the winner's frozen delta only,
+  never a broad sync. The user asked for this; the previous worker-driven
+  revision was replaced because it made the carry depend on a live model turn.
 - **A2. A competing (validating) exit may declare at most one metric — 2+ is a
   workflow validate error (decision 2).** Keeps evaluation well-ordered without
   a select field. Metric *less* (0) competing exits are NOT an error: they are a
@@ -753,18 +693,15 @@ fanning out.
 - **A3. Keep losing-candidate refs; selection recorded as trajectory (decision
   4).** `refs/piano/<exec>/<region>/slot-<n>` retained; stream records why and
   whether/when a winner was carried.
-- **A4. Consolidation is canonical worker behaviour; the engine never merges.**
-  The winner worker carries its change (config §6.1); the engine ranks, protects
-  Git metadata transactionally, and runs the read-only directory gate
-  (§6.0/6.2), rejecting-and-repairing through the existing validate loop. A
-  worker that cannot carry its change leaves the parent workspace untouched and
+- **A4. The carry is program work; no worker turn takes part.**
+  The engine ranks, applies the frozen delta, and verifies it against the
+  pre-apply snapshot (§6.0/6.2). A carry that cannot land restores the parent and
   records `carry-failed` rather than corrupting state.
 - **A5. Carry follows the lane's owner.** Automatic metric selection carries a
   `git-worktree` winner by commit and fast-forward (`applyWinnerWorkspace`) and
-  a `store-worktree` winner through the winner worker and the
-  baseline-relative delta gate (§11). Every consolidation runs through the same
-  transaction core; the execution-scoped winner selector remains an explicit
-  selection surface.
+  a `store-worktree` winner by applying and verifying its baseline-relative
+  delta (§11). The execution-scoped winner selector remains an explicit
+  selection surface and is the hook a future decision model replaces.
 
 ### Deliberate, still open (need code-prove before approval)
 - **D1. Whether a non-loop single-pass tournament has meaningful use** beyond
@@ -789,8 +726,8 @@ fanning out.
   locking.
 - **D4. Whether a metric-less `tournament` is recoverable at all.** This PRD's
   answer: **yes, as a legal report/fan-out.** A metric-less `tournament` runs,
-  carries text/JSON downstream, and never consolidates a winner (no referee → no
-  winner → no worker carry); it is not a promotion path and never silently keeps
+  carries text/JSON downstream, and never carries a winner (no referee → no
+  winner → no carry); it is not a promotion path and never silently keeps
   a winner (R3). Only 2+
   declared metrics underdetermine order and are refused (decision 2 / A2). This
   keeps existing metric-less fan-out estates working rather than removing them
@@ -799,10 +736,10 @@ fanning out.
 ### Rejected
 - R1. A `map`/`tournament` key at load with multiple metrics should be a silent
   pick — rejected: decision 2 mandates a validate error.
-- R2. Delivering a winner by unconditional overwrite-copy, Git merge, or
-  cherry-pick — state must not be destroyed through a detour that removes user
-  edits; the worker applies the frozen delta and the consolidation transaction
-  protects and restores Git metadata on failure.
+- R2. Delivering a winner by unconditional overwrite-copy or a broad
+  whole-tree sync — state must not be destroyed through a detour that removes
+  user edits; the engine applies only the frozen delta, refuses when the parent
+  changed a winner path, and restores its pre-apply snapshot on failure.
 - R3. Winner chosen without a referee metric (by text length, "most tokens",
   arbitrary slot index, or "only the completed branch"). The exit metric is the
   only basis for ranking. If a genuine metric-less fan-out (report-only, no
@@ -827,7 +764,7 @@ fanning out.
 3. A metric-less `map`/`tournament` is a legal report/fan-out (never carries a
    winner); 2+ declared metrics is a load-time validation error (A2/D4). The
    automatic path carries a git lane by commit and fast-forward and a store
-   lane through worker consolidation, while the execution-scoped
+   lane by applying its delta, while the execution-scoped
    `workspace.winner` selector remains an explicit selection surface.
 
 ---
@@ -835,9 +772,8 @@ fanning out.
 ## 17. Relationship to the wider unification PRD
 
 This document concerns the addition/rename of `map`→`tournament` with
-metric-selection and winner consolidation-back. The *selection-as-trajectory*
-shape and the canonical worker-consolidates outcome inherit and reuse the
-unification PRD's:
+metric-selection and deterministic winner carry-back. The *selection-as-trajectory*
+shape and the canonical carry outcomes inherit and reuse the unification PRD's:
 
 - §5.3 *accepted ≠ physically true* → §8 (regression guard),
 - §5.4 one record stream → §10 (selection.jsonl),

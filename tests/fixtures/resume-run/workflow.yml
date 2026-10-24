@@ -3,8 +3,8 @@ version: 3
 # Tuning-loop fixture for the resume e2e guards
 # (tests/cli/tuning-continue-real-workers.test.ts and
 # tests/tui/tuning-resume-continue.pty.test.ts). Same shape as the tournament
-# region-exit guards — a loop whose body races two strategies and consolidates
-# the winner — but with `harness: codex` on every stage and two iterations.
+# region-exit guards — a loop whose body races two strategies and carries the
+# winner — but with `harness: codex` on every stage and two iterations.
 #
 # codex is the harness whose resume handle is explicit on argv
 # (`codex exec resume <thread-id>`, built by harness-argv.ts from the

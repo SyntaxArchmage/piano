@@ -81,7 +81,7 @@ type AgentRunner = (request, options) => Effect<...>
 
 `executeWorkflow` 已执行完整 DAG，并递归展开 loop/map、保存 invocation 级证据、传递 handoff 记录和返回 `stages[]`。这些语义由 L3 的注入 runner 用例覆盖：它们能精确控制每个 stage 的耗时、结果与失败，而不依赖真实模型。
 
-L4 的 parity e2e 目前仍只对 basic 单 stage 对表。multi-stage 的真实进程栈守卫已经建立:`tournament-real-cli`/`tournament-workflow.pty` 用真实 CLI/TUI 子进程跑 loop 套 tournament 的 fixture(`piCli.bin` 替换为确定性 fake agent,免凭据、CI 常开),守住区域退出定胜负与逐轮合并的时序;真实模型侧由门控的 `real-consolidation.e2e.test.ts` loop 嵌套用例(每轮一次真实 `$consolidate` turn)覆盖。剩余「真实模型下的多阶段 parity」(两前端对同一 multi-stage 工作流的等价性)仍是后续工作。
+L4 的 parity e2e 目前仍只对 basic 单 stage 对表。multi-stage 的真实进程栈守卫已经建立:`tournament-real-cli`/`tournament-workflow.pty` 用真实 CLI/TUI 子进程跑 loop 套 tournament 的 fixture(`piCli.bin` 替换为确定性 fake agent,免凭据、CI 常开),守住区域退出定胜负与逐轮 carry 的时序。winner carry 现在是确定式程序行为(引擎应用冻结 delta 并校验,不再有 agent consolidation turn),因此不再需要真实模型守卫。剩余「真实模型下的多阶段 parity」(两前端对同一 multi-stage 工作流的等价性)仍是后续工作。
 
 ## 分层策略的收益与代价
 

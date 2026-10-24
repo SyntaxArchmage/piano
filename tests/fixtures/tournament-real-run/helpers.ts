@@ -108,9 +108,9 @@ export async function listRunIds(home: string): Promise<ReadonlySet<string>> {
 }
 
 /** The core region-exit claims, shared verbatim by the non-TUI and TUI
- * guards: two per-iteration carried selections, the trace ordering showing
- * consolidation land between iterations, the consolidated source, the two
- * exit-time log records, and cleaned slot lanes. */
+ * guards: two per-iteration carried selections, the trace ordering showing the
+ * carry land between iterations, the carried source, the two exit-time log
+ * records, and cleaned slot lanes. */
 export async function assertRegionExitEvidence(input: {
   runDir: string;
   tracePath: string;
@@ -119,7 +119,7 @@ export async function assertRegionExitEvidence(input: {
   const records = await readSelectionRecords(input.runDir);
   expect(records).toHaveLength(2);
   expect(records.map((record) => record.outcome)).toEqual(["carried", "carried"]);
-  expect(records.map((record) => record.carrying?.kind)).toEqual(["worker-consolidated", "worker-consolidated"]);
+  expect(records.map((record) => record.carrying?.kind)).toEqual(["delta-applied", "delta-applied"]);
   expect(records[0]?.winnerKey).toContain("iter-0");
   expect(records[0]?.winnerKey).toMatch(/slot-1$/);
   expect(records[1]?.winnerKey).toContain("iter-1");
@@ -128,22 +128,15 @@ export async function assertRegionExitEvidence(input: {
   expect((await readFile(join(input.workspace, "kernel.py"), "utf8")).trim()).toBe("kernel-1");
 
   // Ordering — the regression these guards exist for. The fake records the
-  // stage and the kernel content at every turn's entry, so consolidation
-  // must land between iterations: the second propose already sees the first
-  // iteration's winner. Under run-end finalization the $consolidate lines
-  // would not precede the second propose, failing this.
+  // stage and the kernel content at every turn's entry, so the carry must
+  // land at the region exit, between iterations: the second propose already
+  // sees the first iteration's winner. Under run-end finalization it would
+  // still see the baseline, failing this.
   const trace = await readTrace(input.tracePath);
   const proposeEntries = trace.filter((entry) => entry.stage === "tune.propose");
-  const consolidateEntries = trace.filter((entry) => entry.stage.startsWith("$consolidate/"));
   expect(proposeEntries.map((entry) => entry.kernelAtEntry)).toEqual(["baseline", "kernel-1"]);
-  expect(consolidateEntries).toHaveLength(2);
-  expect(consolidateEntries[0]?.stage).toContain("iter-0");
-  expect(consolidateEntries[1]?.stage).toContain("iter-1");
-  const firstConsolidate = trace.findIndex((entry) => entry.stage.startsWith("$consolidate/"));
-  const secondPropose = trace.map((entry) => entry.stage).indexOf("tune.propose", firstConsolidate + 1);
-  expect(firstConsolidate).toBeGreaterThanOrEqual(0);
-  expect(secondPropose).toBeGreaterThan(firstConsolidate);
-  // Iteration 1's lane snapshots are taken from the consolidated source:
+  expect(trace.some((entry) => entry.stage.startsWith("$consolidate/"))).toBe(false);
+  // Iteration 1's lane snapshots are taken from the carried source:
   // its implement turns start from iter-0's winner, not the baseline.
   const secondRoundImplements = trace.filter((entry) => entry.stage === "tune.race.implement").slice(2);
   expect(secondRoundImplements).toHaveLength(2);

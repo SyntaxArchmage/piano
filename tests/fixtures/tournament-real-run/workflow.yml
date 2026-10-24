@@ -3,13 +3,13 @@ version: 3
 # Loop-nested tournament for the real-process region-exit guards
 # (tests/workflow/tournament-real-cli.e2e.test.ts and
 # tests/tui/tournament-workflow.pty.test.ts). Each iteration races two
-# strategies; the winner must be decided and consolidated into the shared
+# strategies; the winner must be decided and carried into the shared
 # source when the race region exits, so the next iteration proposes from it.
 #
 # Every stage runs `harness: pi-cli`, the subprocess adapter: the guards point
 # it at a deterministic stand-in binary via `piCli.bin` in an isolated agent
 # config, so the whole real stack (CLI process, engine, subprocess protocol,
-# worker consolidation, workspace cleanup) runs without provider credentials.
+# winner carry, workspace cleanup) runs without provider credentials.
 workflow:
   name: tournament-real-run
   nodes:

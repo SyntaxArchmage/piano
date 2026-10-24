@@ -15,10 +15,7 @@ import {
   cleanupMapWorkspaces,
   createLaneNumberAllocator,
   prepareMapLaneFork,
-  workspaceBaselineChanges,
   type MapLaneFork,
-  type WorkspaceBaseline,
-  type WorkspaceContentChange,
   type WorkflowCarrying,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
@@ -36,16 +33,13 @@ import {
 } from "./selection.js";
 import type { HandoffMapItem } from "./handoff.js";
 import {
-  actorLane,
   mapOverParts,
   runtimeFramesFromInstanceId,
   runtimeInstanceId,
-  runtimeInvocationId,
   runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
-import { appendWorkflowProgress, type WorkflowProgressRegionFinalizedRecord, type WorkflowRegionFinalizedPayload } from "./progress.js";
-import { actorTurnRow } from "./resume-state.js";
+import type { WorkflowProgressRegionFinalizedRecord, WorkflowRegionFinalizedPayload } from "./progress.js";
 import type {
   WorkflowRegionPlan,
   WorkflowRuntimeNode,
@@ -54,11 +48,9 @@ import type {
   InternalStageResult,
 } from "./execution-types.js";
 import type {
-  ConsolidateAndGateRequest,
   WorkflowExecutionError,
   WorkflowWorkspaceCandidate,
 } from "./workflow-execution.js";
-import type { ConsolidationCarrying } from "./consolidation-transaction.js";
 
 /** Mutable state the walker and the composer's finalizer share. */
 export interface WalkerWorkspaceState {
@@ -84,7 +76,6 @@ interface ScopeWalkerContext {
     dirty: ReadonlySet<string>,
     cwd: string,
   ) => Effect.Effect<void, never, FileSystem.FileSystem | Logging>;
-  readonly consolidate: (args: ConsolidateAndGateRequest) => Effect.Effect<ConsolidationCarrying, never, FileSystem.FileSystem | Logging>;
 }
 
 interface ResultGroup {
@@ -252,21 +243,16 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     preExistingDirty,
     workspaceState,
     commitRoundWinner,
-    consolidate,
   } = context;
   /** One lane counter per execution: sibling and nested lanes share it. */
   const laneAllocator = createLaneNumberAllocator();
   const {
     request,
     loaded,
-    compiled,
     runId,
     mnemonic,
     jobOrdinal,
-    actors,
-    actorContexts,
     knownLoopIterations,
-    progressSemaphore,
     workflowTrajectory,
   } = stageRunnerContext;
 
@@ -397,8 +383,8 @@ interface TournamentFinalization {
 // A tournament is one region: however many stages it contains, it decides
 // its winner exactly once, when the region exits — before its parent
 // consumes the result or, inside a loop, the next iteration begins. The
-// decision and the winner's consolidation into the shared source happen
-// here; the run-end finalizer keeps only the workspace cleanup backstop.
+// decision and the winner's carry into the shared source happen here; the
+// run-end finalizer keeps only the workspace cleanup backstop.
 const finalizeTournament = (
   region: WorkflowRegionPlan,
   frames: readonly WorkflowRuntimeFrame[],
@@ -478,22 +464,11 @@ const finalizeTournament = (
   }
   const cleanupKeys = candidates.map((candidate) => candidate.key);
   if (winnerKey !== undefined) {
-    // Winner consolidation is a worker activity (§6): the engine never
-    // merges or copies. The winning slot's own coding-agent worker
-    // consolidates the shared source by continuing in the parent scope;
-    // the engine only re-checks the winner's content against the shared
-    // tree with a read-only directory gate, rejecting like a validation
-    // failure and feeding back what still differs until the content
-    // matches (bounded by the shared repair cap).
+    // The winner is applied by the program, never by a worker: a git lane is
+    // fast-forwarded and a store lane has its frozen delta copied in, both
+    // determined by the winner's own content.
     const winnerCandidate = candidates.find((candidate) => candidate.key === winnerKey);
     const winnerContentDir = winnerCandidate?.workspace.cwd;
-    // Drive consolidation on the winner's deciding map-region exit
-    // worker/harness, so a real coding harness re-opens as the same kind
-    // of agent that produced the winning result.
-    const winnerExitLeaf = compiled.stages.find((leaf) => leaf.id === region.exitStageId);
-    const winnerExitResult = winnerCandidate?.boundaryResults.find((stage) => stage.stageId === region.exitStageId);
-    const winnerWorker = winnerExitLeaf?.stage.worker ?? winnerCandidate?.stages.at(-1)?.worker ?? "basic";
-    const winnerHarness = winnerExitLeaf?.stage.harness ?? "pi";
     const incumbentKey = selectionReferee === undefined
       ? undefined
       : tournamentIncumbentKey(region, frames);
@@ -554,133 +529,28 @@ const finalizeTournament = (
         ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
       };
     }
-    const excludeUnder = [request.runDir];
     let consolidating: WorkflowCarrying;
     if (winnerContentDir === undefined || winnerCandidate === undefined) {
       consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no materialised slot content` };
-    } else if (winnerCandidate.workspace.strategy === "git-worktree") {
-      // A git-worktree winner is merged, not consolidated: its worktree holds
-      // the winning edits, git fast-forwards the parent onto the commit it
-      // makes of them, and the lane branch is the record. Git carries the
-      // delta and git is the verification — no frozen file delta and no
-      // worker turn. A source that cannot fast-forward is a carry failure:
-      // the winner's work did not reach the parent, and saying otherwise
-      // would be the silent loss the delta gate exists to catch.
-      const applied = yield* applyWinnerWorkspace(request.runDir, winnerKey, sourceCwd).pipe(
-        Effect.map((result): WorkflowCarrying => result.skipped === undefined
-          ? { kind: "git-merged", ...(result.commit === undefined ? {} : { commit: result.commit }) }
-          : {
+    } else {
+      // One programmatic carry for both strategies: a git worktree is
+      // fast-forwarded onto the source and a store lane has its frozen delta
+      // copied in. Both report what was verified; neither asks a worker to
+      // apply the winner.
+      consolidating = yield* applyWinnerWorkspace(request.runDir, winnerKey, sourceCwd).pipe(
+        Effect.map((result): WorkflowCarrying => result.skipped !== undefined
+          ? {
             kind: "carry-failed",
             reason: result.skipped.reason,
+            ...(result.commit === undefined ? {} : { commit: result.commit }),
+          }
+          : {
+            kind: result.method === "delta-applied" ? "delta-applied" : "git-merged",
             ...(result.commit === undefined ? {} : { commit: result.commit }),
           }),
         Effect.catchAll((error): Effect.Effect<WorkflowCarrying> =>
           Effect.succeed({ kind: "carry-failed", reason: errorMessage(error) })),
       );
-      consolidating = applied;
-    } else if (winnerCandidate.workspace.baseCommit === undefined) {
-      consolidating = { kind: "carry-failed", reason: `winner "${winnerKey}" has no forked base commit to measure against` };
-    } else {
-      // The lane record carries what it forked from; a store lane's fork is
-      // also the region's drift reference (every sibling shares it).
-      const laneBaseline: WorkspaceBaseline = {
-        runDir: request.runDir,
-        commit: winnerCandidate.workspace.baseCommit,
-      };
-      const frozen = yield* Effect.tryPromise({
-        try: async () => {
-          const [changes, parentChanges] = await Promise.all([
-            workspaceBaselineChanges(
-            laneBaseline,
-            winnerContentDir,
-            excludeUnder,
-            ),
-            workspaceBaselineChanges(laneBaseline, sourceCwd, excludeUnder),
-          ]);
-          return {
-            changes,
-            parentChanges,
-          } satisfies { readonly changes: readonly WorkspaceContentChange[]; readonly parentChanges: readonly WorkspaceContentChange[] };
-        },
-        catch: (cause) => workflowError("schedule", sourceCwd, `cannot inspect tournament winner delta: ${errorMessage(cause)}`),
-      }).pipe(Effect.either);
-      if (Either.isLeft(frozen)) {
-        consolidating = {
-          kind: "carry-failed",
-          reason: errorMessage(frozen.left),
-        };
-      } else {
-        const { changes, parentChanges } = frozen.right;
-        const winnerPaths = new Set(changes.map((change) => change.path));
-        const conflicts = parentChanges.filter((change) => winnerPaths.has(change.path));
-        if (conflicts.length > 0) {
-          consolidating = {
-            kind: "carry-failed",
-            reason: `the tournament parent changed after branch allocation at: ${conflicts.map((change) => change.path).join(", ")}`,
-          };
-        } else if (changes.length === 0) {
-          consolidating = { kind: "worker-consolidated" };
-        } else {
-          const actorContext = winnerExitResult === undefined
-            ? undefined
-            : [...actorContexts.values()].find((context) =>
-              runtimeInvocationId(context.invocation) === winnerExitResult.id);
-          const actor = actorContext === undefined ? undefined : actors.get(actorContext.actorKey);
-          if (actorContext === undefined) {
-            consolidating = {
-              kind: "carry-failed",
-              reason: `winner "${winnerKey}" has no accepted exit-actor context`,
-            };
-          } else {
-            consolidating = yield* consolidate({
-              request,
-              winnerKey,
-              winnerContentDir,
-              sourceCwd,
-              winnerWorker,
-              winnerHarness,
-              excludeUnder,
-              changes,
-              winnerBaseline: laneBaseline,
-              winnerActor: {
-                ...actorContext,
-                ...(actor?.continuation === undefined ? {} : { continuation: actor.continuation }),
-                onTurn: (worker) => {
-                  actors.set(actorContext.actorKey, {
-                    turns: (actors.get(actorContext.actorKey)?.turns ?? 0) + 1,
-                    harness: winnerHarness,
-                    sessionId: worker.sessionId,
-                    transcriptPath: worker.transcriptPath,
-                    ...(worker.continuation === undefined ? {} : { continuation: worker.continuation }),
-                  });
-                },
-              },
-              // The consolidation turn changes the winner actor's state, so it
-              // appends that actor's own `actor-turn` row — the one record a
-              // resume folds — and the carry needs no table snapshot of its
-              // own. Concurrent nested consolidations serialize through the
-              // same semaphore as stage progress.
-              persistAfterCarry: () => progressSemaphore.withPermits(1)(Effect.suspend(() => {
-                const winnerState = actors.get(actorContext.actorKey);
-                if (winnerState === undefined) return Effect.void;
-                const row = actorTurnRow({
-                  runId,
-                  jobOrdinal,
-                  invocationId: runtimeInvocationId(actorContext.invocation),
-                  attempt: winnerExitResult?.attempts ?? 1,
-                  actorKey: actorContext.actorKey,
-                  harness: winnerHarness,
-                  worker: winnerWorker,
-                  lane: actorLane(actorContext.invocation.frames).join("/"),
-                  state: winnerState,
-                });
-                if (row === undefined) return Effect.void;
-                return appendWorkflowProgress(request.runDir, row).pipe(Effect.asVoid);
-              })),
-            });
-          }
-        }
-      }
     }
     yield* WORKFLOW_LOG.info("workspace.winner.consolidated", {
       outcome: carryLanded(consolidating.kind) ? "success" : "no-winner",
@@ -1092,10 +962,10 @@ const executeScope = (
         ));
       }
       const slots = slotOutcomes.map((slot) => Either.getOrThrow(slot));
-      // The region just exited: decide the winner and consolidate it into
-      // the shared source now — one decision per tournament, per instance.
-      // A failed slot set keeps upstream's fail-net effect (the node
-      // fails above and no consolidation runs).
+      // The region just exited: decide the winner and carry it into the
+      // shared source now — one decision per tournament, per instance.
+      // A failed slot set keeps upstream's fail-net effect (the node fails
+      // above and no carry runs).
       const finalization = yield* finalizeTournament(region, frames, workspace, slotBindings.map((slot, index) => ({
         key: slot.workspace.key,
         workspace: slot.workspace,

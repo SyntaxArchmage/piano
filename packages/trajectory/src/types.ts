@@ -94,18 +94,20 @@ export type WorkflowObservation =
     /** Human-readable reason when the winner could not be merged. */
     readonly skipped?: string;
     /** Provenance of how the winner reached the parent scope: a git-worktree
-     * winner is merged (`git-merged`, the engine fast-forwards git), a
-     * store-worktree winner is consolidated by its own worker
-     * (`worker-consolidated`). Either kind makes the `carried` outcome. */
+     * winner is merged (`git-merged`, the engine fast-forwards git) and a
+     * store-worktree winner has its frozen delta applied (`delta-applied`).
+     * `worker-consolidated` is the legacy value recorded before the carry
+     * became deterministic; the schema keeps accepting it so old runs still
+     * load. Every landed kind makes the `carried` outcome. */
     readonly carrying?: {
-      readonly kind: "git-merged" | "worker-consolidated" | "admitted-not-carried" | "carry-failed";
+      readonly kind: "git-merged" | "delta-applied" | "worker-consolidated" | "admitted-not-carried" | "carry-failed";
       readonly commit?: string;
       readonly reason?: string;
-      /** Consolidation source certainty after rollback verification. Optional
-       * for compatibility with historical selection records. */
+      /** Legacy: consolidation source certainty recorded by the removed
+       * worker-consolidation transaction. Optional for old selection records. */
       readonly sourceState?: "known" | "unknown";
-      /** Preserved canonical evidence for operator recovery when source state
-       * cannot be proven. Optional for successful/legacy records. */
+      /** Legacy: preserved consolidation evidence for operator recovery.
+       * Optional for old selection records. */
       readonly externalEvidenceRoot?: string;
     };
   };
@@ -256,7 +258,7 @@ export interface ToolCallScore {
 export type SelectionRecord = Extract<WorkflowObservation, { type: "selection" }>;
 
 /** Whole-run outcome counts over referee decisions. `carried` is an applied
- * winner too (the winning slot's worker consolidated it into the parent
+ * winner too (the engine applied the winning slot's delta into the parent
  * scope), so an apply rate counts merged + carried. */
 export interface SelectionScore {
   readonly count: number;

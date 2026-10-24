@@ -3,16 +3,15 @@
 //
 // This is a real subprocess speaking the real pi-CLI NDJSON protocol; only the
 // model turn is scripted. Like a real worker it acts purely on what the stage
-// prompt tells it (stage id, validation result path, consolidation source and
-// winner paths) plus its own cwd (the slot lane encodes `slot-N`), so the
-// engine cannot tell it apart from a compliant agent. Each invocation appends
-// `<stage>\t<kernel.py content at entry>` to $PIANO_FAKE_TRACE first — the
-// guards read that ordering to prove the winner was consolidated at the
-// region exit, before the next loop iteration started.
-import { appendFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// prompt tells it (stage id, validation result path) plus its own cwd (the slot
+// lane encodes `slot-N`), so the engine cannot tell it apart from a compliant
+// agent. Each invocation appends `<stage>\t<kernel.py content at entry>` to
+// $PIANO_FAKE_TRACE first — the guards read that ordering to prove the winner
+// was carried at the region exit, before the next loop iteration started.
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { setInterval } from "node:timers";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { validationResultPathFromPrompt } from "../../common/validation-path.mjs";
 
@@ -94,30 +93,6 @@ if (stage.endsWith("propose")) {
     promotion: { promoted: true, resulting_best: { path: "state/current-best.py" }, reason: "faster" },
     records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
   });
-} else if (stage.startsWith("$consolidate/")) {
-  const delta = /Apply your winning change from `([^`]+)` to the tournament parent at `([^`]+)`/.exec(prompt);
-  if (delta?.[1] !== undefined && delta[2] !== undefined) {
-    // Apply only the baseline-relative winner delta so
-    // unrelated files already present in the parent remain untouched.
-    const winner = delta[1];
-    const parent = delta[2];
-    const changes = [...prompt.matchAll(/^- (added|modified|deleted): (.+)$/gm)];
-    for (const change of changes) {
-      const kind = change[1];
-      const path = change[2];
-      if (path === undefined) continue;
-      const target = join(parent, path);
-      if (kind === "deleted") {
-        rmSync(target, { recursive: true, force: true });
-      } else {
-        mkdirSync(dirname(target), { recursive: true });
-        cpSync(join(winner, path), target, { recursive: true });
-      }
-    }
-  } else {
-    process.stderr.write(`missing consolidation paths for stage ${stage}\n`);
-    process.exit(5);
-  }
 }
 
 // pi-CLI NDJSON transcript in the json-mode dialect the subprocess adapter

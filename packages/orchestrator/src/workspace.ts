@@ -1055,163 +1055,24 @@ export function cleanupMapWorkspaces(
     : workflowError("schedule", runDir, errorMessage(cause))));
 }
 
-/** Re-emit every validated file link from its original source spelling after
- * the copy: Node's recursive cp can canonicalise relative links. */
-async function rewriteWorkspaceSymlinks(
-  source: string,
-  destination: string,
-  skip: (path: string) => boolean,
-): Promise<void> {
-  const visit = async (sourcePath: string, destinationPath: string): Promise<void> => {
-    if (skip(sourcePath)) return;
-    const info = await lstat(sourcePath);
-    if (info.isSymbolicLink()) {
-      const rawTarget = await readlink(sourcePath);
-      const resolvedTarget = await realpath(sourcePath);
-      if (!pathWithin(source, resolvedTarget) || skip(resolvedTarget) || !(await stat(resolvedTarget)).isFile()) {
-        throw workflowError(
-          "schedule",
-          sourcePath,
-          "workspace content symlink target changed to external or directory content",
-        );
-      }
-      const copied = await lstat(destinationPath);
-      if (!copied.isSymbolicLink()) {
-        throw workflowError("schedule", destinationPath, "workspace content symlink was not preserved by copy");
-      }
-      const target = isAbsolute(rawTarget)
-        ? resolve(destination, relative(source, resolvedTarget))
-        : rawTarget;
-      await rm(destinationPath, { force: true });
-      await symlink(target, destinationPath);
-      return;
-    }
-    if (!info.isDirectory()) return;
-    for (const entry of await readdir(sourcePath, { withFileTypes: true })) {
-      await visit(join(sourcePath, entry.name), join(destinationPath, entry.name));
-    }
-  };
-  await visit(source, destination);
-}
-
-async function applyWorkspaceContents(
-  candidate: string,
-  runRoot: CanonicalRunRoot,
-  sourceIdentity: WorkspaceDirectoryIdentity,
-): Promise<void> {
-  const source = sourceIdentity.canonical;
-  const run = runRoot.canonical;
-  const stagingDirectory = await mkdtemp(join(dirname(source), ".piano-apply-"));
-  const staged = join(stagingDirectory, "workspace");
-  const before = join(stagingDirectory, "before");
-  let beforeSnapshotCreated = false;
-  let operationFailure: unknown;
-  let rollbackFailure: unknown;
-  let cleanupFailure: unknown;
-  try {
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-    const candidateCaseInsensitive = await isCaseInsensitiveFileSystem(candidate);
-    const skipCandidateEntry = (entry: string): boolean =>
-      isProtectedWorkspacePath(candidate, entry, candidateCaseInsensitive);
-    // The content gate is the shared fail-closed walk: external or directory
-    // symlinks and special nodes are refused before anything is copied.
-    await collectContentPaths(candidate);
-    await cp(candidate, staged, {
-      recursive: true,
-      errorOnExist: true,
-      force: false,
-      dereference: false,
-      filter: (entry) => !skipCandidateEntry(entry),
-    });
-    // Node's recursive copy can canonicalise relative links on some paths.
-    // Re-emit every validated file link from its original candidate spelling
-    // before the staged tree is used, so no link can point back at the slot.
-    await rewriteWorkspaceSymlinks(candidate, staged, skipCandidateEntry);
-    const sourceContainsRunDirectory = pathWithin(source, run);
-    const runContainer = dirname(run);
-    const sourceContainsRunContainer = sourceContainsRunDirectory && runContainer !== source;
-    const sourceCaseInsensitive = await isCaseInsensitiveFileSystem(source);
-    const excludedSourceSubtrees = sourceContainsRunDirectory && resolve(run) !== resolve(source) ? [run] : [];
-    const protectedEntry = (entry: string): boolean => {
-      return isProtectedWorkspacePath(source, entry, sourceCaseInsensitive) ||
-        (sourceContainsRunDirectory && (pathWithin(run, resolve(entry)) || (sourceContainsRunContainer && pathWithin(runContainer, resolve(entry)))));
-    };
-    // Freeze the source before the first destructive operation. If any later
-    // copy/rewrite step fails, this snapshot restores the complete application
-    // tree while the protected Git/run entries remain untouched.
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-    await snapshotWorkspaceLstat(source, before, excludedSourceSubtrees);
-    beforeSnapshotCreated = true;
-    // These checks intentionally precede each destructive/use boundary. They
-    // do not eliminate a same-UID check-then-use race; such callers require a
-    // sandbox or descriptor/openat2-based implementation.
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-    const sourceEntries = await readdir(source);
-    for (const entry of sourceEntries) {
-      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-      await assertCanonicalRunRoot(runRoot);
-      if (!protectedEntry(join(source, entry))) await rm(join(source, entry), { recursive: true, force: true });
-    }
-    const stagedEntries = await readdir(staged);
-    for (const entry of stagedEntries) {
-      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-      await assertCanonicalRunRoot(runRoot);
-      if (protectedEntry(join(source, entry))) continue;
-      await cp(join(staged, entry), join(source, entry), { recursive: true, force: true, dereference: false });
-    }
-    const skipStagedEntry = (entry: string): boolean => {
-      const path = relative(staged, entry);
-      return path === "" ? false : protectedEntry(join(source, path));
-    };
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-    await rewriteWorkspaceSymlinks(staged, source, skipStagedEntry);
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-  } catch (error) {
-    operationFailure = error;
-    if (beforeSnapshotCreated) {
-      try {
-        await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before rollback");
-        const sourceContainsRunDirectory = pathWithin(source, run);
-        const excludedSourceSubtrees = sourceContainsRunDirectory && resolve(run) !== resolve(source) ? [run] : [];
-        await restoreWorkspaceLstat(source, before, undefined, excludedSourceSubtrees);
-        await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after rollback");
-      } catch (error) {
-        rollbackFailure = error;
-      }
-    }
-  }
-  try {
-    await rm(stagingDirectory, { recursive: true, force: true });
-  } catch (error) {
-    cleanupFailure = workflowError("schedule", stagingDirectory, `workspace apply cleanup failed: ${errorMessage(error)}`);
-  }
-  if (operationFailure !== undefined) {
-    const failures = [operationFailure];
-    if (rollbackFailure !== undefined) failures.push(workflowError("schedule", source, `workspace source rollback failed: ${errorMessage(rollbackFailure)}`));
-    if (cleanupFailure !== undefined) failures.push(cleanupFailure);
-    if (failures.length > 1) throw new AggregateError(failures, "workspace apply failed and recovery was incomplete");
-    throw operationFailure;
-  }
-  if (cleanupFailure !== undefined) {
-    throw cleanupFailure;
-  }
-}
-
 /** Provenance of how a tournament winner was carried into the parent scope.
- * A git-worktree slot is merged: its worktree is committed on the lane branch
- * and git fast-forwards the parent — git is the delta, the record, and the
- * verification. A store-worktree slot (non-Git sources) keeps the frozen-delta
- * route, where the winning slot's own coding-agent worker consolidates and the
- * engine records only what it verified (PRD §10). */
+ * Both routes are deterministic program work: a git-worktree slot is merged
+ * (its worktree is committed on the lane branch and git fast-forwards the
+ * parent — git is the delta, the record, and the verification), while a
+ * store-worktree slot (non-Git sources) has its frozen delta copied into the
+ * parent and verified by the engine. No worker turn decides a carry.
+ * Persisted Trajectory records may also carry the legacy `worker-consolidated`
+ * value written by older runs; the trajectory schema keeps accepting it, but
+ * this runtime never produces it. */
 export type WorkflowCarryKind =
   | "git-merged"
-  | "worker-consolidated"
+  | "delta-applied"
   | "admitted-not-carried"
   | "carry-failed";
 
 /** Whether a carry kind means the winner's work reached the parent scope. */
 export function carryLanded(kind: WorkflowCarryKind): boolean {
-  return kind === "git-merged" || kind === "worker-consolidated";
+  return kind === "git-merged" || kind === "delta-applied";
 }
 
 export interface WorkflowCarrying {
@@ -1730,8 +1591,8 @@ export async function snapshotWorkspaceLstat(
 }
 
 /** Freeze application content as a directory tree with the exact rollback
- * metadata `restoreWorkspaceLstat` consumes. Only consolidation evidence and
- * rollback use this: baselines themselves are git commits below. */
+ * metadata `restoreWorkspaceLstat` consumes. Only the store-lane carry uses
+ * this: baselines themselves are git commits below. */
 
 /** A frozen workspace content baseline: one git commit in the run's own
  * baseline store. The commit shares blobs across lanes and iterations instead
@@ -1879,34 +1740,153 @@ export async function workspaceBaselineChanges(
   return changes.sort((left, right) => left.path.localeCompare(right.path));
 }
 
-/** Copy just the changed files into a frozen directory — the winner delta
- * evidence and worker input. Deleted paths are represented only in `changes`. */
-async function freezeChangedFiles(
-  changes: readonly WorkspaceContentChange[],
-  winnerContentDir: string,
-  frozenWinnerDir: string,
-): Promise<WorkspaceChangeSet> {
-  await mkdir(frozenWinnerDir, { recursive: true });
-  for (const change of changes) {
-    if (change.kind === "deleted") continue;
-    const destination = join(frozenWinnerDir, change.path);
-    await mkdir(dirname(destination), { recursive: true });
-    await copyContentNode(join(winnerContentDir, change.path), destination);
+/** Validate a delta path's parent chain and, for installs, create missing
+ * directories. Returns false when an ancestor no longer exists and the caller
+ * is deleting: the subtree is already gone, so there is nothing to remove.
+ * A symlink or non-directory ancestor is refused before any mutation. */
+async function prepareWorkspaceDeltaPath(
+  targetRoot: string,
+  path: string,
+  create: boolean,
+): Promise<boolean> {
+  const segments = workspacePathSegments(path);
+  let current = resolve(targetRoot);
+  for (const segment of segments.slice(0, -1)) {
+    current = join(current, segment);
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      if (!create) return false;
+      await mkdir(current);
+      continue;
+    }
+    if (!info.isDirectory() || info.isSymbolicLink() || resolve(await realpath(current)) !== current) {
+      throw workflowError("schedule", current, "workspace carry refuses a symlink or non-directory ancestor");
+    }
   }
-  return { winnerContentDir: frozenWinnerDir, changes };
+  return true;
 }
 
-/** Freeze only the winner's delta against its baseline. This avoids turning
- * build/profile files that were already present in the parent into a
- * whole-tree equality demand. */
-export async function captureWorkspaceBaselineChanges(
-  baseline: WorkspaceBaseline,
-  winnerContentDir: string,
-  frozenWinnerDir: string,
-  excludeUnder: readonly string[] = [],
-): Promise<WorkspaceChangeSet> {
-  const changes = await workspaceBaselineChanges(baseline, winnerContentDir, excludeUnder);
-  return freezeChangedFiles(changes, winnerContentDir, frozenWinnerDir);
+/** Non-directory entries that differ between the pre-apply snapshot and the
+ * target, excluding the delta itself. Directories are ignored on purpose: the
+ * delta model is git trees, which never record empty directories or directory
+ * modes. */
+async function undeclaredWorkspaceChanges(
+  beforeDir: string,
+  targetRoot: string,
+  declared: ReadonlySet<string>,
+  excluded: readonly string[],
+): Promise<readonly string[]> {
+  const [before, after] = await Promise.all([
+    inventoryWorkspaceLstat(beforeDir),
+    inventoryWorkspaceLstat(targetRoot, excluded),
+  ]);
+  const contentEntries = (entries: readonly WorkspaceLstatEntry[]): Map<string, WorkspaceLstatEntry> =>
+    new Map(entries.filter((entry) => entry.kind !== "directory").map((entry) => [entry.path, entry]));
+  const left = contentEntries(before);
+  const right = contentEntries(after);
+  const differing: string[] = [];
+  for (const path of new Set([...left.keys(), ...right.keys()])) {
+    if (declared.has(path)) continue;
+    const previous = left.get(path);
+    const current = right.get(path);
+    if (previous === undefined || current === undefined || !lstatEntryEqual(previous, current)) {
+      differing.push(path);
+    }
+  }
+  return differing.sort();
+}
+
+/** Apply a winner delta to a live tree, fail-closed.
+ *
+ * Every path is either removed or overwritten with the exact node from
+ * `winnerContentDir`; nothing else in the target is touched. The target is
+ * snapshotted before the first mutation, so a failure restores the pre-apply
+ * tree and re-verifies it. This is the store-lane counterpart of a git
+ * fast-forward: the program applies the delta and the program verifies it. */
+export async function applyWorkspaceChangeSet(
+  targetRoot: string,
+  changeSet: WorkspaceChangeSet,
+  excluded: readonly string[] = [],
+): Promise<void> {
+  const target = resolve(targetRoot);
+  const staging = await mkdtemp(join(dirname(target), ".piano-carry-"));
+  const before = join(staging, "before");
+  let snapshotCreated = false;
+  let operationFailure: unknown;
+  let rollbackFailure: unknown;
+  let cleanupFailure: unknown;
+  try {
+    await snapshotWorkspaceLstat(target, before, excluded);
+    snapshotCreated = true;
+    // Deletions first: a winner may replace a directory with a file, and the
+    // copy would otherwise collide with the old subtree still in place.
+    for (const change of changeSet.changes) {
+      if (change.kind !== "deleted") continue;
+      const node = safeWorkspaceNodePath(target, change.path);
+      if (!await prepareWorkspaceDeltaPath(target, change.path, false)) continue;
+      await rm(node, { recursive: true, force: true });
+    }
+    const installed = changeSet.changes
+      .filter((change) => change.kind !== "deleted")
+      .sort((left, right) =>
+        workspacePathDepth(left.path) - workspacePathDepth(right.path) || left.path.localeCompare(right.path));
+    for (const change of installed) {
+      const destination = safeWorkspaceNodePath(target, change.path);
+      await prepareWorkspaceDeltaPath(target, change.path, true);
+      if (await pathExists(destination)) await rm(destination, { recursive: true, force: true });
+      await copyContentNode(join(changeSet.winnerContentDir, change.path), destination);
+    }
+    const applied = await diffWorkspaceChangeSet(target, changeSet);
+    if (!applied.equal) {
+      throw workflowError("schedule", target, `winner delta did not land at: ${applied.differing.join(", ")}`);
+    }
+    const undeclared = await undeclaredWorkspaceChanges(
+      before,
+      target,
+      new Set(changeSet.changes.map((change) => change.path)),
+      excluded,
+    );
+    if (undeclared.length > 0) {
+      throw workflowError("schedule", target, `winner delta changed undeclared paths: ${undeclared.join(", ")}`);
+    }
+  } catch (error) {
+    operationFailure = error;
+    // Without a completed snapshot there is nothing to restore, and the target
+    // is untouched: the snapshot step is the first filesystem write.
+    if (snapshotCreated) {
+      try {
+        await restoreWorkspaceLstat(target, before, undefined, excluded);
+      } catch (error) {
+        rollbackFailure = error;
+      }
+    }
+  }
+  // A failed rollback keeps the snapshot: it is the only copy of the pre-apply
+  // tree, so the error names where it lives instead of deleting it.
+  if (rollbackFailure === undefined) {
+    try {
+      await rm(staging, { recursive: true, force: true });
+    } catch (error) {
+      cleanupFailure = workflowError("schedule", staging, `workspace carry cleanup failed: ${errorMessage(error)}`);
+    }
+  }
+  if (operationFailure !== undefined) {
+    const failures = [operationFailure];
+    if (rollbackFailure !== undefined) {
+      failures.push(workflowError(
+        "schedule",
+        target,
+        `workspace carry rollback failed (pre-apply snapshot kept at ${before}): ${errorMessage(rollbackFailure)}`,
+      ));
+    }
+    if (cleanupFailure !== undefined) failures.push(cleanupFailure);
+    if (failures.length > 1) throw new AggregateError(failures, "workspace carry failed and recovery was incomplete");
+    throw operationFailure;
+  }
+  if (cleanupFailure !== undefined) throw cleanupFailure;
 }
 
 /** Check only the winner delta against a target; unrelated parent files are
@@ -1973,10 +1953,11 @@ async function mergeGitWorktreeWinner(
 
 export interface WorkflowWinnerResult {
   readonly key: string;
-  readonly method: "git-ff" | "git-no-changes" | "content-copy";
+  readonly method: "git-ff" | "git-no-changes" | "delta-applied";
   readonly commit?: string;
-  /** A non-fast-forward source left the winner commit un-merged; it stays
-   * reachable on the lane branch. */
+  /** The winner was not carried: a git source could not fast-forward, or the
+   * parent scope changed a path the winner also changed. The winner's content
+   * stays in its slot/lane branch. */
   readonly skipped?: { readonly reason: string };
 }
 
@@ -1986,9 +1967,9 @@ export interface WorkflowWinnerResult {
  * A source-owned lane is committed on its own branch and fast-forwarded onto
  * the source checkout (true lineage: the working tree now *is* the winner's
  * committed tree). A store-worktree lane — the fallback for non-Git sources —
- * keeps the validated content-copy so unsaved user edits still land. When the
- * source cannot fast-forward, the lane branch keeps the winner and the result
- * reports `skipped` rather than destroying source state. */
+ * has the winner's baseline-relative delta copied into the source and verified;
+ * parent files outside that delta are never touched. Both routes are program
+ * work: nothing asks a worker to apply the winner. */
 export function applyWinnerWorkspace(
   runDir: string,
   winnerKey: string,
@@ -2036,8 +2017,29 @@ export function applyWinnerWorkspace(
         };
         return result;
       }
-      await applyWorkspaceContents(applying.cwd, runRoot, sourceIdentity);
-      return { key: applying.key, method: "content-copy" as const };
+      // The lane's fork commit is the parent's drift reference too: every
+      // sibling forked from it, so a parent change on any winner path is a
+      // genuine conflict and refuses the carry instead of clobbering it.
+      const baseline: WorkspaceBaseline = { runDir: run, commit: applying.baseCommit };
+      const [changes, parentChanges] = await Promise.all([
+        workspaceBaselineChanges(baseline, applying.cwd, [run]),
+        workspaceBaselineChanges(baseline, source, [run]),
+      ]);
+      const winnerPaths = new Set(changes.map((change) => change.path));
+      const conflicts = parentChanges.filter((change) => winnerPaths.has(change.path));
+      if (conflicts.length > 0) {
+        return {
+          key: applying.key,
+          method: "delta-applied" as const,
+          skipped: { reason: `the tournament parent changed after branch allocation at: ${conflicts.map((change) => change.path).join(", ")}` },
+        };
+      }
+      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before delta apply");
+      if (changes.length > 0) {
+        await applyWorkspaceChangeSet(source, { winnerContentDir: applying.cwd, changes }, [run]);
+      }
+      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after delta apply");
+      return { key: applying.key, method: "delta-applied" as const };
     },
     catch: (cause) => cause instanceof WorkflowError
       ? cause

@@ -8,14 +8,14 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 import {
+  allocateMapWorkspace,
+  applyWinnerWorkspace,
+  applyWorkspaceChangeSet,
   cleanupMapWorkspaces,
   freezeWorkspaceBaseline,
   prepareMapLaneFork,
   workspaceBaselineChanges,
   workspaceRefName,
-  captureWorkspaceBaselineChanges,
-  allocateMapWorkspace,
-  applyWinnerWorkspace,
 } from "../../packages/orchestrator/src/index.js";
 import {
   diffWorkspaceLstat,
@@ -122,33 +122,35 @@ describe(" workspace lifecycle", () => {
     }
   });
 
-  it("restores the source when applying a snapshot fails after partial deletion", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-apply-rollback-source-"));
-    const runRoot = await mkdtemp(join(tmpdir(), "piano-apply-rollback-run-"));
-    const blocked = join(root, "blocked");
-    let slotBlocked: string | undefined;
+  it("refuses a store-lane carry when the parent changed a winner path after the fork", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-store-conflict-"));
+    const runRoot = await mkdtemp(join(tmpdir(), "piano-store-conflict-run-"));
     try {
-      await writeFile(join(root, "a.txt"), "baseline\n");
-      await mkdir(blocked);
-      await writeFile(join(blocked, "kept.txt"), "must survive\n");
-      await chmod(blocked, 0o500);
+      await writeFile(join(root, "kernel.py"), "baseline\n");
+      await writeFile(join(root, "untouched.txt"), "parent\n");
       const session = await sessionFor(root, runRoot);
       const binding = await runEffect(session, allocateMapWorkspace(
         session.runDir,
-        "apply-rollback",
+        "store-conflict",
         1, [{ kind: "map", regionId: "tournament", slot: 0 }],
         root,
         { mnemonic: "test" },));
-      slotBlocked = join(binding.cwd, "blocked");
-      await writeFile(join(binding.cwd, "winner.txt"), "winner\n");
+      expect(binding.strategy).toBe("store-worktree");
+      // The winner edits kernel.py; the user edits the same file mid-run.
+      await writeFile(join(binding.cwd, "kernel.py"), "winner\n");
+      await writeFile(join(binding.cwd, "winner-only.txt"), "winner\n");
+      await writeFile(join(root, "kernel.py"), "parent edit\n");
 
-      await expect(runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root)))
-        .rejects.toThrow();
-      await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("baseline\n");
-      await expect(readFile(join(blocked, "kept.txt"), "utf8")).resolves.toBe("must survive\n");
+      const applied = await runEffect(session, applyWinnerWorkspace(session.runDir, binding.key, root));
+      expect(applied.method).toBe("delta-applied");
+      expect(applied.skipped?.reason).toMatch(/changed after branch allocation at: kernel\.py/u);
+      // Neither side is clobbered: the parent keeps its edit and the winner's
+      // work stays in its slot for recovery.
+      await expect(readFile(join(root, "kernel.py"), "utf8")).resolves.toBe("parent edit\n");
+      await expect(stat(join(root, "winner-only.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(binding.cwd, "winner-only.txt"), "utf8")).resolves.toBe("winner\n");
+      await expect(readFile(join(root, "untouched.txt"), "utf8")).resolves.toBe("parent\n");
     } finally {
-      await chmod(blocked, 0o700).catch(() => undefined);
-      if (slotBlocked !== undefined) await chmod(slotBlocked, 0o700).catch(() => undefined);
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
     }
@@ -1181,13 +1183,15 @@ describe("workspace baselines as commits", () => {
     }
   });
 
-  it("keeps a nested run directory out of the tree and freezes only the delta's files", async () => {
-    const source = await mkdtemp(join(tmpdir(), "piano-baseline-nested-"));
+  it("applies only the winner delta and leaves the parent's unrelated files and run directory alone", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-delta-apply-"));
+    const winner = await mkdtemp(join(tmpdir(), "piano-delta-winner-"));
     const runDir = join(source, "run");
     await mkdir(runDir, { recursive: true });
     try {
       await writeFile(join(source, "winner.txt"), "before\n");
       await writeFile(join(source, "kept.txt"), "same\n");
+      await writeFile(join(source, "gone.txt"), "delete me\n");
       await writeFile(join(runDir, "evidence.txt"), "run state\n");
       const baseline = await freezeWorkspaceBaseline(source, {
         runDir,
@@ -1195,16 +1199,63 @@ describe("workspace baselines as commits", () => {
         excludeUnder: [runDir],
       });
 
-      await writeFile(join(source, "winner.txt"), "after\n");
-      await writeFile(join(runDir, "evidence.txt"), "more\n");
-      const frozenWinnerDir = join(runDir, "winner-change");
-      const changeSet = await captureWorkspaceBaselineChanges(baseline, source, frozenWinnerDir, [runDir]);
-      expect(changeSet.changes).toEqual([{ path: "winner.txt", kind: "modified" }]);
-      // Only the changed file is frozen; the run's own evidence is not content.
-      await expect(readFile(join(frozenWinnerDir, "winner.txt"), "utf8")).resolves.toBe("after\n");
-      await expect(stat(join(frozenWinnerDir, "kept.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      // The winner slot changes two files and deletes a third; everything else
+      // in the source is a parent file the carry must not touch.
+      await writeFile(join(winner, "winner.txt"), "after\n");
+      await writeFile(join(winner, "kept.txt"), "same\n");
+      await writeFile(join(winner, "fresh.txt"), "new\n");
+      const changes = await workspaceBaselineChanges(baseline, winner, [runDir]);
+      expect(changes).toEqual([
+        { path: "fresh.txt", kind: "added" },
+        { path: "gone.txt", kind: "deleted" },
+        { path: "winner.txt", kind: "modified" },
+      ]);
+
+      await applyWorkspaceChangeSet(source, { winnerContentDir: winner, changes }, [runDir]);
+
+      await expect(readFile(join(source, "winner.txt"), "utf8")).resolves.toBe("after\n");
+      await expect(readFile(join(source, "fresh.txt"), "utf8")).resolves.toBe("new\n");
+      await expect(stat(join(source, "gone.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(source, "kept.txt"), "utf8")).resolves.toBe("same\n");
+      // The run's own evidence is excluded from the delta on both sides.
+      await expect(readFile(join(runDir, "evidence.txt"), "utf8")).resolves.toBe("run state\n");
     } finally {
       await rm(source, { recursive: true, force: true });
+      await rm(winner, { recursive: true, force: true });
+    }
+  });
+
+  it("restores the pre-apply tree when a delta path cannot be written", async () => {
+    if (process.getuid?.() === 0) return; // root bypasses the directory mode
+    const source = await mkdtemp(join(tmpdir(), "piano-delta-rollback-"));
+    const winner = await mkdtemp(join(tmpdir(), "piano-delta-rollback-winner-"));
+    const blocked = join(source, "blocked");
+    try {
+      await mkdir(blocked);
+      await writeFile(join(blocked, "kept.txt"), "must survive\n");
+      await writeFile(join(source, "a.txt"), "baseline\n");
+      await writeFile(join(winner, "a.txt"), "winner\n");
+      await mkdir(join(winner, "blocked"), { recursive: true });
+      await writeFile(join(winner, "blocked", "new.txt"), "cannot land\n");
+      // Make the parent directory refuse the copy, then apply: the first
+      // change lands and the second fails, so the rollback must undo the first.
+      await chmod(blocked, 0o500);
+
+      await expect(applyWorkspaceChangeSet(source, {
+        winnerContentDir: winner,
+        changes: [
+          { path: "a.txt", kind: "modified" },
+          { path: "blocked/new.txt", kind: "added" },
+        ],
+      })).rejects.toThrow();
+
+      await expect(readFile(join(source, "a.txt"), "utf8")).resolves.toBe("baseline\n");
+      await expect(readFile(join(blocked, "kept.txt"), "utf8")).resolves.toBe("must survive\n");
+      await expect(stat(join(blocked, "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await chmod(blocked, 0o700).catch(() => undefined);
+      await rm(source, { recursive: true, force: true });
+      await rm(winner, { recursive: true, force: true });
     }
   });
 
