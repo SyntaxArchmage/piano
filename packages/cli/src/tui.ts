@@ -101,7 +101,7 @@ export interface TuiOptions {
   /** Deliver a mid-turn steering message to the live prompt's session. The
    * channel answers per capability ("delivered" / "no-active-turn"); the TUI
    * never learns which harness is running. Absent in tests without steering. */
-  readonly steerActive?: (text: string, target: TuiScreenKind) => Promise<SteerDelivery>;
+  readonly steerActive?: (text: string, target: TuiScreenKind) => Effect.Effect<SteerDelivery, unknown>;
   /** Persist a user-assigned name for the current run via `/rename <name>`.
    * The effect carries no service requirements (the caller provides its own). */
   readonly onRename?: (name: string) => Effect.Effect<void, unknown>;
@@ -448,11 +448,15 @@ export function runTui(
   if (deps.terminal === undefined && (!stdin.isTTY || !stdout.isTTY)) {
     return Effect.fail(interactiveTerminalRequired());
   }
-  return Effect.tryPromise({
-    try: async () => {
-      // OSC-11 background probe first so a light shell gets the light palette
-      // even without PIANO_THEME/COLORFGBG; env still wins when set.
-      const bgHex = await queryBackgroundColor();
+  const historyRoot = deps.historyRoot ?? join(homedir(), ".piano");
+  return Effect.gen(function* () {
+    // OSC-11 background probe first so a light shell gets the light palette
+    // even without PIANO_THEME/COLORFGBG; env still wins when set.
+    const bgHex = yield* queryBackgroundColor();
+    // Seed the editor's in-memory history from the persisted prompt history.
+    const history = yield* loadPromptHistory(historyRoot);
+    return yield* Effect.try({
+      try: () => {
       const theme = resolveTheme(process.env, bgHex);
       setTheme(theme);
       const terminal = deps.terminal ?? new ProcessTerminal();
@@ -504,9 +508,7 @@ export function runTui(
       // whichever conversation is in front.
       const chatSurface = new ChatSurface(missionScreen.chatArea);
       const chatViewport = new ScrollableChatArea(chatSurface, paneRows);
-      const historyRoot = deps.historyRoot ?? join(homedir(), ".piano");
-      // Seed the editor's in-memory history from the persisted prompt history.
-      for (const entry of loadPromptHistory(historyRoot)) {
+      for (const entry of history) {
         editor.addToHistory(entry);
       }
       tui.addChild(new SideBySide(chatViewport, { render: () => [], invalidate: () => {} }, split, divider));
@@ -520,8 +522,9 @@ export function runTui(
       tui.addChild(footer);
       tui.setFocus(editor);
       return { terminal, terminalResize, tui, editor, editorPalette, footer, theme, split, divider, missionScreen, makeScreen, chatSurface, chatViewport, trajectoryOverlay, historyRoot, scrollKeys };
-    },
-    catch: (cause) => new TuiError({ operation: "create", message: String(cause) }),
+      },
+      catch: (cause) => new TuiError({ operation: "create", message: String(cause) }),
+    });
   }).pipe(
     Effect.flatMap(({ terminal, terminalResize, tui, editor, editorPalette, footer, theme, split, divider, missionScreen, makeScreen, chatSurface, chatViewport, trajectoryOverlay: trajectoryOverlayInitial, historyRoot, scrollKeys }) => {
       // The screen the developer is looking at. Everything that draws the
@@ -583,7 +586,7 @@ export function runTui(
               tui.requestRender();
             },
           );
-          void graph.refresh();
+          Effect.runFork(graph.refresh());
           return;
         }
         graph.setDefinition(definition);
@@ -672,7 +675,7 @@ export function runTui(
           if (exitTimer !== undefined) clearInterval(exitTimer);
           // The drain verdict, if any, must be in the output stream BEFORE the
           // TUI stops. Diff renders are scheduled (nextTick/timer) and tests
-          // drive the close with fake timers, so nothing here may await a
+          // drive the close with fake timers, so nothing here may wait on a
           // paint: write the final line directly.
           if (exitDrainMsg !== undefined) {
             terminal.write(`\x1b[0m\n${exitDrainMsg}\n`);
@@ -726,18 +729,18 @@ export function runTui(
           // process alive long after the terminal was handed back — the run
           // looks exited but the shell never gets its prompt.
           const abort = pending.length === 0 ? Effect.void : abortEveryScreen;
-          // Interrupt the active prompt fiber AND await it draining its finalizers
+          // Interrupt the active prompt fiber AND join it draining its finalizers
           // (ensuring blocks: trajectory.complete, log flush, promptRunning reset)
           // before resolving, so /exit never tears down the TUI while the prompt's
           // cleanup still calls render/log on a closed terminal. Bounded, because
           // finalizers run uninterruptibly: one that never settles (an SDK abort
-          // awaiting a dead socket, a stuck workspace cleanup) would otherwise
+          // waiting on a dead socket, a stuck workspace cleanup) would otherwise
           // strand the TUI mounted in raw mode with every exit key latched off.
           // A timeout is the stall verdict carried in TuiResult.
           const fibers = pending.flatMap((prompt) => (prompt.fiber === undefined ? [] : [prompt.fiber]));
           /** True when the fiber settled inside the drain budget. */
           const drainOne = (fiber: Fiber.RuntimeFiber<unknown, unknown>): Effect.Effect<boolean> =>
-            Fiber.await(fiber).pipe(
+            Effect.exit(Fiber.join(fiber)).pipe(
               Effect.timeoutOption(Duration.millis(EXIT_DRAIN_TIMEOUT_MS - EXIT_ABORT_GRACE_MS)),
               Effect.map((drained) => drained._tag === "Some"),
               Effect.catchAll(() => Effect.succeed(true)),
@@ -1165,46 +1168,48 @@ export function runTui(
             // Mid-turn input goes to the live session's steering channel
             // first; only what no session takes becomes the queued next turn.
             // The branch is capability-shaped (the channel's answer), never a
-            // harness-name check. A run that finishes during the await takes
+            // harness-name check. A run that finishes during the wait takes
             // the text as a fresh next prompt instead of losing it to the
             // queue no one will drain.
-            const attempt: Promise<SteerDelivery> = deps.steerActive === undefined
-              ? Promise.resolve("no-active-turn")
+            const attempt = deps.steerActive === undefined
+              ? Effect.succeed<SteerDelivery>("no-active-turn")
               : deps.steerActive(prompt, screen.kind);
-            attempt.then(
-              (delivery) => {
-                if (delivery === "delivered") {
-                  screen.transcript.renderUserMessage(prompt);
-                  screen.transcript.appendText(`  ${screen.theme.accent}⚑ steered — ${prompt}${RST}`);
-                } else if (screen.running) {
-                  // Held as the queued next turn: at terminal state the ensuring
-                  // hook resubmits it through the same runner, which continues
-                  // the same execution (never a fresh one); an interrupted run
-                  // hands it back to the editor instead.
+            Effect.runFork(attempt.pipe(
+              Effect.matchEffect({
+                onSuccess: (delivery) => Effect.sync(() => {
+                  if (delivery === "delivered") {
+                    screen.transcript.renderUserMessage(prompt);
+                    screen.transcript.appendText(`  ${screen.theme.accent}⚑ steered — ${prompt}${RST}`);
+                  } else if (screen.running) {
+                    // Held as the queued next turn: at terminal state the ensuring
+                    // hook resubmits it through the same runner, which continues
+                    // the same execution (never a fresh one); an interrupted run
+                    // hands it back to the editor instead.
+                    screen.queued = prompt;
+                    screen.transcript.appendText(`  ${screen.theme.dim}queued — runs as the next prompt when this ${screen.kind === "side" ? "turn" : "workflow"} finishes${RST}`);
+                  } else {
+                    submitPrompt(prompt, screen);
+                    return;
+                  }
+                  if (screen === front) chatViewport.scrollEnd();
+                  tui.requestRender();
+                }),
+                onFailure: () => Effect.sync(() => {
+                  // A live session refused the text (its SDK rejected steer).
+                  // Surface the refusal and keep queue semantics for the input.
+                  if (!screen.running) {
+                    // The run settled during the refusal wait — run the text as
+                    // a fresh next prompt instead of stranding it in the queue.
+                    submitPrompt(prompt, screen);
+                    return;
+                  }
                   screen.queued = prompt;
-                  screen.transcript.appendText(`  ${screen.theme.dim}queued — runs as the next prompt when this ${screen.kind === "side" ? "turn" : "workflow"} finishes${RST}`);
-                } else {
-                  submitPrompt(prompt, screen);
-                  return;
-                }
-                if (screen === front) chatViewport.scrollEnd();
-                tui.requestRender();
-              },
-              () => {
-                // A live session refused the text (its SDK rejected steer).
-                // Surface the refusal and keep queue semantics for the input.
-                if (!screen.running) {
-                  // The run settled during the refusal await — run the text as
-                  // a fresh next prompt instead of stranding it in the queue.
-                  submitPrompt(prompt, screen);
-                  return;
-                }
-                screen.queued = prompt;
-                screen.transcript.appendText(`  ${screen.theme.dim}queued — steering refused${RST}`);
-                if (screen === front) chatViewport.scrollEnd();
-                tui.requestRender();
-              },
-            );
+                  screen.transcript.appendText(`  ${screen.theme.dim}queued — steering refused${RST}`);
+                  if (screen === front) chatViewport.scrollEnd();
+                  tui.requestRender();
+                }),
+              }),
+            ));
             return;
           }
           // Claiming the turn IS this assignment: `running` reads off it, so
@@ -1228,11 +1233,11 @@ export function runTui(
             if (blinkTimer !== undefined) clearInterval(blinkTimer);
             blinkTimer = setInterval(() => {
               graph?.toggleBlink();
-              void graph?.refresh();
+              Effect.runFork(graph?.refresh() ?? Effect.void);
               refreshFooter();
               tui.requestRender();
             }, 500);
-            void graph.refresh();
+            Effect.runFork(graph.refresh());
           }
           refreshFooter();
           tui.requestRender();
@@ -1320,7 +1325,7 @@ export function runTui(
                   submitPrompt(queued, screen, true);
                 }
               }
-              if (screen.kind === "mission") void graph?.refresh();
+              if (screen.kind === "mission" && graph !== undefined) Effect.runFork(graph.refresh());
               if (screen === front) refreshFooter();
               tui.requestRender();
             })),
@@ -1338,7 +1343,7 @@ export function runTui(
             const task = command.slice("/btw".length).trim();
             if (task !== "") {
               editor.addToHistory(task);
-              appendPromptHistory(historyRoot, task);
+              Effect.runFork(appendPromptHistory(historyRoot, task));
             }
             toggleSideAgent(task);
             return;
@@ -1365,10 +1370,10 @@ export function runTui(
             // Status is the whole legality test: a fresh run has none, a
             // running one has nothing to act on yet, and both commands are
             // about work that already stopped.
-            void (statusPath === undefined
-              ? Promise.resolve(undefined)
-              : readWorkflowSnapshot(dirname(statusPath))
-            ).then((snapshot) => {
+            const statusRead = statusPath === undefined
+              ? Effect.succeed(undefined)
+              : readWorkflowSnapshot(dirname(statusPath));
+            Effect.runFork(statusRead.pipe(Effect.tap((snapshot) => Effect.sync(() => {
               if (!jobCommandAllowed(action, snapshot?.status)) {
                 target.transcript.appendText(`  ${target.theme.accent}${action === "continue"
                   ? "/continue needs a paused run"
@@ -1378,7 +1383,7 @@ export function runTui(
                 return;
               }
               submitPrompt(command, target, false, action);
-            });
+            }))));
             return;
           }
           if (command === "/workspace") {
@@ -1434,7 +1439,7 @@ export function runTui(
           }
           if (command !== "") {
             editor.addToHistory(command);
-            appendPromptHistory(historyRoot, command);
+            Effect.runFork(appendPromptHistory(historyRoot, command));
             submitPrompt(command);
           }
           refreshFooter();

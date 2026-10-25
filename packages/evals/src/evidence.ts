@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { readFileSync } from "node:fs";
+import { io } from "@piano/base";
 import { hyperbolicScore } from "@piano/trajectory";
 import { isRecord } from "@piano/logging";
 import type {
@@ -124,13 +124,17 @@ const UNREADABLE_TRANSCRIPT: TranscriptMetrics = {
   issues: [{ kind: "structure", line: 0, message: "transcript could not be read" }],
 };
 
-/** Analyze one persisted transcript file (evidence boundary: sync read). */
-export function analyzeTranscriptFile(path: string): TranscriptMetrics {
-  try {
-    return analyzeTranscriptText(path, readFileSync(path, "utf8"), {});
-  } catch {
-    return UNREADABLE_TRANSCRIPT;
-  }
+/** Analyze one persisted transcript file. An unreadable file still yields the
+ * shaped result, so a read failure is an evidence gap rather than a lost run. */
+export function analyzeTranscriptFile(path: string): Effect.Effect<TranscriptMetrics> {
+  return io.readText(path).pipe(
+    // Match readFileSync("utf8") byte-for-byte: io.readText decodes with the
+    // same fs encoding, preserving a leading BOM. A TextDecoder-based read
+    // strips it, which would turn a previously unreadable first record into
+    // evidence.
+    Effect.map((raw) => analyzeTranscriptText(path, raw, {})),
+    Effect.catchAll(() => Effect.succeed(UNREADABLE_TRANSCRIPT)),
+  );
 }
 
 export function analyzeTranscriptText(

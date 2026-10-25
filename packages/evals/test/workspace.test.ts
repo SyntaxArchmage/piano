@@ -81,7 +81,7 @@ describe("eval workspace destination (ISSUE-016)", () => {
     temporaryRoots.push(workspaceDir);
     await writeFile(join(workspaceDir, "changed.txt"), "one\ntwo\n", "utf8");
     await writeFile(join(workspaceDir, "deleted.txt"), "gone\n", "utf8");
-    const baseline = await prepareWorkspaceDiffBaseline(workspaceDir);
+    const baseline = await Effect.runPromise(prepareWorkspaceDiffBaseline(workspaceDir));
 
     await writeFile(join(workspaceDir, "changed.txt"), "one\nchanged\nextra\n", "utf8");
     await rm(join(workspaceDir, "deleted.txt"));
@@ -100,7 +100,7 @@ describe("eval workspace destination (ISSUE-016)", () => {
       });
     });
 
-    await expect(measureWorkspaceChanges(workspaceDir, baseline)).resolves.toEqual({
+    await expect(Effect.runPromise(measureWorkspaceChanges(workspaceDir, baseline))).resolves.toEqual({
       files: 3,
       additions: 4,
       deletions: 2,
@@ -130,11 +130,11 @@ describe("eval workspace destination (ISSUE-016)", () => {
     temporaryRoots.push(workspaceDir);
     await mkdir(join(workspaceDir, "tests"), { recursive: true });
     await writeFile(join(workspaceDir, "tests", "existing.test.ts"), "test('old', () => {})\n", "utf8");
-    const baseline = await prepareWorkspaceDiffBaseline(workspaceDir);
+    const baseline = await Effect.runPromise(prepareWorkspaceDiffBaseline(workspaceDir));
     await writeFile(join(workspaceDir, "tests", "existing.test.ts"), "test('changed', () => {})\n", "utf8");
     await writeFile(join(workspaceDir, "tests", "new.test.ts"), "test('new', () => {})\n", "utf8");
 
-    const changes = await measureWorkspaceChanges(workspaceDir, baseline);
+    const changes = await Effect.runPromise(measureWorkspaceChanges(workspaceDir, baseline));
 
     expect(changes.testIntegrity).toEqual({
       cheating: true,
@@ -142,5 +142,12 @@ describe("eval workspace destination (ISSUE-016)", () => {
       modifiedFiles: 1,
       deletedFiles: 0,
     });
+  });
+
+  it("reports a missing workspace as a DriverError failure", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "piano-eval-baseline-fail-"));
+    temporaryRoots.push(parent);
+    const error = await Effect.runPromise(Effect.flip(prepareWorkspaceDiffBaseline(join(parent, "workspace"))));
+    expect(error).toMatchObject({ _tag: "DriverError" });
   });
 });

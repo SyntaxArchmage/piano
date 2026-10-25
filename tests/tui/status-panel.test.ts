@@ -1,4 +1,5 @@
 import { resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderStatusPanel } from "../../packages/cli/src/status-panel.js";
 import { darkTheme } from "../../packages/cli/src/theme.js";
@@ -69,8 +70,8 @@ describe("interaction footer", () => {
       name: "工作流",
       path: "/tmp/工作流.yml",
       stages: [{ id: "准备", dependsOn: [] }],
-    }, async () => undefined, darkTheme);
-    await graph.refresh();
+    }, () => Effect.succeed(undefined), darkTheme);
+    await Effect.runPromise(graph.refresh());
 
     for (const width of [40, 80, 120]) {
       const rows = renderStatusPanel(darkTheme, width, graph);
@@ -93,11 +94,11 @@ describe("interaction footer", () => {
 
   it("keeps USAGE content before WORKFLOW content on a narrow terminal", async () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-    const graph = new WorkflowGraph({ stages: [{ id: "setup", dependsOn: [] }] }, async () => ({
+    const graph = new WorkflowGraph({ stages: [{ id: "setup", dependsOn: [] }] }, () => Effect.succeed({
       plannedStages: 1, completedStages: 0, status: "running",
       current: { stageId: "setup", status: "running" },
     }), darkTheme);
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     const narrow = renderStatusPanel(darkTheme, 40, graph).map(stripAnsi).join("\n");
     expect(narrow).toContain("tokens");
   });
@@ -142,7 +143,7 @@ describe("interaction footer", () => {
   });
 
   it("normalizes non-finite widths", () => {
-    const graph = new WorkflowGraph({ stages: [{ id: "setup", dependsOn: [] }] }, async () => undefined, darkTheme);
+    const graph = new WorkflowGraph({ stages: [{ id: "setup", dependsOn: [] }] }, () => Effect.succeed(undefined), darkTheme);
     expect(renderStatusPanel(darkTheme, Number.POSITIVE_INFINITY)).toEqual([]);
     expect(renderStatusPanel(darkTheme, Number.NaN)).toEqual([]);
     expect(renderStatusPanel(darkTheme, Number.POSITIVE_INFINITY, graph)).toEqual([]);
@@ -151,11 +152,11 @@ describe("interaction footer", () => {
 
   it("places the fallback summary in existing WORKFLOW without a workflow section", async () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-    const graph = new WorkflowGraph({ name: "basic", path: "/tmp/basic.yml", stages: [{ id: "setup", dependsOn: [] }] }, async () => ({
+    const graph = new WorkflowGraph({ name: "basic", path: "/tmp/basic.yml", stages: [{ id: "setup", dependsOn: [] }] }, () => Effect.succeed({
       plannedStages: 1, completedStages: 0, status: "running",
       current: { stageId: "setup", status: "running" },
     }), darkTheme);
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     const rows = renderStatusPanel(darkTheme, 120, graph).map(stripAnsi);
     expect(rows[0]).toContain("COMMANDS");
     const headerRow = rows.find((row) => row.includes("COMMANDS") && row.includes("WORKFLOW")) ?? "";
@@ -178,12 +179,12 @@ describe("interaction footer", () => {
   it("shows the stage model in light blue under the stage name inside WORKFLOW", async () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
     const stages = [{ id: "implement", dependsOn: [], model: "qwen3.8-flash" }];
-    const snapshot = async () => ({
+    const snapshot = () => Effect.succeed({
       plannedStages: 1, completedStages: 0, status: "running" as const,
       current: { stageId: "implement", status: "running" as const },
     });
     const graph = new WorkflowGraph({ name: "basic", path: "/tmp/basic.yml", stages }, snapshot, darkTheme);
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     const rows = renderStatusPanel(darkTheme, 120, graph);
     const plainRows = rows.map(stripAnsi);
     const workflowStart = (plainRows.find((row) => row.includes("WORKFLOW")) ?? "").indexOf("WORKFLOW");
@@ -205,7 +206,7 @@ describe("interaction footer", () => {
         snapshot,
         darkTheme,
       );
-      await other.refresh();
+      await Effect.runPromise(other.refresh());
       return renderStatusPanel(darkTheme, 120, other).length;
     };
     const withoutModel = await heightOf(undefined);
@@ -222,8 +223,8 @@ describe("interaction footer", () => {
       name: "basic",
       path: "/tmp/basic.yml",
       stages: [{ id: "implement", dependsOn: [], model: "qwen3.8-flash" }],
-    }, async () => undefined, darkTheme);
-    await graph.refresh();
+    }, () => Effect.succeed(undefined), darkTheme);
+    await Effect.runPromise(graph.refresh());
 
     // 120 columns is an ordinary terminal. Sizing the canvas to a share of the
     // whole terminal instead of the column makes `layoutColumns` slice the
@@ -249,7 +250,7 @@ describe("interaction footer", () => {
 
   it("updates WORKFLOW when the selected workflow changes", () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-    const graph = new WorkflowGraph({ stages: [{ id: "old-stage", dependsOn: [] }] }, async () => undefined, darkTheme);
+    const graph = new WorkflowGraph({ stages: [{ id: "old-stage", dependsOn: [] }] }, () => Effect.succeed(undefined), darkTheme);
     graph.setDefinition({ stages: [{ id: "new-stage", dependsOn: [] }] });
     const output = renderStatusPanel(darkTheme, 120, graph).map(stripAnsi).join("\n");
     expect(output).toContain("new-stage");
@@ -258,11 +259,11 @@ describe("interaction footer", () => {
 
   it("keeps the image payload full-width and the summary in WORKFLOW", async () => {
     setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
-    const graph = new WorkflowGraph({ name: "basic", path: "/tmp/basic.yml", stages: [{ id: "setup", dependsOn: [] }] }, async () => ({
+    const graph = new WorkflowGraph({ name: "basic", path: "/tmp/basic.yml", stages: [{ id: "setup", dependsOn: [] }] }, () => Effect.succeed({
       plannedStages: 1, completedStages: 0, status: "running",
       current: { stageId: "setup", status: "running" },
     }), darkTheme);
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     const rows = renderStatusPanel(darkTheme, 120, graph);
 
     expect(rows[0]?.startsWith(KITTY_IMAGE_PREFIX)).toBe(true);

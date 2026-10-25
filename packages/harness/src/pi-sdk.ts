@@ -1,6 +1,5 @@
 import { Effect } from "effect";
-import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { errorMessage, io } from "@piano/base";
 import { join, resolve } from "node:path";
 import type { AgentHarnessOptions } from "./agent-contract.js";
 import { AgentError } from "./errors.js";
@@ -95,35 +94,71 @@ function compareVersions(left: string, right: string): number {
  * deployment override — it names `.../@earendil-works/pi-coding-agent` itself —
  * so an install without npm never needs the `npm root -g` shell-out. The
  * npm-derived path is cached for the process; an explicit root is not, so a
- * long-lived process can retarget it (and tests can vary it). */
-function sdkRoot(): string {
-  const override = process.env.PIANO_PI_SDK_ROOT;
-  if (override !== undefined && override.trim() !== "") return resolve(override.trim());
-  if (sdkRootCache === undefined) {
-    sdkRootCache = join(execSync("npm root -g", { encoding: "utf8" }).trim(), "@earendil-works/pi-coding-agent");
-  }
-  return sdkRootCache;
+ * long-lived process can retarget it (and tests can vary it).
+ *
+ * Resolution is Effect-native because io's process adapter is: there is no
+ * synchronous shell-out in the io interface, so the sync `piAvailable`
+ * predicate this module used to expose is now an Effect as well. */
+function sdkRoot(): Effect.Effect<string, AgentError> {
+  return Effect.suspend(() => {
+    const override = process.env.PIANO_PI_SDK_ROOT;
+    if (override !== undefined && override.trim() !== "") return Effect.succeed(resolve(override.trim()));
+    if (sdkRootCache !== undefined) return Effect.succeed(sdkRootCache);
+    return io.execFile("npm", ["root", "-g"]).pipe(
+      Effect.map((result) => {
+        sdkRootCache = join(result.stdout.trim(), "@earendil-works/pi-coding-agent");
+        return sdkRootCache;
+      }),
+      Effect.mapError((cause) => sdkDiscoveryError(cause)),
+    );
+  });
+}
+
+/** The one classification every discovery step shares: an unreadable install
+ * is reported with the underlying message, exactly as the old synchronous
+ * probe's throw was. */
+function sdkDiscoveryError(cause: unknown): AgentError {
+  return new AgentError({
+    kind: "sdk-discovery",
+    message: `unable to inspect the pi SDK installation: ${errorMessage(cause)}`,
+    cause,
+  });
 }
 
 type SdkLoader = () => Promise<PiModule>;
-const defaultSdkLoader: SdkLoader = () => import(join(sdkRoot(), "dist/index.js")) as Promise<PiModule>;
+/** The SDK module import is Promise-only (a dynamic `import()`); the root it
+ * needs is resolved by an Effect, so the adapter crosses at this one leaf and
+ * nowhere else. */
+const defaultSdkLoader: SdkLoader = () => Effect.runPromise(
+  sdkRoot().pipe(
+    Effect.flatMap((root) => Effect.tryPromise({
+      try: () => import(join(root, "dist/index.js")) as Promise<PiModule>,
+      catch: (cause) => cause,
+    })),
+  ),
+);
 const sdkModuleCache = new WeakMap<SdkLoader, Promise<PiModule>>();
 
-function sdkAvailable(): boolean {
-  const root = sdkRoot();
-  const packagePath = join(root, "package.json");
-  if (!existsSync(join(root, "dist/index.js")) || !existsSync(packagePath)) return false;
-  const packageJson = JSON.parse(readFileSync(packagePath, "utf8")) as { version?: string };
-  return typeof packageJson.version === "string" && compareVersions(packageJson.version, MIN_PI_VERSION) >= 0;
+/** The installed SDK satisfies the entry-point and version-floor checks. */
+function sdkAvailable(): Effect.Effect<boolean, AgentError> {
+  return Effect.gen(function* () {
+    const root = yield* sdkRoot();
+    const packagePath = join(root, "package.json");
+    if (!(yield* io.exists(join(root, "dist/index.js"))) || !(yield* io.exists(packagePath))) return false;
+    const raw = yield* io.readText(packagePath).pipe(Effect.mapError(sdkDiscoveryError));
+    const packageJson = yield* Effect.try({
+      try: () => JSON.parse(raw) as { version?: string },
+      catch: sdkDiscoveryError,
+    });
+    return typeof packageJson.version === "string" && compareVersions(packageJson.version, MIN_PI_VERSION) >= 0;
+  });
 }
 
-/** Check the installed SDK boundary without importing or starting a session. */
-export function piAvailable(): boolean {
-  try {
-    return sdkAvailable();
-  } catch {
-    return false;
-  }
+/** Check the installed SDK boundary without importing or starting a session.
+ * A failed discovery is reported as "not available", exactly as the old
+ * synchronous probe swallowed its throw. */
+export function piAvailable(): Effect.Effect<boolean> {
+  return sdkAvailable().pipe(Effect.catchAll(() => Effect.succeed(false)));
 }
 
 
@@ -154,29 +189,24 @@ function loadCachedSdk(loader: SdkLoader): Promise<PiModule> {
 
 /** Load the SDK module without creating a session. This is the real discovery
  * boundary used by doctor before it reports the Pi SDK as ready. */
-export async function piLoadable(): Promise<boolean> {
-  if (!piAvailable()) return false;
-  try {
-    await loadCachedSdk(defaultSdkLoader);
-    return true;
-  } catch {
-    return false;
-  }
+export function piLoadable(): Effect.Effect<boolean> {
+  return piAvailable().pipe(
+    Effect.flatMap((available) => available
+      ? Effect.tryPromise({
+        try: () => loadCachedSdk(defaultSdkLoader),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.as(true),
+        Effect.catchAll(() => Effect.succeed(false)),
+      )
+      : Effect.succeed(false)),
+  );
 }
 
 export function loadSdk(options: PiHarnessOptions): Effect.Effect<PiModule, AgentError> {
   return Effect.suspend(() => {
     if (options.sdk !== undefined) return Effect.succeed(options.sdk);
-    const available = options.sdkLoader === undefined
-      ? Effect.try({
-        try: sdkAvailable,
-        catch: (cause) => new AgentError({
-          kind: "sdk-discovery",
-          message: `unable to inspect the pi SDK installation: ${cause instanceof Error ? cause.message : String(cause)}`,
-          cause,
-        }),
-      })
-      : Effect.succeed(true);
+    const available = options.sdkLoader === undefined ? sdkAvailable() : Effect.succeed(true);
     return available.pipe(
       Effect.flatMap((isAvailable) => {
         if (!isAvailable) {

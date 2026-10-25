@@ -10,7 +10,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
-import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   KeybindingsManager,
@@ -22,6 +21,7 @@ import {
   Text,
 } from "@earendil-works/pi-tui";
 import type { SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
+import { io } from "@piano/base";
 import { defaultRunsRoot } from "@piano/logging";
 import { readRunStatus } from "@piano/orchestrator";
 import { CliArgumentError, interactiveTerminalRequired, LogsStorageError, TuiError, type CliError } from "./errors.js";
@@ -72,16 +72,19 @@ function resolveRunDir(
   runsRoot: string,
   run: string,
 ): Effect.Effect<string, LogsStorageError> {
-  const resolvedRunsRoot = resolve(runsRoot);
-  const runDir = resolve(resolvedRunsRoot, run);
-  const fail = (message: string) => Effect.fail(new LogsStorageError({ operation: "logs", path: runDir, message }));
-  if (dirname(runDir) !== resolvedRunsRoot) {
-    return fail("run id must name a direct child of the runs root");
-  }
-  if (!existsSync(runDir)) {
-    return fail(`no run directory ${runDir}`);
-  }
-  return Effect.succeed(runDir);
+  return Effect.gen(function* () {
+    const resolvedRunsRoot = resolve(runsRoot);
+    const runDir = resolve(resolvedRunsRoot, run);
+    const fail = (message: string) => Effect.fail(new LogsStorageError({ operation: "logs", path: runDir, message }));
+    if (dirname(runDir) !== resolvedRunsRoot) {
+      return yield* fail("run id must name a direct child of the runs root");
+    }
+    const exists = yield* io.exists(runDir);
+    if (!exists) {
+      return yield* fail(`no run directory ${runDir}`);
+    }
+    return runDir;
+  });
 }
 
 /** One picker label: `2026-09-03 01:07 · gpu-cuda-tuning · [failed] · <prompt

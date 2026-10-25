@@ -3,45 +3,11 @@
  * and process-group termination), substitute its command template, and render
  * the live progress tick while a run is in flight.
  */
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { evalMetricsPath, runStatusPath } from "@piano/base";
+import { Effect } from "effect";
+import { evalMetricsPath, io, runStatusPath } from "@piano/base";
 import { parseJsonRecord } from "@piano/logging";
-
-interface ShellResult { code: number; stdout: string; stderr: string }
-
-export function runShell(command: string, cwd: string, timeoutMs?: number): Promise<ShellResult> {
-  return new Promise((resolve) => {
-    const child = spawn("bash", ["-lc", command], {
-      cwd,
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    const terminate = (signal: NodeJS.Signals): void => {
-      if (child.pid !== undefined) {
-        try { process.kill(-child.pid, signal); } catch { /* process already exited */ }
-      }
-    };
-    const timeout = timeoutMs === undefined ? undefined : setTimeout(() => {
-      timedOut = true;
-      terminate("SIGTERM");
-      setTimeout(() => terminate("SIGKILL"), 5_000).unref();
-    }, timeoutMs);
-    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      resolve({ code: 1, stdout, stderr: `${stderr}${String(error)}` });
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timeout);
-      resolve({ code: timedOut ? 124 : code ?? 1, stdout, stderr });
-    });
-  });
-}
+/** The eval launcher's shell boundary is the shared process adapter. */
+export const runShell = io.runShell;
 
 export function substituteCommand(command: string, vars: Record<string, string>): string {
   // Single pass: placeholders are matched as literal tokens and substituted
@@ -66,7 +32,12 @@ export function shellQuote(value: string): string {
 
 export function readStatus(runDir: string): Record<string, unknown> | undefined {
   try {
-    return parseJsonRecord(readFileSync(runStatusPath(runDir), "utf8"));
+    // Synchronous UI/evidence contract: the progress tick and the transcript
+    // fallback are plain functions, so the io read runs at this sync edge.
+    const raw = Effect.runSync(io.readTextSync(runStatusPath(runDir)).pipe(
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    ));
+    return raw === undefined ? undefined : parseJsonRecord(raw);
   } catch {
     return undefined;
   }
@@ -88,9 +59,14 @@ export function progressTickLine(label: string, runDir: string, startedAt: numbe
   const currentStage = typeof current?.stageId === "string" ? current.stageId : undefined;
   let iteration: number | undefined;
   let best: string | undefined;
-  try {
+  // Synchronous presentation contract (one tick, no fiber): the io read runs
+  // at this sync edge; a missing benchmark.jsonl reports the stage fields only.
+  const rawMetrics = Effect.runSync(io.readTextSync(evalMetricsPath(runDir, "benchmark.jsonl")).pipe(
+    Effect.catchAll(() => Effect.succeed(undefined)),
+  ));
+  if (rawMetrics !== undefined) {
     const records: { iteration?: number; metric?: { name?: string; best?: number } }[] = [];
-    for (const line of readFileSync(evalMetricsPath(runDir, "benchmark.jsonl"), "utf8").split("\n")) {
+    for (const line of rawMetrics.split("\n")) {
       if (line.trim() === "") continue;
       const record = parseJsonRecord(line);
       // A line torn mid-append is skipped; the next tick sees it whole.
@@ -113,8 +89,6 @@ export function progressTickLine(label: string, runDir: string, startedAt: numbe
     if (topBest !== undefined) {
       best = `${topBest.toFixed(4)}${topName === undefined ? "" : ` ${topName}`}`;
     }
-  } catch {
-    // benchmark.jsonl missing — report the stage fields only.
   }
   if (completed === undefined && iteration === undefined) return undefined;
   const parts = [

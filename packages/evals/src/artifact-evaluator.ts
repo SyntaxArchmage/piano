@@ -7,9 +7,9 @@
  * extracts the configured metric.
  */
 
-import { execFile } from "node:child_process";
 import { Effect } from "effect";
 import { Data } from "effect";
+import { io } from "@piano/base";
 import type { ArtifactMetrics, BenchmarkMeasurement, EvalCase, TestRunSummary } from "./types.js";
 
 export class ArtifactEvalError extends Data.TaggedError("ArtifactEvalError")<{
@@ -24,17 +24,17 @@ interface CommandResult {
   code: number;
 }
 
-function runCommand(command: string, cwd: string): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    execFile("bash", ["-lc", command], { cwd, timeout: 120_000 }, (error, stdout, stderr) => {
-      const code = error === null
-        ? 0
-        : typeof (error as { code?: unknown }).code === "number"
-          ? (error as { code: number }).code
-          : 1;
-      resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), code });
-    });
-  });
+/** Every readout command runs under the same wall-clock limit. */
+const READOUT_TIMEOUT_MS = 120_000;
+
+function runCommand(
+  command: string,
+  cwd: string,
+  caseId: string,
+): Effect.Effect<CommandResult, ArtifactEvalError> {
+  return io.runShell(command, cwd, READOUT_TIMEOUT_MS).pipe(
+    Effect.mapError((cause) => new ArtifactEvalError({ caseId, message: cause.message, cause })),
+  );
 }
 
 function extractMetric(output: string, pattern: string | undefined): number | undefined {
@@ -75,19 +75,18 @@ export function evaluateBaseline(
   workspaceDir: string,
 ): Effect.Effect<BenchmarkMeasurement | undefined, ArtifactEvalError> {
   if (kase.readout.baselineCommand === undefined) return Effect.succeed(undefined);
-  return Effect.tryPromise({
-    try: () => runCommand(kase.readout.baselineCommand!, workspaceDir),
-    catch: (cause) => new ArtifactEvalError({ caseId: kase.id, message: String(cause), cause }),
-  }).pipe(Effect.map((result) => {
-    const rawOutput = `${result.stdout}\n${result.stderr}`.trim();
-    const value = extractMetric(rawOutput, kase.readout.metricPattern);
-    return {
-      ...(value === undefined ? {} : { value }),
-      ...(kase.metric === undefined ? {} : { metric: kase.metric.name, direction: kase.metric.direction }),
-      rawOutput,
-      passed: result.code === 0 && value !== undefined,
-    };
-  }));
+  return runCommand(kase.readout.baselineCommand, workspaceDir, kase.id).pipe(
+    Effect.map((result) => {
+      const rawOutput = `${result.stdout}\n${result.stderr}`.trim();
+      const value = extractMetric(rawOutput, kase.readout.metricPattern);
+      return {
+        ...(value === undefined ? {} : { value }),
+        ...(kase.metric === undefined ? {} : { metric: kase.metric.name, direction: kase.metric.direction }),
+        rawOutput,
+        passed: result.code === 0 && value !== undefined,
+      };
+    }),
+  );
 }
 
 /**
@@ -100,10 +99,7 @@ export function evaluateArtifact(
 ): Effect.Effect<ArtifactMetrics, ArtifactEvalError> {
   return Effect.gen(function* () {
     const run = (command: string): Effect.Effect<CommandResult, ArtifactEvalError> =>
-      Effect.tryPromise({
-        try: () => runCommand(command, workspaceDir),
-        catch: (cause) => new ArtifactEvalError({ caseId: kase.id, message: String(cause), cause }),
-      });
+      runCommand(command, workspaceDir, kase.id);
 
     // 1. Compile or prepare the artifact.
     const { code: compileCode, stderr: compileErr, stdout: compileOut } =

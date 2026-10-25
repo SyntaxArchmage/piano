@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { Effect } from "effect";
+import { io } from "@piano/base";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { THINKING_LEVELS, type ThinkingLevel } from "./events.js";
@@ -75,9 +76,11 @@ export function agentConfigPath(): string {
 
 function configuredFile(): ConfigRecord {
   const path = agentConfigPath();
-  if (!existsSync(path)) return {};
+  // Synchronous contract: the resolvers below are plain functions read during
+  // workflow parsing and argv assembly, so the synchronous io adapters are
+  // driven at this edge rather than making every caller Effect.
   try {
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const value: unknown = JSON.parse(Effect.runSync(io.readTextSync(path)));
     return asRecord(value) as ConfigRecord ?? {};
   } catch {
     // The selected adapter will report missing configuration or executable

@@ -146,15 +146,13 @@ export function validateStageResult(
         message: `validation result missing: expected "${resultPath}"`,
       })),
     );
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      return yield* Effect.fail(new ContractValidationError({
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: (error) => new ContractValidationError({
         contract: validation.id,
         message: `validation result is not valid JSON: ${errorMessage(error)}`,
-      }));
-    }
+      }),
+    });
     const result = validateStagePayload(validation, parsed);
     if (!result.success) return yield* Effect.fail(result.error);
     return result.payload;

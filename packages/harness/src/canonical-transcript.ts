@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
+import { io } from "@piano/base";
 import { parseJsonRecord } from "@piano/logging";
+import { Effect } from "effect";
 import type { HarnessName } from "./harness-config.js";
 import { asRecord, jsonValue, numberValue, stringValue, type JsonRecord } from "./json-narrowing.js";
 
@@ -189,38 +190,38 @@ export interface TranscriptTokenUsage {
  * total, because native totals disagree: pi's is per call, dsh's is
  * session-cumulative, and neither is this sum. Returns `undefined` when the
  * file is missing or records no usage. */
-export function transcriptTokenUsage(path: string | undefined): TranscriptTokenUsage | undefined {
-  if (path === undefined) return undefined;
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch {
-    return undefined;
-  }
-  const total: Record<(typeof CANONICAL_USAGE_KEYS)[number], number> = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-  };
-  let recorded = false;
-  for (const line of raw.split("\n")) {
-    const record = parseJsonRecord(line);
-    if (record === undefined) continue;
-    const usage = asRecord(asRecord(record.message)?.usage) ?? asRecord(record.usage);
-    if (usage === undefined) continue;
-    const input = numberValue(usage.input);
-    const output = numberValue(usage.output);
-    const cacheRead = numberValue(usage.cacheRead);
-    const cacheWrite = numberValue(usage.cacheWrite);
-    if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined) continue;
-    recorded = true;
-    total.input += input ?? 0;
-    total.output += output ?? 0;
-    total.cacheRead += cacheRead ?? 0;
-    total.cacheWrite += cacheWrite ?? 0;
-  }
-  return recorded ? { ...total, total: total.input + total.output + total.cacheRead + total.cacheWrite } : undefined;
+export function transcriptTokenUsage(
+  path: string | undefined,
+): Effect.Effect<TranscriptTokenUsage | undefined> {
+  if (path === undefined) return Effect.succeed(undefined);
+  return Effect.gen(function* () {
+    const raw = yield* io.readText(path).pipe(Effect.orElseSucceed(() => undefined));
+    if (raw === undefined) return undefined;
+    const total: Record<(typeof CANONICAL_USAGE_KEYS)[number], number> = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    };
+    let recorded = false;
+    for (const line of raw.split("\n")) {
+      const record = parseJsonRecord(line);
+      if (record === undefined) continue;
+      const usage = asRecord(asRecord(record.message)?.usage) ?? asRecord(record.usage);
+      if (usage === undefined) continue;
+      const input = numberValue(usage.input);
+      const output = numberValue(usage.output);
+      const cacheRead = numberValue(usage.cacheRead);
+      const cacheWrite = numberValue(usage.cacheWrite);
+      if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined) continue;
+      recorded = true;
+      total.input += input ?? 0;
+      total.output += output ?? 0;
+      total.cacheRead += cacheRead ?? 0;
+      total.cacheWrite += cacheWrite ?? 0;
+    }
+    return recorded ? { ...total, total: total.input + total.output + total.cacheRead + total.cacheWrite } : undefined;
+  });
 }
 
 function claudeMessageRecords(line: string): JsonRecord[] {

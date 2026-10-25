@@ -15,7 +15,6 @@ import {
   cleanupMapWorkspaces,
   createLaneNumberAllocator,
   prepareMapLaneFork,
-  type MapLaneFork,
   type WorkflowCarrying,
   type WorkflowWorkspaceBinding,
 } from "./workspace.js";
@@ -427,15 +426,15 @@ const finalizeTournament = (
   };
   if (options?.winner !== undefined) {
     // An explicit host-plugin selector overrides the metric referee.
-    try {
-      winnerKey = options.winner === "first"
+    const winnerSelector = options.winner;
+    winnerKey = yield* Effect.try({
+      try: () => winnerSelector === "first"
         ? candidates[0]?.key
-        : options.winner === "last"
+        : winnerSelector === "last"
           ? candidates.at(-1)?.key
-          : options.winner({ runId, sourceCwd, candidates });
-    } catch (cause) {
-      return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `workspace winner selector failed: ${errorMessage(cause)}`));
-    }
+          : winnerSelector({ runId, sourceCwd, candidates }),
+      catch: (cause) => workflowError("schedule", loaded.workflowPath, `workspace winner selector failed: ${errorMessage(cause)}`),
+    });
   } else {
     // Automatic tournament: promote only when a single map-region exit
     // metric referee is genuinely present across the competing slots.
@@ -882,10 +881,11 @@ const executeScope = (
         readonly workspace: WorkflowWorkspaceBinding;
       }>;
       // One fork per region entry: every lane of this tournament starts from
-      // the same commit. The thunk keeps it lazy — a resume whose slots all
-      // exist never pays for a seed commit it will not use.
-      let forkPromise: Promise<MapLaneFork> | undefined;
-      const fork = (): Promise<MapLaneFork> => (forkPromise ??= prepareMapLaneFork(workspace.cwd, {
+      // the same commit. Memoizing the Effect (not a Promise) keeps the fork
+      // lazy and single-run — a resume whose slots all exist never pays for a
+      // seed commit it will not use, and every allocation that does need it
+      // shares the same result.
+      const fork = yield* Effect.cached(prepareMapLaneFork(workspace.cwd, {
         runDir: request.runDir,
         runId,
         jobOrdinal,

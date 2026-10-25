@@ -23,7 +23,7 @@ describe("architect discuss primitive", () => {
   });
 
   it("mounts discuss only when enabled and returns supervisor text", async () => {
-    let seen: { tools?: readonly string[]; discuss?: (question: string) => Promise<string> } | undefined;
+    let seen: { tools?: readonly string[]; discuss?: (question: string) => Effect.Effect<string, unknown> } | undefined;
     const runner: AgentRunner = (request) => {
       seen = request;
       return Effect.succeed({ sessionId: "s", transcriptPath: "/tmp/s", text: "done" });
@@ -34,7 +34,7 @@ describe("architect discuss primitive", () => {
       harness: "pi",
       prompt: "design",
       cwd: "/tmp",
-      discuss: async () => "approved direction",
+      discuss: () => Effect.succeed("approved direction"),
       agentRunner: runner,
     }).pipe(
       Effect.provideService(Logging, loggingService(
@@ -45,7 +45,7 @@ describe("architect discuss primitive", () => {
     ));
     expect(result.text).toBe("done");
     expect(seen?.discuss).toBeDefined();
-    expect(await seen!.discuss!("Is this boundary right?")).toBe("approved direction");
+    expect(await Effect.runPromise(seen!.discuss!("Is this boundary right?"))).toBe("approved direction");
   });
 
   it("uses the deterministic self-decision reply in headless mode", async () => {

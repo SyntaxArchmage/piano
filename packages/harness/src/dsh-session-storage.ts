@@ -1,4 +1,5 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { Duration, Effect, Fiber } from "effect";
+import { io } from "@piano/base";
 import { join } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { asRecord, nonEmptyString, numberValue, type JsonRecord } from "./json-narrowing.js";
@@ -28,7 +29,7 @@ export interface DshSessionEvidence {
 }
 
 export interface DshSessionTailer {
-  finish(): Promise<DshSessionEvidence | undefined>;
+  finish(): Effect.Effect<DshSessionEvidence | undefined>;
 }
 
 const ZSTD_MAGIC = 0xFD2FB528;
@@ -130,15 +131,38 @@ function dshSessionArtifacts(names: readonly string[]): readonly string[] {
     .sort((left, right) => dshSessionArtifactRank(right) - dshSessionArtifactRank(left));
 }
 
+/** Leaf adapters: one io call each, with failure collapsed to "not there".
+ * Every lookup in this module treats an unreadable artifact as absent evidence
+ * rather than as a reason to lose the records the caller already tailed. */
+function readDirents(path: string) {
+  return io.readdir(path).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+}
+
+function statPath(path: string) {
+  return io.stat(path).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+}
+
+/** A Buffer view over bytes io read — no copy; the frame walker uses Node's
+ * Buffer reading methods. */
+function bufferView(bytes: Uint8Array): Buffer {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+function readFileBytes(path: string): Effect.Effect<Buffer | undefined> {
+  return io.readFile(path).pipe(
+    Effect.map(bufferView),
+    Effect.catchAll(() => Effect.succeed(undefined)),
+  );
+}
+
 /** The names dsh may have given the artifacts inside one session directory;
  * `undefined` when the directory cannot be read (no such session here). */
-async function dshSessionArtifactNames(sessionDir: string): Promise<readonly string[] | undefined> {
-  try {
-    const entries = await readdir(sessionDir, { withFileTypes: true });
-    return dshSessionArtifacts(entries.filter((entry) => entry.isFile()).map((entry) => entry.name));
-  } catch {
-    return undefined;
-  }
+function dshSessionArtifactNames(sessionDir: string): Effect.Effect<readonly string[] | undefined> {
+  return readDirents(sessionDir).pipe(
+    Effect.map((entries) => entries === undefined
+      ? undefined
+      : dshSessionArtifacts(entries.filter((entry) => entry.isFile()).map((entry) => entry.name))),
+  );
 }
 
 /** The session artifact for a known native session id, or undefined when this
@@ -158,66 +182,56 @@ async function dshSessionArtifactNames(sessionDir: string): Promise<readonly str
  * lookup by cwd — or by "newest in this directory" — can hand an actor a
  * sibling's conversation. A session id belongs to exactly one actor, so a
  * lookup by id can only ever return that actor's own memory. */
-async function sessionArtifactForId(home: string, sessionId: string): Promise<string | undefined> {
-  const sessionsRoot = join(home, "sessions");
-  let projects: readonly string[];
-  try {
-    projects = (await readdir(sessionsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
-  } catch {
+function sessionArtifactForId(home: string, sessionId: string): Effect.Effect<string | undefined> {
+  return Effect.gen(function* () {
+    const sessionsRoot = join(home, "sessions");
+    const entries = yield* readDirents(sessionsRoot);
+    if (entries === undefined) return undefined;
+    const projects = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    for (const project of projects) {
+      const sessionDir = join(sessionsRoot, project, sessionId);
+      const names = yield* dshSessionArtifactNames(sessionDir);
+      // An unreadable directory means this project key does not hold the session;
+      // keep looking, exactly as a failed stat on a named candidate did.
+      if (names === undefined) continue;
+      if (names.length > 0) return join(sessionDir, names[0] ?? "");
+    }
     return undefined;
-  }
-  for (const project of projects) {
-    const sessionDir = join(sessionsRoot, project, sessionId);
-    const names = await dshSessionArtifactNames(sessionDir);
-    // An unreadable directory means this project key does not hold the session;
-    // keep looking, exactly as a failed stat on a named candidate did.
-    if (names === undefined) continue;
-    if (names.length > 0) return join(sessionDir, names[0] ?? "");
-  }
-  return undefined;
+  });
 }
 
-async function sessionArtifactPaths(home: string, cwd: string): Promise<readonly string[]> {
-  const sessionsRoot = join(home, "sessions");
-  const expectedProject = join(sessionsRoot, dshProjectKey(cwd));
-  const projects: string[] = [];
-  try {
-    await stat(expectedProject);
-    projects.push(expectedProject);
-  } catch {
-    // The fallback scan below handles older dsh layouts and lossy project-key
-    // collisions without assuming a native implementation detail forever.
-  }
-  if (projects.length === 0) {
-    try {
-      for (const entry of await readdir(sessionsRoot, { withFileTypes: true })) {
+function sessionArtifactPaths(home: string, cwd: string): Effect.Effect<readonly string[]> {
+  return Effect.gen(function* () {
+    const sessionsRoot = join(home, "sessions");
+    const expectedProject = join(sessionsRoot, dshProjectKey(cwd));
+    const projects: string[] = [];
+    if ((yield* statPath(expectedProject)) !== undefined) {
+      projects.push(expectedProject);
+    } else {
+      // The fallback scan below handles older dsh layouts and lossy project-key
+      // collisions without assuming a native implementation detail forever.
+      const rootEntries = yield* readDirents(sessionsRoot);
+      if (rootEntries === undefined) return [];
+      for (const entry of rootEntries) {
         if (entry.isDirectory()) projects.push(join(sessionsRoot, entry.name));
       }
-    } catch {
-      return [];
     }
-  }
-  const paths: string[] = [];
-  for (const project of projects) {
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(project, { withFileTypes: true });
-    } catch {
-      continue;
+    const paths: string[] = [];
+    for (const project of projects) {
+      const entries = yield* readDirents(project);
+      if (entries === undefined) continue;
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const sessionDir = join(project, entry.name);
+        // A concurrent dsh cleanup can remove an incomplete session, which reads
+        // here as an unreadable directory.
+        const names = yield* dshSessionArtifactNames(sessionDir);
+        if (names === undefined) continue;
+        for (const filename of names) paths.push(join(sessionDir, filename));
+      }
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const sessionDir = join(project, entry.name);
-      // A concurrent dsh cleanup can remove an incomplete session, which reads
-      // here as an unreadable directory.
-      const names = await dshSessionArtifactNames(sessionDir);
-      if (names === undefined) continue;
-      for (const filename of names) paths.push(join(sessionDir, filename));
-    }
-  }
-  return paths;
+    return paths;
+  });
 }
 
 /** Decode just the first session header. The header is its own zstd frame, so
@@ -393,32 +407,34 @@ export function expandDshStorageRecord(record: JsonRecord): readonly JsonRecord[
  * newest first, because a later file may be a repair of an earlier one. A read
  * that throws is skipped: a writer may still be publishing its first frame, or
  * the child may have removed an incomplete file between listing and stat. */
-async function scanSessionArtifacts<T>(
+function scanSessionArtifacts<T>(
   home: string,
   cwd: string,
   startedAt: number,
   read: (path: string, raw: Buffer) => T | undefined,
-): Promise<T | undefined> {
-  const candidates = await sessionArtifactPaths(home, cwd);
-  const ranked: Array<{ readonly path: string; readonly mtimeMs: number }> = [];
-  for (const path of candidates) {
-    try {
-      const identity = await stat(path);
-      if (identity.mtimeMs >= startedAt - 1000) ranked.push({ path, mtimeMs: identity.mtimeMs });
-    } catch {
+): Effect.Effect<T | undefined> {
+  return Effect.gen(function* () {
+    const candidates = yield* sessionArtifactPaths(home, cwd);
+    const ranked: Array<{ readonly path: string; readonly mtimeMs: number }> = [];
+    for (const path of candidates) {
+      const identity = yield* statPath(path);
       // Unreadable between listing and stat; the next poll tries it again.
+      if (identity !== undefined && identity.mtimeMs >= startedAt - 1000) {
+        ranked.push({ path, mtimeMs: identity.mtimeMs });
+      }
     }
-  }
-  ranked.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  for (const candidate of ranked) {
-    try {
-      const value = read(candidate.path, await readFile(candidate.path));
-      if (value !== undefined) return value;
-    } catch {
+    ranked.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    for (const candidate of ranked) {
+      const raw = yield* readFileBytes(candidate.path);
+      if (raw === undefined) continue;
       // Best effort: the stdout result stays usable without native evidence.
+      const value = yield* Effect.sync(() => read(candidate.path, raw)).pipe(
+        Effect.catchAllDefect(() => Effect.succeed(undefined)),
+      );
+      if (value !== undefined) return value;
     }
-  }
-  return undefined;
+    return undefined;
+  });
 }
 
 /** Whether a header's cwd claim matches the cwd that is looking. A header that
@@ -427,12 +443,12 @@ function headerCwdMatches(claimed: unknown, cwd: string): boolean {
   return nonEmptyString(claimed) === undefined || nonEmptyString(claimed) === cwd;
 }
 
-async function findDshSessionArtifact(
+function findDshSessionArtifact(
   home: string,
   cwd: string,
   startedAt: number,
   resumeSessionId?: string,
-): Promise<string | undefined> {
+): Effect.Effect<string | undefined> {
   // A continued actor names its session; take that session or nothing. The
   // discovery below answers "which session did this attempt create", and for a
   // continued actor that question has a wrong answer available: a sibling
@@ -474,32 +490,49 @@ function decodeDshSession(path: string, raw: Buffer): DshSessionEvidence | undef
   return { path, sessionId, text, events };
 }
 
-export async function readDshSessionEvidence(
+function readDshSessionEvidenceOnce(
   home: string,
   cwd: string,
   startedAt: number,
   resumeSessionId?: string,
-): Promise<DshSessionEvidence | undefined> {
-  // Same rule as findDshSessionArtifact: a named session is read by name, and a
-  // miss stays a miss. Widening to discovery would read a sibling actor's
-  // conversation into this actor's transcript, and the next epoch would replay
-  // it back as if it were its own history.
-  if (resumeSessionId !== undefined) {
-    const known = await sessionArtifactForId(home, resumeSessionId);
-    if (known === undefined) return undefined;
-    try {
-      return decodeDshSession(known, await readFile(known));
-    } catch {
-      // A writer may still be publishing the first frame; the caller keeps the
-      // records it tailed itself.
-      return undefined;
+): Effect.Effect<DshSessionEvidence | undefined> {
+  return Effect.gen(function* () {
+    // Same rule as findDshSessionArtifact: a named session is read by name, and a
+    // miss stays a miss. Widening to discovery would read a sibling actor's
+    // conversation into this actor's transcript, and the next epoch would replay
+    // it back as if it were its own history.
+    if (resumeSessionId !== undefined) {
+      const known = yield* sessionArtifactForId(home, resumeSessionId);
+      if (known === undefined) return undefined;
+      const raw = yield* readFileBytes(known);
+      if (raw === undefined) {
+        // A writer may still be publishing the first frame; the caller keeps the
+        // records it tailed itself.
+        return undefined;
+      }
+      return yield* Effect.sync(() => decodeDshSession(known, raw)).pipe(
+        Effect.catchAllDefect(() => Effect.succeed(undefined)),
+      );
     }
-  }
-  return scanSessionArtifacts(home, cwd, startedAt, (path, raw) => {
-    const evidence = decodeDshSession(path, raw);
-    const header = evidence?.events.find((event) => event.type === "session");
-    return evidence !== undefined && headerCwdMatches(header?.cwd, cwd) ? evidence : undefined;
+    return yield* scanSessionArtifacts(home, cwd, startedAt, (path, raw) => {
+      const evidence = decodeDshSession(path, raw);
+      const header = evidence?.events.find((event) => event.type === "session");
+      return evidence !== undefined && headerCwdMatches(header?.cwd, cwd) ? evidence : undefined;
+    });
   });
+}
+
+/** Read what the child persisted; a miss and an unreadable artifact are both
+ * "no evidence" so an interrupted turn keeps the records it tailed itself. */
+export function readDshSessionEvidence(
+  home: string,
+  cwd: string,
+  startedAt: number,
+  resumeSessionId?: string,
+): Effect.Effect<DshSessionEvidence | undefined> {
+  return readDshSessionEvidenceOnce(home, cwd, startedAt, resumeSessionId).pipe(
+    Effect.catchAllDefect(() => Effect.succeed(undefined)),
+  );
 }
 
 class DshSessionTailerImpl implements DshSessionTailer {
@@ -512,8 +545,8 @@ class DshSessionTailerImpl implements DshSessionTailer {
   private pending = Buffer.alloc(0);
   private sessionHeader: JsonRecord | undefined;
   private stopped = false;
-  private loop: Promise<void> | undefined;
-  private finished: Promise<DshSessionEvidence | undefined> | undefined;
+  private loop: Fiber.RuntimeFiber<void, never> | undefined;
+  private finishResult: { readonly value: DshSessionEvidence | undefined } | undefined;
 
   constructor(
     private readonly home: string,
@@ -525,56 +558,94 @@ class DshSessionTailerImpl implements DshSessionTailer {
 
   start(): void {
     if (this.loop !== undefined) return;
-    this.loop = this.pollLoop();
+    this.loop = Effect.runFork(this.pollLoop());
   }
 
-  async finish(): Promise<DshSessionEvidence | undefined> {
-    if (this.finished !== undefined) return this.finished;
-    this.finished = this.finishOnce();
-    return this.finished;
+  finish(): Effect.Effect<DshSessionEvidence | undefined> {
+    return Effect.suspend(() => {
+      const cached = this.finishResult;
+      if (cached !== undefined) return Effect.succeed(cached.value);
+      return this.finishOnce().pipe(
+        Effect.catchAllDefect(() => Effect.succeed(undefined)),
+        Effect.map((value) => {
+          this.finishResult = { value };
+          return value;
+        }),
+      );
+    });
   }
 
-  private async finishOnce(): Promise<DshSessionEvidence | undefined> {
-    this.stopped = true;
-    await this.loop;
-    // One final read closes the race where the process exits immediately after
-    // the last persistence batch becomes visible to the filesystem.
-    await this.poll();
-    const complete = await readDshSessionEvidence(this.home, this.cwd, this.startedAt, this.resumeSessionId);
+  private finishOnce(): Effect.Effect<DshSessionEvidence | undefined> {
+    return Effect.suspend(() => {
+      this.stopped = true;
+      const settled = this.loop === undefined ? Effect.void : Fiber.await(this.loop).pipe(Effect.asVoid);
+      // One final read closes the race where the process exits immediately after
+      // the last persistence batch becomes visible to the filesystem.
+      return settled.pipe(
+        Effect.flatMap(() => this.poll()),
+        Effect.flatMap(() => readDshSessionEvidenceOnce(this.home, this.cwd, this.startedAt, this.resumeSessionId)),
+        Effect.map((complete) => this.evidenceAfterFinish(complete)),
+      );
+    });
+  }
+
+  /** The persisted evidence, or the records this tailer read itself. */
+  private evidenceAfterFinish(complete: DshSessionEvidence | undefined): DshSessionEvidence | undefined {
     if (complete !== undefined) {
       for (const event of complete.events) {
         if (event.type !== "session") this.accept(event);
       }
       return complete;
     }
-    return this.sessionHeader === undefined || this.filePath === undefined
+    const header = this.sessionHeader;
+    const filePath = this.filePath;
+    return header === undefined || filePath === undefined
       ? undefined
       : {
-        path: this.filePath,
-        sessionId: nonEmptyString(this.sessionHeader.id) ?? "",
+        path: filePath,
+        sessionId: nonEmptyString(header.id) ?? "",
         text: "",
-        events: [this.sessionHeader, ...this.records],
+        events: [header, ...this.records],
       };
   }
 
-  private async pollLoop(): Promise<void> {
-    while (!this.stopped) {
-      await this.poll();
-      if (!this.stopped) await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    }
+  private pollLoop(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.stopped) return Effect.void;
+      return this.poll().pipe(
+        Effect.flatMap(() => this.stopped
+          ? Effect.void
+          : Effect.sleep(Duration.millis(50)).pipe(Effect.flatMap(() => this.pollLoop()))),
+      );
+    });
   }
 
-  private async poll(): Promise<void> {
-    try {
-      if (this.filePath === undefined) this.filePath = await findDshSessionArtifact(this.home, this.cwd, this.startedAt, this.resumeSessionId);
-      if (this.filePath === undefined) return;
-      const raw = await readFile(this.filePath);
-      if (this.filePath.endsWith(".zstd")) this.consumeZstd(raw);
-      else this.consumePlain(raw);
-    } catch {
+  private poll(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.filePath === undefined) {
+        return findDshSessionArtifact(this.home, this.cwd, this.startedAt, this.resumeSessionId).pipe(
+          Effect.flatMap((found) => {
+            this.filePath = found;
+            return found === undefined ? Effect.void : this.consumeArtifact(found);
+          }),
+        );
+      }
+      return this.consumeArtifact(this.filePath);
+    }).pipe(
       // Session discovery and reads are best effort. The final stdout result
       // remains valid when a native artifact is absent or being repaired.
-    }
+      Effect.catchAllDefect(() => Effect.void),
+    );
+  }
+
+  private consumeArtifact(path: string): Effect.Effect<void> {
+    return readFileBytes(path).pipe(
+      Effect.map((raw) => {
+        if (raw === undefined) return;
+        if (path.endsWith(".zstd")) this.consumeZstd(raw);
+        else this.consumePlain(raw);
+      }),
+    );
   }
 
   private resetPhysicalCursor(): void {

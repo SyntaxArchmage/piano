@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect } from "effect";
 import { findTranscriptPath, evidencePaths } from "../src/run-case.js";
 
 describe("evals evidence discovery across run layouts", () => {
@@ -18,7 +19,7 @@ describe("evals evidence discovery across run layouts", () => {
       await writeFile(transcript, '{"role":"user","content":"go"}\n');
       await mkdir(join(runDir, "system-log"), { recursive: true });
       await writeFile(join(runDir, "system-log", "trajectory.jsonl"), `${JSON.stringify({ version: 1, runId: "r", timestamp: "2026-01-01T00:00:00.000Z", status: "failed", promptLength: 1, events: [] })}\n`);
-      expect(findTranscriptPath(runDir)).toBe(transcript);
+      expect(await Effect.runPromise(findTranscriptPath(runDir))).toBe(transcript);
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
@@ -33,7 +34,7 @@ describe("evals evidence discovery across run layouts", () => {
       const top = join(runDir, "sessions", "pi", "agent", "root", "session", "real.jsonl");
       await writeFile(top, '{"role":"user","content":"go"}\n');
       await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", transcriptPath: top }));
-      expect(findTranscriptPath(runDir)).toBe(top);
+      expect(await Effect.runPromise(findTranscriptPath(runDir))).toBe(top);
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
@@ -46,7 +47,7 @@ describe("evals evidence discovery across run layouts", () => {
       for (const name of ["log.jsonl", "trace.jsonl", "trajectory.jsonl"]) {
         await writeFile(join(runDir, "system-log", name), "{}\n");
       }
-      expect(evidencePaths(runDir)).toMatchObject({
+      expect(await Effect.runPromise(evidencePaths(runDir))).toMatchObject({
         logPath: join(runDir, "system-log", "log.jsonl"),
         tracePath: join(runDir, "system-log", "trace.jsonl"),
         trajectoryPath: join(runDir, "system-log", "trajectory.jsonl"),

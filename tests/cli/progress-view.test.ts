@@ -67,7 +67,7 @@ async function finishedRun(): Promise<string> {
 describe("reading a run's progress", () => {
   it("reads the state document the run keeps", async () => {
     const runDir = await finishedRun();
-    const view = await readWorkflowSnapshot(runDir);
+    const view = await Effect.runPromise(readWorkflowSnapshot(runDir));
 
     expect(view?.status).toBe("completed");
     expect(view?.completedStages).toBe(1);
@@ -78,13 +78,13 @@ describe("reading a run's progress", () => {
     const runDir = await finishedRun();
     await writeFile(runStatusPath(runDir), '{"version":1,"runId":"ru', "utf8");
 
-    expect(await readWorkflowSnapshot(runDir)).toBeUndefined();
+    expect(await Effect.runPromise(readWorkflowSnapshot(runDir))).toBeUndefined();
   });
 
   it("draws nothing when neither file can be read", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-progress-empty-"));
     roots.push(runDir);
 
-    expect(await readWorkflowSnapshot(runDir)).toBeUndefined();
+    expect(await Effect.runPromise(readWorkflowSnapshot(runDir))).toBeUndefined();
   });
 });

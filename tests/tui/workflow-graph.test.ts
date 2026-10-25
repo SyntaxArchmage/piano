@@ -1,4 +1,5 @@
 import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { darkTheme } from "../../packages/cli/src/theme.js";
 import {
@@ -99,8 +100,8 @@ describe("WorkflowGraph", () => {
 
   it("uses a stable Kitty image id across animation frames", async () => {
     setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
-    const graph = new WorkflowGraph(definition, async () => runningSnapshot, darkTheme);
-    await graph.refresh();
+    const graph = new WorkflowGraph(definition, () => Effect.succeed(runningSnapshot), darkTheme);
+    await Effect.runPromise(graph.refresh());
 
     const first = graph.render(100);
     graph.toggleBlink();
@@ -119,8 +120,8 @@ describe("WorkflowGraph", () => {
 
   it("renders a face-page line DAG on xterm-like terminals", async () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
-    const graph = new WorkflowGraph(definition, async () => runningSnapshot, darkTheme);
-    await graph.refresh();
+    const graph = new WorkflowGraph(definition, () => Effect.succeed(runningSnapshot), darkTheme);
+    await Effect.runPromise(graph.refresh());
 
     const first = graph.render(100);
     graph.toggleBlink();
@@ -152,25 +153,25 @@ describe("WorkflowGraph", () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
     const identified = new WorkflowGraph(
       { ...definition, name: "basic", path: "/home/albert/.piano/workflow.yml" },
-      async () => runningSnapshot,
+      () => Effect.succeed(runningSnapshot),
       darkTheme,
     );
-    await identified.refresh();
+    await Effect.runPromise(identified.refresh());
     expect(stripAnsi(identified.summary())).toBe("basic /home/albert/.piano/workflow.yml");
     // A name-only definition shows only the name.
     const nameOnly = new WorkflowGraph(
       { ...definition, name: "basic" },
-      async () => runningSnapshot,
+      () => Effect.succeed(runningSnapshot),
       darkTheme,
     );
-    await nameOnly.refresh();
+    await Effect.runPromise(nameOnly.refresh());
     expect(stripAnsi(nameOnly.summary())).toBe("basic");
   });
 
   it("yields an empty summary when a graph has no identity", () => {
     const graph = new WorkflowGraph(
       { stages: [{ id: "setup", dependsOn: [] }] },
-      async () => runningSnapshot,
+      () => Effect.succeed(runningSnapshot),
       darkTheme,
     );
     expect(stripAnsi(graph.summary())).toBe("");
@@ -449,13 +450,13 @@ describe("WorkflowGraph", () => {
   });
 
   it("renders map slots without a summary-driven status", async () => {
-    const graph = new WorkflowGraph(mapDefinition, async () => ({
+    const graph = new WorkflowGraph(mapDefinition, () => Effect.succeed({
       plannedStages: 7,
       completedStages: 1,
       status: "running",
       current: { stageId: "fanout.implement", status: "running" },
     }), darkTheme);
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     // Without an identity (name/path) the summary is empty; stage state lives
     // in the DAG itself, not the summary line.
     expect(stripAnsi(graph.summary())).toBe("");
@@ -464,17 +465,17 @@ describe("WorkflowGraph", () => {
 
   it("moves accepted and failed stages into their visual states", async () => {
     let snapshot: WorkflowGraphSnapshot = runningSnapshot;
-    const graph = new WorkflowGraph(definition, async () => snapshot, darkTheme);
-    await graph.refresh();
+    const graph = new WorkflowGraph(definition, () => Effect.succeed(snapshot), darkTheme);
+    await Effect.runPromise(graph.refresh());
 
     snapshot = { ...runningSnapshot, completedStages: 3, current: { stageId: "profile.models", status: "accepted" } };
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     expect(stripAnsi(graph.summary())).toBe("");
     expect(renderWorkflowGraphSvg(definition, snapshot, darkTheme))
       .toContain("data-stage=\"profile.models\" data-status=\"completed\"");
 
     snapshot = { ...snapshot, status: "failed", current: { stageId: "measure", status: "failed" } };
-    await graph.refresh();
+    await Effect.runPromise(graph.refresh());
     expect(stripAnsi(graph.summary())).toBe("");
     expect(renderWorkflowGraphSvg(definition, snapshot, darkTheme))
       .toContain("data-stage=\"measure\" data-status=\"failed\"");
@@ -483,23 +484,27 @@ describe("WorkflowGraph", () => {
   it("shares an in-flight read and keeps the last valid snapshot", async () => {
     let calls = 0;
     let resolveRead: ((snapshot: WorkflowGraphSnapshot | undefined) => void) | undefined;
-    const pending = new Promise<WorkflowGraphSnapshot | undefined>((resolve) => { resolveRead = resolve; });
-    let nextRead: Promise<WorkflowGraphSnapshot | undefined> = pending;
-    const graph = new WorkflowGraph({ stages: [{ id: "setup", dependsOn: [] }] }, async () => {
+    const pending = Effect.async<WorkflowGraphSnapshot | undefined>((resume) => {
+      resolveRead = (snapshot) => resume(Effect.succeed(snapshot));
+    });
+    let nextRead: Effect.Effect<WorkflowGraphSnapshot | undefined> = pending;
+    const graph = new WorkflowGraph({ stages: [{ id: "setup", dependsOn: [] }] }, () => {
       calls += 1;
       return nextRead;
     }, darkTheme);
 
-    const first = graph.refresh();
-    expect(graph.refresh()).toBe(first);
+    // Two concurrent refreshes share the one read that is in flight.
+    const first = Effect.runPromise(graph.refresh());
+    const second = Effect.runPromise(graph.refresh());
     await Promise.resolve();
     expect(calls).toBe(1);
     resolveRead?.({ plannedStages: 1, completedStages: 1, status: "completed" });
     await first;
+    await second;
     expect(stripAnsi(graph.summary())).toBe("");
 
-    nextRead = Promise.resolve(undefined);
-    await graph.refresh();
+    nextRead = Effect.succeed(undefined);
+    await Effect.runPromise(graph.refresh());
     expect(stripAnsi(graph.summary())).toBe("");
   });
 

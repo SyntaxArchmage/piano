@@ -56,7 +56,7 @@ describe.skipIf(!runReal)(" real pi RPC steering (subprocess adapter)", () => {
         onEvent: (event) => {
           events.push(event);
           if ((event.type === "tool_execution_start" || event.type === "message_start") && steerPromise === undefined) {
-            steerPromise = channel.steer("STEER-MARK-1: also run `echo steered` and mention STEER-MARK-1 in your final answer.");
+            steerPromise = Effect.runPromise(channel.steer("STEER-MARK-1: also run `echo steered` and mention STEER-MARK-1 in your final answer."));
             steerPromise.catch(() => undefined);
           }
         },

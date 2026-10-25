@@ -38,7 +38,7 @@ export interface WorkerRequest {
    * Transport only — the worker never interprets it. */
   readonly steering?: SteeringChannel;
   /** Supervisor discussion callback for the `discuss` primitive. */
-  readonly discuss?: (question: string) => Promise<string>;
+  readonly discuss?: (question: string) => Effect.Effect<string, unknown>;
   /** Test/runtime injection point; production uses the configured default adapter. */
   readonly agentRunner?: AgentRunner;
 }

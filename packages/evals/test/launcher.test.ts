@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { matchNewRunDir } from "../src/run-locator.js";
 import { progressTickLine, shellQuote, substituteCommand } from "../src/launcher.js";
@@ -142,8 +143,8 @@ describe("parallel presentation", () => {
     const created = ["run-a", "run-b"];
     const startedAt = Date.now();
 
-    const boundA = matchNewRunDir(root, created, "/tmp/ws-a");
-    const boundB = matchNewRunDir(root, created, "/tmp/ws-b");
+    const boundA = await Effect.runPromise(matchNewRunDir(root, created, "/tmp/ws-a"));
+    const boundB = await Effect.runPromise(matchNewRunDir(root, created, "/tmp/ws-b"));
     expect(boundA).toBe("run-a");
     expect(boundB).toBe("run-b");
 
@@ -173,8 +174,8 @@ describe("parallel presentation", () => {
     await mkdir(join(root, "run-c"));
     await mkdir(join(root, "run-d"));
 
-    expect(matchNewRunDir(root, ["run-c", "run-d"], "/tmp/ws-a")).toBeUndefined();
-    expect(matchNewRunDir(root, ["run-c", "run-d"], "/tmp/ws-b")).toBeUndefined();
+    expect(await Effect.runPromise(matchNewRunDir(root, ["run-c", "run-d"], "/tmp/ws-a"))).toBeUndefined();
+    expect(await Effect.runPromise(matchNewRunDir(root, ["run-c", "run-d"], "/tmp/ws-b"))).toBeUndefined();
   });
 
   it("a late foreign entrant does not blur an already-associated case", async () => {
@@ -185,7 +186,7 @@ describe("parallel presentation", () => {
 
     // Unique match among candidates keeps case-a's line stable even while the
     // window is not clean: the binding ignores evidence-less other runs.
-    const bound = matchNewRunDir(root, ["run-a", "run-e"], "/tmp/ws-a");
+    const bound = await Effect.runPromise(matchNewRunDir(root, ["run-a", "run-e"], "/tmp/ws-a"));
     expect(bound).toBe("run-a");
     expect(progressTickLine("case-a#1", join(root, bound!), Date.now())).toContain("stages=5/82");
   });

@@ -654,7 +654,12 @@ function runPiAttempt(
     const unbindSteering = request.steering?.bind(
       session.session.steer === undefined
         ? undefined
-        : { steer: (text) => session.session.steer!(text) },
+        : {
+          steer: (text) => Effect.tryPromise({
+            try: () => session.session.steer!(text),
+            catch: (cause) => agentError("request-rejected", cause),
+          }),
+        },
     );
     const cleanup = Effect.gen(function* () {
       yield* Effect.sync(() => unbindSteering?.());

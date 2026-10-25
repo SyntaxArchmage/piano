@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { Effect } from "effect";
 import type { AgentRequest } from "./agent-contract.js";
 import { isSteerAckLine } from "./child-protocols.js";
+import { AgentError, agentError } from "./errors.js";
 import { asRecord, nonEmptyString, type JsonRecord } from "./json-narrowing.js";
 
 /**
@@ -31,11 +33,11 @@ export interface ChildOutcome {
 
 
 export interface ChildStdinControl {
-  /** Deliver one steering frame. Resolves when the child has acknowledged
+  /** Deliver one steering frame. Succeeds when the child has acknowledged
    * acceptance where its protocol can say so (pi RPC correlates by request id);
-   * rejects when the child refused it, so the caller — not the whole attempt —
-   * owns that outcome. */
-  writeFrame(text: string): Promise<void>;
+   * fails when the child refused it or the stdin is gone, so the caller — not
+   * the whole attempt — owns that outcome. */
+  writeFrame(text: string): Effect.Effect<void, AgentError>;
   windDown(): void;
 }
 
@@ -46,8 +48,8 @@ export interface ChildStdinControl {
 export interface ChildStdinBridge {
   readonly initialFrame?: string;
   /** Builds a steering frame, returning the line to write and — where the
-   * protocol has acknowledgments — the promise they settle. */
-  readonly frame: (text: string) => { readonly json: string; readonly settled?: Promise<void> };
+   * protocol has acknowledgments — the effect they settle. */
+  readonly frame: (text: string) => { readonly json: string; readonly settled?: Effect.Effect<void, AgentError> };
   /** Given a response record, the pending frame it settles, if any. */
   readonly settle?: (value: JsonRecord) => boolean;
   /** One line of the child's stderr, read as it arrives — the channel a backend
@@ -83,8 +85,8 @@ export function runChild(
    * on stderr and a steer waits on it while the turn still runs, so this cannot
    * be deferred to close; it is also the run's only mid-turn signal. */
   onStderrLine?: (line: string) => void,
-): Promise<ChildOutcome> {
-  return new Promise((resolve, reject) => {
+): Effect.Effect<ChildOutcome, AgentError> {
+  return Effect.async<ChildOutcome, AgentError>((resume) => {
     let child: ChildProcess;
     try {
       child = spawn(binPath, [...argv], {
@@ -96,7 +98,7 @@ export function runChild(
         detached: process.platform !== "win32",
       });
     } catch (cause) {
-      reject(cause);
+      resume(Effect.fail(agentError("harness-unavailable", cause)));
       return;
     }
     const rawLines: string[] = [];
@@ -147,12 +149,12 @@ export function runChild(
       if (killTimer !== undefined) clearTimeout(killTimer);
       if (windDownTimer !== undefined) clearTimeout(windDownTimer);
       request.signal?.removeEventListener("abort", onAbort);
-      resolve({
+      resume(Effect.succeed({
         code, signal, stderr, rawLines,
         ...(spawnError === undefined ? {} : { spawnError }),
         aborted,
         ...(windDownArmed ? { gracefulShutdown: true } : {}),
-      });
+      }));
     };
     request.signal?.addEventListener("abort", onAbort, { once: true });
     if (request.signal?.aborted) onAbort();
@@ -161,22 +163,33 @@ export function runChild(
       // bounds the case where it does not, so a hung post-`result` process
       // can never keep the worker (and the run's stage) open forever.
       const control: ChildStdinControl = {
-        writeFrame: async (text: string): Promise<void> => {
+        // The write and its acknowledgment are Effect-native all the way out;
+        // only the Pi/UI contracts wrapped around it are Promise-shaped.
+        writeFrame: (text: string): Effect.Effect<void, AgentError> => Effect.gen(function* () {
           const stream = child.stdin;
           if (settled || windDownArmed || stream === null || stream.destroyed || stream.writableEnded) {
-            throw new Error(`${binPath} stdin is closed; the turn has ended`);
+            return yield* Effect.fail(new AgentError({
+              kind: "harness-unavailable",
+              message: `${binPath} stdin is closed; the turn has ended`,
+            }));
           }
           const { json, settled: acknowledged } = stdin.frame(text);
-          // Write first, then await: a protocol with acknowledgments only
+          // Write first, then wait: a protocol with acknowledgments only
           // reports success through a response frame that can arrive before the
           // write call itself has returned.
           const written = stream.write(`${json}\n`);
           if (acknowledged === undefined) return;
           // Backpressure is irrelevant next to the ack, but an error on the
-          // stream is not: without this the promise would outlive the child.
-          if (written === false) await new Promise<void>((resolve) => stream.once("drain", resolve));
-          await acknowledged;
-        },
+          // stream is not: without this the wait would outlive the child.
+          if (written === false) {
+            yield* Effect.async<void>((resumeDrain) => {
+              const onDrain = (): void => resumeDrain(Effect.void);
+              stream.once("drain", onDrain);
+              return Effect.sync(() => stream.off("drain", onDrain));
+            });
+          }
+          yield* acknowledged;
+        }),
         windDown: (): void => {
           if (settled || windDownArmed) return;
           windDownArmed = true;
@@ -249,6 +262,13 @@ export function runChild(
         child.stdout?.destroy();
         child.stderr?.destroy();
       }
+    });
+    // An interrupted run never reaches a normal close, so the child would keep
+    // running past the effect that owns it. Terminate the adapter tree on the
+    // way out; a run that already answered has nothing left to stop.
+    return Effect.sync(() => {
+      if (!settled) onAbort();
+      request.signal?.removeEventListener("abort", onAbort);
     });
   });
 }

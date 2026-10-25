@@ -7,8 +7,7 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { contractSnapshotPath, evalMetricsDir } from "@piano/base";
+import { contractSnapshotPath, evalMetricsDir, io } from "@piano/base";
 import {
   BenchmarkRecorder,
   DurationRecorder,
@@ -135,9 +134,33 @@ export function readRunTrace(
     const rows = new Map(
       acceptedInvocations(yield* readInvocationRecords(runDir)).map((row) => [row.invocationId, row]),
     );
-    // Several invocations of one actor share a session transcript; analyze
-    // each file once per run.
+    const invocationIds = [...new Set<string>([
+      ...benchmarks.map((record) => record.invocationId),
+      ...durations.map((record) => record.invocationId),
+      ...tokens.map((record) => record.invocationId),
+      ...tools.map((record) => record.invocationId),
+      ...rows.keys(),
+    ])];
+    // Several invocations of one actor share a session transcript: resolve each
+    // stage's effective path, then analyze every file once per run.
+    const recordPathByInvocation = new Map<string, string>();
+    for (const record of [...benchmarks, ...durations, ...tokens, ...tools]) {
+      if (record.transcriptPath !== undefined && !recordPathByInvocation.has(record.invocationId)) {
+        recordPathByInvocation.set(record.invocationId, record.transcriptPath);
+      }
+    }
+    const transcriptPathByInvocation = new Map<string, string>();
+    for (const invocationId of invocationIds) {
+      const transcriptPath = rows.get(invocationId)?.transcriptPath ?? recordPathByInvocation.get(invocationId);
+      if (transcriptPath !== undefined) transcriptPathByInvocation.set(invocationId, transcriptPath);
+    }
     const transcripts = new Map<string, TranscriptMetrics>();
+    yield* Effect.forEach(new Set(transcriptPathByInvocation.values()), (path) =>
+      analyzeTranscriptFile(path).pipe(
+        Effect.map((metrics) => {
+          transcripts.set(path, metrics);
+        }),
+      ), { discard: true });
     const stageTranscript = (transcript: TranscriptMetrics): StageTranscriptMetrics => ({
       messageCount: transcript.messageCount,
       userMessageCount: transcript.userMessageCount,
@@ -147,20 +170,6 @@ export function readRunTrace(
       ...(transcript.valid === undefined ? {} : { valid: transcript.valid }),
       ...(transcript.issues === undefined ? {} : { issues: transcript.issues }),
     });
-    const transcriptFor = (path: string): TranscriptMetrics => {
-      const cached = transcripts.get(path);
-      if (cached !== undefined) return cached;
-      const analyzed = analyzeTranscriptFile(path);
-      transcripts.set(path, analyzed);
-      return analyzed;
-    };
-    const invocationIds = [...new Set<string>([
-      ...benchmarks.map((record) => record.invocationId),
-      ...durations.map((record) => record.invocationId),
-      ...tokens.map((record) => record.invocationId),
-      ...tools.map((record) => record.invocationId),
-      ...rows.keys(),
-    ])];
     const stages: StageObservation[] = invocationIds.map((invocationId) => {
       const benchmarkRows = benchmarks.filter((record) => record.invocationId === invocationId);
       const durationRows = durations.filter((record) => record.invocationId === invocationId);
@@ -168,8 +177,9 @@ export function readRunTrace(
       const toolRows = tools.filter((record) => record.invocationId === invocationId);
       const row = rows.get(invocationId);
       const context = [...benchmarkRows, ...durationRows, ...tokenRows, ...toolRows][0];
-      const transcriptPath = row?.transcriptPath ?? context?.transcriptPath;
-      const transcript = transcriptPath === undefined ? undefined : stageTranscript(transcriptFor(transcriptPath));
+      const transcriptPath = transcriptPathByInvocation.get(invocationId);
+      const analyzed = transcriptPath === undefined ? undefined : transcripts.get(transcriptPath);
+      const transcript = analyzed === undefined ? undefined : stageTranscript(analyzed);
       const outcome = durationRows.at(-1)?.outcome ?? tokenRows.at(-1)?.outcome;
       const attempt = context?.attempt ?? row?.attempt;
       const iteration = context?.iteration ?? iterationOfInvocationId(invocationId);
@@ -252,6 +262,6 @@ export function readRunStatusSummary(
 }
 
 /** Whether a run directory holds recorder metrics (the eval-metrics dir). */
-export function evalMetricsAvailable(runDir: string): boolean {
-  return existsSync(evalMetricsDir(runDir));
+export function evalMetricsAvailable(runDir: string): Effect.Effect<boolean> {
+  return io.existsSync(evalMetricsDir(runDir));
 }

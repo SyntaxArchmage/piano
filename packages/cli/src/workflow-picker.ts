@@ -1,7 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { Effect } from "effect";
+import { io } from "@piano/base";
 import { parseWorkflow } from "@piano/orchestrator";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
@@ -29,68 +29,67 @@ interface BuiltinGroupItem {
 
 type ListItem = WorkflowItem | BuiltinGroupItem;
 
-async function findWorkflowFiles(root: string, excludePaths: Set<string>): Promise<WorkflowItem[]> {
-  const candidates: string[] = [];
-  const visit = async (directory: string): Promise<void> => {
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    await Promise.all(entries.map(async (entry) => {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        if (entry.name === ".git" || entry.name === "node_modules") return;
-        await visit(path);
-      } else if (entry.isFile() && /\.ya?ml$/i.test(entry.name)) {
-        candidates.push(path);
-      }
-    }));
-  };
-  await visit(root);
-
-  const valid: WorkflowItem[] = [];
-  await Promise.all(candidates.map(async (path) => {
-    if (excludePaths.has(resolve(path))) return;
-    try {
-      const source = await readFile(path, "utf8");
-      await Effect.runPromise(parseWorkflow(source, path));
-      valid.push({ kind: "workflow", name: relative(root, path) || entryName(path), path, isBuiltin: false });
-    } catch {
-      // Invalid YAML/workflow schema is intentionally not selectable.
-    }
-  }));
-  return valid.sort((left, right) => left.name.localeCompare(right.name));
+/** Read one candidate workflow and keep it only when it parses. Invalid
+ * YAML/workflow schema is intentionally not selectable. */
+function loadWorkflowItem(path: string, name: string, isBuiltin: boolean, valid: WorkflowItem[]): Effect.Effect<void> {
+  return io.readText(path).pipe(
+    Effect.flatMap((source) => parseWorkflow(source, path)),
+    Effect.flatMap(() => Effect.sync(() => {
+      valid.push({ kind: "workflow", name, path, isBuiltin });
+    })),
+    Effect.catchAll(() => Effect.void),
+  );
 }
 
-async function findBuiltinWorkflows(): Promise<WorkflowItem[]> {
+function findWorkflowFiles(root: string, excludePaths: Set<string>): Effect.Effect<WorkflowItem[]> {
+  const candidates: string[] = [];
+  const visit = (directory: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const entries = yield* io.readdir(directory).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+      if (entries === undefined) return;
+      yield* Effect.forEach(entries, (entry) => {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === ".git" || entry.name === "node_modules") return Effect.void;
+          return visit(path);
+        }
+        if (entry.isFile() && /\.ya?ml$/i.test(entry.name)) {
+          candidates.push(path);
+        }
+        return Effect.void;
+      }, { concurrency: "unbounded" });
+    });
+  return Effect.gen(function* () {
+    yield* visit(root);
+    const valid: WorkflowItem[] = [];
+    yield* Effect.forEach(candidates, (path) => {
+      if (excludePaths.has(resolve(path))) return Effect.void;
+      return loadWorkflowItem(path, relative(root, path) || entryName(path), false, valid);
+    }, { concurrency: "unbounded" });
+    return valid.sort((left, right) => left.name.localeCompare(right.name));
+  });
+}
+
+function findBuiltinWorkflows(): Effect.Effect<WorkflowItem[]> {
   // Builtin recipes live at <repo-root>/recipes/workflows/ relative to this
   // source file at packages/cli/src/workflow-picker.ts.
   const here = dirname(fileURLToPath(import.meta.url));
   const recipesDir = resolve(here, "../../..", "recipes", "workflows");
-  const candidates: string[] = [];
-  try {
-    const entries = await readdir(recipesDir, { withFileTypes: true });
+  return Effect.gen(function* () {
+    const entries = yield* io.readdir(recipesDir).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+    if (entries === undefined) return [];
+    const candidates: string[] = [];
     for (const entry of entries) {
       if (entry.isFile() && /\.ya?ml$/i.test(entry.name)) {
         candidates.push(join(recipesDir, entry.name));
       }
     }
-  } catch {
-    return [];
-  }
-  const valid: WorkflowItem[] = [];
-  await Promise.all(candidates.map(async (path) => {
-    try {
-      const source = await readFile(path, "utf8");
-      await Effect.runPromise(parseWorkflow(source, path));
-      valid.push({ kind: "workflow", name: entryName(path).replace(/\.ya?ml$/i, ""), path, isBuiltin: true });
-    } catch {
-      // skip invalid
-    }
-  }));
-  return valid.sort((left, right) => left.name.localeCompare(right.name));
+    const valid: WorkflowItem[] = [];
+    yield* Effect.forEach(candidates, (path) => {
+      return loadWorkflowItem(path, entryName(path).replace(/\.ya?ml$/i, ""), true, valid);
+    }, { concurrency: "unbounded" });
+    return valid.sort((left, right) => left.name.localeCompare(right.name));
+  });
 }
 
 function entryName(path: string): string {
@@ -112,7 +111,7 @@ export class WorkflowPicker implements Component {
 
   constructor(private readonly deps: WorkflowPickerDeps) {
     this.root = resolve(deps.cwd);
-    void this.refresh();
+    Effect.runFork(this.refresh());
   }
 
   /** Full visible list: builtin header + (if expanded) builtin items, then the workspace matches. */
@@ -207,31 +206,38 @@ export class WorkflowPicker implements Component {
     if (matchesKey(data, Key.backspace)) {
       this.query = this.query.slice(0, -1);
       this.selectedIndex = 0;
-      void this.refresh();
+      Effect.runFork(this.refresh());
       return;
     }
     if (isPrintableInput(data)) {
       this.query += data;
       this.selectedIndex = 0;
-      void this.refresh();
+      Effect.runFork(this.refresh());
     }
   }
 
   invalidate(): void {}
 
-  private async refresh(): Promise<void> {
+  private refresh(): Effect.Effect<void> {
     const requestId = ++this.requestId;
     this.loading = true;
     this.deps.onRender?.();
-    const [builtins] = await Promise.all([findBuiltinWorkflows()]);
-    const builtinPaths = new Set(builtins.map((b) => resolve(b.path)));
-    const workspace = await findWorkflowFiles(this.root, builtinPaths);
-    if (requestId !== this.requestId) return;
-    this.workspaceItems = workspace;
-    this.builtinItems = builtins;
-    this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.listItems.length - 1));
-    this.loading = false;
-    this.deps.onRender?.();
+    return findBuiltinWorkflows().pipe(
+      Effect.flatMap((builtins) => {
+        const builtinPaths = new Set(builtins.map((b) => resolve(b.path)));
+        return findWorkflowFiles(this.root, builtinPaths).pipe(
+          Effect.map((workspace) => ({ builtins, workspace })),
+        );
+      }),
+      Effect.tap(({ builtins, workspace }) => Effect.sync(() => {
+        if (requestId !== this.requestId) return;
+        this.workspaceItems = workspace;
+        this.builtinItems = builtins;
+        this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.listItems.length - 1));
+        this.loading = false;
+        this.deps.onRender?.();
+      })),
+    );
   }
 }
 

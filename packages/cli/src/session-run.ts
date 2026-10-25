@@ -539,17 +539,19 @@ function runSessionBody(
               // check the gap only surfaces as a failed turn deep inside the
               // first resumed stage.
               if (reloaded.right.loaded.document.workflow.nodes.some((node) => "stage" in node && node.stage.harness === "dsh")) {
-                const resumeProbe = yield* Effect.tryPromise({
-                  try: () => probeDshResumeCapability(resolveHarnessConfig("dsh")),
-                  catch: (cause) => cause,
-                }).pipe(Effect.either);
-                if (resumeProbe._tag === "Right" && resumeProbe.right.capability !== "supported") {
-                  const note = resumeProbe.right.capability === "unsupported"
+                // The probe is best effort: an unverifiable capability must
+                // not block the resume, so every failure (including the
+                // untyped mkdtemp defect) becomes "no verdict".
+                const resumeProbe = yield* probeDshResumeCapability(resolveHarnessConfig("dsh")).pipe(
+                  Effect.catchAllCause(() => Effect.succeed(undefined)),
+                );
+                if (resumeProbe !== undefined && resumeProbe.capability !== "supported") {
+                  const note = resumeProbe.capability === "unsupported"
                     ? "the installed dsh cannot resume sessions; the next turn on this run will fail — upgrade dsh or switch the workflow to another harness"
-                    : `dsh resume capability could not be verified (${resumeProbe.right.reason ?? "unknown error"})`;
+                    : `dsh resume capability could not be verified (${resumeProbe.reason ?? "unknown error"})`;
                   workflowNote = workflowNote === undefined ? note : `${workflowNote}; ${note}`;
                   yield* TUI_LOG.warn("tui.resume_dsh_capability", {
-                    data: { runId, capability: resumeProbe.right.capability, ...(resumeProbe.right.reason === undefined ? {} : { reason: resumeProbe.right.reason }) },
+                    data: { runId, capability: resumeProbe.capability, ...(resumeProbe.reason === undefined ? {} : { reason: resumeProbe.reason }) },
                   });
                 }
               }
@@ -628,7 +630,7 @@ function runSessionBody(
           // never bound) tells the TUI to keep queue semantics — the caller
           // never asks which harness is running.
           steerActive: (text, target) => steerings[target]?.steer(text)
-            ?? Promise.resolve("no-active-turn" as const),
+            ?? Effect.succeed("no-active-turn" as const),
           // Renaming targets whichever run the TUI is showing, so it follows a
           // takeover.
           onRename: (name) => active.session.trajectory.rename(name).pipe(

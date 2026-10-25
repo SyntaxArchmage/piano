@@ -1,5 +1,6 @@
-import { readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { Effect } from "effect";
+import { io } from "@piano/base";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { type PianoTheme } from "./theme.js";
@@ -28,7 +29,7 @@ export class WorkspacePicker implements Component {
 
   constructor(private readonly deps: WorkspacePickerDeps) {
     this.currentDir = resolve(deps.cwd);
-    void this.refresh();
+    Effect.runFork(this.refresh());
   }
 
   render(width: number): string[] {
@@ -81,50 +82,55 @@ export class WorkspacePicker implements Component {
         this.currentDir = selected.path;
         this.query = "";
         this.selectedIndex = 0;
-        void this.refresh();
+        Effect.runFork(this.refresh());
       }
       return;
     }
     if (matchesKey(data, Key.backspace)) {
       this.query = this.query.slice(0, -1);
-      void this.refresh();
+      Effect.runFork(this.refresh());
       return;
     }
     if (isPrintableInput(data)) {
       this.query += data;
       this.selectedIndex = 0;
-      void this.refresh();
+      Effect.runFork(this.refresh());
     }
   }
 
   invalidate(): void {}
 
-  private async refresh(): Promise<void> {
+  private refresh(): Effect.Effect<void> {
     const requestId = ++this.requestId;
     this.loading = true;
     this.deps.onRender?.();
-    try {
-      const entries = await readdir(this.currentDir, { withFileTypes: true });
-      if (requestId !== this.requestId) return;
-      const candidates: DirectoryItem[] = [
-        ...(dirname(this.currentDir) === this.currentDir ? [] : [{ name: "..", path: dirname(this.currentDir) }]),
-        ...entries
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => ({ name: entry.name, path: join(this.currentDir, entry.name) })),
-      ];
-      this.items = candidates
-        .map((item) => ({ item, score: fuzzyScore(item.name, this.query) }))
-        .filter((value): value is { item: DirectoryItem; score: number } => value.score !== undefined)
-        .sort((left, right) => left.score - right.score || left.item.name.localeCompare(right.item.name))
-        .map(({ item }) => item);
-      this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.items.length - 1));
-      this.loading = false;
-      this.deps.onRender?.();
-    } catch {
-      if (requestId !== this.requestId) return;
-      this.items = [];
-      this.loading = false;
-      this.deps.onRender?.();
-    }
+    return io.readdir(this.currentDir).pipe(
+      Effect.flatMap((entries) => Effect.try({
+        try: () => {
+          if (requestId !== this.requestId) return;
+          const candidates: DirectoryItem[] = [
+            ...(dirname(this.currentDir) === this.currentDir ? [] : [{ name: "..", path: dirname(this.currentDir) }]),
+            ...entries
+              .filter((entry) => entry.isDirectory())
+              .map((entry) => ({ name: entry.name, path: join(this.currentDir, entry.name) })),
+          ];
+          this.items = candidates
+            .map((item) => ({ item, score: fuzzyScore(item.name, this.query) }))
+            .filter((value): value is { item: DirectoryItem; score: number } => value.score !== undefined)
+            .sort((left, right) => left.score - right.score || left.item.name.localeCompare(right.item.name))
+            .map(({ item }) => item);
+          this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.items.length - 1));
+          this.loading = false;
+          this.deps.onRender?.();
+        },
+        catch: (cause) => cause,
+      })),
+      Effect.catchAll(() => Effect.sync(() => {
+        if (requestId !== this.requestId) return;
+        this.items = [];
+        this.loading = false;
+        this.deps.onRender?.();
+      })),
+    );
   }
 }

@@ -39,3 +39,6 @@ export {
 export { errorMessage, failureDetails, isCancellation, type FailureDetails } from "./errors.js";
 
 export { installStagingFile, writeFileAtomic } from "./atomic-write.js";
+
+// The one Effect interface to the outside world: filesystem, processes, HTTP.
+export * as io from "./io.js";

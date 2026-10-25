@@ -2,7 +2,6 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import {
   readResumeContext,
@@ -111,7 +110,7 @@ describe("readResumeContext", () => {
     ]);
 
     const context = await Effect.runPromise(
-      readResumeContext(root, "run-stream").pipe(Effect.provide(NodeFileSystem.layer)),
+      readResumeContext(root, "run-stream"),
     );
 
     // Same replay as the equivalent document gives, down to the per-turn
@@ -128,7 +127,7 @@ describe("readResumeContext", () => {
     await writeRun(root, "run-a", twoTurns);
 
     const context = await Effect.runPromise(
-      readResumeContext(root, "run-a").pipe(Effect.provide(NodeFileSystem.layer)),
+      readResumeContext(root, "run-a"),
     );
 
     expect(context.turns.map((turn) => turn.prompt)).toEqual(["one", "two"]);
@@ -146,7 +145,7 @@ describe("readResumeContext", () => {
     });
 
     const context = await Effect.runPromise(
-      readResumeContext(root, "run-b").pipe(Effect.provide(NodeFileSystem.layer)),
+      readResumeContext(root, "run-b"),
     );
 
     expect(context.turns).toHaveLength(1);
@@ -166,7 +165,7 @@ describe("readResumeContext", () => {
     });
 
     const context = await Effect.runPromise(
-      readResumeContext(root, "run-c").pipe(Effect.provide(NodeFileSystem.layer)),
+      readResumeContext(root, "run-c"),
     );
 
     expect(context.turns[0]?.error).toBeUndefined();
@@ -185,7 +184,7 @@ describe("readResumeContext", () => {
     });
 
     const context = await Effect.runPromise(
-      readResumeContext(root, "run-e").pipe(Effect.provide(NodeFileSystem.layer)),
+      readResumeContext(root, "run-e"),
     );
 
     expect(context.turns[0]?.prompt).toBe("tune the kernel");
@@ -199,7 +198,7 @@ describe("readResumeContext", () => {
 
     for (const runId of ["run-f", "absent"]) {
       const exit = await Effect.runPromiseExit(
-        readResumeContext(root, runId).pipe(Effect.provide(NodeFileSystem.layer)),
+        readResumeContext(root, runId),
       );
       expect(exit._tag).toBe("Failure");
       if (exit._tag === "Failure" && exit.cause._tag === "Fail") {
@@ -217,7 +216,7 @@ describe("readResumeContext", () => {
     await writeRun(root, "run-g", { version: 1, runId: "run-g", status: "failed", promptLength: 0, events: [] });
 
     const context = await Effect.runPromise(
-      readResumeContext(root, "run-g").pipe(Effect.provide(NodeFileSystem.layer)),
+      readResumeContext(root, "run-g"),
     );
 
     expect(context.turns).toEqual([]);
@@ -258,7 +257,7 @@ describe("readRunRow", () => {
       turns: [{ prompt: "only prompt", status: "completed", eventCount: 1 }],
     }));
 
-    expect(await readRunRow(join(root, "run-s"))).toMatchObject({
+    expect(await Effect.runPromise(readRunRow(join(root, "run-s")))).toMatchObject({
       prompt: "only prompt",
       workflow: "basic",
       status: "completed",
@@ -274,8 +273,8 @@ describe("readRunRow", () => {
     await writeRun(root, "run-junk", { version: 1, runId: "run-junk" });
     await writeStateRun(root, "run-junk", "{not json\n");
 
-    expect(await readRunRow(join(root, "run-legacy"))).toEqual({ runId: "run-legacy" });
-    expect(await readRunRow(join(root, "run-junk"))).toEqual({ runId: "run-junk" });
+    expect(await Effect.runPromise(readRunRow(join(root, "run-legacy")))).toEqual({ runId: "run-legacy" });
+    expect(await Effect.runPromise(readRunRow(join(root, "run-junk")))).toEqual({ runId: "run-junk" });
   });
 
   it("drops a run that recorded nothing to replay", async () => {
@@ -286,7 +285,7 @@ describe("readRunRow", () => {
     // ...and a run with state but no trajectory the picker could resume.
     await writeStateRun(root, "unresumable", stateFixture());
 
-    expect(await readRunRow(join(root, "bare"))).toBeUndefined();
-    expect(await readRunRow(join(root, "unresumable"))).toBeUndefined();
+    expect(await Effect.runPromise(readRunRow(join(root, "bare")))).toBeUndefined();
+    expect(await Effect.runPromise(readRunRow(join(root, "unresumable")))).toBeUndefined();
   });
 });

@@ -1,5 +1,6 @@
 // ── Themes ────────────────────────────────────────────────────────────────────
 
+import { Effect } from "effect";
 import { stdin, stdout } from "node:process";
 
 /** Contrast class a theme was built for. The mission and `/btw`'s side screen
@@ -268,28 +269,43 @@ function themeFromEnv(env: Record<string, string | undefined>): PianoTheme | nul
  * The query is `\x1b]11;?\x07`; most modern terminals answer with
  * `\x1b]11;rgb:RRRR/GGGG/BBBB\x07` which `parseBackgroundQuery` understands.
  */
-export function queryBackgroundColor(timeoutMs = 200): Promise<string | null> {
-  return new Promise((resolve) => {
-    if (!stdin.isTTY || !stdout.isTTY) return resolve(null);
-    const onData = (chunk: Buffer | string) => {
-      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-      const hex = parseBackgroundQuery(text);
-      if (hex !== null) finish(hex);
-    };
-    const finish = (hex: string | null) => {
-      clearTimeout(timer);
+export function queryBackgroundColor(timeoutMs = 200): Effect.Effect<string | null> {
+  return Effect.async<string | null>((resume) => {
+    if (!stdin.isTTY || !stdout.isTTY) {
+      resume(Effect.succeed(null));
+      return;
+    }
+    let settled = false;
+    const state: { timer?: ReturnType<typeof setTimeout> } = {};
+    const cleanup = () => {
+      if (state.timer !== undefined) clearTimeout(state.timer);
       stdin.off("data", onData);
       // Restore the mode we found; the TUI sets raw itself when it starts.
       if (wasRaw !== undefined && stdin.setRawMode) stdin.setRawMode(wasRaw);
-      resolve(hex);
+    };
+    const settle = (hex: string | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resume(Effect.succeed(hex));
+    };
+    const onData = (chunk: Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      const hex = parseBackgroundQuery(text);
+      if (hex !== null) settle(hex);
     };
     const wasRaw = stdin.isRaw ?? false;
     if (stdin.setRawMode) stdin.setRawMode(true);
     stdin.on("data", onData);
     // OSC-11 background colour query (BEL-terminated).
     stdout.write("\x1b]11;?\x07");
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    timer.unref?.();
+    state.timer = setTimeout(() => settle(null), timeoutMs);
+    state.timer.unref?.();
+    return Effect.sync(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+    });
   });
 }
 

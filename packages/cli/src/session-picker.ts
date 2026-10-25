@@ -12,8 +12,9 @@
 //     the footer states how many rows are still unread rather than implying the
 //     filter saw everything.
 
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { Effect } from "effect";
+import { io } from "@piano/base";
 import { Key, matchesKey, type Component } from "@earendil-works/pi-tui";
 import { fuzzyScore, isPrintableInput, wrapBorder } from "./picker-support.js";
 import { RST, type PianoTheme } from "./theme.js";
@@ -51,7 +52,7 @@ export class SessionPicker implements Component {
   private scanError: string | undefined;
 
   constructor(private readonly deps: SessionPickerDeps) {
-    void this.scan();
+    Effect.runFork(this.scan());
   }
 
   /** Ids matching the query. Rows without metadata yet match on id alone, so
@@ -176,23 +177,28 @@ export class SessionPicker implements Component {
 
   /** Enumerate run directories newest first. One readdir, no per-entry stat:
    * run ids sort chronologically, so the name is the ordering key. */
-  private async scan(): Promise<void> {
-    try {
-      const entries = await readdir(this.deps.runsRoot, { withFileTypes: true });
-      this.runIds = entries
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name)
-        .sort()
-        .reverse();
-    } catch (cause) {
-      this.runIds = [];
-      const message = cause instanceof Error ? cause.message : String(cause);
-      // A missing runs root means "no runs yet", which the empty list already
-      // says. Anything else is a real read failure worth showing.
-      if (!/ENOENT/.test(message)) this.scanError = message;
-    }
-    this.scanning = false;
-    this.deps.onRender?.();
+  private scan(): Effect.Effect<void> {
+    return io.readdir(this.deps.runsRoot).pipe(
+      Effect.matchEffect({
+        onSuccess: (entries) => Effect.sync(() => {
+          this.runIds = entries
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort()
+            .reverse();
+        }),
+        onFailure: (error) => Effect.sync(() => {
+          this.runIds = [];
+          // A missing runs root means "no runs yet", which the empty list
+          // already says. Anything else is a real read failure worth showing.
+          if (!io.isMissingPathError(error.cause)) this.scanError = error.message;
+        }),
+      }),
+      Effect.tap(() => Effect.sync(() => {
+        this.scanning = false;
+        this.deps.onRender?.();
+      })),
+    );
   }
 
   /** Read the metadata for the drawn window: a run the resume layer drops
@@ -202,15 +208,17 @@ export class SessionPicker implements Component {
     for (const runId of runIds) {
       if (this.summaries.has(runId) || this.loading.has(runId)) continue;
       this.loading.add(runId);
-      void readRunRow(join(this.deps.runsRoot, runId)).then((row) => {
-        this.loading.delete(runId);
-        if (row === undefined) {
-          this.runIds = this.runIds.filter((listed) => listed !== runId);
-        } else {
-          this.summaries.set(runId, row);
-        }
-        this.deps.onRender?.();
-      });
+      Effect.runFork(readRunRow(join(this.deps.runsRoot, runId)).pipe(
+        Effect.tap((row) => Effect.sync(() => {
+          this.loading.delete(runId);
+          if (row === undefined) {
+            this.runIds = this.runIds.filter((listed) => listed !== runId);
+          } else {
+            this.summaries.set(runId, row);
+          }
+          this.deps.onRender?.();
+        })),
+      ));
     }
   }
 }

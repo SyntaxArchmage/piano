@@ -204,9 +204,9 @@ describe(" mid-turn steering ahead of the queue", () => {
     const running = Effect.runPromise(runTui({
       terminal,
       runPrompt: (p) => harness.runPrompt(p),
-      steerActive: async (text) => {
+      steerActive: (text) => {
         steered.push(text);
-        return "delivered" as const;
+        return Effect.succeed("delivered" as const);
       },
     }));
     await sleep(30);
@@ -237,9 +237,9 @@ describe(" mid-turn steering ahead of the queue", () => {
     const running = Effect.runPromise(runTui({
       terminal,
       runPrompt: (p) => harness.runPrompt(p),
-      steerActive: async () => {
+      steerActive: () => {
         attempted += 1;
-        return "no-active-turn" as const;
+        return Effect.succeed("no-active-turn" as const);
       },
     }));
     await sleep(30);
@@ -267,9 +267,7 @@ describe(" mid-turn steering ahead of the queue", () => {
     const running = Effect.runPromise(runTui({
       terminal,
       runPrompt: (p) => harness.runPrompt(p),
-      steerActive: async () => {
-        throw new Error("session closed");
-      },
+      steerActive: () => Effect.fail(new Error("session closed")),
     }));
     await sleep(30);
     terminal.onInput?.("first");
