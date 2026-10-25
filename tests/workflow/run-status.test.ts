@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { refreshRunStatus } from "../../packages/orchestrator/src/index.js";
-import { runStatusFromTrajectory } from "../../packages/orchestrator/src/run-status.js";
+import { emptyRunStatus, parseRunStatus, runStatusFromTrajectory } from "../../packages/orchestrator/src/run-status.js";
 import { foldStatus } from "../common/status-fold.js";
 
 const timestamp = "2026-01-01T00:00:00.000Z";
@@ -220,5 +220,48 @@ describe("run status", () => {
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("run status schema", () => {
+  it("round-trips the zero document", () => {
+    const status = emptyRunStatus("run-1", timestamp);
+    expect(parseRunStatus(JSON.stringify(status))).toEqual(status);
+  });
+
+  it("loads an older document that omits collection fields", () => {
+    const parsed = parseRunStatus(JSON.stringify({
+      runId: "old",
+      updatedAt: timestamp,
+      status: "completed",
+    }));
+    expect(parsed).toMatchObject({
+      runId: "old",
+      status: "completed",
+      promptLength: 0,
+      plannedStages: 0,
+      completedStages: 0,
+      stageCounts: {},
+      jobs: [],
+      actors: {},
+    });
+  });
+
+  it("rejects a torn or mistyped document", () => {
+    expect(parseRunStatus("{not json")).toBeUndefined();
+    // A document with only identity fields is an older/partial document, not
+    // corruption: it loads with the schema's defaults.
+    expect(parseRunStatus(JSON.stringify({ runId: "r" }))).toMatchObject({ runId: "r", status: "running" });
+    expect(parseRunStatus(JSON.stringify({
+      runId: "r",
+      updatedAt: timestamp,
+      status: "not-a-status",
+    }))).toBeUndefined();
+    expect(parseRunStatus(JSON.stringify({
+      runId: "r",
+      updatedAt: timestamp,
+      status: "running",
+      jobs: [{ jobOrdinal: "one" }],
+    }))).toBeUndefined();
   });
 });

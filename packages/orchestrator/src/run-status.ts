@@ -15,7 +15,8 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { parseJsonRecord, parseTrajectory, type TrajectoryDocument } from "@piano/logging";
+import { parseTrajectory, type TrajectoryDocument } from "@piano/logging";
+import { z } from "zod";
 import {
   runStatusPath,
   trajectoryStreamPath,
@@ -153,6 +154,96 @@ export interface RunStatus {
 
 export { runStatusPath };
 
+/** The state document's one schema. Readers validate; writers validate before
+ * serializing, so a malformed document is never produced. Missing collection
+ * fields default to empty so a run written by an older build still loads;
+ * unknown keys pass through. */
+const RuntimeFrameSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("loop"), regionId: z.string(), iteration: z.number() }).passthrough(),
+  z.object({ kind: z.literal("map"), regionId: z.string(), slot: z.number() }).passthrough(),
+]);
+
+const AcceptedInvocationSchema = z.object({
+  invocationId: z.string(),
+  stageId: z.string(),
+  frames: z.array(RuntimeFrameSchema).optional(),
+  iteration: z.number().optional(),
+}).passthrough();
+
+const RunJobSchema = z.object({
+  jobOrdinal: z.number(),
+  outcome: z.enum(["completed", "failed", "restarted"]).optional(),
+  accepted: z.array(AcceptedInvocationSchema).default([]),
+  attempts: z.record(z.string(), z.number()).default({}),
+  input: z.string().optional(),
+  regions: z.record(z.string(), z.unknown()).optional(),
+}).passthrough();
+
+const RunTurnSchema = z.object({
+  prompt: z.string(),
+  status: z.enum(["completed", "failed", "cancelled"]),
+}).passthrough();
+
+const StageCountSchema = z.object({
+  planned: z.number().default(0),
+  completed: z.number().default(0),
+}).passthrough();
+
+const InvocationTimeSchema = z.object({
+  stageId: z.string(),
+  instanceId: z.string().optional(),
+  completedMs: z.number().optional(),
+  runningSince: z.string().optional(),
+}).passthrough();
+
+// Partial current entries are read-compatible: older documents and status
+// fixtures recorded only the fields a view needed. Readers that require more
+// treat a missing field as absent, as they did before this schema.
+const CurrentSchema = z.object({
+  status: z.enum(["running", "accepted", "failed"]).optional(),
+  invocationId: z.string().optional(),
+  stageId: z.string().optional(),
+  stage: z.string().optional(),
+  worker: z.string().optional(),
+  attempt: z.number().optional(),
+  instanceId: z.string().optional(),
+  iteration: z.number().optional(),
+  error: z.string().optional(),
+}).passthrough();
+
+const ActorSchema = z.object({
+  harness: z.string(),
+  sessionId: z.string(),
+  transcriptPath: z.string(),
+  turns: z.number(),
+  continuation: z.unknown().optional(),
+}).passthrough();
+
+export const RunStatusSchema = z.object({
+  // Identity fields are defaulted rather than required: an old or partial
+  // document still loads, and a reader that needs the id already has the run
+  // directory. Wrong types are still rejected.
+  runId: z.string().default(""),
+  updatedAt: z.string().default(""),
+  status: z.enum(["running", "completed", "failed", "paused", "cancelled"]).default("running"),
+  error: z.unknown().optional(),
+  name: z.string().optional(),
+  mnemonic: z.string().optional(),
+  workflowPath: z.string().optional(),
+  workspaceCwd: z.string().optional(),
+  transcriptPath: z.string().optional(),
+  sessionId: z.string().optional(),
+  promptLength: z.number().default(0),
+  turns: z.array(RunTurnSchema).optional(),
+  plannedStages: z.number().default(0),
+  completedStages: z.number().default(0),
+  stageCounts: z.record(z.string(), StageCountSchema).default({}),
+  invocationTime: z.record(z.string(), InvocationTimeSchema).optional(),
+  current: CurrentSchema.optional(),
+  jobs: z.array(RunJobSchema).default([]),
+  actors: z.record(z.string(), ActorSchema).default({}),
+}).passthrough();
+
 /** The state document's trajectory-derived fields. One projection, so the
  * bootstrap fold and the per-write refresh cannot drift. */
 function trajectoryStatusFields(trajectory: TrajectoryDocument): Partial<RunStatus> {
@@ -274,7 +365,11 @@ export function writeRunStatus(
   status: RunStatus,
 ): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
   const path = runStatusPath(runDir);
-  return writeFileAtomic(path, `${JSON.stringify(status, null, 2)}\n`, {
+  const parsed = RunStatusSchema.safeParse(status);
+  if (!parsed.success) {
+    return Effect.fail(workflowError("schedule", path, `status document is invalid: ${parsed.error.message}`));
+  }
+  return writeFileAtomic(path, `${JSON.stringify(parsed.data, null, 2)}\n`, {
     mapError: (cause, step) => workflowError("schedule", path, `status ${step}: ${errorMessage(cause)}`),
   });
 }
@@ -283,6 +378,14 @@ export function writeRunStatus(
  * an object — the same tolerance every reader of the document needs, so none
  * of them hand-rolls its own. */
 export function parseRunStatus(raw: string): RunStatus | undefined {
-  // A torn write reads as absent; the ledgers behind it still hold the run.
-  return parseJsonRecord(raw) as RunStatus | undefined;
+  // A torn write or a document that fails the schema reads as absent; the
+  // ledgers behind it still hold the run.
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  const parsed = RunStatusSchema.safeParse(value);
+  return parsed.success ? (parsed.data as RunStatus) : undefined;
 }

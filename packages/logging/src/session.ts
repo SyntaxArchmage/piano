@@ -1,4 +1,5 @@
 import { FileSystem } from "@effect/platform";
+import { acquireRunLock } from "@piano/base";
 import { Effect } from "effect";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
@@ -75,6 +76,16 @@ export function createSession(
     yield* fileSystem.makeDirectory(values.runDir, { recursive: true }).pipe(
       Effect.mapError((cause) => new SessionCreateError({
         operation: "mkdir",
+        path: values.runDir,
+        message: errorMessage(cause),
+      })),
+    );
+    // One writer per run across processes. A live owner refuses this open; a
+    // crashed owner (dead pid) is reclaimed. Same-process reopen is allowed
+    // because the CLI resumes a run by reopening its session.
+    yield* acquireRunLock(values.runDir).pipe(
+      Effect.mapError((cause) => new SessionCreateError({
+        operation: "lock",
         path: values.runDir,
         message: errorMessage(cause),
       })),

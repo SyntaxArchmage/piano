@@ -65,6 +65,18 @@ export function writeFile(path: string, data: string | Uint8Array): Effect.Effec
   });
 }
 
+/** Atomically create a file. `false` when it already exists; any other
+ * failure is an IoError. The lock module builds on this. */
+export function createExclusive(path: string, text: string): Effect.Effect<boolean, IoError> {
+  return fsCall("writeFile", path, () => fsp.writeFile(path, text, { flag: "wx" })).pipe(
+    Effect.as(true),
+    Effect.catchIf(
+      (cause) => (cause.cause as NodeJS.ErrnoException | undefined)?.code === "EEXIST",
+      () => Effect.succeed(false),
+    ),
+  );
+}
+
 /** Append without reading the file back. Creates a missing file, exactly like
  * the `flag: "a"` write this replaces. */
 export function appendText(path: string, text: string): Effect.Effect<void, IoError> {
