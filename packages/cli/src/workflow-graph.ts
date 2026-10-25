@@ -1,5 +1,5 @@
 import { Resvg } from "@resvg/resvg-js";
-import { Effect, Fiber } from "effect";
+import { Deferred, Effect, FiberId } from "effect";
 import {
   Image,
   allocateImageId,
@@ -730,7 +730,7 @@ export function renderWorkflowGraphPng(
 /** Read-only workflow visualization owned by the footer's STATUS section. */
 export class WorkflowGraph implements Component {
   private snapshot: WorkflowGraphSnapshot | undefined;
-  private refreshInFlight: { readonly fiber: Fiber.RuntimeFiber<void, never>; readonly token: object } | undefined;
+  private refreshInFlight: Deferred.Deferred<void> | undefined;
   private disposed = false;
   private pulseOn = true;
   private image: Image | undefined;
@@ -760,34 +760,23 @@ export class WorkflowGraph implements Component {
     return Effect.suspend(() => {
       if (this.disposed) return Effect.void;
       const inFlight = this.refreshInFlight;
-      if (inFlight !== undefined) return Fiber.join(inFlight.fiber);
-      const token = {};
-      const fiber = Effect.runFork(
-        // Defer the read by a tick, as the previous Promise boundary did:
-        // refresh calls made in the same tick share the one in-flight read.
-        Effect.yieldNow().pipe(
-          Effect.zipRight(Effect.try({
-            try: () => this.readSnapshot(),
-            catch: (cause) => cause,
-          })),
-          Effect.flatten,
-          Effect.flatMap((snapshot) => Effect.sync(() => {
-            if (this.disposed || snapshot === undefined) return;
-            this.snapshot = snapshot;
-            this.invalidate();
-            this.onSnapshot();
-          })),
-          Effect.catchAll(() => Effect.void),
-          Effect.ensuring(Effect.sync(() => {
-            if (this.refreshInFlight?.token === token) this.refreshInFlight = undefined;
-          })),
-        ),
+      if (inFlight !== undefined) return Deferred.await(inFlight);
+      const gate = Deferred.unsafeMake<void>(FiberId.none);
+      this.refreshInFlight = gate;
+      return Effect.suspend(() => this.readSnapshot()).pipe(
+        Effect.flatMap((snapshot) => Effect.sync(() => {
+          if (this.disposed || snapshot === undefined) return;
+          this.snapshot = snapshot;
+          this.invalidate();
+          this.onSnapshot();
+        })),
+        Effect.catchAll(() => Effect.void),
+        Effect.ensuring(Effect.sync(() => {
+          // A later refresh may already own the slot; only its owner clears it,
+          // then every caller waiting on this gate resumes after the read.
+          if (this.refreshInFlight === gate) this.refreshInFlight = undefined;
+        }).pipe(Effect.zipRight(Deferred.succeed(gate, void 0)))),
       );
-      this.refreshInFlight = { fiber, token };
-      // A synchronous read can settle before the fork returns; drop that
-      // settled entry so the next tick starts a fresh read.
-      if (fiber.unsafePoll() !== null) this.refreshInFlight = undefined;
-      return Fiber.join(fiber);
     });
   }
 

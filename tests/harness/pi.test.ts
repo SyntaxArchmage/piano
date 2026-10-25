@@ -179,9 +179,9 @@ describe(" pi sdk cancellation", () => {
       );
       const sdk = sdkLoaderFixture(root, "cached");
       let loads = 0;
-      const sdkLoader = async (): Promise<PiModule> => {
+      const sdkLoader = (): Effect.Effect<PiModule, AgentError> => {
         loads += 1;
-        return sdk;
+        return Effect.succeed(sdk);
       };
       const run = (prompt: string) => executeAgent({
         cwd: root,
@@ -249,10 +249,15 @@ describe(" pi sdk cancellation", () => {
       const sdk = sdkLoaderFixture(root, "retry");
       let loads = 0;
       let fail = true;
-      const sdkLoader = async (): Promise<PiModule> => {
+      const sdkLoader = (): Effect.Effect<PiModule, AgentError> => {
         loads += 1;
-        if (fail) throw Object.assign(new Error("temporary module unavailable"), { code: "EAGAIN" });
-        return sdk;
+        return fail
+          ? Effect.fail(new AgentError({
+            kind: "sdk-load",
+            message: "temporary module unavailable",
+            cause: Object.assign(new Error("temporary module unavailable"), { code: "EAGAIN" }),
+          }))
+          : Effect.succeed(sdk);
       };
       const run = () => executeAgent({ cwd: root, prompt: "retry", tools: [] }, { sdkLoader, ...TEST_MODEL, ...TEST_RETRY }).pipe(
         Effect.provideService(Logging, loggingService(runSession.log, runSession.trace)),
@@ -284,9 +289,13 @@ describe(" pi sdk cancellation", () => {
         createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       let loads = 0;
-      const sdkLoader = async (): Promise<PiModule> => {
+      const sdkLoader = (): Effect.Effect<PiModule, AgentError> => {
         loads += 1;
-        throw Object.assign(new Error("module not found"), { code: "ERR_MODULE_NOT_FOUND" });
+        return Effect.fail(new AgentError({
+          kind: "sdk-load",
+          message: "module not found",
+          cause: Object.assign(new Error("module not found"), { code: "ERR_MODULE_NOT_FOUND" }),
+        }));
       };
       const result = await Effect.runPromiseExit(executeAgent({ cwd: root, prompt: "permanent", tools: [] }, { sdkLoader, ...TEST_MODEL, ...TEST_RETRY }).pipe(
         Effect.provideService(Logging, loggingService(runSession.log, runSession.trace)),
@@ -314,13 +323,17 @@ describe(" pi sdk cancellation", () => {
         createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       let loads = 0;
-      const sdkLoader = async (): Promise<PiModule> => {
+      const sdkLoader = (): Effect.Effect<PiModule, AgentError> => {
         loads += 1;
         const cause = new Error("temporary module unavailable");
         Object.defineProperty(cause, "code", {
           get: () => { throw new Error("error code unavailable"); },
         });
-        throw cause;
+        return Effect.fail(new AgentError({
+          kind: "sdk-load",
+          message: "temporary module unavailable",
+          cause,
+        }));
       };
       const result = await Effect.runPromiseExit(executeAgent({ cwd: root, prompt: "malformed code", tools: [] }, { sdkLoader, ...TEST_MODEL, ...TEST_RETRY }).pipe(
         Effect.provideService(Logging, loggingService(runSession.log, runSession.trace)),

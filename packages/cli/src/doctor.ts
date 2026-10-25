@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stdout } from "node:process";
 import { Cause, Effect, Exit, Option } from "effect";
+import type { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { io } from "@piano/base";
 import {
@@ -103,6 +104,24 @@ function probeLogging(runId: string, root: string) {
   );
 }
 
+/** Run `body` against a fresh throwaway root and remove the root afterwards,
+ * even when the body failed. Cleanup is best effort: a diagnostic artifact
+ * cleanup failure must not hide or reclassify an already classified probe. */
+function withTempRoot<A, E>(
+  prefix: string,
+  body: (root: string) => Effect.Effect<A, E, FileSystem.FileSystem>,
+): Effect.Effect<A, E> {
+  return io.mkdtemp(prefix).pipe(
+    Effect.orDie,
+    Effect.flatMap((root) =>
+      body(root).pipe(
+        Effect.ensuring(io.rm(root, { recursive: true, force: true }).pipe(Effect.catchAll(() => Effect.void))),
+      ),
+    ),
+    Effect.provide(NodeFileSystem.layer),
+  );
+}
+
 /** Run the smallest useful request through the selected native harness. A
  * version command is intentionally not enough: it cannot prove that the
  * harness can authenticate, resolve a model, or complete a request. */
@@ -111,61 +130,55 @@ function runSubprocessProbe(
   config: ResolvedHarnessConfig,
   models?: readonly string[],
 ): Effect.Effect<HarnessProbeResult, io.IoError> {
-  return io.mkdtemp(join(tmpdir(), `piano-doctor-${harness}-`)).pipe(
-    Effect.flatMap((root) =>
-      Effect.gen(function* () {
-        const runId = `doctor-${harness}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-        const logging = probeLogging(runId, root);
-        const exit = yield* prepareHarnessHomes({
-          rootDir: join(root, "home"),
-          configs: { [harness]: config },
-          ...(models === undefined ? {} : { models }),
-        }).pipe(
-          Effect.flatMap((homes) => executeSubprocessAgent(harness, {
-            cwd: process.cwd(),
-            prompt: "Reply with exactly OK. This is a health check; do not use tools.",
-            ...(config.model === undefined ? {} : { model: config.model }),
-            tools: [],
-            signal: AbortSignal.timeout(30_000),
-            sessionDir: join(root, "session"),
-          }, {
-            ...(config.provider === undefined ? {} : { provider: config.provider }),
-            ...(config.model === undefined ? {} : { model: config.model }),
-            ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
-            ...(config.apiKeyEnv === undefined ? {} : { apiKeyEnv: config.apiKeyEnv }),
-            ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
-            ...(config.authToken === undefined ? {} : { authToken: config.authToken }),
-            ...(config.binPath === undefined ? {} : { binPath: config.binPath }),
-            ...(config.profile === undefined ? {} : { profile: config.profile }),
-            ...(config.homePath === undefined ? {} : { homePath: config.homePath }),
-            env: homes.env,
-            retryDelaysMs: [],
-          })),
-          Effect.provideService(Logging, logging),
-          Effect.exit,
-        );
-        if (Exit.isSuccess(exit)) {
-          if (exit.value.text.trim() === "") {
-            return { status: "unavailable", reason: "real health request returned no assistant response" } satisfies HarnessProbeResult;
-          }
-          return { status: "ready", reason: "real health request succeeded" } satisfies HarnessProbeResult;
-        }
-        const failure = Cause.failureOption(exit.cause);
-        const error = Option.isSome(failure) && failure.value instanceof AgentError ? failure.value : undefined;
-        if (error?.kind === "configuration" || error?.kind === "authentication") {
-          return { status: "unconfigured", reason: "native harness configuration or authentication is incomplete" } satisfies HarnessProbeResult;
-        }
-        if (error?.kind === "cancelled") return { status: "unavailable", reason: "real health request timed out" } satisfies HarnessProbeResult;
-        return { status: "unavailable", reason: "real health request failed" } satisfies HarnessProbeResult;
+  return withTempRoot(join(tmpdir(), `piano-doctor-${harness}-`), (root) =>
+    Effect.gen(function* () {
+      const runId = `doctor-${harness}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const logging = probeLogging(runId, root);
+      const exit = yield* prepareHarnessHomes({
+        rootDir: join(root, "home"),
+        configs: { [harness]: config },
+        ...(models === undefined ? {} : { models }),
       }).pipe(
-        Effect.catchAll(() => Effect.succeed(degradedProbe("real health request failed"))),
-        Effect.catchAllDefect(() => Effect.succeed(degradedProbe("real health request failed"))),
-        // Diagnostic cleanup must not turn an already classified probe into a
-        // false positive or expose a filesystem detail in doctor output.
-        Effect.ensuring(io.rm(root, { recursive: true, force: true }).pipe(Effect.catchAll(() => Effect.void))),
-      ),
+        Effect.flatMap((homes) => executeSubprocessAgent(harness, {
+          cwd: process.cwd(),
+          prompt: "Reply with exactly OK. This is a health check; do not use tools.",
+          ...(config.model === undefined ? {} : { model: config.model }),
+          tools: [],
+          signal: AbortSignal.timeout(30_000),
+          sessionDir: join(root, "session"),
+        }, {
+          ...(config.provider === undefined ? {} : { provider: config.provider }),
+          ...(config.model === undefined ? {} : { model: config.model }),
+          ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
+          ...(config.apiKeyEnv === undefined ? {} : { apiKeyEnv: config.apiKeyEnv }),
+          ...(config.baseUrl === undefined ? {} : { baseUrl: config.baseUrl }),
+          ...(config.authToken === undefined ? {} : { authToken: config.authToken }),
+          ...(config.binPath === undefined ? {} : { binPath: config.binPath }),
+          ...(config.profile === undefined ? {} : { profile: config.profile }),
+          ...(config.homePath === undefined ? {} : { homePath: config.homePath }),
+          env: homes.env,
+          retryDelaysMs: [],
+        })),
+        Effect.provideService(Logging, logging),
+        Effect.exit,
+      );
+      if (Exit.isSuccess(exit)) {
+        if (exit.value.text.trim() === "") {
+          return { status: "unavailable", reason: "real health request returned no assistant response" } satisfies HarnessProbeResult;
+        }
+        return { status: "ready", reason: "real health request succeeded" } satisfies HarnessProbeResult;
+      }
+      const failure = Cause.failureOption(exit.cause);
+      const error = Option.isSome(failure) && failure.value instanceof AgentError ? failure.value : undefined;
+      if (error?.kind === "configuration" || error?.kind === "authentication") {
+        return { status: "unconfigured", reason: "native harness configuration or authentication is incomplete" } satisfies HarnessProbeResult;
+      }
+      if (error?.kind === "cancelled") return { status: "unavailable", reason: "real health request timed out" } satisfies HarnessProbeResult;
+      return { status: "unavailable", reason: "real health request failed" } satisfies HarnessProbeResult;
+    }).pipe(
+      Effect.catchAll(() => Effect.succeed(degradedProbe("real health request failed"))),
+      Effect.catchAllDefect(() => Effect.succeed(degradedProbe("real health request failed"))),
     ),
-    Effect.provide(NodeFileSystem.layer),
   );
 }
 
@@ -410,64 +423,58 @@ function runPiModelProbe(
   config: ResolvedHarnessConfig,
   sdk: PiModule | undefined,
 ): Effect.Effect<ModelDoctorReport, io.IoError> {
-  return io.mkdtemp(join(tmpdir(), "piano-doctor-pi-")).pipe(
-    Effect.flatMap((root) =>
-      Effect.gen(function* () {
-        const probeApiKey = configuredApiKey(config);
-        const runId = `doctor-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-        const logging = probeLogging(runId, root);
-        const exit = yield* prepareHarnessHomes({
-          // The probe answers "can a mission reach this model?", so it must run
-          // against the same generated registry a mission gets — not the user's
-          // own Pi install. The requested id is registered alongside the
-          // configured list so `--model <unlisted>` stays answerable.
-          rootDir: join(root, "home"),
-          configs: { pi: config },
-          models: [...new Set([...resolveSupportedModels(), model])],
-        }).pipe(
-          Effect.flatMap((homes) => executeAgent({
-            cwd: process.cwd(),
-            prompt: "Reply with exactly OK. This is a health check; do not use tools.",
-            model,
-            tools: [],
-            // A health check that cannot end is worse than a failed one: without a
-            // bound, one unresponsive model stalls the whole `--model all` sweep and
-            // the report never prints. The allowance is well above a two-token reply
-            // even for a reasoning model, so a trip here means genuinely unusable.
-            signal: AbortSignal.timeout(90_000),
-            sessionDir: join(root, "session"),
-          }, {
-            // The configured model is deliberately not forwarded — asking about one
-            // model must never be answered about another; the requested model above
-            // always wins. Provider and credential are forwarded, because Pi
-            // discovers a provider from its own registry *before* the credential is
-            // applied: on an install whose Pi auth store is empty that registry
-            // advertises nothing, so a working model reports "unconfigured", and
-            // when Pi does guess a provider it may not be the one this credential
-            // belongs to, which sends the key to the wrong endpoint.
-            usePianoConfig: false,
-            ...(config.provider === undefined ? {} : { provider: config.provider }),
-            ...(probeApiKey === undefined ? {} : { apiKey: probeApiKey }),
-            ...(sdk === undefined ? {} : { sdk }),
-            ...homes.agentOptions,
-          })),
-          Effect.provideService(Logging, logging),
-          Effect.exit,
-        );
-        if (Exit.isSuccess(exit)) {
-          return { status: "supported", endpoint: "pi", models: [], model } satisfies ModelDoctorReport;
-        }
-        const failure = Cause.failureOption(exit.cause);
-        return piFailureReport(model, Option.isSome(failure) ? failure.value : undefined);
+  return withTempRoot(join(tmpdir(), "piano-doctor-pi-"), (root) =>
+    Effect.gen(function* () {
+      const probeApiKey = configuredApiKey(config);
+      const runId = `doctor-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const logging = probeLogging(runId, root);
+      const exit = yield* prepareHarnessHomes({
+        // The probe answers "can a mission reach this model?", so it must run
+        // against the same generated registry a mission gets — not the user's
+        // own Pi install. The requested id is registered alongside the
+        // configured list so `--model <unlisted>` stays answerable.
+        rootDir: join(root, "home"),
+        configs: { pi: config },
+        models: [...new Set([...resolveSupportedModels(), model])],
       }).pipe(
-        Effect.catchAll(() => Effect.succeed(piFailureReport(model, undefined))),
-        Effect.catchAllDefect(() => Effect.succeed(piFailureReport(model, undefined))),
-        // Doctor output is about model health; a temporary diagnostic artifact
-        // cleanup failure must not hide the probe result.
-        Effect.ensuring(io.rm(root, { recursive: true, force: true }).pipe(Effect.catchAll(() => Effect.void))),
-      ),
+        Effect.flatMap((homes) => executeAgent({
+          cwd: process.cwd(),
+          prompt: "Reply with exactly OK. This is a health check; do not use tools.",
+          model,
+          tools: [],
+          // A health check that cannot end is worse than a failed one: without a
+          // bound, one unresponsive model stalls the whole `--model all` sweep and
+          // the report never prints. The allowance is well above a two-token reply
+          // even for a reasoning model, so a trip here means genuinely unusable.
+          signal: AbortSignal.timeout(90_000),
+          sessionDir: join(root, "session"),
+        }, {
+          // The configured model is deliberately not forwarded — asking about one
+          // model must never be answered about another; the requested model above
+          // always wins. Provider and credential are forwarded, because Pi
+          // discovers a provider from its own registry *before* the credential is
+          // applied: on an install whose Pi auth store is empty that registry
+          // advertises nothing, so a working model reports "unconfigured", and
+          // when Pi does guess a provider it may not be the one this credential
+          // belongs to, which sends the key to the wrong endpoint.
+          usePianoConfig: false,
+          ...(config.provider === undefined ? {} : { provider: config.provider }),
+          ...(probeApiKey === undefined ? {} : { apiKey: probeApiKey }),
+          ...(sdk === undefined ? {} : { sdk }),
+          ...homes.agentOptions,
+        })),
+        Effect.provideService(Logging, logging),
+        Effect.exit,
+      );
+      if (Exit.isSuccess(exit)) {
+        return { status: "supported", endpoint: "pi", models: [], model } satisfies ModelDoctorReport;
+      }
+      const failure = Cause.failureOption(exit.cause);
+      return piFailureReport(model, Option.isSome(failure) ? failure.value : undefined);
+    }).pipe(
+      Effect.catchAll(() => Effect.succeed(piFailureReport(model, undefined))),
+      Effect.catchAllDefect(() => Effect.succeed(piFailureReport(model, undefined))),
     ),
-    Effect.provide(NodeFileSystem.layer),
   );
 }
 

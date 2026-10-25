@@ -1,7 +1,7 @@
 import type { FileSystem } from "@effect/platform";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { Data, Deferred, Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import { isRecord, TRACE, type Logging, type Source } from "@piano/logging";
 import {
   io,
@@ -11,7 +11,7 @@ import {
   workspaceStorePath,
   workspaceWorktreePath as workspacePath,
 } from "@piano/base";
-import { errorMessage, isMissingPathError, WorkflowError, workflowError } from "./errors.js";
+import { errorMessage, WorkflowError, workflowError } from "./errors.js";
 import { pathWithin } from "./path-within.js";
 import { isWorkflowIdentifier } from "./workflow.js";
 import {
@@ -19,26 +19,10 @@ import {
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
 
-/** A raw node/git rejection carried until an exported boundary names it.
- * Missing paths are state rather than failures, so leaves keep their cause
- * intact and callers classify it with `isMissingPathError` before the
- * boundary collapses the channel to `WorkflowError`. */
-class WorkspaceLeafFailure extends Data.TaggedError("WorkspaceLeafFailure")<{
-  readonly cause: unknown;
-}> {}
-
-/** The module-internal failure channel: typed workflow errors plus the raw
- * leaf cause that the public boundary converts. */
-type WorkspaceFailure = WorkflowError | WorkspaceLeafFailure;
-
-/** One @piano/base io call mapped onto the module-internal channel. The
- * original node cause travels intact so `isMissingPathError` classification
- * stays at exactly the boundary it had over the raw fs rejection. */
-function ioLeaf<A>(operation: Effect.Effect<A, io.IoError>): Effect.Effect<A, WorkspaceFailure> {
-  return operation.pipe(
-    Effect.mapError((failure) => new WorkspaceLeafFailure({ cause: failure.cause ?? failure })),
-  );
-}
+/** The module-internal failure channel: typed workflow errors plus the
+ * `io.IoError` leaves whose cause callers classify before the public boundary
+ * collapses the channel to `WorkflowError`. */
+type WorkspaceFailure = WorkflowError | io.IoError;
 
 /** The `fs.Stats` shape `io.lstat`/`io.stat` returns. */
 type WorkspaceStat = Effect.Effect.Success<ReturnType<typeof io.lstat>>;
@@ -48,12 +32,12 @@ type WorkspaceStat = Effect.Effect.Success<ReturnType<typeof io.lstat>>;
 function guard<A>(operation: () => A): Effect.Effect<A, WorkspaceFailure> {
   return Effect.try({
     try: operation,
-    catch: (cause) => cause instanceof WorkflowError ? cause : new WorkspaceLeafFailure({ cause }),
+    catch: (cause) => cause instanceof WorkflowError ? cause : io.ioError("guard", undefined, cause),
   });
 }
 
 function rawCause(failure: WorkspaceFailure): unknown {
-  return failure instanceof WorkspaceLeafFailure ? failure.cause : failure;
+  return failure instanceof io.IoError ? failure.cause ?? failure : failure;
 }
 
 /** Collapse the internal channel to the module's typed error at a public
@@ -61,14 +45,14 @@ function rawCause(failure: WorkspaceFailure): unknown {
 function failureAt(path: string, failure: WorkspaceFailure): WorkflowError {
   return failure instanceof WorkflowError
     ? failure
-    : workflowError("schedule", path, errorMessage(failure.cause));
+    : workflowError("schedule", path, failure.message);
 }
 
 const isMissingLeaf = (failure: WorkspaceFailure): boolean =>
-  failure instanceof WorkspaceLeafFailure && isMissingPathError(failure.cause);
+  failure instanceof io.IoError && io.isMissingPathError(failure.cause);
 
 const isGoneLeaf = (failure: WorkspaceFailure): boolean =>
-  failure instanceof WorkspaceLeafFailure && io.isMissingPathError(failure.cause);
+  failure instanceof io.IoError && io.isMissingPathError(failure.cause);
 
 export type WorkflowWorkspaceStrategy = "git-worktree" | "store-worktree";
 export type WorkflowWorkspacePhase = "allocated" | "applying" | "cleaning" | "preserved";
@@ -146,7 +130,7 @@ function isProtectedWorkspacePath(root: string, candidate: string, caseInsensiti
 function isCaseInsensitiveFileSystem(root: string): Effect.Effect<boolean, WorkspaceFailure> {
   return Effect.gen(function* () {
     const resolvedRoot = resolve(root);
-    const rootInfo = yield* ioLeaf(io.lstat(resolvedRoot));
+    const rootInfo = yield* io.lstat(resolvedRoot);
     const segments = workspacePathSegments(resolvedRoot);
     for (let index = segments.length - 1; index >= 0; index -= 1) {
       const segment = segments[index];
@@ -160,7 +144,7 @@ function isCaseInsensitiveFileSystem(root: string): Effect.Effect<boolean, Works
         : original.toLowerCase();
       const candidateSegments = [...segments];
       candidateSegments[index] = `${segment.slice(0, letter)}${alternate}${segment.slice(letter + 1)}`;
-      const candidateInfo = yield* ioLeaf(io.lstat(candidateSegments.join(sep))).pipe(
+      const candidateInfo = yield* io.lstat(candidateSegments.join(sep)).pipe(
         Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
       );
       if (candidateInfo !== undefined && candidateInfo.dev === rootInfo.dev && candidateInfo.ino === rootInfo.ino) {
@@ -191,8 +175,8 @@ function captureWorkspaceDirectoryIdentity(
 ): Effect.Effect<WorkspaceDirectoryIdentity, WorkspaceFailure> {
   return Effect.gen(function* () {
     const lexical = resolve(path);
-    const canonical = yield* ioLeaf(io.realpath(lexical));
-    const info = yield* ioLeaf(io.lstat(canonical));
+    const canonical = yield* io.realpath(lexical);
+    const info = yield* io.lstat(canonical);
     if (!info.isDirectory() || info.isSymbolicLink()) {
       return yield* Effect.fail(workflowError("schedule", lexical, `${label} must resolve to a real directory`));
     }
@@ -209,11 +193,11 @@ function assertWorkspaceDirectoryIdentity(
   label: string,
 ): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const actual = yield* ioLeaf(io.realpath(identity.lexical));
+    const actual = yield* io.realpath(identity.lexical);
     if (resolve(actual) !== identity.canonical) {
       return yield* Effect.fail(workflowError("schedule", identity.lexical, `${label} realpath changed during workspace operation`));
     }
-    const info = yield* ioLeaf(io.lstat(identity.canonical));
+    const info = yield* io.lstat(identity.canonical);
     if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== identity.dev || info.ino !== identity.ino) {
       return yield* Effect.fail(workflowError("schedule", identity.lexical, `${label} identity changed during workspace operation`));
     }
@@ -225,12 +209,12 @@ function assertWorkspaceDirectoryIdentity(
 function canonicalRunRoot(runDir: string, create: boolean): Effect.Effect<CanonicalRunRoot, WorkspaceFailure> {
   return Effect.gen(function* () {
     const lexical = resolve(runDir);
-    const info = yield* ioLeaf(io.lstat(lexical)).pipe(
+    const info = yield* io.lstat(lexical).pipe(
       Effect.catchIf(isMissingLeaf, (failure) => {
         if (!create) return Effect.fail(failure);
         return Effect.gen(function* () {
-          yield* ioLeaf(io.mkdir(lexical, { recursive: true }));
-          return yield* ioLeaf(io.lstat(lexical));
+          yield* io.mkdir(lexical, { recursive: true });
+          return yield* io.lstat(lexical);
         });
       }),
     );
@@ -241,8 +225,8 @@ function canonicalRunRoot(runDir: string, create: boolean): Effect.Effect<Canoni
         "run directory must be a real directory; refusing a symlink or non-directory final node",
       ));
     }
-    const canonical = yield* ioLeaf(io.realpath(lexical));
-    const canonicalInfo = yield* ioLeaf(io.lstat(canonical));
+    const canonical = yield* io.realpath(lexical);
+    const canonicalInfo = yield* io.lstat(canonical);
     if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isDirectory()) {
       return yield* Effect.fail(workflowError("schedule", lexical, "run directory resolved to a symlink or non-directory"));
     }
@@ -255,15 +239,15 @@ function canonicalRunRoot(runDir: string, create: boolean): Effect.Effect<Canoni
  * retaining compatibility with a symlink in a runDir parent component. */
 function assertCanonicalRunRoot(root: CanonicalRunRoot): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const lexicalInfo = yield* ioLeaf(io.lstat(root.lexical));
+    const lexicalInfo = yield* io.lstat(root.lexical);
     if (lexicalInfo.isSymbolicLink() || !lexicalInfo.isDirectory()) {
       return yield* Effect.fail(workflowError("schedule", root.lexical, "run directory was replaced by a symlink or non-directory"));
     }
-    const actual = yield* ioLeaf(io.realpath(root.lexical));
+    const actual = yield* io.realpath(root.lexical);
     if (resolve(actual) !== root.canonical) {
       return yield* Effect.fail(workflowError("schedule", root.lexical, "run directory realpath changed during workspace operation"));
     }
-    const canonicalInfo = yield* ioLeaf(io.lstat(root.canonical));
+    const canonicalInfo = yield* io.lstat(root.canonical);
     if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isDirectory() ||
       canonicalInfo.dev !== root.dev || canonicalInfo.ino !== root.ino) {
       return yield* Effect.fail(workflowError("schedule", root.lexical, "run directory identity changed during workspace operation"));
@@ -285,14 +269,14 @@ function assertSafeWorkspacePathAncestors(root: string, candidate: string): Effe
     const segments = workspacePathSegments(relative(canonicalRoot, lexicalCandidate)).filter((segment) => segment !== "");
     for (const segment of segments) {
       current = join(current, segment);
-      const info = yield* ioLeaf(io.lstat(current)).pipe(
+      const info = yield* io.lstat(current).pipe(
         Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
       );
       if (info === undefined) return;
       if (info.isSymbolicLink() || !info.isDirectory()) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace path has a symlink or non-directory ancestor"));
       }
-      const actual = yield* ioLeaf(io.realpath(current));
+      const actual = yield* io.realpath(current);
       if (resolve(actual) !== resolve(current)) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace path ancestor realpath changed"));
       }
@@ -397,12 +381,12 @@ function writeWorkspaceRecord(
       });
     yield* assertRecordPathSafe();
     const temporary = `${recordPath}.${randomUUID()}.tmp`;
-    yield* ioLeaf(io.mkdir(recordDir, { recursive: true }));
+    yield* io.mkdir(recordDir, { recursive: true });
     const operation = yield* Effect.gen(function* () {
       yield* assertRecordPathSafe();
-      yield* ioLeaf(io.writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`));
+      yield* io.writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`);
       yield* assertRecordPathSafe();
-      yield* ioLeaf(io.rename(temporary, recordPath));
+      yield* io.rename(temporary, recordPath);
     }).pipe(Effect.either);
     if (operation._tag === "Right") return;
     const operationFailure = operation.left;
@@ -410,18 +394,16 @@ function writeWorkspaceRecord(
     // root was substituted, do not follow it merely to remove the residue.
     const cleanup = yield* Effect.gen(function* () {
       yield* assertRecordPathSafe();
-      yield* ioLeaf(io.rm(temporary, { force: true }));
+      yield* io.rm(temporary, { force: true });
     }).pipe(Effect.either);
     if (cleanup._tag === "Left") {
-      return yield* Effect.fail(new WorkspaceLeafFailure({
-        cause: new AggregateError(
-          [
-            rawCause(operationFailure),
-            workflowError("schedule", temporary, `workspace record temporary cleanup failed: ${errorMessage(rawCause(cleanup.left))}`),
-          ],
-          "workspace record write and cleanup both failed",
-        ),
-      }));
+      return yield* Effect.fail(io.ioError("writeWorkspaceRecord", undefined, new AggregateError(
+        [
+          rawCause(operationFailure),
+          workflowError("schedule", temporary, `workspace record temporary cleanup failed: ${errorMessage(rawCause(cleanup.left))}`),
+        ],
+        "workspace record write and cleanup both failed",
+      )));
     }
     return yield* Effect.fail(operationFailure);
   });
@@ -437,13 +419,13 @@ function removeWorkspaceRecord(recordPath: string, runRoot: CanonicalRunRoot): E
     yield* assertCanonicalRunRoot(runRoot);
     yield* assertSafeWorkspacePathAncestors(runRoot.canonical, recordsRoot);
     const trash = join(recordsRoot, ".removing");
-    yield* ioLeaf(io.mkdir(trash, { recursive: true }));
+    yield* io.mkdir(trash, { recursive: true });
     const moved = join(trash, `${basename(recordDir)}.${randomUUID()}`);
-    yield* ioLeaf(io.rename(recordDir, moved));
-    yield* ioLeaf(io.rm(moved, { recursive: true, force: true }));
+    yield* io.rename(recordDir, moved);
+    yield* io.rm(moved, { recursive: true, force: true });
     // Best-effort: a concurrent sweep may still own the trash directory, and an
     // earlier record in this sweep may already have removed it.
-    yield* ioLeaf(io.rmdir(trash)).pipe(Effect.catchAll(() => Effect.void));
+    yield* io.rmdir(trash).pipe(Effect.catchAll(() => Effect.void));
   });
 }
 
@@ -452,14 +434,14 @@ function readWorkspaceRecord(
   expected: { readonly key: string; readonly cwd: string; readonly sourceCwd?: string },
 ): Effect.Effect<WorkflowWorkspaceRecord | undefined, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const recordInfo = yield* ioLeaf(io.lstat(recordPath)).pipe(
+    const recordInfo = yield* io.lstat(recordPath).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
     );
     if (recordInfo === undefined) return undefined;
     if (recordInfo.isSymbolicLink() || !recordInfo.isFile()) {
       return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record must be a regular file"));
     }
-    const raw = yield* ioLeaf(io.readText(recordPath)).pipe(
+    const raw = yield* io.readText(recordPath).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
     );
     if (raw === undefined) return undefined;
@@ -523,11 +505,11 @@ function inspectGitSource(source: string, run: string): Effect.Effect<GitSourceF
     // content. Both shapes take the store-worktree strategy instead.
     if (root !== source || pathWithin(source, run)) return undefined;
     const [head, branch, status] = yield* Effect.all([
-      ioLeaf(io.execFile("git", ["-C", root, "rev-parse", "--verify", "HEAD"]))
+      io.execFile("git", ["-C", root, "rev-parse", "--verify", "HEAD"])
         .pipe(Effect.map((result) => result.stdout.trim()), Effect.catchAll(() => Effect.succeed(""))),
-      ioLeaf(io.execFile("git", ["-C", root, "symbolic-ref", "--quiet", "--short", "HEAD"]))
+      io.execFile("git", ["-C", root, "symbolic-ref", "--quiet", "--short", "HEAD"])
         .pipe(Effect.map((result) => result.stdout.trim()), Effect.catchAll(() => Effect.succeed(""))),
-      ioLeaf(io.execFile("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"])),
+      io.execFile("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"]),
     ], { concurrency: "unbounded" });
     if (head === "") {
       return yield* Effect.fail(workflowError("schedule", source, "workspace source repository has no commits to fork a lane from"));
@@ -553,12 +535,12 @@ interface GitRepositoryIdentity {
  * worktree. `rev-parse --git-common-dir` names it for a working tree and for a
  * bare store alike. */
 function resolveGitCommonDir(cwd: string, path: string): Effect.Effect<string, WorkspaceFailure> {
-  return ioLeaf(io.realpath(isAbsolute(path) ? path : resolve(cwd, path)));
+  return io.realpath(isAbsolute(path) ? path : resolve(cwd, path));
 }
 
 function gitCommonDir(cwd: string): Effect.Effect<string, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const result = yield* ioLeaf(io.execFile("git", ["-C", cwd, "rev-parse", "--git-common-dir"]));
+    const result = yield* io.execFile("git", ["-C", cwd, "rev-parse", "--git-common-dir"]);
     return yield* resolveGitCommonDir(cwd, result.stdout.trim());
   });
 }
@@ -566,13 +548,13 @@ function gitCommonDir(cwd: string): Effect.Effect<string, WorkspaceFailure> {
 function gitRepositoryIdentity(cwd: string): Effect.Effect<GitRepositoryIdentity, WorkspaceFailure> {
   return Effect.gen(function* () {
     // One spawn: rev-parse prints each requested value on its own line, in order.
-    const result = yield* ioLeaf(io.execFile("git", [
+    const result = yield* io.execFile("git", [
       "-C", cwd,
       "rev-parse", "--show-toplevel", "--git-common-dir",
-    ]));
+    ]);
     const [rootLine, commonLine] = result.stdout.split(/\r?\n/u);
     const commonPath = (commonLine ?? "").trim();
-    const worktreeRoot = yield* ioLeaf(io.realpath((rootLine ?? "").trim()));
+    const worktreeRoot = yield* io.realpath((rootLine ?? "").trim());
     const commonRoot = yield* resolveGitCommonDir(cwd, commonPath);
     return { worktreeRoot, commonRoot };
   });
@@ -626,7 +608,7 @@ function commitWorkspaceContent(
 ): Effect.Effect<string, WorkspaceFailure> {
   return Effect.gen(function* () {
     const scratch = join(options.runDir, "git");
-    yield* ioLeaf(io.mkdir(scratch, { recursive: true }));
+    yield* io.mkdir(scratch, { recursive: true });
     const tree = yield* writeContentTree({
       contentDir: source,
       excludeUnder: [options.runDir],
@@ -634,13 +616,13 @@ function commitWorkspaceContent(
       gitArgs: ["-C", source],
       env: process.env,
     });
-    const result = yield* ioLeaf(io.execFile("git", [
+    const result = yield* io.execFile("git", [
       "-C", source,
       ...PIANO_GIT_IDENTITY_ARGS,
       "commit-tree", tree,
       ...(options.parent === undefined ? [] : ["-p", options.parent]),
       "-m", options.message,
-    ]));
+    ]);
     return result.stdout.trim();
   });
 }
@@ -648,14 +630,14 @@ function commitWorkspaceContent(
 /** Stage and commit a worktree's edits when it has any. */
 function stageAndCommitWorktree(cwd: string, message: string): Effect.Effect<boolean, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const status = yield* ioLeaf(io.execFile("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"]));
+    const status = yield* io.execFile("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"]);
     if (status.stdout.trim() === "") return false;
-    yield* ioLeaf(io.execFile("git", ["-C", cwd, "add", "-A", "--", "."]));
-    yield* ioLeaf(io.execFile("git", [
+    yield* io.execFile("git", ["-C", cwd, "add", "-A", "--", "."]);
+    yield* io.execFile("git", [
       "-C", cwd,
       ...PIANO_GIT_IDENTITY_ARGS,
       "commit", "-q", "-m", message,
-    ]));
+    ]);
     return true;
   });
 }
@@ -668,7 +650,7 @@ function commitWorktreeChanges(
 ): Effect.Effect<{ readonly commit: string; readonly changed: boolean }, WorkspaceFailure> {
   return Effect.gen(function* () {
     const changed = yield* stageAndCommitWorktree(cwd, message);
-    const commit = (yield* ioLeaf(io.execFile("git", ["-C", cwd, "rev-parse", "HEAD"]))).stdout.trim();
+    const commit = (yield* io.execFile("git", ["-C", cwd, "rev-parse", "HEAD"])).stdout.trim();
     return { commit, changed };
   });
 }
@@ -686,7 +668,7 @@ function prepareMapLaneForkInternal(
 ): Effect.Effect<MapLaneFork, WorkspaceFailure> {
   return Effect.gen(function* () {
     const run = (yield* canonicalRunRoot(options.runDir, true)).canonical;
-    const source = yield* ioLeaf(io.realpath(resolve(sourceCwd)));
+    const source = yield* io.realpath(resolve(sourceCwd));
     const facts = yield* inspectGitSource(source, run);
     if (facts === undefined) {
       const baseline = yield* freezeWorkspaceBaselineInternal(source, {
@@ -730,10 +712,10 @@ function prepareMapLaneForkInternal(
  * reuses one even though every branch survives cleanup. */
 function scanLaneNumbers(gitRoot: string, mnemonic: string): Effect.Effect<readonly number[], WorkspaceFailure> {
   return Effect.gen(function* () {
-    const result = yield* ioLeaf(io.execFile("git", [
+    const result = yield* io.execFile("git", [
       "-C", gitRoot,
       "for-each-ref", "--format=%(refname:short)", `refs/heads/tuna/${mnemonic}/`,
-    ]));
+    ]);
     const numbers: number[] = [];
     for (const line of result.stdout.split(/\r?\n/u)) {
       const parsed = parseLaneBranch(line.trim());
@@ -794,7 +776,7 @@ export function createLaneNumberAllocator(): LaneNumberAllocator {
 }
 
 function addLaneWorktree(gitRoot: string, branch: string, cwd: string, commit: string): Effect.Effect<void, WorkspaceFailure> {
-  return ioLeaf(io.execFile("git", ["-C", gitRoot, "worktree", "add", "-b", branch, cwd, commit])).pipe(Effect.asVoid);
+  return io.execFile("git", ["-C", gitRoot, "worktree", "add", "-b", branch, cwd, commit]).pipe(Effect.asVoid);
 }
 
 /** A map slot that still needs a lane: preparation stops right before the
@@ -832,7 +814,7 @@ function prepareMapSlot(
         `cannot allocate a workspace inside Piano run directory "${run}"`,
       ));
     }
-    const sourceInfo = yield* ioLeaf(io.stat(source));
+    const sourceInfo = yield* io.stat(source);
     if (!sourceInfo.isDirectory()) {
       return yield* Effect.fail(workflowError("schedule", source, "workspace source must be a directory"));
     }
@@ -874,9 +856,9 @@ function prepareMapSlot(
 
     yield* assertCanonicalRunRoot(runRoot);
     yield* assertSafeWorkspacePathAncestors(run, dirname(cwd));
-    yield* ioLeaf(io.mkdir(dirname(cwd), { recursive: true }));
+    yield* io.mkdir(dirname(cwd), { recursive: true });
     yield* assertSafeWorkspacePathAncestors(run, dirname(cwd));
-    const occupied = yield* ioLeaf(io.lstat(cwd)).pipe(
+    const occupied = yield* io.lstat(cwd).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
     );
     if (occupied !== undefined) {
@@ -899,8 +881,8 @@ function allocatePreparedMapSlot(
     const removeAllocatedWorkspace = (): Effect.Effect<void, WorkspaceFailure> =>
       Effect.gen(function* () {
         yield* assertCanonicalRunRoot(runRoot);
-        yield* ioLeaf(io.rm(cwd, { recursive: true, force: true }));
-        yield* ioLeaf(io.execFile("git", ["-C", gitRoot, "worktree", "prune"])).pipe(Effect.catchAll(() => Effect.void));
+        yield* io.rm(cwd, { recursive: true, force: true });
+        yield* io.execFile("git", ["-C", gitRoot, "worktree", "prune"]).pipe(Effect.catchAll(() => Effect.void));
       }).pipe(
         // If the run root changed, do not follow the replacement to clean
         // up; report the residue so recovery can inspect the original root.
@@ -1033,18 +1015,18 @@ function readWorkspaceRecords(
     yield* assertCanonicalRunRoot(runRoot);
     const run = runRoot.canonical;
     const recordsRoot = workspaceRecordRoot(run);
-    const recordsRootInfo = yield* ioLeaf(io.lstat(recordsRoot)).pipe(
+    const recordsRootInfo = yield* io.lstat(recordsRoot).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
     );
     if (recordsRootInfo === undefined) return [];
     yield* assertSafeWorkspaceDirectory(run, recordsRoot);
-    const entries = yield* ioLeaf(io.readdir(recordsRoot)).pipe(
+    const entries = yield* io.readdir(recordsRoot).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
     );
     if (entries === undefined) return [];
     let expectedSource: string | undefined;
     if (sourceCwd !== undefined) {
-      expectedSource = yield* ioLeaf(io.realpath(resolve(sourceCwd)));
+      expectedSource = yield* io.realpath(resolve(sourceCwd));
     }
     const selectedKeys = keys === undefined ? undefined : new Set(keys);
     const records: Array<{ readonly path: string; readonly record: WorkflowWorkspaceRecord }> = [];
@@ -1101,7 +1083,7 @@ function removeWorkspaceDirectory(
 ): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
     yield* assertCanonicalRunRoot(runRoot);
-    const info = yield* ioLeaf(io.lstat(record.cwd)).pipe(
+    const info = yield* io.lstat(record.cwd).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
     );
     if (info === undefined) return;
@@ -1113,7 +1095,7 @@ function removeWorkspaceDirectory(
     yield* checkpointLane(record);
     const removal = yield* Effect.gen(function* () {
       yield* assertCanonicalRunRoot(runRoot);
-      yield* ioLeaf(io.execFile("git", ["-C", gitRoot, "worktree", "remove", "--force", record.cwd]));
+      yield* io.execFile("git", ["-C", gitRoot, "worktree", "remove", "--force", record.cwd]);
     }).pipe(Effect.either);
     if (removal._tag === "Left") {
       // A failed Git removal leaves the worktree admin entry uncertain. Keep
@@ -1238,11 +1220,11 @@ function assertSafeWorkspaceAncestors(root: string, path: string): Effect.Effect
   return Effect.gen(function* () {
     const segments = workspacePathSegments(path);
     let current = resolve(root);
-    const rootInfo = yield* ioLeaf(io.lstat(current));
+    const rootInfo = yield* io.lstat(current);
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
       return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory root"));
     }
-    const rootRealpath = yield* ioLeaf(io.realpath(current));
+    const rootRealpath = yield* io.realpath(current);
     if (resolve(rootRealpath) !== current) {
       return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory root"));
     }
@@ -1252,11 +1234,11 @@ function assertSafeWorkspaceAncestors(root: string, path: string): Effect.Effect
     }
     for (const segment of segments.slice(0, -1)) {
       current = join(current, segment);
-      const info = yield* ioLeaf(io.lstat(current));
+      const info = yield* io.lstat(current);
       if (!info.isDirectory() || info.isSymbolicLink()) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory ancestor"));
       }
-      const ancestorRealpath = yield* ioLeaf(io.realpath(current));
+      const ancestorRealpath = yield* io.realpath(current);
       if (resolve(ancestorRealpath) !== current) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink ancestor"));
       }
@@ -1286,7 +1268,7 @@ function safeWorkspaceNodePath(root: string, path: string): string {
  * protect every ancestor and the final slot against symlink replacement. */
 function assertSafeWorkspaceDirectory(root: string, candidate: string): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const canonicalRoot = yield* ioLeaf(io.realpath(root));
+    const canonicalRoot = yield* io.realpath(root);
     const lexicalCandidate = resolve(candidate);
     if (!pathWithin(canonicalRoot, lexicalCandidate)) {
       return yield* Effect.fail(workflowError("schedule", candidate, "workspace path escapes its execution directory"));
@@ -1296,14 +1278,14 @@ function assertSafeWorkspaceDirectory(root: string, candidate: string): Effect.E
     let current = canonicalRoot;
     for (const segment of segments) {
       current = join(current, segment);
-      const info = yield* ioLeaf(io.lstat(current));
+      const info = yield* io.lstat(current);
       if (info.isSymbolicLink()) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace slot refuses a symlink ancestor or directory substitution"));
       }
       if (!info.isDirectory()) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace slot has a non-directory ancestor"));
       }
-      const actual = yield* ioLeaf(io.realpath(current));
+      const actual = yield* io.realpath(current);
       if (resolve(actual) !== resolve(current) || !pathWithin(canonicalRoot, actual)) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace slot realpath escapes its execution directory"));
       }
@@ -1330,7 +1312,7 @@ function assertRunOwnedWorkspaceDirectory(
     if (gitRoot === undefined) {
       return yield* Effect.fail(workflowError("schedule", candidate, "workspace slot has no owning repository"));
     }
-    const pointer = yield* ioLeaf(io.readText(join(candidate, ".git"))).pipe(
+    const pointer = yield* io.readText(join(candidate, ".git")).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.fail(
         workflowError("schedule", candidate, "workspace slot is not a run-owned worktree"),
       )),
@@ -1360,10 +1342,10 @@ function assertOwnedWorkspace(
     const gitRoot = yield* assertRunOwnedWorkspaceDirectory(root, record.cwd, record.gitRoot);
     // One process: the worktree shares the repository's refs, so both the tip
     // and the branch can be resolved from inside the lane.
-    const tips = yield* ioLeaf(io.execFile("git", [
+    const tips = yield* io.execFile("git", [
       "-C", record.cwd,
       "rev-parse", "HEAD", `refs/heads/${record.laneBranch}`,
-    ])).pipe(
+    ]).pipe(
       Effect.map((result) => result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)),
       Effect.catchAll(() => Effect.succeed([] as string[])),
     );
@@ -1381,7 +1363,7 @@ function regularFileHash(root: string, path: string): Effect.Effect<string, Work
     const filePath = yield* guard(() => safeWorkspaceNodePath(root, path));
     // O_NOFOLLOW/O_NONBLOCK open, stat, read, and a close that cannot replace
     // the operation result all live in the adapter.
-    const { info, content } = yield* ioLeaf(io.readFileNoFollow(filePath));
+    const { info, content } = yield* io.readFileNoFollow(filePath);
     if (!info.isFile()) {
       return yield* Effect.fail(workflowError("schedule", filePath, "workspace rollback refuses a non-regular file"));
     }
@@ -1407,7 +1389,7 @@ function inventoryWorkspaceLstatInternal(
   excluded: readonly string[] = [],
 ): Effect.Effect<readonly WorkspaceLstatEntry[], WorkspaceFailure> {
   return Effect.gen(function* () {
-    yield* ioLeaf(io.realpath(root));
+    yield* io.realpath(root);
     const caseInsensitive = yield* isCaseInsensitiveFileSystem(root);
     const excludedUnder = excluded.map((entry) => resolve(entry));
     const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
@@ -1416,28 +1398,28 @@ function inventoryWorkspaceLstatInternal(
     const protectsExcludedDescendant = (candidate: string): boolean =>
       effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
     const entries: WorkspaceLstatEntry[] = [];
-    const rootInfo = yield* ioLeaf(io.lstat(root));
+    const rootInfo = yield* io.lstat(root);
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
       return yield* Effect.fail(workflowError("schedule", root, "workspace rollback refuses a symlink or non-directory root"));
     }
     entries.push({ path: WORKSPACE_ROOT_PATH, kind: "directory", mode: rootInfo.mode & 0o7777 });
 
     const visit = (directory: string): Effect.Effect<void, WorkspaceFailure> => Effect.gen(function* () {
-      const directoryInfo = yield* ioLeaf(io.lstat(directory));
+      const directoryInfo = yield* io.lstat(directory);
       if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
         return yield* Effect.fail(workflowError("schedule", directory, "workspace rollback refuses a symlink or non-directory ancestor"));
       }
-      const children = yield* ioLeaf(io.readdir(directory));
+      const children = yield* io.readdir(directory);
       for (const entry of children) {
         if (isProtectedWorkspaceName(entry.name, caseInsensitive)) continue;
         const entryPath = join(directory, entry.name);
         if (!reachable(entryPath)) continue;
-        const info = yield* ioLeaf(io.lstat(entryPath));
+        const info = yield* io.lstat(entryPath);
         const path = relative(root, entryPath);
         const base = { path, mode: info.mode & 0o7777 };
         if (info.isSymbolicLink()) {
           // readlink does not resolve the target. Do not call realpath here.
-          entries.push({ ...base, kind: "symlink", symlinkTarget: yield* ioLeaf(io.readlink(entryPath)) });
+          entries.push({ ...base, kind: "symlink", symlinkTarget: yield* io.readlink(entryPath) });
         } else if (info.isDirectory()) {
           // Do not make an ancestor of an excluded run subtree a rollback root:
           // removing that ancestor would also delete the evidence we promised to
@@ -1492,7 +1474,7 @@ function removeWorkspaceLstatNode(root: string, path: string): Effect.Effect<voi
     yield* guard(() => safeWorkspaceNodePath(root, path));
     yield* assertSafeWorkspaceAncestors(root, path);
     const node = yield* guard(() => safeWorkspaceNodePath(root, path));
-    yield* ioLeaf(io.rm(node, { recursive: true, force: true }));
+    yield* io.rm(node, { recursive: true, force: true });
   });
 }
 
@@ -1506,24 +1488,24 @@ function copyWorkspaceLstatNode(
     const target = yield* guard(() => safeWorkspaceNodePath(targetRoot, path));
     yield* assertSafeWorkspaceAncestors(sourceRoot, path);
     yield* assertSafeWorkspaceAncestors(targetRoot, path);
-    const info = yield* ioLeaf(io.lstat(source));
+    const info = yield* io.lstat(source);
     if (info.isSymbolicLink()) {
-      const target0 = yield* ioLeaf(io.readlink(source));
-      yield* ioLeaf(io.symlink(target0, target));
+      const target0 = yield* io.readlink(source);
+      yield* io.symlink(target0, target);
       return;
     }
     if (info.isFile()) {
-      yield* ioLeaf(io.cp(source, target, { dereference: false }));
-      yield* ioLeaf(io.chmod(target, info.mode & 0o7777));
+      yield* io.cp(source, target, { dereference: false });
+      yield* io.chmod(target, info.mode & 0o7777);
       return;
     }
     if (info.isDirectory()) {
-      yield* ioLeaf(io.mkdir(target, { recursive: true }));
-      const children = yield* ioLeaf(io.readdir(source));
+      yield* io.mkdir(target, { recursive: true });
+      const children = yield* io.readdir(source);
       for (const entry of children) {
         yield* copyWorkspaceLstatNode(sourceRoot, targetRoot, join(path, entry.name));
       }
-      yield* ioLeaf(io.chmod(target, info.mode & 0o7777));
+      yield* io.chmod(target, info.mode & 0o7777);
       return;
     }
     return yield* Effect.fail(workflowError("schedule", source, "workspace rollback cannot recreate a special baseline node"));
@@ -1554,7 +1536,7 @@ function restoreWorkspaceLstatInternal(
     const effectiveChanges = changes ?? (yield* diffWorkspaceLstatInternal(baselineRoot, targetRoot, excluded));
     yield* assertSafeWorkspaceAncestors(targetRoot, "root");
     yield* assertSafeWorkspaceAncestors(baselineRoot, "root");
-    const baselineRootInfo = yield* ioLeaf(io.lstat(baselineRoot));
+    const baselineRootInfo = yield* io.lstat(baselineRoot);
     if (!baselineRootInfo.isDirectory() || baselineRootInfo.isSymbolicLink()) {
       return yield* Effect.fail(workflowError("schedule", baselineRoot, "workspace rollback baseline root is not a real directory"));
     }
@@ -1579,7 +1561,7 @@ function restoreWorkspaceLstatInternal(
         yield* copyWorkspaceLstatNode(baselineRoot, targetRoot, change.path);
       }
     }
-    yield* ioLeaf(io.chmod(targetRoot, baselineRootInfo.mode & 0o7777));
+    yield* io.chmod(targetRoot, baselineRootInfo.mode & 0o7777);
     const remaining = yield* diffWorkspaceLstatInternal(baselineRoot, targetRoot, excluded);
     if (remaining.length > 0) {
       return yield* Effect.fail(workflowError("schedule", targetRoot, `workspace rollback verification failed: ${remaining.map((change) => change.path).join(", ")}`));
@@ -1594,7 +1576,7 @@ function collectContentPaths(
 ): Effect.Effect<readonly string[], WorkspaceFailure> {
   return Effect.gen(function* () {
     const paths: string[] = [];
-    const resolvedRoot = yield* ioLeaf(io.realpath(root));
+    const resolvedRoot = yield* io.realpath(root);
     const caseInsensitive = yield* isCaseInsensitiveFileSystem(resolvedRoot);
     const excludedUnder = excluded.map((entry) => resolve(entry));
     // An exclusion only makes sense as a subtree *of this tree*. The shared
@@ -1606,7 +1588,7 @@ function collectContentPaths(
     // that is properly contained within the walked root.
     const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
     const resolvedExclusions = yield* Effect.all(
-      effectiveExcluded.map((entry) => ioLeaf(io.realpath(entry)).pipe(Effect.catchAll(() => Effect.succeed(entry)))),
+      effectiveExcluded.map((entry) => io.realpath(entry).pipe(Effect.catchAll(() => Effect.succeed(entry)))),
       { concurrency: "unbounded" },
     );
     const excludedRoots = [
@@ -1625,11 +1607,11 @@ function collectContentPaths(
       info: WorkspaceStat,
     ): Effect.Effect<void, WorkspaceFailure> => Effect.gen(function* () {
       if (info.isSymbolicLink()) {
-        const target = yield* ioLeaf(io.realpath(entryPath));
+        const target = yield* io.realpath(entryPath);
         if (!pathWithin(resolvedRoot, target) || excludedTarget(target)) {
           return yield* Effect.fail(workflowError("schedule", entryPath, `workspace content symlink targets excluded or external content: ${target}`));
         }
-        const targetInfo = yield* ioLeaf(io.stat(target));
+        const targetInfo = yield* io.stat(target);
         if (!targetInfo.isFile()) {
           return yield* Effect.fail(workflowError("schedule", entryPath, "workspace content does not support directory symlinks or non-file targets"));
         }
@@ -1640,12 +1622,12 @@ function collectContentPaths(
       }
     });
     const visit = (directory: string): Effect.Effect<void, WorkspaceFailure> => Effect.gen(function* () {
-      const children = yield* ioLeaf(io.readdir(directory));
+      const children = yield* io.readdir(directory);
       for (const entry of children) {
         const entryPath = join(directory, entry.name);
         if (isProtectedWorkspaceName(entry.name, caseInsensitive)) continue;
         if (!reachable(entryPath)) continue;
-        const info = yield* ioLeaf(io.lstat(entryPath));
+        const info = yield* io.lstat(entryPath);
         yield* validateNode(entryPath, info);
         if (info.isDirectory()) {
           if (!protectsExcludedDescendant(entryPath)) {
@@ -1661,7 +1643,7 @@ function collectContentPaths(
 }
 
 function pathExists(path: string): Effect.Effect<boolean, WorkspaceFailure> {
-  return ioLeaf(io.lstat(path)).pipe(
+  return io.lstat(path).pipe(
     Effect.as(true),
     // ENOTDIR means a non-directory ancestor already replaced this subtree
     // (a winner can turn `a/b` into a file at `a`), so no node exists here.
@@ -1682,8 +1664,8 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
 function sameFile(left: string, right: string): Effect.Effect<boolean, WorkspaceFailure> {
   return Effect.gen(function* () {
     const infos = yield* Effect.all([
-      ioLeaf(io.lstat(left)),
-      ioLeaf(io.lstat(right)),
+      io.lstat(left),
+      io.lstat(right),
     ], { concurrency: "unbounded" }).pipe(
       Effect.catchIf(isMissingLeaf, () => Effect.succeed([undefined, undefined] as const)),
     );
@@ -1693,16 +1675,16 @@ function sameFile(left: string, right: string): Effect.Effect<boolean, Workspace
     if (leftInfo.isSymbolicLink() || rightInfo.isSymbolicLink()) {
       if (!leftInfo.isSymbolicLink() || !rightInfo.isSymbolicLink()) return false;
       const [leftTarget, rightTarget] = yield* Effect.all([
-        ioLeaf(io.readlink(left)),
-        ioLeaf(io.readlink(right)),
+        io.readlink(left),
+        io.readlink(right),
       ], { concurrency: "unbounded" });
       return leftTarget === rightTarget;
     }
     if (!leftInfo.isFile() || !rightInfo.isFile()) return false;
     if ((leftInfo.mode & 0o7777) !== (rightInfo.mode & 0o7777)) return false;
     const [leftBuffer, rightBuffer] = yield* Effect.all([
-      ioLeaf(io.readFile(left)),
-      ioLeaf(io.readFile(right)),
+      io.readFile(left),
+      io.readFile(right),
     ], { concurrency: "unbounded" });
     return sameBytes(leftBuffer, rightBuffer);
   });
@@ -1710,20 +1692,20 @@ function sameFile(left: string, right: string): Effect.Effect<boolean, Workspace
 
 function copyContentNode(source: string, destination: string): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const info = yield* ioLeaf(io.lstat(source));
+    const info = yield* io.lstat(source);
     if (info.isSymbolicLink()) {
-      const target = yield* ioLeaf(io.readlink(source));
+      const target = yield* io.readlink(source);
       if (isAbsolute(target) || /^[A-Za-z]:[\\/]/u.test(target)) {
         return yield* Effect.fail(workflowError("schedule", source, "workspace content snapshot refuses absolute symlink targets"));
       }
-      yield* ioLeaf(io.symlink(target, destination));
+      yield* io.symlink(target, destination);
       return;
     }
     if (!info.isFile()) {
       return yield* Effect.fail(workflowError("schedule", source, "workspace content can only copy regular files or file symlinks"));
     }
-    yield* ioLeaf(io.cp(source, destination, { dereference: false }));
-    yield* ioLeaf(io.chmod(destination, info.mode & 0o7777));
+    yield* io.cp(source, destination, { dereference: false });
+    yield* io.chmod(destination, info.mode & 0o7777);
   });
 }
 
@@ -1738,33 +1720,33 @@ function snapshotWorkspaceLstatInternal(
   excludeUnder: readonly string[] = [],
 ): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const exists = yield* ioLeaf(io.stat(snapshotDir)).pipe(
+    const exists = yield* io.stat(snapshotDir).pipe(
       Effect.as(true),
       Effect.catchIf(isMissingLeaf, () => Effect.succeed(false)),
     );
     if (exists) return yield* Effect.fail(workflowError("schedule", snapshotDir, "workspace rollback snapshot already exists"));
-    const canonicalSourceRoot = yield* ioLeaf(io.realpath(resolve(sourceContentDir)));
-    const sourceInfo = yield* ioLeaf(io.lstat(canonicalSourceRoot));
+    const canonicalSourceRoot = yield* io.realpath(resolve(sourceContentDir));
+    const sourceInfo = yield* io.lstat(canonicalSourceRoot);
     if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
       return yield* Effect.fail(workflowError("schedule", sourceContentDir, "workspace rollback snapshot requires a real directory root"));
     }
     const directoryModes = new Map<string, number>();
     const paths = yield* collectContentPaths(canonicalSourceRoot, excludeUnder, directoryModes);
-    yield* ioLeaf(io.mkdir(snapshotDir, { recursive: true }));
+    yield* io.mkdir(snapshotDir, { recursive: true });
     for (const path of [...directoryModes.keys()].sort((left, right) =>
       workspacePathDepth(left) - workspacePathDepth(right) || left.localeCompare(right))) {
-      yield* ioLeaf(io.mkdir(join(snapshotDir, path), { recursive: true }));
+      yield* io.mkdir(join(snapshotDir, path), { recursive: true });
     }
     for (const path of paths) {
       const destination = join(snapshotDir, path);
-      yield* ioLeaf(io.mkdir(dirname(destination), { recursive: true }));
+      yield* io.mkdir(dirname(destination), { recursive: true });
       yield* copyContentNode(join(canonicalSourceRoot, path), destination);
     }
     for (const [path, mode] of [...directoryModes.entries()].sort((left, right) =>
       workspacePathDepth(right[0]) - workspacePathDepth(left[0]) || right[0].localeCompare(left[0]))) {
-      yield* ioLeaf(io.chmod(join(snapshotDir, path), mode));
+      yield* io.chmod(join(snapshotDir, path), mode);
     }
-    yield* ioLeaf(io.chmod(snapshotDir, sourceInfo.mode & 0o7777));
+    yield* io.chmod(snapshotDir, sourceInfo.mode & 0o7777);
   });
 }
 
@@ -1787,8 +1769,8 @@ function workspaceBaselineStore(runDir: string): Effect.Effect<string, Workspace
   return Effect.gen(function* () {
     const storeDir = workspaceStorePath(runDir);
     if (!(yield* io.exists(join(storeDir, "HEAD")))) {
-      yield* ioLeaf(io.mkdir(dirname(storeDir), { recursive: true }));
-      yield* ioLeaf(io.execFile("git", ["init", "--bare", "--quiet", storeDir]));
+      yield* io.mkdir(dirname(storeDir), { recursive: true });
+      yield* io.execFile("git", ["init", "--bare", "--quiet", storeDir]);
     }
     return storeDir;
   });
@@ -1800,7 +1782,7 @@ export function workspaceRefName(runId: string, suffix: string): string {
 }
 
 function readBaselineCommit(storeDir: string, refName: string): Effect.Effect<string | undefined, WorkspaceFailure> {
-  return ioLeaf(io.execFile("git", ["--git-dir", storeDir, "rev-parse", "--verify", "--quiet", refName])).pipe(
+  return io.execFile("git", ["--git-dir", storeDir, "rev-parse", "--verify", "--quiet", refName]).pipe(
     Effect.map((result) => result.stdout.trim()),
     Effect.catchAll(() => Effect.succeed(undefined)),
   );
@@ -1818,24 +1800,24 @@ function writeContentTree(options: {
   readonly env: NodeJS.ProcessEnv;
 }): Effect.Effect<string, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const contentDir = yield* ioLeaf(io.realpath(resolve(options.contentDir)));
+    const contentDir = yield* io.realpath(resolve(options.contentDir));
     const paths = yield* collectContentPaths(contentDir, options.excludeUnder);
     const pathspecPath = join(options.scratchDir, `piano-pathspec-${randomUUID()}`);
     const indexPath = join(options.scratchDir, `piano-index-${randomUUID()}`);
     const env = { ...options.env, GIT_INDEX_FILE: indexPath };
     return yield* Effect.gen(function* () {
-      yield* ioLeaf(io.writeFile(pathspecPath, paths.map((path) => `${path}\0`).join("")));
-      yield* ioLeaf(io.execFile("git", [
+      yield* io.writeFile(pathspecPath, paths.map((path) => `${path}\0`).join(""));
+      yield* io.execFile("git", [
         ...options.gitArgs,
         "add", "-f",
         "--pathspec-from-file", pathspecPath,
         "--pathspec-file-nul",
-      ], { cwd: contentDir, env }));
-      const result = yield* ioLeaf(io.execFile("git", [...options.gitArgs, "write-tree"], { env }));
+      ], { cwd: contentDir, env });
+      const result = yield* io.execFile("git", [...options.gitArgs, "write-tree"], { env });
       return result.stdout.trim();
     }).pipe(Effect.ensuring(Effect.gen(function* () {
-      yield* ioLeaf(io.rm(pathspecPath, { force: true }));
-      yield* ioLeaf(io.rm(indexPath, { force: true }));
+      yield* io.rm(pathspecPath, { force: true });
+      yield* io.rm(indexPath, { force: true });
     }).pipe(Effect.catchAll(() => Effect.void))));
   });
 }
@@ -1846,7 +1828,7 @@ function writeWorkspaceTree(
   excludeUnder: readonly string[],
 ): Effect.Effect<string, WorkspaceFailure> {
   return Effect.gen(function* () {
-    const contentDir = yield* ioLeaf(io.realpath(resolve(sourceContentDir)));
+    const contentDir = yield* io.realpath(resolve(sourceContentDir));
     return yield* writeContentTree({
       contentDir,
       excludeUnder,
@@ -1878,15 +1860,15 @@ function freezeWorkspaceBaselineInternal(
     const prior = options.refName === undefined ? undefined : yield* readBaselineCommit(storeDir, options.refName);
     if (prior !== undefined) return { runDir: options.runDir, commit: prior };
     const tree = yield* writeWorkspaceTree(storeDir, sourceContentDir, options.excludeUnder ?? []);
-    const result = yield* ioLeaf(io.execFile("git", [
+    const result = yield* io.execFile("git", [
       "--git-dir", storeDir,
       ...PIANO_GIT_IDENTITY_ARGS,
       "commit-tree", tree,
       "-m", `piano: workspace baseline ${options.refName ?? "in-memory"}`,
-    ]));
+    ]);
     const commit = result.stdout.trim();
     if (options.refName !== undefined) {
-      yield* ioLeaf(io.execFile("git", ["--git-dir", storeDir, "update-ref", options.refName!, commit, ""]));
+      yield* io.execFile("git", ["--git-dir", storeDir, "update-ref", options.refName!, commit, ""]);
     }
     return { runDir: options.runDir, commit };
   });
@@ -1905,11 +1887,11 @@ function workspaceBaselineChangesInternal(
     const tree = yield* writeWorkspaceTree(storeDir, candidateContentDir, excludeUnder);
     // -z keeps pathnames verbatim (no C-quoting of backslashes and the like),
     // as `status\0path\0` pairs.
-    const result = yield* ioLeaf(io.execFile("git", [
+    const result = yield* io.execFile("git", [
       "--git-dir", storeDir,
       "diff-tree", "-r", "--name-status", "--no-renames", "-z",
       baseline.commit, tree,
-    ]));
+    ]);
     const fields = result.stdout.split("\0");
     const changes: WorkspaceContentChange[] = [];
     for (let index = 0; index + 1 < fields.length; index += 2) {
@@ -1936,18 +1918,18 @@ function prepareWorkspaceDeltaPath(
     let current = resolve(targetRoot);
     for (const segment of segments.slice(0, -1)) {
       current = join(current, segment);
-      const attempted = yield* ioLeaf(io.lstat(current)).pipe(Effect.either);
+      const attempted = yield* io.lstat(current).pipe(Effect.either);
       if (attempted._tag === "Left") {
         if (!isMissingLeaf(attempted.left)) return yield* Effect.fail(attempted.left);
         if (!create) return false;
-        yield* ioLeaf(io.mkdir(current));
+        yield* io.mkdir(current);
         continue;
       }
       const info = attempted.right;
       if (!info.isDirectory() || info.isSymbolicLink()) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace carry refuses a symlink or non-directory ancestor"));
       }
-      const actual = yield* ioLeaf(io.realpath(current));
+      const actual = yield* io.realpath(current);
       if (resolve(actual) !== current) {
         return yield* Effect.fail(workflowError("schedule", current, "workspace carry refuses a symlink or non-directory ancestor"));
       }
@@ -2002,7 +1984,7 @@ function applyWorkspaceChangeSetInternal(
 ): Effect.Effect<void, WorkspaceFailure> {
   return Effect.gen(function* () {
     const target = resolve(targetRoot);
-    const staging = yield* ioLeaf(io.mkdtemp(join(dirname(target), ".piano-carry-")));
+    const staging = yield* io.mkdtemp(join(dirname(target), ".piano-carry-"));
     const before = join(staging, "before");
     let snapshotCreated = false;
     const operation = yield* Effect.gen(function* () {
@@ -2014,7 +1996,7 @@ function applyWorkspaceChangeSetInternal(
         if (change.kind !== "deleted") continue;
         const node = yield* guard(() => safeWorkspaceNodePath(target, change.path));
         if (!(yield* prepareWorkspaceDeltaPath(target, change.path, false))) continue;
-        yield* ioLeaf(io.rm(node, { recursive: true, force: true }));
+        yield* io.rm(node, { recursive: true, force: true });
       }
       const installed = changeSet.changes
         .filter((change) => change.kind !== "deleted")
@@ -2023,7 +2005,7 @@ function applyWorkspaceChangeSetInternal(
       for (const change of installed) {
         const destination = yield* guard(() => safeWorkspaceNodePath(target, change.path));
         yield* prepareWorkspaceDeltaPath(target, change.path, true);
-        if (yield* pathExists(destination)) yield* ioLeaf(io.rm(destination, { recursive: true, force: true }));
+        if (yield* pathExists(destination)) yield* io.rm(destination, { recursive: true, force: true });
         yield* copyContentNode(join(changeSet.winnerContentDir, change.path), destination);
       }
       const applied = yield* diffWorkspaceChangeSetInternal(target, changeSet);
@@ -2051,7 +2033,7 @@ function applyWorkspaceChangeSetInternal(
     // A failed rollback keeps the snapshot: it is the only copy of the pre-apply
     // tree, so the error names where it lives instead of deleting it.
     if (rollbackFailure === undefined) {
-      const cleanup = yield* ioLeaf(io.rm(staging, { recursive: true, force: true })).pipe(Effect.either);
+      const cleanup = yield* io.rm(staging, { recursive: true, force: true }).pipe(Effect.either);
       if (cleanup._tag === "Left") {
         cleanupFailure = workflowError("schedule", staging, `workspace carry cleanup failed: ${errorMessage(rawCause(cleanup.left))}`);
       }
@@ -2067,9 +2049,10 @@ function applyWorkspaceChangeSetInternal(
       }
       if (cleanupFailure !== undefined) failures.push(cleanupFailure);
       if (failures.length > 1) {
-        return yield* Effect.fail(new WorkspaceLeafFailure({
-          cause: new AggregateError(failures, "workspace carry failed and recovery was incomplete"),
-        }));
+        return yield* Effect.fail(io.ioError("applyWorkspaceChangeSet", undefined, new AggregateError(
+          failures,
+          "workspace carry failed and recovery was incomplete",
+        )));
       }
       return yield* Effect.fail(operation.left);
     }
@@ -2096,7 +2079,7 @@ function diffWorkspaceChangeSetInternal(
         if (!(yield* pathExists(target))) continue;
         const replacedByDirectory = changeSet.changes.some((other) =>
           other.kind !== "deleted" && isWorkspacePathAncestor(change.path, other.path));
-        const isDirectory = yield* ioLeaf(io.lstat(target)).pipe(
+        const isDirectory = yield* io.lstat(target).pipe(
           Effect.map((info) => info.isDirectory()),
           Effect.catchAll(() => Effect.succeed(false)),
         );
@@ -2128,7 +2111,7 @@ function mergeGitWorktreeWinner(
     // No edits: the fork point is the winner and is already on the source.
     if (!changed) return { commit, changed, merged: true };
     if (record.sourceBranch !== undefined) {
-      const current = yield* ioLeaf(io.execFile("git", ["-C", record.sourceCwd, "symbolic-ref", "--quiet", "--short", "HEAD"])).pipe(
+      const current = yield* io.execFile("git", ["-C", record.sourceCwd, "symbolic-ref", "--quiet", "--short", "HEAD"]).pipe(
         Effect.map((result) => result.stdout.trim()),
         Effect.catchAll(() => Effect.succeed("")),
       );
@@ -2143,7 +2126,7 @@ function mergeGitWorktreeWinner(
     }
     yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git merge");
     const merged = yield* Effect.gen(function* () {
-      yield* ioLeaf(io.execFile("git", ["-C", gitRoot, "merge", "--ff-only", record.laneBranch]));
+      yield* io.execFile("git", ["-C", gitRoot, "merge", "--ff-only", record.laneBranch]);
       yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after Git merge");
     }).pipe(Effect.either);
     if (merged._tag === "Right") return { commit, changed, merged: true };

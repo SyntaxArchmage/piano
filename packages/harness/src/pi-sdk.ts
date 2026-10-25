@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { errorMessage, io } from "@piano/base";
 import { join, resolve } from "node:path";
 import type { AgentHarnessOptions } from "./agent-contract.js";
@@ -72,7 +72,7 @@ export interface PiHarnessOptions extends AgentHarnessOptions {
   /** Keep provider/model/auth discovery inside Pi when false. */
   readonly usePianoConfig?: boolean;
   readonly sdk?: PiModule;
-  readonly sdkLoader?: () => Promise<PiModule>;
+  readonly sdkLoader?: SdkLoader;
 }
 
 const MIN_PI_VERSION = "0.84.0";
@@ -125,17 +125,14 @@ function sdkDiscoveryError(cause: unknown): AgentError {
   });
 }
 
-type SdkLoader = () => Promise<PiModule>;
-/** The SDK module import is Promise-only (a dynamic `import()`); the root it
- * needs is resolved by an Effect, so the adapter crosses at this one leaf and
- * nowhere else. */
-const defaultSdkLoader: SdkLoader = () => Effect.runPromise(
-  sdkRoot().pipe(
-    Effect.flatMap((root) => Effect.tryPromise({
-      try: () => import(join(root, "dist/index.js")) as Promise<PiModule>,
-      catch: (cause) => cause,
-    })),
-  ),
+type SdkLoader = () => Effect.Effect<PiModule, AgentError>;
+/** The loader seam is Effect-native; the dynamic `import()` is the one Promise
+ * leaf left in this module, adapted here and nowhere else. */
+const defaultSdkLoader: SdkLoader = () => sdkRoot().pipe(
+  Effect.flatMap((root) => Effect.tryPromise({
+    try: () => import(join(root, "dist/index.js")) as Promise<PiModule>,
+    catch: (cause) => new AgentError({ kind: "sdk-load", message: errorMessage(cause), cause }),
+  })),
 );
 const sdkModuleCache = new WeakMap<SdkLoader, Promise<PiModule>>();
 
@@ -175,16 +172,37 @@ function transientSdkLoad(error: AgentError): boolean {
   return (typeof code === "string" && TRANSIENT_SDK_ERROR_CODES.has(code)) || /temporar|timeout|timed out|try again/i.test(error.message);
 }
 
-function loadCachedSdk(loader: SdkLoader): Promise<PiModule> {
-  const cached = sdkModuleCache.get(loader);
-  if (cached !== undefined) return cached;
-  const pending = Promise.resolve().then(loader);
-  const tracked = pending.catch((cause) => {
-    if (sdkModuleCache.get(loader) === tracked) sdkModuleCache.delete(loader);
-    throw cause;
+/** The cache keeps its Promise shape so a loader still runs at most once even
+ * when several callers race; running the loader Effect to build the entry is
+ * the one adapter crossing. The rejection carries the loader's own error, not
+ * a FiberFailure wrapper, so its `code` still reaches `transientSdkLoad`. A
+ * failed load is evicted, so a later attempt can retry it. */
+function loadCachedSdk(loader: SdkLoader): Effect.Effect<PiModule, AgentError> {
+  return Effect.suspend(() => {
+    const cached = sdkModuleCache.get(loader);
+    if (cached !== undefined) return sdkLoadResult(cached);
+    const pending = Effect.runPromiseExit(Effect.suspend(loader)).then((exit) => {
+      if (Exit.isSuccess(exit)) return exit.value;
+      throw Cause.squash(exit.cause);
+    });
+    const tracked = pending.catch((cause: unknown) => {
+      if (sdkModuleCache.get(loader) === tracked) sdkModuleCache.delete(loader);
+      throw cause;
+    });
+    sdkModuleCache.set(loader, tracked);
+    return sdkLoadResult(tracked);
   });
-  sdkModuleCache.set(loader, tracked);
-  return tracked;
+}
+
+/** A loader is typed to fail with `AgentError`; a thrown or defected loader is
+ * classified here so the seam's error channel stays honest. */
+function sdkLoadResult(pending: Promise<PiModule>): Effect.Effect<PiModule, AgentError> {
+  return Effect.tryPromise({
+    try: () => pending,
+    catch: (cause) => cause instanceof AgentError
+      ? cause
+      : new AgentError({ kind: "sdk-load", message: errorMessage(cause), cause }),
+  });
 }
 
 /** Load the SDK module without creating a session. This is the real discovery
@@ -192,10 +210,7 @@ function loadCachedSdk(loader: SdkLoader): Promise<PiModule> {
 export function piLoadable(): Effect.Effect<boolean> {
   return piAvailable().pipe(
     Effect.flatMap((available) => available
-      ? Effect.tryPromise({
-        try: () => loadCachedSdk(defaultSdkLoader),
-        catch: (cause) => cause,
-      }).pipe(
+      ? loadCachedSdk(defaultSdkLoader).pipe(
         Effect.as(true),
         Effect.catchAll(() => Effect.succeed(false)),
       )
@@ -219,14 +234,13 @@ export function loadSdk(options: PiHarnessOptions): Effect.Effect<PiModule, Agen
         let attempt = 0;
         const loadAttempt = Effect.suspend(() => {
           attempt += 1;
-          return Effect.tryPromise({
-            try: () => loadCachedSdk(loader),
-            catch: (cause) => new AgentError({
+          return loadCachedSdk(loader).pipe(
+            Effect.mapError((cause) => new AgentError({
               kind: "sdk-load",
-              message: `pi SDK module load failed on attempt ${attempt}: ${cause instanceof Error ? cause.message : String(cause)}`,
-              cause,
-            }),
-          });
+              message: `pi SDK module load failed on attempt ${attempt}: ${cause.message}`,
+              cause: cause.cause ?? cause,
+            })),
+          );
         });
         return Effect.retry(loadAttempt, {
           times: MAX_SDK_LOAD_RETRIES,
