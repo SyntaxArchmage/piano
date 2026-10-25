@@ -77,7 +77,7 @@ describe("live-progress run-directory binding", () => {
 
     // The poller must not stall on a single new run that has not written its
     // first log line yet; completion-time findNewRunDir still fails closed.
-    expect(matchNewRunDir(root, ["run-a"], "/tmp/workspace-a")).toBe("run-a");
+    expect(await Effect.runPromise(matchNewRunDir(root, ["run-a"], "/tmp/workspace-a"))).toBe("run-a");
   });
 
   it("binds only the uniquely matching run among concurrent candidates", async () => {
@@ -87,7 +87,7 @@ describe("live-progress run-directory binding", () => {
     await mkdir(join(root, "run-b", "system-log"), { recursive: true });
     await writeFile(join(root, "run-b", "system-log", "log.jsonl"), JSON.stringify({ workspace: "/tmp/workspace-b" }));
 
-    expect(matchNewRunDir(root, ["run-a", "run-b"], "/tmp/workspace-b")).toBe("run-b");
+    expect(await Effect.runPromise(matchNewRunDir(root, ["run-a", "run-b"], "/tmp/workspace-b"))).toBe("run-b");
   });
 
   it("returns undefined when concurrent candidates cannot be uniquely associated", async () => {
@@ -98,10 +98,10 @@ describe("live-progress run-directory binding", () => {
 
     // No evidence yet: the tick is skipped rather than borrowed from a
     // possibly foreign run.
-    expect(matchNewRunDir(root, ["run-a", "run-b"], "/tmp/workspace-a")).toBeUndefined();
+    expect(await Effect.runPromise(matchNewRunDir(root, ["run-a", "run-b"], "/tmp/workspace-a"))).toBeUndefined();
     await writeFile(join(root, "run-a", "system-log", "log.jsonl"), JSON.stringify({ workspace: "/tmp/workspace-a" }));
     await writeFile(join(root, "run-b", "system-log", "log.jsonl"), JSON.stringify({ workspace: "/tmp/workspace-a" }));
     // Ambiguous match: still undefined.
-    expect(matchNewRunDir(root, ["run-a", "run-b"], "/tmp/workspace-a")).toBeUndefined();
+    expect(await Effect.runPromise(matchNewRunDir(root, ["run-a", "run-b"], "/tmp/workspace-a"))).toBeUndefined();
   });
 });

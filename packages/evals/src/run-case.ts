@@ -5,9 +5,7 @@
  */
 import { Effect, Fiber } from "effect";
 import { FileSystem } from "@effect/platform";
-import { evalMetricsDir, sessionsRoot } from "@piano/base";
-import { readdir } from "node:fs/promises";
-import { existsSync, readdirSync } from "node:fs";
+import { evalMetricsDir, io, sessionsRoot } from "@piano/base";
 import { join } from "node:path";
 import { hasPerformanceReadout } from "./case-config.js";
 import { workloadsDir } from "./case-loader.js";
@@ -73,7 +71,9 @@ export function dryRunCase(
 }
 
 function pathExists(path: string | undefined): boolean {
-  return path !== undefined && existsSync(path);
+  // Synchronous evidence assembly: finalizeCaseResult is a plain CaseResult
+  // builder, so the io existence probe runs at this sync edge.
+  return path !== undefined && Effect.runSync(io.existsSync(path));
 }
 
 /** Add the evaluation contract after all run artifacts have been collected.
@@ -139,20 +139,24 @@ export function runCase(
     }
     const workspaceDir = yield* copyWorkspaceTemplate(root, kase, opts.workspaceRoot, join(runSetId, `trial-${trial}`));
     if (kase.prepareCommand !== undefined) {
-      const prepared = yield* Effect.tryPromise({
-        try: () => runShell(kase.prepareCommand!, workspaceDir, 10 * 60 * 1000),
-        catch: (cause) => new DriverError({ message: `prepare workspace for ${kase.id}: ${String(cause)}`, cause }),
-      });
+      const prepared = yield* runShell(kase.prepareCommand, workspaceDir, 10 * 60 * 1000).pipe(
+        Effect.mapError((cause) => new DriverError({
+          message: `prepare workspace for ${kase.id}: ${String(cause.cause ?? cause)}`,
+          cause,
+        })),
+      );
       if (prepared.code !== 0) {
         return yield* Effect.fail(new DriverError({
           message: `prepare workspace for ${kase.id} exited ${prepared.code}: ${prepared.stderr || prepared.stdout}`,
         }));
       }
     }
-    const workspaceBaseline = yield* Effect.tryPromise({
-      try: () => prepareWorkspaceDiffBaseline(workspaceDir),
-      catch: (cause) => new DriverError({ message: `prepare workspace diff for ${kase.id}: ${String(cause)}`, cause }),
-    });
+    const workspaceBaseline = yield* prepareWorkspaceDiffBaseline(workspaceDir).pipe(
+      Effect.mapError((cause) => new DriverError({
+        message: `prepare workspace diff for ${kase.id}: ${cause.message}`,
+        cause,
+      })),
+    );
 
     // Capture the grader-owned clean baseline before Piano is allowed to mutate
     // the copied workspace. This is intentionally outside the agent prompt.
@@ -163,7 +167,9 @@ export function runCase(
     // Execute the launch command. The artifact evaluator then verifies the
     // result inside the mutated workspace.
     const runsRoot = defaultRunsRoot();
-    const readRunIds = Effect.promise(() => readdir(runsRoot).catch(() => [] as string[]));
+    const readRunIds = io.readdirNames(runsRoot).pipe(
+      Effect.catchAll(() => Effect.succeed([] as readonly string[])),
+    );
     const before = new Set(yield* readRunIds);
     const command = substituteCommand(kase.command, {
       workspace: shellQuote(workspaceDir),
@@ -190,7 +196,7 @@ export function runCase(
             .filter((id) => !before.has(id))
             .sort();
           if (created.length === 0) continue;
-          const associated = matchNewRunDir(runsRoot, created, workspaceDir);
+          const associated = yield* matchNewRunDir(runsRoot, created, workspaceDir);
           if (associated === undefined) continue;
           watchedRunDir = join(runsRoot, associated);
         }
@@ -201,20 +207,21 @@ export function runCase(
         }
       }
     }).pipe(Effect.fork);
-    const outcome = yield* Effect.tryPromise({
-      try: () => runShell(command, workspaceDir, timeoutMs),
-      catch: (cause) => new DriverError({ message: `run ${kase.id}: ${String(cause)}`, cause }),
-    });
+    const outcome = yield* runShell(command, workspaceDir, timeoutMs).pipe(
+      Effect.mapError((cause) => new DriverError({ message: `run ${kase.id}: ${String(cause.cause ?? cause)}`, cause })),
+    );
     if (poller !== undefined) yield* Fiber.interrupt(poller);
 
     const durationMs = Date.now() - startedAt;
-    const codeChanges = yield* Effect.tryPromise({
-      try: () => measureWorkspaceChanges(workspaceDir, workspaceBaseline),
-      catch: (cause) => new DriverError({ message: `measure workspace diff for ${kase.id}: ${String(cause)}`, cause }),
-    });
+    const codeChanges = yield* measureWorkspaceChanges(workspaceDir, workspaceBaseline).pipe(
+      Effect.mapError((cause) => new DriverError({
+        message: `measure workspace diff for ${kase.id}: ${cause.message}`,
+        cause,
+      })),
+    );
     const association = yield* findNewRunDir(runsRoot, before, workspaceDir, startedAt);
     const runDir = association.path;
-    const evidence = runDir === undefined ? {} : evidencePaths(runDir);
+    const evidence = runDir === undefined ? {} : yield* evidencePaths(runDir);
     const traceOutcome = runDir === undefined
       ? undefined
       : yield* readRunTrace(runDir).pipe(Effect.either);
@@ -224,7 +231,8 @@ export function runCase(
         ? { trace: traceOutcome.right }
         : { traceError: traceOutcome.left.message };
     const statusSummary = runDir === undefined ? undefined : yield* readRunStatusSummary(runDir);
-    const metricsDir = runDir !== undefined && evalMetricsAvailable(runDir)
+    const metricsAvailable = runDir === undefined ? false : yield* evalMetricsAvailable(runDir);
+    const metricsDir = runDir !== undefined && metricsAvailable
       ? evalMetricsDir(runDir)
       : undefined;
 
@@ -283,43 +291,55 @@ export function runCase(
   });
 }
 
-export function evidencePaths(runDir: string): Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript"> {
-  // The stream is the run's trajectory record; the document it used to be
-  // folded into is gone, so the path names the stream.
-  const trajectoryPath = trajectoryStreamPath(runDir);
-  const transcriptPath = findTranscriptPath(runDir);
-  return {
-    runDir,
-    ...(existsSync(trajectoryPath) ? { trajectoryPath } : {}),
-    logPath: logStreamPath(runDir),
-    tracePath: traceStreamPath(runDir),
-    ...(transcriptPath === undefined ? {} : { transcriptPath, transcript: analyzeTranscriptFile(transcriptPath) }),
-  };
+export function evidencePaths(
+  runDir: string,
+): Effect.Effect<Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript">> {
+  return Effect.gen(function* () {
+    // The stream is the run's trajectory record; the document it used to be
+    // folded into is gone, so the path names the stream.
+    const trajectoryPath = trajectoryStreamPath(runDir);
+    const transcriptPath = yield* findTranscriptPath(runDir);
+    const hasTrajectory = yield* io.exists(trajectoryPath);
+    return {
+      runDir,
+      ...(hasTrajectory ? { trajectoryPath } : {}),
+      logPath: logStreamPath(runDir),
+      tracePath: traceStreamPath(runDir),
+      ...(transcriptPath === undefined
+        ? {}
+        : { transcriptPath, transcript: yield* analyzeTranscriptFile(transcriptPath) }),
+    };
+  });
 }
 
-export function findTranscriptPath(runDir: string): string | undefined {
-  // The run's state document says where its transcript lives. The scan below
-  // is for a run that failed before it recorded one.
-  const recorded = readStatus(runDir)?.transcriptPath;
-  if (typeof recorded === "string" && existsSync(recorded)) return recorded;
-  const find = (directory: string): string | undefined => {
-    try {
-      for (const entry of readdirSync(directory, { withFileTypes: true, encoding: "utf8" })) {
-        const path = join(directory, entry.name);
-        if (entry.isFile() && entry.name.endsWith(".jsonl")) return path;
-        if (entry.isDirectory()) {
-          const found = find(path);
-          if (found !== undefined) return found;
-        }
+export function findTranscriptPath(runDir: string): Effect.Effect<string | undefined> {
+  return Effect.gen(function* () {
+    // The run's state document says where its transcript lives. The scan below
+    // is for a run that failed before it recorded one.
+    const recorded = readStatus(runDir)?.transcriptPath;
+    if (typeof recorded === "string" && (yield* io.exists(recorded))) return recorded;
+    // The current orchestrator writes one conversation directory per actor
+    // under `sessions/`. Runs that fail before the top-level `transcriptPath`
+    // is persisted (and every multi-stage run, which has no single root
+    // transcript) rely on this fallback.
+    return yield* findTranscriptIn(sessionsRoot(runDir));
+  });
+}
+
+function findTranscriptIn(directory: string): Effect.Effect<string | undefined> {
+  return Effect.gen(function* () {
+    const entries = yield* io.readdir(directory).pipe(
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    );
+    if (entries === undefined) return undefined;
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) return path;
+      if (entry.isDirectory()) {
+        const found = yield* findTranscriptIn(path);
+        if (found !== undefined) return found;
       }
-    } catch {
-      return undefined;
     }
     return undefined;
-  };
-  // The current orchestrator writes one conversation directory per actor
-  // under `sessions/`. Runs that fail before the top-level `transcriptPath` is
-  // persisted (and every multi-stage run, which has no single root
-  // transcript) rely on this fallback.
-  return find(sessionsRoot(runDir));
+  });
 }

@@ -4,7 +4,8 @@
 // as it schedules. That is the file to read; there is no second way to answer
 // the question.
 
-import { readFile } from "node:fs/promises";
+import { Effect } from "effect";
+import { io } from "@piano/base";
 import { parseRunStatus, runStatusPath } from "@piano/orchestrator";
 import { parseWorkflowGraphSnapshot, type WorkflowGraphSnapshot } from "./workflow-graph.js";
 
@@ -12,10 +13,12 @@ import { parseWorkflowGraphSnapshot, type WorkflowGraphSnapshot } from "./workfl
  *
  * Missing, malformed, or concurrently replaced files must not interrupt the
  * interactive session, so every failure lands on `undefined`. */
-export async function readWorkflowSnapshot(runDir: string): Promise<WorkflowGraphSnapshot | undefined> {
-  try {
-    return parseWorkflowGraphSnapshot(parseRunStatus(await readFile(runStatusPath(runDir), "utf8")));
-  } catch {
-    return undefined;
-  }
+export function readWorkflowSnapshot(runDir: string): Effect.Effect<WorkflowGraphSnapshot | undefined> {
+  return Effect.gen(function* () {
+    const raw = yield* io.readText(runStatusPath(runDir));
+    return yield* Effect.try({
+      try: () => parseWorkflowGraphSnapshot(parseRunStatus(raw)),
+      catch: (cause) => cause,
+    });
+  }).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
 }

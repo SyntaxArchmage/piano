@@ -203,6 +203,38 @@ describe("run-reader", () => {
     });
   });
 
+  it("reads an unreadable stage transcript as the shaped evidence gap", async () => {
+    // A transcript the FileSystem service cannot read still yields a stage
+    // transcript with its validation issue, never a lost run.
+    const runDir = await baseRunDir("piano-run-reader-unreadable-transcript-");
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    const transcriptPath = join(runDir, "missing-session.jsonl");
+    await writeFile(join(runDir, "system-log", "invocations.jsonl"), `${JSON.stringify({
+      version: 1,
+      kind: "invocation-accepted",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      runId: "eval-run",
+      jobOrdinal: 1,
+      ref: "inv-0001",
+      invocationId: "race.implement@race/slot-0",
+      stageId: "race.implement",
+      stage: "race",
+      worker: "tune",
+      sessionId: "session-1",
+      transcriptPath,
+      text: "done",
+      workspace: { key: "shared", cwd: "/tmp/workspace", kind: "shared" },
+    })}\n`, "utf8");
+
+    const result = await run(readRunTrace(runDir));
+    expect(result.messages).toEqual({ count: 0, rounds: 0 });
+    expect(result.stages[0]?.transcript).toMatchObject({
+      messageCount: 0,
+      valid: false,
+      issues: [{ kind: "structure", line: 0, message: "transcript could not be read" }],
+    });
+  });
+
   it("counts a shared session transcript once across its invocations", async () => {
     // Resumed invocations of one actor write to the same transcript; folding
     // every stage snapshot as-is would count the conversation once per stage.

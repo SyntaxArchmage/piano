@@ -451,12 +451,14 @@ function resolveWorkflowRecord(
     if (read._tag === "Left") {
       return { workflowPath: defaultWorkflowTemplatePath, backfills: false, creates: true };
     }
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(read.right) as Record<string, unknown>;
-    } catch {
+    const parsedAttempt = yield* Effect.either(Effect.try({
+      try: () => JSON.parse(read.right) as Record<string, unknown>,
+      catch: (cause) => cause,
+    }));
+    if (parsedAttempt._tag === "Left") {
       return { workflowPath: defaultWorkflowTemplatePath, backfills: false, creates: false };
     }
+    const parsed = parsedAttempt.right;
     const selection = parsed.workflow;
     const value = typeof selection === "string" ? selection.trim() : "";
     // Legacy key, the old unnamed "builtin", or a malformed builtin name:

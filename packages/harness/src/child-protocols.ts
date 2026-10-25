@@ -1,3 +1,4 @@
+import { Deferred, Effect, FiberId } from "effect";
 import { AgentError } from "./errors.js";
 import { asRecord, nonEmptyString, type JsonRecord } from "./json-narrowing.js";
 
@@ -5,7 +6,7 @@ import { asRecord, nonEmptyString, type JsonRecord } from "./json-narrowing.js";
  * The two request/response protocols Piano speaks over a child's stdio.
  *
  * A pipe write proves only that the child received bytes; both of these
- * protocols carry an explicit acknowledgment, so a write becomes a promise
+ * protocols carry an explicit acknowledgment, so a write becomes an effect
  * that settles on the child's own answer. They share one correlation table
  * (`PendingAcks`) and differ only in how a reply is decoded: the dsh runner
  * answers steer frames on stderr (`piano-steer:` lines), pi RPC answers every
@@ -15,16 +16,17 @@ import { asRecord, nonEmptyString, type JsonRecord } from "./json-narrowing.js";
 /** The correlation table both brokers share: one entry per write awaiting the
  * child's acknowledgment. `take` removes and returns one by id; `abortAll`
  * fails whatever is still open when the child dies, so no caller waits for an
- * answer that has become impossible. The settled promise carries a catch guard
- * because a rejection the caller never awaits (the attempt may die first) must
- * not surface as an unhandled rejection. */
+ * answer that has become impossible. The entry is completed through a
+ * `Deferred` rather than a promise, so an answer nobody ever awaits is simply
+ * a completed effect — it can never surface as an unhandled rejection. */
+interface PendingAck {
+  readonly command: string;
+  readonly deferred: Deferred.Deferred<void, AgentError>;
+}
+
 class PendingAcks {
   private nextId = 0;
-  private readonly pending = new Map<string, {
-    readonly command: string;
-    readonly resolve: () => void;
-    readonly reject: (error: Error) => void;
-  }>();
+  private readonly pending = new Map<string, PendingAck>();
 
   /** Next id in this table's own sequence, spelled the way the protocol does. */
   next(prefix: string): string {
@@ -32,15 +34,18 @@ class PendingAcks {
     return `${prefix}-${this.nextId}`;
   }
 
-  open(id: string, command: string): Promise<void> {
-    const settled = new Promise<void>((resolve, reject) => {
-      this.pending.set(id, { command, resolve, reject });
-    });
-    settled.catch(() => undefined);
-    return settled;
+  /** Register one write awaiting the child's answer and return the effect that
+   * settles with it. The entry exists as soon as the frame is built: a
+   * protocol with acknowledgments may answer the write before the caller
+   * reaches its wait, so registration cannot be deferred until then. */
+  open(id: string, command: string): Effect.Effect<void, AgentError> {
+    const deferred = Deferred.unsafeMake<void, AgentError>(FiberId.none);
+    this.pending.set(id, { command, deferred });
+    // A Deferred is itself the effect that suspends until the answer arrives.
+    return deferred;
   }
 
-  take(id: string): { readonly command: string; readonly resolve: () => void; readonly reject: (error: Error) => void } | undefined {
+  take(id: string): PendingAck | undefined {
     const entry = this.pending.get(id);
     if (entry === undefined) return undefined;
     this.pending.delete(id);
@@ -49,7 +54,7 @@ class PendingAcks {
 
   abortAll(reason: string): void {
     const error = new AgentError({ kind: "harness-unavailable", message: reason });
-    for (const [, pending] of this.pending) pending.reject(error);
+    for (const [, pending] of this.pending) Deferred.unsafeDone(pending.deferred, Effect.fail(error));
     this.pending.clear();
   }
 }
@@ -74,12 +79,12 @@ const DSH_STEER_ACK_PREFIX = "piano-steer:";
 
 /** Correlates dsh steer frames with the runner's acks. The runner is the only
  * party that knows whether a live turn took the text, so a write alone must not
- * resolve a steer: the ack does, and a refusal rejects the caller's promise
+ * resolve a steer: the ack does, and a refusal fails the caller's wait
  * instead of being reported as delivered. */
 export class DshSteerAcks {
   private readonly acks = new PendingAcks();
 
-  frame(text: string): { readonly json: string; readonly settled: Promise<void> } {
+  frame(text: string): { readonly json: string; readonly settled: Effect.Effect<void, AgentError> } {
     const id = this.acks.next("steer");
     const settled = this.acks.open(id, "steer");
     return { json: dshSteerFrame(text, id), settled };
@@ -92,13 +97,13 @@ export class DshSteerAcks {
     const pending = this.acks.take(ack.id);
     if (pending === undefined) return;
     if (ack.accepted) {
-      pending.resolve();
+      Deferred.unsafeDone(pending.deferred, Effect.succeed(undefined));
       return;
     }
-    pending.reject(new AgentError({
+    Deferred.unsafeDone(pending.deferred, Effect.fail(new AgentError({
       kind: "request-rejected",
       message: ack.reason ?? "the dsh turn had already ended, so the steer was dropped",
-    }));
+    })));
   }
 
   /** The child is gone: nothing can still be acknowledged. */
@@ -142,10 +147,10 @@ const PI_PROMPT_REQUEST_ID = "piano-prompt";
  * installed CLI: prompt and steer both answered), so a write is only really
  * delivered when its own response arrives — a successful pipe write proves
  * nothing about whether the agent accepted the message. The broker owns that
- * correlation: the steer promise resolves on the matching `success:true`,
- * rejects with the child's own error text on `success:false`, and rejects
- * everything still pending when the stream ends, so a caller can never await an
- * answer that has already become impossible.
+ * correlation: the steer effect resolves on the matching `success:true`,
+ * fails with the child's own error text on `success:false`, and fails
+ * everything still pending when the stream ends, so a caller can never wait on
+ * an answer that has already become impossible.
  */
 export class PiRpcClient {
   private readonly acks = new PendingAcks();
@@ -166,7 +171,7 @@ export class PiRpcClient {
     const pending = this.acks.take(id);
     if (pending === undefined) return false;
     if (value.success === true) {
-      pending.resolve();
+      Deferred.unsafeDone(pending.deferred, Effect.succeed(undefined));
       return true;
     }
     const reason = nonEmptyString(value.error) ?? "unknown reason";
@@ -185,25 +190,25 @@ export class PiRpcClient {
       // here: there is no later stdout line that would carry the hook.
       this.onPromptRefusal?.();
     }
-    pending.reject(error);
+    Deferred.unsafeDone(pending.deferred, Effect.fail(error));
     return true;
   }
 
-  /** Build one steer frame and the promise its acknowledgment settles. The id
+  /** Build one steer frame and the effect its acknowledgment settles. The id
    * is this client's own sequence so a wrong answer cannot resolve a later
    * steer; pi acknowledges a `steer` as soon as the message is queued, not when
    * the model reads it — "accepted into the running turn's steering queue" is
-   * the strongest delivery this protocol can honestly report. A refusal rejects
+   * the strongest delivery this protocol can honestly report. A refusal fails
    * here and stops at this caller instead of failing the whole conversation. */
-  frame(text: string): { readonly json: string; readonly settled: Promise<void> } {
+  frame(text: string): { readonly json: string; readonly settled: Effect.Effect<void, AgentError> } {
     const id = this.acks.next("piano");
     const settled = this.acks.open(id, "steer");
     return { json: JSON.stringify({ id, type: "steer", message: text }), settled };
   }
 
-  /** Build the task frame and the promise pi's acknowledgment settles. The id
+  /** Build the task frame and the effect pi's acknowledgment settles. The id
    * is the shared prompt id so a refusal is attributable to the attempt. */
-  prompt(text: string): { readonly json: string; readonly settled: Promise<void> } {
+  prompt(text: string): { readonly json: string; readonly settled: Effect.Effect<void, AgentError> } {
     const settled = this.acks.open(PI_PROMPT_REQUEST_ID, "prompt");
     return {
       json: JSON.stringify({ id: PI_PROMPT_REQUEST_ID, type: "prompt", message: text }),

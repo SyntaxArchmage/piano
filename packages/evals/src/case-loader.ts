@@ -8,9 +8,9 @@
  */
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { io } from "@piano/base";
 import { parseCaseConfig } from "./case-config.js";
 import { DriverError } from "./errors.js";
 import type { EvalCase } from "./types.js";
@@ -37,10 +37,9 @@ export function listCaseDirs(
       Effect.mapError((cause) => new DriverError({ message: String(cause), cause })),
     );
     if (!exists) return [] as const;
-    const entries = yield* Effect.tryPromise({
-      try: () => readdir(dir, { withFileTypes: true }),
-      catch: (cause) => new DriverError({ message: String(cause), cause }),
-    });
+    const entries = yield* io.readdir(dir).pipe(
+      Effect.mapError((cause) => new DriverError({ message: String(new Error(cause.message)), cause })),
+    );
     return entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name);

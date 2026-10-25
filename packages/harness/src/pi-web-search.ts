@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Effect } from "effect";
+import { io } from "@piano/base";
 import { Type } from "typebox";
 
 /** Pi has no built-in web search. Piano exposes the same `web_search` id used
@@ -17,7 +18,9 @@ export const PI_WEB_SEARCH_TOOL_NAME = "web_search";
 export const piWebSearchExtensionPath = (() => {
   const self = fileURLToPath(import.meta.url);
   const sidecar = join(dirname(self), "pi-web-search.js");
-  return existsSync(sidecar) ? sidecar : self;
+  // Module initialisation is synchronous by construction; the io probe is
+  // driven here with no Promise at the boundary.
+  return Effect.runSync(io.existsSync(sidecar)) ? sidecar : self;
 })();
 
 const DEFAULT_API_VERSION = "2023-06-01";
@@ -84,59 +87,64 @@ function normalizeSearchResponse(blocks: readonly SearchResponseBlock[] | undefi
 }
 
 /** Execute one server-side web search and return a compact, cited result list. */
-export async function runPiWebSearch(
+export function runPiWebSearch(
   options: PiWebSearchOptions,
   query: string,
   signal?: AbortSignal,
-): Promise<string> {
-  const baseUrl = options.baseUrl?.trim().replace(/\/+$/u, "");
-  const model = options.model?.trim();
-  if (baseUrl === undefined || baseUrl === "" || options.apiKey === undefined || options.apiKey === ""
-    || model === undefined || model === "") {
-    throw new Error("web_search is not configured: the configured endpoint, API key, or model is missing");
-  }
+): Effect.Effect<string, Error> {
+  return Effect.gen(function* () {
+    const baseUrl = options.baseUrl?.trim().replace(/\/+$/u, "");
+    const model = options.model?.trim();
+    if (baseUrl === undefined || baseUrl === "" || options.apiKey === undefined || options.apiKey === ""
+      || model === undefined || model === "") {
+      return yield* Effect.fail(new Error("web_search is not configured: the configured endpoint, API key, or model is missing"));
+    }
 
-  const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
-  const searchSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-  const response = await fetch(`${baseUrl}/messages`, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      "x-api-key": options.apiKey,
-      authorization: `Bearer ${options.apiKey}`,
-      "anthropic-version": DEFAULT_API_VERSION,
-      "content-type": "application/json",
-      accept: "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: DEFAULT_MAX_TOKENS,
-      messages: [{
-        role: "user",
-        content: [{ type: "text", text: `Perform a web search for the query: ${query}` }],
-      }],
-      tools: [{
-        type: "web_search_20250305",
-        name: "web_search",
-        max_uses: DEFAULT_MAX_USES,
-      }],
-    }),
-    signal: searchSignal,
+    const timeout = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
+    const searchSignal = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+    const apiKey = options.apiKey;
+    const response = yield* io.fetchText(`${baseUrl}/messages`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        "x-api-key": apiKey,
+        authorization: `Bearer ${apiKey}`,
+        "anthropic-version": DEFAULT_API_VERSION,
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: DEFAULT_MAX_TOKENS,
+        messages: [{
+          role: "user",
+          content: [{ type: "text", text: `Perform a web search for the query: ${query}` }],
+        }],
+        tools: [{
+          type: "web_search_20250305",
+          name: "web_search",
+          max_uses: DEFAULT_MAX_USES,
+        }],
+      }),
+      signal: searchSignal,
+    });
+    if (!response.ok) {
+      return yield* Effect.fail(new Error(`web_search request failed (HTTP ${response.status}): ${response.text.slice(0, 400)}`));
+    }
+
+    const data = yield* Effect.try({
+      try: () => JSON.parse(response.text) as {
+        readonly type?: unknown;
+        readonly error?: unknown;
+        readonly content?: readonly SearchResponseBlock[];
+      },
+      catch: (cause) => cause instanceof Error ? cause : new Error(String(cause)),
+    });
+    if (data.type === "error" || data.error !== undefined) {
+      return yield* Effect.fail(new Error(`web_search provider error: ${JSON.stringify(data.error ?? data).slice(0, 400)}`));
+    }
+    return normalizeSearchResponse(data.content);
   });
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(`web_search request failed (HTTP ${response.status}): ${detail.slice(0, 400)}`);
-  }
-
-  const data = await response.json() as {
-    readonly type?: unknown;
-    readonly error?: unknown;
-    readonly content?: readonly SearchResponseBlock[];
-  };
-  if (data.type === "error" || data.error !== undefined) {
-    throw new Error(`web_search provider error: ${JSON.stringify(data.error ?? data).slice(0, 400)}`);
-  }
-  return normalizeSearchResponse(data.content);
 }
 
 interface PiExtensionRegistrar {
@@ -167,9 +175,11 @@ export function webSearchExtensionFactory(options: PiWebSearchOptions) {
       parameters: Type.Object({
         query: Type.String({ description: "The search query" }),
       }),
-      async execute(_toolCallId, params, signal) {
-        const text = await runPiWebSearch(options, params.query, signal);
-        return { content: [{ type: "text", text }], details: { query: params.query } };
+      execute(_toolCallId, params, signal) {
+        // The Pi tool contract is a Promise; the search itself is Effect-native.
+        return Effect.runPromise(runPiWebSearch(options, params.query, signal).pipe(
+          Effect.map((text) => ({ content: [{ type: "text" as const, text }], details: { query: params.query } })),
+        ));
       },
     });
   };

@@ -1,4 +1,5 @@
 import { Resvg } from "@resvg/resvg-js";
+import { Effect, Fiber } from "effect";
 import {
   Image,
   allocateImageId,
@@ -134,7 +135,7 @@ export function parseWorkflowGraphSnapshot(value: unknown): WorkflowGraphSnapsho
   };
 }
 
-type WorkflowGraphSnapshotReader = () => Promise<WorkflowGraphSnapshot | undefined>;
+type WorkflowGraphSnapshotReader = () => Effect.Effect<WorkflowGraphSnapshot | undefined>;
 
 /** Whether the run is at rest because it finished or a human stopped it. An
  * absent status is treated as live: a partial or legacy snapshot must not put
@@ -729,7 +730,7 @@ export function renderWorkflowGraphPng(
 /** Read-only workflow visualization owned by the footer's STATUS section. */
 export class WorkflowGraph implements Component {
   private snapshot: WorkflowGraphSnapshot | undefined;
-  private refreshInFlight: Promise<void> | undefined;
+  private refreshInFlight: { readonly fiber: Fiber.RuntimeFiber<void, never>; readonly token: object } | undefined;
   private disposed = false;
   private pulseOn = true;
   private image: Image | undefined;
@@ -755,19 +756,39 @@ export class WorkflowGraph implements Component {
 
   /** Refresh outside render. Concurrent heartbeat ticks share one read, and an
    * invalid/partial read leaves the last valid frame intact. */
-  refresh(): Promise<void> {
-    if (this.disposed) return Promise.resolve();
-    if (this.refreshInFlight !== undefined) return this.refreshInFlight;
-    const request = Promise.resolve().then(() => this.readSnapshot()).then((snapshot) => {
-      if (this.disposed || snapshot === undefined) return;
-      this.snapshot = snapshot;
-      this.invalidate();
-      this.onSnapshot();
-    }).catch(() => undefined).finally(() => {
-      this.refreshInFlight = undefined;
+  refresh(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.disposed) return Effect.void;
+      const inFlight = this.refreshInFlight;
+      if (inFlight !== undefined) return Fiber.join(inFlight.fiber);
+      const token = {};
+      const fiber = Effect.runFork(
+        // Defer the read by a tick, as the previous Promise boundary did:
+        // refresh calls made in the same tick share the one in-flight read.
+        Effect.yieldNow().pipe(
+          Effect.zipRight(Effect.try({
+            try: () => this.readSnapshot(),
+            catch: (cause) => cause,
+          })),
+          Effect.flatten,
+          Effect.flatMap((snapshot) => Effect.sync(() => {
+            if (this.disposed || snapshot === undefined) return;
+            this.snapshot = snapshot;
+            this.invalidate();
+            this.onSnapshot();
+          })),
+          Effect.catchAll(() => Effect.void),
+          Effect.ensuring(Effect.sync(() => {
+            if (this.refreshInFlight?.token === token) this.refreshInFlight = undefined;
+          })),
+        ),
+      );
+      this.refreshInFlight = { fiber, token };
+      // A synchronous read can settle before the fork returns; drop that
+      // settled entry so the next tick starts a fresh read.
+      if (fiber.unsafePoll() !== null) this.refreshInFlight = undefined;
+      return Fiber.join(fiber);
     });
-    this.refreshInFlight = request;
-    return request;
   }
 
   setBlink(on: boolean): void {

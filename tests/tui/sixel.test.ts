@@ -1,4 +1,5 @@
 import { resetCapabilitiesCache, setCapabilities } from "@earendil-works/pi-tui";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { darkTheme } from "../../packages/cli/src/theme.js";
 import { renderWorkflowGraphPng, WorkflowGraph } from "../../packages/cli/src/workflow-graph.js";
@@ -32,7 +33,7 @@ describe("Sixel image backend", () => {
   it("uses Sixel only when explicitly enabled and keeps the image path atomic", async () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: false });
     process.env.PIANO_IMAGE_PROTOCOL = "sixel";
-    const graph = new WorkflowGraph(definition, async () => undefined, darkTheme);
+    const graph = new WorkflowGraph(definition, () => Effect.succeed(undefined), darkTheme);
     const rows = graph.render(80);
 
     expect(rows).toHaveLength(1);

@@ -49,8 +49,10 @@ export interface AgentRequest {
    * (pi `AgentSession.steer` delivers before the next LLM call of the running
    * turn); an SDK without `steer` leaves it unbound. */
   readonly steering?: SteeringChannel;
-  /** Supervisor discussion callback exposed by the Piano `discuss` tool. */
-  readonly discuss?: (question: string) => Promise<string>;
+  /** Supervisor discussion callback exposed by the Piano `discuss` tool. The
+   * callback is Effect-native; only the Pi tool contract it feeds is a
+   * Promise, and `pi-tools` adapts at that leaf. */
+  readonly discuss?: (question: string) => Effect.Effect<string, unknown>;
 }
 
 export interface AgentContinuation {

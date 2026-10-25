@@ -40,10 +40,14 @@ describe(" doctor harness report", () => {
     await Effect.runPromise(doctorCommand(["--model"], {
       modelEndpoint: "https://models.example/v1",
       modelConfig: { apiKey: "secret-key" },
-      fetch: async (input, init) => {
-        requestedUrl = String(input);
+      fetchJson: (url, init) => {
+        requestedUrl = String(url);
         authorization = String(new Headers(init?.headers).get("authorization"));
-        return new Response(JSON.stringify({ data: [{ id: "model-a" }, { id: "model-b" }] }), { status: 200 });
+        return Effect.succeed({
+          status: 200,
+          ok: true,
+          json: { data: [{ id: "model-a" }, { id: "model-b" }] },
+        });
       },
       write: (line) => output.push(line),
     }));
@@ -59,10 +63,10 @@ describe(" doctor harness report", () => {
     let fetched = false;
     await Effect.runPromise(doctorCommand(["--model"], {
       modelConfig: {},
-      fetch: async () => {
+      fetchJson: () => Effect.sync(() => {
         fetched = true;
-        return new Response("{}", { status: 200 });
-      },
+        return { status: 200, ok: true, json: {} };
+      }),
       write: (line) => output.push(line),
     }));
     // There is no built-in fallback endpoint: an unconfigured install must not
@@ -78,11 +82,11 @@ describe(" doctor harness report", () => {
     let selectedProvider = "";
     await Effect.runPromise(doctorCommand(["--model", "selected-model"], {
       modelConfig: { provider: "example-provider", apiKey: "secret-key" },
-      probePi: async (model, config) => {
+      probePi: (model, config) => Effect.sync(() => {
         selectedModel = model;
         selectedProvider = config.provider ?? "";
         return { status: "supported", endpoint: "pi", models: [], model };
-      },
+      }),
       write: (line) => output.push(line),
     }));
     expect(selectedModel).toBe("selected-model");
@@ -143,7 +147,7 @@ describe(" doctor harness report", () => {
   it("reports a selected model rejected by the Pi SDK", async () => {
     const output: string[] = [];
     await Effect.runPromise(doctorCommand(["--model", "missing-model"], {
-      probePi: async (model) => ({
+      probePi: (model) => Effect.succeed({
         status: "unsupported",
         endpoint: "pi",
         models: [],
@@ -164,14 +168,14 @@ describe(" doctor harness report", () => {
   it("checks the installed Pi SDK and configured subprocess harness", async () => {
     const sdkOutput: string[] = [];
     await Effect.runPromise(doctorCommand(["--harness", "pi"], {
-      sdkAvailable: () => false,
+      sdkAvailable: () => Effect.succeed(false),
       write: (line) => sdkOutput.push(line),
     }));
     expect(sdkOutput).toEqual(["[WARN] pi: unavailable — pi SDK is not installed or is below the supported version"]);
 
     const readySdkOutput: string[] = [];
     await Effect.runPromise(doctorCommand(["--harness", "pi"], {
-      sdkAvailable: async () => true,
+      sdkAvailable: () => Effect.succeed(true),
       harnessConfig: () => ({ provider: "example-provider", model: "selected-model" }),
       write: (line) => readySdkOutput.push(line),
     }));
@@ -185,11 +189,11 @@ describe(" doctor harness report", () => {
         apiKey: "secret-key",
         binPath: "pi-test",
       }),
-      runExecutable: async (file, args) => `${file} ${args.join(" ")} 1.0.0`,
-      probeSubprocess: async (harness) => {
+      runExecutable: (file, args) => Effect.succeed(`${file} ${args.join(" ")} 1.0.0`),
+      probeSubprocess: (harness) => Effect.sync(() => {
         expect(harness).toBe("pi-cli");
         return { status: "ready", reason: "real health request succeeded" };
-      },
+      }),
       write: (line) => subprocessOutput.push(line),
     }));
     expect(subprocessOutput).toEqual(["[PASS] pi-cli: ready (pi-test --version 1.0.0) — real health request succeeded"]);
@@ -201,7 +205,7 @@ describe(" doctor harness report", () => {
     await Effect.runPromise(doctorCommand(["--model", "all"], {
       modelConfig: { provider: "example-provider", apiKey: "secret-key" },
       supportedModels: () => ["deepseek-v4-flash", "qwen3.8-max", "gpt-5.6-luna"],
-      probePi: async (model, config) => {
+      probePi: (model, config) => Effect.sync(() => {
         probed.push(`${model}@${config.provider ?? ""}`);
         return model === "qwen3.8-max"
           ? {
@@ -212,7 +216,7 @@ describe(" doctor harness report", () => {
             reason: "Pi SDK could not resolve this model from its provider configuration",
           }
           : { status: "supported", endpoint: "pi", models: [], model };
-      },
+      }),
       write: (line) => output.push(line),
     }));
     expect(probed).toEqual([
@@ -234,10 +238,10 @@ describe(" doctor harness report", () => {
     let probeCalls = 0;
     await Effect.runPromise(doctorCommand(["--model", "all"], {
       supportedModels: () => [],
-      probePi: async (model) => {
+      probePi: (model) => Effect.sync(() => {
         probeCalls += 1;
         return { status: "supported", endpoint: "pi", models: [], model };
-      },
+      }),
       write: (line) => output.push(line),
     }));
     expect(probeCalls).toBe(0);
@@ -250,7 +254,7 @@ describe(" doctor harness report", () => {
     const output: string[] = [];
     await Effect.runPromise(doctorCommand(["--model", "all"], {
       supportedModels: () => ["model-a", "model-b"],
-      probePi: async (model) => ({
+      probePi: (model) => Effect.succeed({
         status: "unconfigured",
         endpoint: "pi",
         models: [],
@@ -273,14 +277,12 @@ describe(" doctor harness report", () => {
     let probedModel = "";
     await Effect.runPromise(doctorCommand(["--model", "qwen3.8-max", "--harness", "dsh"], {
       harnessConfig: () => ({ provider: "example-provider", model: "configured-model", binPath: "dsh" }),
-      probePi: async (model) => {
-        throw new Error(`the SDK adapter must not answer for dsh: ${model}`);
-      },
-      probeSubprocess: async (harness, config) => {
+      probePi: (model) => Effect.fail(new Error(`the SDK adapter must not answer for dsh: ${model}`)),
+      probeSubprocess: (harness, config) => Effect.sync(() => {
         probedHarness = harness;
         probedModel = config.model ?? "";
         return { status: "ready", reason: "real health request succeeded" };
-      },
+      }),
       write: (line) => output.push(line),
     }));
     expect(probedHarness).toBe("dsh");
@@ -292,7 +294,7 @@ describe(" doctor harness report", () => {
     const failing: string[] = [];
     await Effect.runPromise(doctorCommand(["--model", "qwen3.8-max", "--harness", "dsh"], {
       harnessConfig: () => ({ provider: "example-provider", binPath: "dsh" }),
-      probeSubprocess: async () => ({ status: "unavailable", reason: "real health request failed" }),
+      probeSubprocess: () => Effect.succeed({ status: "unavailable", reason: "real health request failed" }),
       write: (line) => failing.push(line),
     }));
     // A subprocess reports a failed run rather than a typed reason, so an id its
@@ -304,10 +306,8 @@ describe(" doctor harness report", () => {
   it("defaults a model probe to the SDK adapter and rejects an unknown harness", async () => {
     const output: string[] = [];
     await Effect.runPromise(doctorCommand(["--model", "selected-model"], {
-      probePi: async (model) => ({ status: "supported", endpoint: "pi", models: [], model }),
-      probeSubprocess: async () => {
-        throw new Error("a model probe without --harness must not spawn a subprocess");
-      },
+      probePi: (model) => Effect.succeed({ status: "supported", endpoint: "pi", models: [], model }),
+      probeSubprocess: () => Effect.fail(new Error("a model probe without --harness must not spawn a subprocess")),
       write: (line) => output.push(line),
     }));
     expect(output).toEqual(["[PASS] model: selected-model responded successfully"]);
@@ -325,10 +325,10 @@ describe(" doctor harness report", () => {
     let selected = "";
     await Effect.runPromise(doctorCommand(["--model", "unlisted-model"], {
       supportedModels: () => ["listed-model"],
-      probePi: async (model) => {
+      probePi: (model) => Effect.sync(() => {
         selected = model;
         return { status: "supported", endpoint: "pi", models: [], model };
-      },
+      }),
       write: (line) => output.push(line),
     }));
     expect(selected).toBe("unlisted-model");

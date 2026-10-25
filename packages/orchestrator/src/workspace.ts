@@ -1,13 +1,10 @@
-import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readlink, readdir, realpath, rename, rm, rmdir, stat, symlink, writeFile } from "node:fs/promises";
-import { execFile } from "node:child_process";
+import type { FileSystem } from "@effect/platform";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
-import { Effect } from "effect";
-import { FileSystem } from "@effect/platform";
+import { Data, Deferred, Effect } from "effect";
 import { isRecord, TRACE, type Logging, type Source } from "@piano/logging";
 import {
+  io,
   workspaceRecordPath,
   workspaceRecordRoot,
   workspaceRoot as workspaceRootPath,
@@ -22,7 +19,56 @@ import {
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
 
-const execFileAsync = promisify(execFile);
+/** A raw node/git rejection carried until an exported boundary names it.
+ * Missing paths are state rather than failures, so leaves keep their cause
+ * intact and callers classify it with `isMissingPathError` before the
+ * boundary collapses the channel to `WorkflowError`. */
+class WorkspaceLeafFailure extends Data.TaggedError("WorkspaceLeafFailure")<{
+  readonly cause: unknown;
+}> {}
+
+/** The module-internal failure channel: typed workflow errors plus the raw
+ * leaf cause that the public boundary converts. */
+type WorkspaceFailure = WorkflowError | WorkspaceLeafFailure;
+
+/** One @piano/base io call mapped onto the module-internal channel. The
+ * original node cause travels intact so `isMissingPathError` classification
+ * stays at exactly the boundary it had over the raw fs rejection. */
+function ioLeaf<A>(operation: Effect.Effect<A, io.IoError>): Effect.Effect<A, WorkspaceFailure> {
+  return operation.pipe(
+    Effect.mapError((failure) => new WorkspaceLeafFailure({ cause: failure.cause ?? failure })),
+  );
+}
+
+/** The `fs.Stats` shape `io.lstat`/`io.stat` returns. */
+type WorkspaceStat = Effect.Effect.Success<ReturnType<typeof io.lstat>>;
+
+/** Run a synchronous helper that may throw a workflow error (path
+ * validation) as a typed Effect failure instead of a defect. */
+function guard<A>(operation: () => A): Effect.Effect<A, WorkspaceFailure> {
+  return Effect.try({
+    try: operation,
+    catch: (cause) => cause instanceof WorkflowError ? cause : new WorkspaceLeafFailure({ cause }),
+  });
+}
+
+function rawCause(failure: WorkspaceFailure): unknown {
+  return failure instanceof WorkspaceLeafFailure ? failure.cause : failure;
+}
+
+/** Collapse the internal channel to the module's typed error at a public
+ * boundary, exactly as the previous promise boundary did. */
+function failureAt(path: string, failure: WorkspaceFailure): WorkflowError {
+  return failure instanceof WorkflowError
+    ? failure
+    : workflowError("schedule", path, errorMessage(failure.cause));
+}
+
+const isMissingLeaf = (failure: WorkspaceFailure): boolean =>
+  failure instanceof WorkspaceLeafFailure && isMissingPathError(failure.cause);
+
+const isGoneLeaf = (failure: WorkspaceFailure): boolean =>
+  failure instanceof WorkspaceLeafFailure && io.isMissingPathError(failure.cause);
 
 export type WorkflowWorkspaceStrategy = "git-worktree" | "store-worktree";
 export type WorkflowWorkspacePhase = "allocated" | "applying" | "cleaning" | "preserved";
@@ -97,30 +143,32 @@ function isProtectedWorkspacePath(root: string, candidate: string, caseInsensiti
  * `.piano-run.lock`. This is read-only: it compares a case-variant path to the
  * root's own device/inode, so content inspection does not require write access
  * or leave a probe residue. */
-async function isCaseInsensitiveFileSystem(root: string): Promise<boolean> {
-  const resolvedRoot = resolve(root);
-  const rootInfo = await lstat(resolvedRoot);
-  const segments = workspacePathSegments(resolvedRoot);
-  for (let index = segments.length - 1; index >= 0; index -= 1) {
-    const segment = segments[index];
-    if (segment === undefined) continue;
-    const letter = segment.search(/[A-Za-z]/u);
-    if (letter < 0) continue;
-    const original = segment[letter];
-    if (original === undefined) continue;
-    const alternate = original === original.toLowerCase()
-      ? original.toUpperCase()
-      : original.toLowerCase();
-    const candidateSegments = [...segments];
-    candidateSegments[index] = `${segment.slice(0, letter)}${alternate}${segment.slice(letter + 1)}`;
-    try {
-      const candidateInfo = await lstat(candidateSegments.join(sep));
-      if (candidateInfo.dev === rootInfo.dev && candidateInfo.ino === rootInfo.ino) return true;
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
+function isCaseInsensitiveFileSystem(root: string): Effect.Effect<boolean, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const resolvedRoot = resolve(root);
+    const rootInfo = yield* ioLeaf(io.lstat(resolvedRoot));
+    const segments = workspacePathSegments(resolvedRoot);
+    for (let index = segments.length - 1; index >= 0; index -= 1) {
+      const segment = segments[index];
+      if (segment === undefined) continue;
+      const letter = segment.search(/[A-Za-z]/u);
+      if (letter < 0) continue;
+      const original = segment[letter];
+      if (original === undefined) continue;
+      const alternate = original === original.toLowerCase()
+        ? original.toUpperCase()
+        : original.toLowerCase();
+      const candidateSegments = [...segments];
+      candidateSegments[index] = `${segment.slice(0, letter)}${alternate}${segment.slice(letter + 1)}`;
+      const candidateInfo = yield* ioLeaf(io.lstat(candidateSegments.join(sep))).pipe(
+        Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+      );
+      if (candidateInfo !== undefined && candidateInfo.dev === rootInfo.dev && candidateInfo.ino === rootInfo.ino) {
+        return true;
+      }
     }
-  }
-  return false;
+    return false;
+  });
 }
 
 interface CanonicalRunRoot {
@@ -137,110 +185,119 @@ interface WorkspaceDirectoryIdentity {
   readonly ino: number;
 }
 
-async function captureWorkspaceDirectoryIdentity(
+function captureWorkspaceDirectoryIdentity(
   path: string,
   label: string,
-): Promise<WorkspaceDirectoryIdentity> {
-  const lexical = resolve(path);
-  const canonical = await realpath(lexical);
-  const info = await lstat(canonical);
-  if (!info.isDirectory() || info.isSymbolicLink()) {
-    throw workflowError("schedule", lexical, `${label} must resolve to a real directory`);
-  }
-  return { lexical, canonical, dev: info.dev, ino: info.ino };
+): Effect.Effect<WorkspaceDirectoryIdentity, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const lexical = resolve(path);
+    const canonical = yield* ioLeaf(io.realpath(lexical));
+    const info = yield* ioLeaf(io.lstat(canonical));
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      return yield* Effect.fail(workflowError("schedule", lexical, `${label} must resolve to a real directory`));
+    }
+    return { lexical, canonical, dev: info.dev, ino: info.ino };
+  });
 }
 
 /** Identity checks are deliberately separate from the filesystem operations.
  * They close ordinary replacement/substitution paths; same-UID check-then-use
  * races still require descriptor/openat2 or sandbox enforcement (see the
  * explicit limitation at the destructive boundaries below). */
-async function assertWorkspaceDirectoryIdentity(
+function assertWorkspaceDirectoryIdentity(
   identity: WorkspaceDirectoryIdentity,
   label: string,
-): Promise<void> {
-  const actual = await realpath(identity.lexical);
-  if (resolve(actual) !== identity.canonical) {
-    throw workflowError("schedule", identity.lexical, `${label} realpath changed during workspace operation`);
-  }
-  const info = await lstat(identity.canonical);
-  if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== identity.dev || info.ino !== identity.ino) {
-    throw workflowError("schedule", identity.lexical, `${label} identity changed during workspace operation`);
-  }
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const actual = yield* ioLeaf(io.realpath(identity.lexical));
+    if (resolve(actual) !== identity.canonical) {
+      return yield* Effect.fail(workflowError("schedule", identity.lexical, `${label} realpath changed during workspace operation`));
+    }
+    const info = yield* ioLeaf(io.lstat(identity.canonical));
+    if (!info.isDirectory() || info.isSymbolicLink() || info.dev !== identity.dev || info.ino !== identity.ino) {
+      return yield* Effect.fail(workflowError("schedule", identity.lexical, `${label} identity changed during workspace operation`));
+    }
+  });
 }
 
 /** Validate the final runDir node before resolving it. Parent symlinks remain
  * supported, but the run root itself must always be a real directory. */
-async function canonicalRunRoot(runDir: string, create: boolean): Promise<CanonicalRunRoot> {
-  const lexical = resolve(runDir);
-  let info: Awaited<ReturnType<typeof lstat>>;
-  try {
-    info = await lstat(lexical);
-  } catch (error) {
-    if (!isMissingPathError(error) || !create) throw error;
-    await mkdir(lexical, { recursive: true });
-    info = await lstat(lexical);
-  }
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw workflowError(
-      "schedule",
-      lexical,
-      "run directory must be a real directory; refusing a symlink or non-directory final node",
+function canonicalRunRoot(runDir: string, create: boolean): Effect.Effect<CanonicalRunRoot, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const lexical = resolve(runDir);
+    const info = yield* ioLeaf(io.lstat(lexical)).pipe(
+      Effect.catchIf(isMissingLeaf, (failure) => {
+        if (!create) return Effect.fail(failure);
+        return Effect.gen(function* () {
+          yield* ioLeaf(io.mkdir(lexical, { recursive: true }));
+          return yield* ioLeaf(io.lstat(lexical));
+        });
+      }),
     );
-  }
-  const canonical = await realpath(lexical);
-  const canonicalInfo = await lstat(canonical);
-  if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isDirectory()) {
-    throw workflowError("schedule", lexical, "run directory resolved to a symlink or non-directory");
-  }
-  return { lexical, canonical, dev: canonicalInfo.dev, ino: canonicalInfo.ino };
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        lexical,
+        "run directory must be a real directory; refusing a symlink or non-directory final node",
+      ));
+    }
+    const canonical = yield* ioLeaf(io.realpath(lexical));
+    const canonicalInfo = yield* ioLeaf(io.lstat(canonical));
+    if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isDirectory()) {
+      return yield* Effect.fail(workflowError("schedule", lexical, "run directory resolved to a symlink or non-directory"));
+    }
+    return { lexical, canonical, dev: canonicalInfo.dev, ino: canonicalInfo.ino };
+  });
 }
 
 /** Recheck the same run-root identity immediately before metadata or slot
  * mutation. This catches deletion/recreation and parent substitution while
  * retaining compatibility with a symlink in a runDir parent component. */
-async function assertCanonicalRunRoot(root: CanonicalRunRoot): Promise<void> {
-  const lexicalInfo = await lstat(root.lexical);
-  if (lexicalInfo.isSymbolicLink() || !lexicalInfo.isDirectory()) {
-    throw workflowError("schedule", root.lexical, "run directory was replaced by a symlink or non-directory");
-  }
-  const actual = await realpath(root.lexical);
-  if (resolve(actual) !== root.canonical) {
-    throw workflowError("schedule", root.lexical, "run directory realpath changed during workspace operation");
-  }
-  const canonicalInfo = await lstat(root.canonical);
-  if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isDirectory() ||
-    canonicalInfo.dev !== root.dev || canonicalInfo.ino !== root.ino) {
-    throw workflowError("schedule", root.lexical, "run directory identity changed during workspace operation");
-  }
+function assertCanonicalRunRoot(root: CanonicalRunRoot): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const lexicalInfo = yield* ioLeaf(io.lstat(root.lexical));
+    if (lexicalInfo.isSymbolicLink() || !lexicalInfo.isDirectory()) {
+      return yield* Effect.fail(workflowError("schedule", root.lexical, "run directory was replaced by a symlink or non-directory"));
+    }
+    const actual = yield* ioLeaf(io.realpath(root.lexical));
+    if (resolve(actual) !== root.canonical) {
+      return yield* Effect.fail(workflowError("schedule", root.lexical, "run directory realpath changed during workspace operation"));
+    }
+    const canonicalInfo = yield* ioLeaf(io.lstat(root.canonical));
+    if (canonicalInfo.isSymbolicLink() || !canonicalInfo.isDirectory() ||
+      canonicalInfo.dev !== root.dev || canonicalInfo.ino !== root.ino) {
+      return yield* Effect.fail(workflowError("schedule", root.lexical, "run directory identity changed during workspace operation"));
+    }
+  });
 }
 
 /** Check the existing portion of a run-owned path without resolving through a
  * missing tail. This lets first allocation create absent metadata directories
  * while rejecting a substituted ancestor before any mkdir/read/write. */
-async function assertSafeWorkspacePathAncestors(root: string, candidate: string): Promise<void> {
-  const canonicalRoot = resolve(root);
-  const lexicalCandidate = resolve(candidate);
-  if (!pathWithin(canonicalRoot, lexicalCandidate)) {
-    throw workflowError("schedule", candidate, "workspace path escapes its canonical root");
-  }
-  let current = canonicalRoot;
-  const segments = workspacePathSegments(relative(canonicalRoot, lexicalCandidate)).filter((segment) => segment !== "");
-  for (const segment of segments) {
-    current = join(current, segment);
-    let info: Awaited<ReturnType<typeof lstat>>;
-    try {
-      info = await lstat(current);
-    } catch (error) {
-      if (isMissingPathError(error)) return;
-      throw error;
+function assertSafeWorkspacePathAncestors(root: string, candidate: string): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const canonicalRoot = resolve(root);
+    const lexicalCandidate = resolve(candidate);
+    if (!pathWithin(canonicalRoot, lexicalCandidate)) {
+      return yield* Effect.fail(workflowError("schedule", candidate, "workspace path escapes its canonical root"));
     }
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw workflowError("schedule", current, "workspace path has a symlink or non-directory ancestor");
+    let current = canonicalRoot;
+    const segments = workspacePathSegments(relative(canonicalRoot, lexicalCandidate)).filter((segment) => segment !== "");
+    for (const segment of segments) {
+      current = join(current, segment);
+      const info = yield* ioLeaf(io.lstat(current)).pipe(
+        Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+      );
+      if (info === undefined) return;
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace path has a symlink or non-directory ancestor"));
+      }
+      const actual = yield* ioLeaf(io.realpath(current));
+      if (resolve(actual) !== resolve(current)) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace path ancestor realpath changed"));
+      }
     }
-    if (resolve(await realpath(current)) !== resolve(current)) {
-      throw workflowError("schedule", current, "workspace path ancestor realpath changed");
-    }
-  }
+  });
 }
 
 /** The run's lane namespace: `<task-slug>-<runId>`. The run id carries the
@@ -282,131 +339,136 @@ function parseWorkspaceRecord(
   value: unknown,
   expected: { readonly key: string; readonly cwd: string; readonly sourceCwd?: string },
   recordPath: string,
-): WorkflowWorkspaceRecord {
-  if (!isRecord(value)) {
-    throw workflowError("schedule", recordPath, "workspace record must be an object");
-  }
-  const strategy = value.strategy === "git-worktree" || value.strategy === "store-worktree"
-    ? value.strategy
-    : undefined;
-  const phase = value.phase === "allocated" || value.phase === "applying" || value.phase === "cleaning" || value.phase === "preserved"
-    ? value.phase
-    : "allocated";
-  if (value.version !== 3 || value.key !== expected.key || value.cwd !== expected.cwd || typeof value.sourceCwd !== "string" ||
-    strategy === undefined || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string" ||
-    typeof value.gitRoot !== "string" || typeof value.mnemonic !== "string" ||
-    typeof value.laneBranch !== "string" || typeof value.baseCommit !== "string") {
-    throw workflowError("schedule", recordPath, "workspace record has an unsupported or inconsistent format");
-  }
-  if (expected.sourceCwd !== undefined && resolve(value.sourceCwd) !== resolve(expected.sourceCwd)) {
-    throw workflowError("schedule", recordPath, "workspace record belongs to a different source workspace");
-  }
-  if (parseLaneBranch(value.laneBranch)?.mnemonic !== value.mnemonic) {
-    throw workflowError("schedule", recordPath, "workspace record has an unsupported or inconsistent lane identity");
-  }
-  if (value.sourceBranch !== undefined && typeof value.sourceBranch !== "string") {
-    throw workflowError("schedule", recordPath, "workspace record sourceBranch must be a string");
-  }
-  return {
-    version: 3,
-    key: value.key,
-    cwd: value.cwd,
-    sourceCwd: value.sourceCwd,
-    strategy,
-    phase,
-    mnemonic: value.mnemonic,
-    laneBranch: value.laneBranch,
-    baseCommit: value.baseCommit,
-    ...(typeof value.sourceBranch === "string" ? { sourceBranch: value.sourceBranch } : {}),
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-    gitRoot: value.gitRoot,
-  };
+): Effect.Effect<WorkflowWorkspaceRecord, WorkflowError> {
+  return Effect.gen(function* () {
+    if (!isRecord(value)) {
+      return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record must be an object"));
+    }
+    const strategy = value.strategy === "git-worktree" || value.strategy === "store-worktree"
+      ? value.strategy
+      : undefined;
+    const phase = value.phase === "allocated" || value.phase === "applying" || value.phase === "cleaning" || value.phase === "preserved"
+      ? value.phase
+      : "allocated";
+    if (value.version !== 3 || value.key !== expected.key || value.cwd !== expected.cwd || typeof value.sourceCwd !== "string" ||
+      strategy === undefined || typeof value.createdAt !== "string" || typeof value.updatedAt !== "string" ||
+      typeof value.gitRoot !== "string" || typeof value.mnemonic !== "string" ||
+      typeof value.laneBranch !== "string" || typeof value.baseCommit !== "string") {
+      return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record has an unsupported or inconsistent format"));
+    }
+    if (expected.sourceCwd !== undefined && resolve(value.sourceCwd) !== resolve(expected.sourceCwd)) {
+      return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record belongs to a different source workspace"));
+    }
+    if (parseLaneBranch(value.laneBranch)?.mnemonic !== value.mnemonic) {
+      return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record has an unsupported or inconsistent lane identity"));
+    }
+    if (value.sourceBranch !== undefined && typeof value.sourceBranch !== "string") {
+      return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record sourceBranch must be a string"));
+    }
+    return {
+      version: 3,
+      key: value.key,
+      cwd: value.cwd,
+      sourceCwd: value.sourceCwd,
+      strategy,
+      phase,
+      mnemonic: value.mnemonic,
+      laneBranch: value.laneBranch,
+      baseCommit: value.baseCommit,
+      ...(typeof value.sourceBranch === "string" ? { sourceBranch: value.sourceBranch } : {}),
+      createdAt: value.createdAt,
+      updatedAt: value.updatedAt,
+      gitRoot: value.gitRoot,
+    };
+  });
 }
 
-async function writeWorkspaceRecord(
+function writeWorkspaceRecord(
   recordPath: string,
   record: WorkflowWorkspaceRecord,
   runRoot: CanonicalRunRoot,
-): Promise<void> {
-  const recordDir = dirname(recordPath);
-  const assertRecordPathSafe = async (): Promise<void> => {
-    await assertCanonicalRunRoot(runRoot);
-    await assertSafeWorkspacePathAncestors(runRoot.canonical, recordDir);
-  };
-  await assertRecordPathSafe();
-  const temporary = `${recordPath}.${randomUUID()}.tmp`;
-  await mkdir(recordDir, { recursive: true });
-  let operationFailure: unknown;
-  try {
-    await assertRecordPathSafe();
-    await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-    await assertRecordPathSafe();
-    await rename(temporary, recordPath);
-    return;
-  } catch (error) {
-    operationFailure = error;
-  }
-  // Only a failed write/rename can leave the temporary behind. If the run root
-  // was substituted, do not follow it merely to remove the residue.
-  try {
-    await assertRecordPathSafe();
-    await rm(temporary, { force: true });
-  } catch (error) {
-    throw new AggregateError(
-      [operationFailure, workflowError("schedule", temporary, `workspace record temporary cleanup failed: ${errorMessage(error)}`)],
-      "workspace record write and cleanup both failed",
-    );
-  }
-  throw operationFailure;
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const recordDir = dirname(recordPath);
+    const assertRecordPathSafe = (): Effect.Effect<void, WorkspaceFailure> =>
+      Effect.gen(function* () {
+        yield* assertCanonicalRunRoot(runRoot);
+        yield* assertSafeWorkspacePathAncestors(runRoot.canonical, recordDir);
+      });
+    yield* assertRecordPathSafe();
+    const temporary = `${recordPath}.${randomUUID()}.tmp`;
+    yield* ioLeaf(io.mkdir(recordDir, { recursive: true }));
+    const operation = yield* Effect.gen(function* () {
+      yield* assertRecordPathSafe();
+      yield* ioLeaf(io.writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`));
+      yield* assertRecordPathSafe();
+      yield* ioLeaf(io.rename(temporary, recordPath));
+    }).pipe(Effect.either);
+    if (operation._tag === "Right") return;
+    const operationFailure = operation.left;
+    // Only a failed write/rename can leave the temporary behind. If the run
+    // root was substituted, do not follow it merely to remove the residue.
+    const cleanup = yield* Effect.gen(function* () {
+      yield* assertRecordPathSafe();
+      yield* ioLeaf(io.rm(temporary, { force: true }));
+    }).pipe(Effect.either);
+    if (cleanup._tag === "Left") {
+      return yield* Effect.fail(new WorkspaceLeafFailure({
+        cause: new AggregateError(
+          [
+            rawCause(operationFailure),
+            workflowError("schedule", temporary, `workspace record temporary cleanup failed: ${errorMessage(rawCause(cleanup.left))}`),
+          ],
+          "workspace record write and cleanup both failed",
+        ),
+      }));
+    }
+    return yield* Effect.fail(operationFailure);
+  });
 }
 
 /** Delete one slot's record directory crash-atomically: rename it out of the
  * records tree first, so a crash leaves an ignorable trash entry instead of a
  * half-deleted record that every later read would reject. */
-async function removeWorkspaceRecord(recordPath: string, runRoot: CanonicalRunRoot): Promise<void> {
-  const recordDir = dirname(recordPath);
-  const recordsRoot = dirname(recordDir);
-  await assertCanonicalRunRoot(runRoot);
-  await assertSafeWorkspacePathAncestors(runRoot.canonical, recordsRoot);
-  const trash = join(recordsRoot, ".removing");
-  await mkdir(trash, { recursive: true });
-  const moved = join(trash, `${basename(recordDir)}.${randomUUID()}`);
-  await rename(recordDir, moved);
-  await rm(moved, { recursive: true, force: true });
-  // Best-effort: a concurrent sweep may still own the trash directory, and an
-  // earlier record in this sweep may already have removed it.
-  await rmdir(trash).catch(() => undefined);
+function removeWorkspaceRecord(recordPath: string, runRoot: CanonicalRunRoot): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const recordDir = dirname(recordPath);
+    const recordsRoot = dirname(recordDir);
+    yield* assertCanonicalRunRoot(runRoot);
+    yield* assertSafeWorkspacePathAncestors(runRoot.canonical, recordsRoot);
+    const trash = join(recordsRoot, ".removing");
+    yield* ioLeaf(io.mkdir(trash, { recursive: true }));
+    const moved = join(trash, `${basename(recordDir)}.${randomUUID()}`);
+    yield* ioLeaf(io.rename(recordDir, moved));
+    yield* ioLeaf(io.rm(moved, { recursive: true, force: true }));
+    // Best-effort: a concurrent sweep may still own the trash directory, and an
+    // earlier record in this sweep may already have removed it.
+    yield* ioLeaf(io.rmdir(trash)).pipe(Effect.catchAll(() => Effect.void));
+  });
 }
 
-async function readWorkspaceRecord(
+function readWorkspaceRecord(
   recordPath: string,
   expected: { readonly key: string; readonly cwd: string; readonly sourceCwd?: string },
-): Promise<WorkflowWorkspaceRecord | undefined> {
-  let recordInfo: Awaited<ReturnType<typeof lstat>>;
-  try {
-    recordInfo = await lstat(recordPath);
-  } catch (error) {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  }
-  if (recordInfo.isSymbolicLink() || !recordInfo.isFile()) {
-    throw workflowError("schedule", recordPath, "workspace record must be a regular file");
-  }
-  let raw: string;
-  try {
-    raw = await readFile(recordPath, "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch (error) {
-    throw workflowError("schedule", recordPath, `workspace record is not valid JSON: ${errorMessage(error)}`);
-  }
-  return parseWorkspaceRecord(value, expected, recordPath);
+): Effect.Effect<WorkflowWorkspaceRecord | undefined, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const recordInfo = yield* ioLeaf(io.lstat(recordPath)).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+    );
+    if (recordInfo === undefined) return undefined;
+    if (recordInfo.isSymbolicLink() || !recordInfo.isFile()) {
+      return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record must be a regular file"));
+    }
+    const raw = yield* ioLeaf(io.readText(recordPath)).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+    );
+    if (raw === undefined) return undefined;
+    const value = yield* Effect.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: (error) => workflowError("schedule", recordPath, `workspace record is not valid JSON: ${errorMessage(error)}`),
+    });
+    return yield* parseWorkspaceRecord(value, expected, recordPath);
+  });
 }
 
 
@@ -415,23 +477,25 @@ async function readWorkspaceRecord(
  * iteration zero, so a key without it collides with a previous job's
  * preserved slot record — or silently rebinds a leftover directory — the
  * moment a second prompt or a continue re-allocates the same slot. */
-function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[]): string {
-  if (!frames.some((frame) => frame.kind === "map")) {
-    throw new WorkflowError({
-      phase: "schedule",
-      path: "workspace",
-      message: "map workspace allocation requires an active map slot",
-    });
-  }
-  const instanceId = runtimeInstanceId(frames);
-  if (instanceId === undefined) {
-    throw new WorkflowError({
-      phase: "schedule",
-      path: "workspace",
-      message: "map workspace allocation has no runtime instance id",
-    });
-  }
-  return `job-${jobOrdinal}/${instanceId}`;
+function mapSlotKey(jobOrdinal: number, frames: readonly WorkflowRuntimeFrame[]): Effect.Effect<string, WorkflowError> {
+  return Effect.gen(function* () {
+    if (!frames.some((frame) => frame.kind === "map")) {
+      return yield* Effect.fail(new WorkflowError({
+        phase: "schedule",
+        path: "workspace",
+        message: "map workspace allocation requires an active map slot",
+      }));
+    }
+    const instanceId = runtimeInstanceId(frames);
+    if (instanceId === undefined) {
+      return yield* Effect.fail(new WorkflowError({
+        phase: "schedule",
+        path: "workspace",
+        message: "map workspace allocation has no runtime instance id",
+      }));
+    }
+    return `job-${jobOrdinal}/${instanceId}`;
+  });
 }
 
 interface GitSourceFacts {
@@ -446,42 +510,38 @@ interface GitSourceFacts {
  * not a Git workspace at all (or is a subdirectory/embeds the run), which
  * sends lanes to the run's own store. A Git workspace with no commits or a
  * detached HEAD is refused: there is no branch to name or fast-forward. */
-async function inspectGitSource(source: string, run: string): Promise<GitSourceFacts | undefined> {
-  let repository: GitRepositoryIdentity;
-  try {
-    repository = await gitRepositoryIdentity(source);
-  } catch {
-    return undefined;
-  }
-  const root = repository.worktreeRoot;
-  // A workspace rooted below the repository root would make the worktree
-  // include files outside the caller's declared workspace, and a run
-  // embedded in the workspace is run management rather than application
-  // content. Both shapes take the store-worktree strategy instead.
-  if (root !== source || pathWithin(source, run)) return undefined;
-  const [headResult, branchResult, statusResult] = await Promise.all([
-    execFileAsync("git", ["-C", root, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" })
-      .then((result) => result.stdout.trim())
-      .catch(() => ""),
-    execFileAsync("git", ["-C", root, "symbolic-ref", "--quiet", "--short", "HEAD"], { encoding: "utf8" })
-      .then((result) => result.stdout.trim())
-      .catch(() => ""),
-    execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" }),
-  ]);
-  const head = headResult;
-  if (head === "") {
-    throw workflowError("schedule", source, "workspace source repository has no commits to fork a lane from");
-  }
-  const branch = branchResult;
-  if (branch === "") {
-    throw workflowError("schedule", source, "workspace source HEAD is detached; check out a branch before running lanes");
-  }
-  const caseInsensitive = await isCaseInsensitiveFileSystem(root);
-  const dirty = statusResult.stdout
-    .split(/\r?\n/u)
-    .map((line) => line.slice(3).trim())
-    .some((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive));
-  return { root, commonRoot: repository.commonRoot, dirty, head, branch };
+function inspectGitSource(source: string, run: string): Effect.Effect<GitSourceFacts | undefined, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const repository = yield* gitRepositoryIdentity(source).pipe(
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    );
+    if (repository === undefined) return undefined;
+    const root = repository.worktreeRoot;
+    // A workspace rooted below the repository root would make the worktree
+    // include files outside the caller's declared workspace, and a run
+    // embedded in the workspace is run management rather than application
+    // content. Both shapes take the store-worktree strategy instead.
+    if (root !== source || pathWithin(source, run)) return undefined;
+    const [head, branch, status] = yield* Effect.all([
+      ioLeaf(io.execFile("git", ["-C", root, "rev-parse", "--verify", "HEAD"]))
+        .pipe(Effect.map((result) => result.stdout.trim()), Effect.catchAll(() => Effect.succeed(""))),
+      ioLeaf(io.execFile("git", ["-C", root, "symbolic-ref", "--quiet", "--short", "HEAD"]))
+        .pipe(Effect.map((result) => result.stdout.trim()), Effect.catchAll(() => Effect.succeed(""))),
+      ioLeaf(io.execFile("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"])),
+    ], { concurrency: "unbounded" });
+    if (head === "") {
+      return yield* Effect.fail(workflowError("schedule", source, "workspace source repository has no commits to fork a lane from"));
+    }
+    if (branch === "") {
+      return yield* Effect.fail(workflowError("schedule", source, "workspace source HEAD is detached; check out a branch before running lanes"));
+    }
+    const caseInsensitive = yield* isCaseInsensitiveFileSystem(root);
+    const dirty = status.stdout
+      .split(/\r?\n/u)
+      .map((line) => line.slice(3).trim())
+      .some((path) => path !== "" && !isProtectedWorkspaceName(path, caseInsensitive));
+    return { root, commonRoot: repository.commonRoot, dirty, head, branch };
+  });
 }
 
 interface GitRepositoryIdentity {
@@ -492,47 +552,51 @@ interface GitRepositoryIdentity {
 /** The repository's common git directory: the admin parent for every linked
  * worktree. `rev-parse --git-common-dir` names it for a working tree and for a
  * bare store alike. */
-async function resolveGitCommonDir(cwd: string, path: string): Promise<string> {
-  return realpath(isAbsolute(path) ? path : resolve(cwd, path));
+function resolveGitCommonDir(cwd: string, path: string): Effect.Effect<string, WorkspaceFailure> {
+  return ioLeaf(io.realpath(isAbsolute(path) ? path : resolve(cwd, path)));
 }
 
-async function gitCommonDir(cwd: string): Promise<string> {
-  const result = await execFileAsync("git", ["-C", cwd, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
-  return resolveGitCommonDir(cwd, result.stdout.trim());
+function gitCommonDir(cwd: string): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const result = yield* ioLeaf(io.execFile("git", ["-C", cwd, "rev-parse", "--git-common-dir"]));
+    return yield* resolveGitCommonDir(cwd, result.stdout.trim());
+  });
 }
 
-async function gitRepositoryIdentity(cwd: string): Promise<GitRepositoryIdentity> {
-  // One spawn: rev-parse prints each requested value on its own line, in order.
-  const result = await execFileAsync("git", [
-    "-C", cwd,
-    "rev-parse", "--show-toplevel", "--git-common-dir",
-  ], { encoding: "utf8" });
-  const [rootLine, commonLine] = result.stdout.split(/\r?\n/u);
-  const commonPath = (commonLine ?? "").trim();
-  return {
-    worktreeRoot: await realpath((rootLine ?? "").trim()),
-    commonRoot: await resolveGitCommonDir(cwd, commonPath),
-  };
+function gitRepositoryIdentity(cwd: string): Effect.Effect<GitRepositoryIdentity, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    // One spawn: rev-parse prints each requested value on its own line, in order.
+    const result = yield* ioLeaf(io.execFile("git", [
+      "-C", cwd,
+      "rev-parse", "--show-toplevel", "--git-common-dir",
+    ]));
+    const [rootLine, commonLine] = result.stdout.split(/\r?\n/u);
+    const commonPath = (commonLine ?? "").trim();
+    const worktreeRoot = yield* ioLeaf(io.realpath((rootLine ?? "").trim()));
+    const commonRoot = yield* resolveGitCommonDir(cwd, commonPath);
+    return { worktreeRoot, commonRoot };
+  });
 }
 
 /** Linked-worktree admin entries live under the owning repository's
  * `worktrees/` folder. */
-async function gitWorktreeAdminParent(owner: string): Promise<string> {
-  return join(await gitCommonDir(owner), "worktrees");
+function gitWorktreeAdminParent(owner: string): Effect.Effect<string, WorkspaceFailure> {
+  return gitCommonDir(owner).pipe(Effect.map((common) => join(common, "worktrees")));
 }
 
-async function assertGitRootBound(sourceCwd: string, gitRoot: string): Promise<void> {
-  const expected = await gitRepositoryIdentity(sourceCwd);
-  const actual = await gitRepositoryIdentity(gitRoot);
-  if (actual.worktreeRoot !== expected.worktreeRoot || actual.commonRoot !== expected.commonRoot) {
-    throw workflowError(
-      "schedule",
-      gitRoot,
-      `git workspace repository does not match source Git common root ${expected.commonRoot}`,
-    );
-  }
+function assertGitRootBound(sourceCwd: string, gitRoot: string): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const expected = yield* gitRepositoryIdentity(sourceCwd);
+    const actual = yield* gitRepositoryIdentity(gitRoot);
+    if (actual.worktreeRoot !== expected.worktreeRoot || actual.commonRoot !== expected.commonRoot) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        gitRoot,
+        `git workspace repository does not match source Git common root ${expected.commonRoot}`,
+      ));
+    }
+  });
 }
-
 
 /** Root/loop scopes intentionally use the caller workspace. The runtime
  * serializes ready siblings in such a shared binding because the DSL has no
@@ -556,54 +620,61 @@ export interface MapLaneFork {
 /** Write the workspace content as one commit into the source repository,
  * without touching its index or any ref. The commit is reachable only through
  * the lane branches that fork from it. */
-async function commitWorkspaceContent(
+function commitWorkspaceContent(
   source: string,
   options: { readonly runDir: string; readonly parent?: string; readonly message: string },
-): Promise<string> {
-  const scratch = join(options.runDir, "git");
-  await mkdir(scratch, { recursive: true });
-  const tree = await writeContentTree({
-    contentDir: source,
-    excludeUnder: [options.runDir],
-    scratchDir: scratch,
-    gitArgs: ["-C", source],
-    env: process.env,
+): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const scratch = join(options.runDir, "git");
+    yield* ioLeaf(io.mkdir(scratch, { recursive: true }));
+    const tree = yield* writeContentTree({
+      contentDir: source,
+      excludeUnder: [options.runDir],
+      scratchDir: scratch,
+      gitArgs: ["-C", source],
+      env: process.env,
+    });
+    const result = yield* ioLeaf(io.execFile("git", [
+      "-C", source,
+      ...PIANO_GIT_IDENTITY_ARGS,
+      "commit-tree", tree,
+      ...(options.parent === undefined ? [] : ["-p", options.parent]),
+      "-m", options.message,
+    ]));
+    return result.stdout.trim();
   });
-  return (await execFileAsync("git", [
-    "-C", source,
-    ...PIANO_GIT_IDENTITY_ARGS,
-    "commit-tree", tree,
-    ...(options.parent === undefined ? [] : ["-p", options.parent]),
-    "-m", options.message,
-  ], { encoding: "utf8" })).stdout.trim();
 }
 
 /** Stage and commit a worktree's edits when it has any. */
-async function stageAndCommitWorktree(cwd: string, message: string): Promise<boolean> {
-  const status = await execFileAsync("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf8" });
-  if (status.stdout.trim() === "") return false;
-  await execFileAsync("git", ["-C", cwd, "add", "-A", "--", "."], { encoding: "utf8" });
-  await execFileAsync("git", [
-    "-C", cwd,
-    ...PIANO_GIT_IDENTITY_ARGS,
-    "commit", "-q", "-m", message,
-  ], { encoding: "utf8" });
-  return true;
+function stageAndCommitWorktree(cwd: string, message: string): Effect.Effect<boolean, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const status = yield* ioLeaf(io.execFile("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"]));
+    if (status.stdout.trim() === "") return false;
+    yield* ioLeaf(io.execFile("git", ["-C", cwd, "add", "-A", "--", "."]));
+    yield* ioLeaf(io.execFile("git", [
+      "-C", cwd,
+      ...PIANO_GIT_IDENTITY_ARGS,
+      "commit", "-q", "-m", message,
+    ]));
+    return true;
+  });
 }
 
 /** Stage and commit a worktree's edits, returning the tip and whether anything
  * was committed. One place for the piano identity and the change check. */
-async function commitWorktreeChanges(
+function commitWorktreeChanges(
   cwd: string,
   message: string,
-): Promise<{ readonly commit: string; readonly changed: boolean }> {
-  const changed = await stageAndCommitWorktree(cwd, message);
-  const commit = (await execFileAsync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8" })).stdout.trim();
-  return { commit, changed };
+): Effect.Effect<{ readonly commit: string; readonly changed: boolean }, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const changed = yield* stageAndCommitWorktree(cwd, message);
+    const commit = (yield* ioLeaf(io.execFile("git", ["-C", cwd, "rev-parse", "HEAD"]))).stdout.trim();
+    return { commit, changed };
+  });
 }
 
 /** Resolve what this region's lanes fork from, once per entry. */
-export async function prepareMapLaneFork(
+function prepareMapLaneForkInternal(
   sourceCwd: string,
   options: {
     readonly runDir: string;
@@ -612,60 +683,64 @@ export async function prepareMapLaneFork(
     readonly frames: readonly WorkflowRuntimeFrame[];
     readonly parent?: WorkflowWorkspaceBinding;
   },
-): Promise<MapLaneFork> {
-  const run = (await canonicalRunRoot(options.runDir, true)).canonical;
-  const source = await realpath(resolve(sourceCwd));
-  const facts = await inspectGitSource(source, run);
-  if (facts === undefined) {
-    const baseline = await freezeWorkspaceBaseline(source, {
-      runDir: run,
-      refName: workspaceRefName(
-        options.runId,
-        `baselines/job-${options.jobOrdinal}/${encodeURIComponent(`${runtimeInstanceId(options.frames) ?? "root"}/fork`)}`,
-      ),
-      excludeUnder: [run],
-    });
-    const storeDir = await workspaceBaselineStore(run);
-    return {
-      strategy: "store-worktree",
-      gitRoot: storeDir,
-      commonRoot: storeDir,
-      commit: baseline.commit,
-    };
-  }
-  if (options.parent?.kind === "map-slot" && facts.dirty) {
-    // A nested tournament inside a lane: checkpoint the parent lane onto its
-    // own branch so children fork from a commit that contains its edits.
-    const { commit } = await commitWorktreeChanges(
-      source,
-      `piano: checkpoint lane ${facts.branch} before nested lanes`,
-    );
-    return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit, sourceBranch: facts.branch };
-  }
-  if (facts.dirty) {
-    const commit = await commitWorkspaceContent(source, {
-      runDir: run,
-      parent: facts.head,
-      message: `piano: seed unsaved workspace content for ${facts.branch}`,
-    });
-    return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit, sourceBranch: facts.branch };
-  }
-  return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit: facts.head, sourceBranch: facts.branch };
+): Effect.Effect<MapLaneFork, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const run = (yield* canonicalRunRoot(options.runDir, true)).canonical;
+    const source = yield* ioLeaf(io.realpath(resolve(sourceCwd)));
+    const facts = yield* inspectGitSource(source, run);
+    if (facts === undefined) {
+      const baseline = yield* freezeWorkspaceBaselineInternal(source, {
+        runDir: run,
+        refName: workspaceRefName(
+          options.runId,
+          `baselines/job-${options.jobOrdinal}/${encodeURIComponent(`${runtimeInstanceId(options.frames) ?? "root"}/fork`)}`,
+        ),
+        excludeUnder: [run],
+      });
+      const storeDir = yield* workspaceBaselineStore(run);
+      return {
+        strategy: "store-worktree",
+        gitRoot: storeDir,
+        commonRoot: storeDir,
+        commit: baseline.commit,
+      };
+    }
+    if (options.parent?.kind === "map-slot" && facts.dirty) {
+      // A nested tournament inside a lane: checkpoint the parent lane onto its
+      // own branch so children fork from a commit that contains its edits.
+      const { commit } = yield* commitWorktreeChanges(
+        source,
+        `piano: checkpoint lane ${facts.branch} before nested lanes`,
+      );
+      return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit, sourceBranch: facts.branch };
+    }
+    if (facts.dirty) {
+      const commit = yield* commitWorkspaceContent(source, {
+        runDir: run,
+        parent: facts.head,
+        message: `piano: seed unsaved workspace content for ${facts.branch}`,
+      });
+      return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit, sourceBranch: facts.branch };
+    }
+    return { strategy: "git-worktree", gitRoot: source, commonRoot: facts.commonRoot, commit: facts.head, sourceBranch: facts.branch };
+  });
 }
 
 /** The lane numbers already taken in this namespace, so allocation never
  * reuses one even though every branch survives cleanup. */
-async function scanLaneNumbers(gitRoot: string, mnemonic: string): Promise<readonly number[]> {
-  const result = await execFileAsync("git", [
-    "-C", gitRoot,
-    "for-each-ref", "--format=%(refname:short)", `refs/heads/tuna/${mnemonic}/`,
-  ], { encoding: "utf8" });
-  const numbers: number[] = [];
-  for (const line of result.stdout.split(/\r?\n/u)) {
-    const parsed = parseLaneBranch(line.trim());
-    if (parsed?.mnemonic === mnemonic) numbers.push(parsed.laneNumber);
-  }
-  return numbers;
+function scanLaneNumbers(gitRoot: string, mnemonic: string): Effect.Effect<readonly number[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const result = yield* ioLeaf(io.execFile("git", [
+      "-C", gitRoot,
+      "for-each-ref", "--format=%(refname:short)", `refs/heads/tuna/${mnemonic}/`,
+    ]));
+    const numbers: number[] = [];
+    for (const line of result.stdout.split(/\r?\n/u)) {
+      const parsed = parseLaneBranch(line.trim());
+      if (parsed?.mnemonic === mnemonic) numbers.push(parsed.laneNumber);
+    }
+    return numbers;
+  });
 }
 
 /** Allocates lane numbers for one execution: every `allocateMapWorkspace`
@@ -674,44 +749,220 @@ async function scanLaneNumbers(gitRoot: string, mnemonic: string): Promise<reado
  * one scan and take consecutive numbers, and a collision just advances the
  * hint. */
 export interface LaneNumberAllocator {
-  next(input: { readonly scanRoot: string; readonly commonRoot: string; readonly mnemonic: string }): Promise<number>;
+  next(input: {
+    readonly scanRoot: string;
+    readonly commonRoot: string;
+    readonly mnemonic: string;
+  }): Effect.Effect<number, WorkspaceFailure>;
 }
 
 export function createLaneNumberAllocator(): LaneNumberAllocator {
   const hints = new Map<string, number>();
-  const scans = new Map<string, Promise<number>>();
+  const scans = new Map<string, Deferred.Deferred<number, WorkspaceFailure>>();
   const keyOf = (commonRoot: string, mnemonic: string): string => `${commonRoot}\0${mnemonic}`;
   return {
-    async next({ scanRoot, commonRoot, mnemonic }) {
-      const key = keyOf(commonRoot, mnemonic);
+    next: (input) => Effect.gen(function* () {
+      const key = keyOf(input.commonRoot, input.mnemonic);
       const hinted = hints.get(key);
       if (hinted !== undefined) {
         hints.set(key, hinted + 1);
         return hinted;
       }
-      let scan = scans.get(key);
-      if (scan === undefined) {
-        scan = scanLaneNumbers(scanRoot, mnemonic).then((taken) => {
+      const pending = scans.get(key);
+      if (pending !== undefined) {
+        // A concurrent cold caller started the scan and reserved its result;
+        // take the next hint once it resolves.
+        const first = yield* pending;
+        const next = hints.get(key) ?? first + 1;
+        hints.set(key, next + 1);
+        return next;
+      }
+      const deferred = yield* Deferred.make<number, WorkspaceFailure>();
+      scans.set(key, deferred);
+      return yield* scanLaneNumbers(input.scanRoot, input.mnemonic).pipe(
+        Effect.map((taken) => {
           const next = taken.length === 0 ? 0 : Math.max(...taken) + 1;
           hints.set(key, next + 1);
           return next;
-        });
-        scans.set(key, scan);
-        void scan.finally(() => scans.delete(key)).catch(() => undefined);
-        return scan;
-      }
-      // A concurrent cold caller started the scan and reserved its result;
-      // take the next hint once it resolves.
-      const first = await scan;
-      const next = hints.get(key) ?? first + 1;
-      hints.set(key, next + 1);
-      return next;
-    },
+        }),
+        Effect.onExit((exit) => Deferred.done(deferred, exit).pipe(
+          Effect.ensuring(Effect.sync(() => { scans.delete(key); })),
+        )),
+      );
+    }),
   };
 }
 
-async function addLaneWorktree(gitRoot: string, branch: string, cwd: string, commit: string): Promise<void> {
-  await execFileAsync("git", ["-C", gitRoot, "worktree", "add", "-b", branch, cwd, commit], { encoding: "utf8" });
+function addLaneWorktree(gitRoot: string, branch: string, cwd: string, commit: string): Effect.Effect<void, WorkspaceFailure> {
+  return ioLeaf(io.execFile("git", ["-C", gitRoot, "worktree", "add", "-b", branch, cwd, commit])).pipe(Effect.asVoid);
+}
+
+/** A map slot that still needs a lane: preparation stops right before the
+ * fork so the Effect layer resolves it only when this slot is allocated. */
+interface PendingMapSlot {
+  readonly kind: "pending";
+  readonly sourceIdentity: WorkspaceDirectoryIdentity;
+  readonly source: string;
+  readonly runRoot: CanonicalRunRoot;
+  readonly run: string;
+  readonly key: string;
+  readonly cwd: string;
+  readonly recordPath: string;
+}
+
+/** Validate and prepare one slot. An existing record returns its binding;
+ * anything else returns the context the allocation phase needs. */
+function prepareMapSlot(
+  runDir: string,
+  jobOrdinal: number,
+  frames: readonly WorkflowRuntimeFrame[],
+  sourceCwd: string,
+  mnemonic: string,
+): Effect.Effect<WorkflowWorkspaceBinding | PendingMapSlot, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const sourceIdentity = yield* captureWorkspaceDirectoryIdentity(sourceCwd, "workspace source");
+    const source = sourceIdentity.canonical;
+    const runRoot = yield* canonicalRunRoot(runDir, true);
+    const run = runRoot.canonical;
+    const workspaceRoot = workspaceRootPath(run);
+    if (pathWithin(run, source) && !pathWithin(workspaceRoot, source)) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        source,
+        `cannot allocate a workspace inside Piano run directory "${run}"`,
+      ));
+    }
+    const sourceInfo = yield* ioLeaf(io.stat(source));
+    if (!sourceInfo.isDirectory()) {
+      return yield* Effect.fail(workflowError("schedule", source, "workspace source must be a directory"));
+    }
+    const key = yield* mapSlotKey(jobOrdinal, frames);
+    const cwd = workspacePath(run, key);
+    if (!pathWithin(source, run) && pathWithin(source, cwd)) {
+      return yield* Effect.fail(workflowError("schedule", cwd, `workspace for map slot "${key}" cannot be nested inside its source`));
+    }
+    const recordPath = workspaceRecordPath(run, key);
+    yield* assertCanonicalRunRoot(runRoot);
+    yield* assertSafeWorkspacePathAncestors(run, dirname(recordPath));
+    let existing = yield* readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
+    // A sweep interrupted between removing the worktree and deleting the
+    // record leaves a "cleaning" record whose lane is already gone: finish
+    // the sweep instead of reporting a missing slot.
+    if (existing?.phase === "cleaning") {
+      const present = yield* pathExists(existing.cwd);
+      if (!present) {
+        yield* removeWorkspaceRecord(recordPath, runRoot);
+        existing = undefined;
+      }
+    }
+    if (existing !== undefined) {
+      const current = existing;
+      if (current.mnemonic !== mnemonic) {
+        return yield* Effect.fail(workflowError(
+          "schedule",
+          recordPath,
+          `workspace slot "${key}" belongs to lane namespace "${current.mnemonic}"`,
+        ));
+      }
+      yield* assertOwnedWorkspace(workspaceRoot, current).pipe(
+        Effect.catchIf(isMissingLeaf, () => Effect.fail(
+          workflowError("schedule", recordPath, `workspace slot "${key}" is missing at ${current.cwd}`),
+        )),
+      );
+      return bindingFromRecord(current, recordPath);
+    }
+
+    yield* assertCanonicalRunRoot(runRoot);
+    yield* assertSafeWorkspacePathAncestors(run, dirname(cwd));
+    yield* ioLeaf(io.mkdir(dirname(cwd), { recursive: true }));
+    yield* assertSafeWorkspacePathAncestors(run, dirname(cwd));
+    const occupied = yield* ioLeaf(io.lstat(cwd)).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+    );
+    if (occupied !== undefined) {
+      return yield* Effect.fail(workflowError("schedule", cwd, `workspace for map slot "${key}" already exists`));
+    }
+
+    return { kind: "pending", sourceIdentity, source, runRoot, run, key, cwd, recordPath };
+  });
+}
+
+/** Create the lane worktree and its record for a prepared slot. */
+function allocatePreparedMapSlot(
+  pending: PendingMapSlot,
+  fork: MapLaneFork,
+  options: { readonly mnemonic: string; readonly laneAllocator?: LaneNumberAllocator },
+): Effect.Effect<WorkflowWorkspaceBinding, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const { sourceIdentity, source, runRoot, key, cwd, recordPath } = pending;
+    const gitRoot = fork.gitRoot;
+    const removeAllocatedWorkspace = (): Effect.Effect<void, WorkspaceFailure> =>
+      Effect.gen(function* () {
+        yield* assertCanonicalRunRoot(runRoot);
+        yield* ioLeaf(io.rm(cwd, { recursive: true, force: true }));
+        yield* ioLeaf(io.execFile("git", ["-C", gitRoot, "worktree", "prune"])).pipe(Effect.catchAll(() => Effect.void));
+      }).pipe(
+        // If the run root changed, do not follow the replacement to clean
+        // up; report the residue so recovery can inspect the original root.
+        Effect.catchAll((failure) => Effect.fail(workflowError(
+          "schedule",
+          cwd,
+          `allocated workspace cleanup failed: ${errorMessage(rawCause(failure))}`,
+        ))),
+      );
+    const laneAllocator = options.laneAllocator ?? createLaneNumberAllocator();
+    let laneBranch = "";
+    const allocation = yield* Effect.gen(function* () {
+      yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+      yield* assertCanonicalRunRoot(runRoot);
+      let addFailure: WorkspaceFailure | undefined;
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const next = yield* laneAllocator.next({
+          scanRoot: gitRoot,
+          commonRoot: fork.commonRoot,
+          mnemonic: options.mnemonic,
+        });
+        const branch = laneBranchName(options.mnemonic, next);
+        const attempted = yield* addLaneWorktree(gitRoot, branch, cwd, fork.commit).pipe(Effect.either);
+        if (attempted._tag === "Right") {
+          laneBranch = branch;
+          addFailure = undefined;
+          break;
+        }
+        addFailure = attempted.left;
+        // A concurrent allocation may have taken the number; the hint is
+        // already advanced past it, so just try the next one.
+        if (!errorMessage(rawCause(attempted.left)).includes("already exists")) break;
+      }
+      if (addFailure !== undefined) return yield* Effect.fail(addFailure);
+    }).pipe(Effect.either);
+    if (allocation._tag === "Left") {
+      yield* removeAllocatedWorkspace();
+      return yield* Effect.fail(allocation.left);
+    }
+    const now = new Date().toISOString();
+    const record: WorkflowWorkspaceRecord = {
+      version: 3,
+      key,
+      cwd,
+      sourceCwd: source,
+      strategy: fork.strategy,
+      phase: "allocated",
+      mnemonic: options.mnemonic,
+      laneBranch,
+      baseCommit: fork.commit,
+      ...(fork.sourceBranch === undefined ? {} : { sourceBranch: fork.sourceBranch }),
+      createdAt: now,
+      updatedAt: now,
+      gitRoot,
+    };
+    const written = yield* writeWorkspaceRecord(recordPath, record, runRoot).pipe(Effect.either);
+    if (written._tag === "Left") {
+      yield* removeAllocatedWorkspace();
+      return yield* Effect.fail(written.left);
+    }
+    return bindingFromRecord(record, recordPath);
+  });
 }
 
 /** Allocate one concrete map slot as a lane branch worktree. Git workspaces
@@ -725,160 +976,37 @@ export function allocateMapWorkspace(
   sourceCwd: string,
   options: {
     readonly mnemonic: string;
-    /** The region's fork, or a thunk resolving it. The walker passes a
-     * memoized thunk so a resume whose slots all exist never pays for a seed
-     * commit the allocation will not use. */
-    readonly fork?: MapLaneFork | (() => Promise<MapLaneFork>);
+    /** The region's fork. The walker passes one cached Effect so a resume
+     * whose slots all exist never pays for a seed commit the allocation will
+     * not use, and every slot that does need it shares the same fork. */
+    readonly fork?: Effect.Effect<MapLaneFork, WorkflowError>;
     /** The execution's lane counter; omitted callers get a fresh allocator
      * (one scan per allocation). */
     readonly laneAllocator?: LaneNumberAllocator;
   },
 ): Effect.Effect<WorkflowWorkspaceBinding, WorkflowError, FileSystem.FileSystem | Logging> {
-  return TRACE(WORKSPACE_SOURCE, Effect.tryPromise({
-    try: async () => {
-      const sourceIdentity = await captureWorkspaceDirectoryIdentity(sourceCwd, "workspace source");
-      const source = sourceIdentity.canonical;
-      const runRoot = await canonicalRunRoot(runDir, true);
-      const run = runRoot.canonical;
-      const workspaceRoot = workspaceRootPath(run);
-      if (pathWithin(run, source) && !pathWithin(workspaceRoot, source)) {
-        throw workflowError(
-          "schedule",
-          source,
-          `cannot allocate a workspace inside Piano run directory "${run}"`,
-        );
-      }
-      const sourceInfo = await stat(source);
-      if (!sourceInfo.isDirectory()) {
-        throw workflowError("schedule", source, "workspace source must be a directory");
-      }
-      const key = mapSlotKey(jobOrdinal, frames);
-      const cwd = workspacePath(run, key);
-      if (!pathWithin(source, run) && pathWithin(source, cwd)) {
-        throw workflowError("schedule", cwd, `workspace for map slot "${key}" cannot be nested inside its source`);
-      }
-      const recordPath = workspaceRecordPath(run, key);
-      await assertCanonicalRunRoot(runRoot);
-      await assertSafeWorkspacePathAncestors(run, dirname(recordPath));
-      let existing = await readWorkspaceRecord(recordPath, { key, cwd, sourceCwd: source });
-      // A sweep interrupted between removing the worktree and deleting the
-      // record leaves a "cleaning" record whose lane is already gone: finish
-      // the sweep instead of reporting a missing slot.
-      if (existing?.phase === "cleaning" && !await pathExists(existing.cwd)) {
-        await removeWorkspaceRecord(recordPath, runRoot);
-        existing = undefined;
-      }
-      if (existing !== undefined) {
-        if (existing.mnemonic !== options.mnemonic) {
-          throw workflowError(
-            "schedule",
-            recordPath,
-            `workspace slot "${key}" belongs to lane namespace "${existing.mnemonic}"`,
-          );
-        }
-        try {
-          await assertOwnedWorkspace(workspaceRoot, existing);
-        } catch (error) {
-          if (isMissingPathError(error)) {
-            throw workflowError("schedule", recordPath, `workspace slot "${key}" is missing at ${existing.cwd}`);
-          }
-          throw error;
-        }
-        return bindingFromRecord(existing, recordPath);
-      }
-
-      await assertCanonicalRunRoot(runRoot);
-      await assertSafeWorkspacePathAncestors(run, dirname(cwd));
-      await mkdir(dirname(cwd), { recursive: true });
-      await assertSafeWorkspacePathAncestors(run, dirname(cwd));
-      try {
-        await lstat(cwd);
-        throw workflowError("schedule", cwd, `workspace for map slot "${key}" already exists`);
-      } catch (error) {
-        if (!isMissingPathError(error)) throw error;
-      }
-
-      const supplied = options.fork;
-      const fork = typeof supplied === "function"
-        ? await supplied()
-        : supplied ?? await prepareMapLaneFork(source, { runDir: run, runId, jobOrdinal, frames });
-      const gitRoot = fork.gitRoot;
-      const removeAllocatedWorkspace = async (): Promise<void> => {
-        try {
-          await assertCanonicalRunRoot(runRoot);
-          await rm(cwd, { recursive: true, force: true });
-          await execFileAsync("git", ["-C", gitRoot, "worktree", "prune"]).catch(() => undefined);
-        } catch (error) {
-          // If the run root changed, do not follow the replacement to clean
-          // up; report the residue so recovery can inspect the original root.
-          throw workflowError("schedule", cwd, `allocated workspace cleanup failed: ${errorMessage(error)}`);
-        }
-      };
-      const laneAllocator = options.laneAllocator ?? createLaneNumberAllocator();
-      let laneBranch = "";
-      let addFailure: unknown;
-      try {
-        await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-        await assertCanonicalRunRoot(runRoot);
-        for (let attempt = 0; attempt < 8; attempt += 1) {
-          const next = await laneAllocator.next({
-            scanRoot: gitRoot,
-            commonRoot: fork.commonRoot,
-            mnemonic: options.mnemonic,
-          });
-          const branch = laneBranchName(options.mnemonic, next);
-          try {
-            await addLaneWorktree(gitRoot, branch, cwd, fork.commit);
-            laneBranch = branch;
-            addFailure = undefined;
-            break;
-          } catch (error) {
-            addFailure = error;
-            // A concurrent allocation may have taken the number; the hint is
-            // already advanced past it, so just try the next one.
-            if (!errorMessage(error).includes("already exists")) break;
-          }
-        }
-        if (addFailure !== undefined) throw addFailure;
-      } catch (error) {
-        await removeAllocatedWorkspace();
-        throw error;
-      }
-      const now = new Date().toISOString();
-      const record: WorkflowWorkspaceRecord = {
-        version: 3,
-        key,
-        cwd,
-        sourceCwd: source,
-        strategy: fork.strategy,
-        phase: "allocated",
-        mnemonic: options.mnemonic,
-        laneBranch,
-        baseCommit: fork.commit,
-        ...(fork.sourceBranch === undefined ? {} : { sourceBranch: fork.sourceBranch }),
-        createdAt: now,
-        updatedAt: now,
-        gitRoot,
-      };
-      try {
-        await writeWorkspaceRecord(recordPath, record, runRoot);
-      } catch (error) {
-        await removeAllocatedWorkspace();
-        throw error;
-      }
-      return bindingFromRecord(record, recordPath);
-    },
-    catch: (cause) => cause instanceof WorkflowError
-      ? cause
-      : workflowError("schedule", sourceCwd, errorMessage(cause)),
+  return TRACE(WORKSPACE_SOURCE, Effect.gen(function* () {
+    const prepared = yield* prepareMapSlot(runDir, jobOrdinal, frames, sourceCwd, options.mnemonic).pipe(
+      Effect.mapError((failure) => failureAt(sourceCwd, failure)),
+    );
+    if (prepared.kind !== "pending") return prepared;
+    const fork = options.fork === undefined
+      ? yield* prepareMapLaneFork(prepared.source, {
+        runDir: prepared.run,
+        runId,
+        jobOrdinal,
+        frames,
+      })
+      : yield* options.fork;
+    return yield* allocatePreparedMapSlot(prepared, fork, options).pipe(
+      Effect.mapError((failure) => failureAt(sourceCwd, failure)),
+    );
   }), {
     runDir,
     runId,
     sourceCwd: resolve(sourceCwd),
     instanceId: runtimeInstanceId(frames),
-  }).pipe(Effect.mapError((cause) => cause instanceof WorkflowError
-    ? cause
-    : workflowError("schedule", sourceCwd, errorMessage(cause))));
+  });
 }
 
 export interface WorkflowWorkspaceCleanupOptions {
@@ -896,108 +1024,106 @@ export interface WorkflowWorkspaceCleanupOptions {
   readonly preserve?: boolean;
 }
 
-async function readWorkspaceRecords(
+function readWorkspaceRecords(
   runRoot: CanonicalRunRoot,
   sourceCwd?: string,
   keys?: readonly string[],
-): Promise<readonly { readonly path: string; readonly record: WorkflowWorkspaceRecord }[]> {
-  await assertCanonicalRunRoot(runRoot);
-  const run = runRoot.canonical;
-  const recordsRoot = workspaceRecordRoot(run);
-  try {
-    await lstat(recordsRoot);
-  } catch (error) {
-    if (isMissingPathError(error)) return [];
-    throw error;
-  }
-  await assertSafeWorkspaceDirectory(run, recordsRoot);
-  let entries;
-  try {
-    entries = await readdir(recordsRoot, { withFileTypes: true });
-  } catch (error) {
-    if (isMissingPathError(error)) return [];
-    throw error;
-  }
-  const expectedSource = sourceCwd === undefined ? undefined : await realpath(resolve(sourceCwd));
-  const selectedKeys = keys === undefined ? undefined : new Set(keys);
-  const records: Array<{ readonly path: string; readonly record: WorkflowWorkspaceRecord }> = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.isSymbolicLink()) {
-      throw workflowError("schedule", join(recordsRoot, entry.name), "workspace record directory cannot be a symlink");
+): Effect.Effect<readonly { readonly path: string; readonly record: WorkflowWorkspaceRecord }[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    yield* assertCanonicalRunRoot(runRoot);
+    const run = runRoot.canonical;
+    const recordsRoot = workspaceRecordRoot(run);
+    const recordsRootInfo = yield* ioLeaf(io.lstat(recordsRoot)).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+    );
+    if (recordsRootInfo === undefined) return [];
+    yield* assertSafeWorkspaceDirectory(run, recordsRoot);
+    const entries = yield* ioLeaf(io.readdir(recordsRoot)).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+    );
+    if (entries === undefined) return [];
+    let expectedSource: string | undefined;
+    if (sourceCwd !== undefined) {
+      expectedSource = yield* ioLeaf(io.realpath(resolve(sourceCwd)));
     }
-    // `.removing` is the crash-safe trash an interrupted sweep leaves behind.
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    let key: string;
-    try {
-      key = decodeURIComponent(entry.name);
-    } catch (error) {
-      throw workflowError("schedule", join(recordsRoot, entry.name), `workspace record key is not encoded safely: ${errorMessage(error)}`);
+    const selectedKeys = keys === undefined ? undefined : new Set(keys);
+    const records: Array<{ readonly path: string; readonly record: WorkflowWorkspaceRecord }> = [];
+    for (const entry of [...entries].sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.isSymbolicLink()) {
+        return yield* Effect.fail(workflowError("schedule", join(recordsRoot, entry.name), "workspace record directory cannot be a symlink"));
+      }
+      // `.removing` is the crash-safe trash an interrupted sweep leaves behind.
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const key = yield* Effect.try({
+        try: () => decodeURIComponent(entry.name),
+        catch: (error) => workflowError("schedule", join(recordsRoot, entry.name), `workspace record key is not encoded safely: ${errorMessage(error)}`),
+      });
+      if (selectedKeys !== undefined && !selectedKeys.has(key)) continue;
+      yield* assertCanonicalRunRoot(runRoot);
+      yield* assertSafeWorkspaceDirectory(run, join(recordsRoot, entry.name));
+      const recordPath = join(recordsRoot, entry.name, "record.json");
+      const expectedCwd = workspacePath(run, key);
+      const record = yield* readWorkspaceRecord(recordPath, {
+        key,
+        cwd: expectedCwd,
+      });
+      if (record === undefined) {
+        return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record is missing"));
+      }
+      if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(run, resolve(record.cwd))) {
+        return yield* Effect.fail(workflowError("schedule", recordPath, "workspace record points outside its execution directory"));
+      }
+      records.push({ path: recordPath, record });
     }
-    if (selectedKeys !== undefined && !selectedKeys.has(key)) continue;
-    await assertCanonicalRunRoot(runRoot);
-    await assertSafeWorkspaceDirectory(run, join(recordsRoot, entry.name));
-    const recordPath = join(recordsRoot, entry.name, "record.json");
-    const expectedCwd = workspacePath(run, key);
-    const record = await readWorkspaceRecord(recordPath, {
-      key,
-      cwd: expectedCwd,
-    });
-    if (record === undefined) {
-      throw workflowError("schedule", recordPath, "workspace record is missing");
-    }
-    if (resolve(record.cwd) !== resolve(expectedCwd) || !pathWithin(run, resolve(record.cwd))) {
-      throw workflowError("schedule", recordPath, "workspace record points outside its execution directory");
-    }
-    records.push({ path: recordPath, record });
-  }
-  if (expectedSource !== undefined) {
-    for (const { path, record } of records) {
-      const source = resolve(record.sourceCwd);
-      if (source !== expectedSource) {
-        throw workflowError("schedule", path, "workspace record belongs to a different source workspace");
+    if (expectedSource !== undefined) {
+      for (const { path, record } of records) {
+        const source = resolve(record.sourceCwd);
+        if (source !== expectedSource) {
+          return yield* Effect.fail(workflowError("schedule", path, "workspace record belongs to a different source workspace"));
+        }
       }
     }
-  }
-  return records;
+    return records;
+  });
 }
 
 /** Commit a lane's remaining edits onto its own branch before the worktree is
  * removed. Every lane keeps its history — the branch is the lane version — so
  * a losing lane's work must not vanish with its working copy. */
-async function checkpointLane(record: WorkflowWorkspaceRecord): Promise<void> {
-  await stageAndCommitWorktree(record.cwd, `piano: lane ${record.laneBranch} final state`);
+function checkpointLane(record: WorkflowWorkspaceRecord): Effect.Effect<void, WorkspaceFailure> {
+  return stageAndCommitWorktree(record.cwd, `piano: lane ${record.laneBranch} final state`).pipe(Effect.asVoid);
 }
 
-async function removeWorkspaceDirectory(
+function removeWorkspaceDirectory(
   record: WorkflowWorkspaceRecord,
   runRoot: CanonicalRunRoot,
   executionRoot: string,
-): Promise<void> {
-  await assertCanonicalRunRoot(runRoot);
-  let kind: "directory" | "file" | "symlink" | "missing";
-  try {
-    const info = await lstat(record.cwd);
-    kind = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-  const gitRoot = await assertOwnedWorkspace(executionRoot, record);
-  if (kind !== "directory") {
-    throw workflowError("schedule", record.cwd, `refusing to cleanup non-directory workspace (${kind})`);
-  }
-  await checkpointLane(record);
-  try {
-    await assertCanonicalRunRoot(runRoot);
-    await execFileAsync("git", ["-C", gitRoot, "worktree", "remove", "--force", record.cwd], { encoding: "utf8" });
-  } catch (error) {
-    // A failed Git removal leaves the worktree admin entry uncertain. Keep
-    // the directory intact so recovery can repair Git and retry cleanup.
-    throw workflowError("schedule", record.cwd, `git worktree cleanup failed: ${errorMessage(error)}`);
-  }
-  if (await pathExists(record.cwd)) {
-    throw workflowError("schedule", record.cwd, "git worktree cleanup reported success but the workspace still exists");
-  }
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    yield* assertCanonicalRunRoot(runRoot);
+    const info = yield* ioLeaf(io.lstat(record.cwd)).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(undefined)),
+    );
+    if (info === undefined) return;
+    const kind: "directory" | "file" | "symlink" = info.isSymbolicLink() ? "symlink" : info.isDirectory() ? "directory" : "file";
+    const gitRoot = yield* assertOwnedWorkspace(executionRoot, record);
+    if (kind !== "directory") {
+      return yield* Effect.fail(workflowError("schedule", record.cwd, `refusing to cleanup non-directory workspace (${kind})`));
+    }
+    yield* checkpointLane(record);
+    const removal = yield* Effect.gen(function* () {
+      yield* assertCanonicalRunRoot(runRoot);
+      yield* ioLeaf(io.execFile("git", ["-C", gitRoot, "worktree", "remove", "--force", record.cwd]));
+    }).pipe(Effect.either);
+    if (removal._tag === "Left") {
+      // A failed Git removal leaves the worktree admin entry uncertain. Keep
+      // the directory intact so recovery can repair Git and retry cleanup.
+      return yield* Effect.fail(workflowError("schedule", record.cwd, `git worktree cleanup failed: ${errorMessage(rawCause(removal.left))}`));
+    }
+    if (yield* pathExists(record.cwd)) {
+      return yield* Effect.fail(workflowError("schedule", record.cwd, "git worktree cleanup reported success but the workspace still exists"));
+    }
+  });
 }
 
 /** Sweep every slot in one execution: a preserved slot keeps its record and
@@ -1006,53 +1132,46 @@ async function removeWorkspaceDirectory(
 export function cleanupMapWorkspaces(
   runDir: string,
   options: WorkflowWorkspaceCleanupOptions = {},
-): Effect.Effect<readonly WorkflowWorkspaceRecord[], WorkflowError, FileSystem.FileSystem | Logging> {
-  return Effect.tryPromise({
-    try: async () => {
-      const runRoot = await canonicalRunRoot(runDir, false);
-      const all = await readWorkspaceRecords(runRoot, options.sourceCwd, options.keys);
-      const prefix = options.keyPrefix;
-      const selected = prefix === undefined
-        ? all
-        : all.filter(({ record }) => record.key.startsWith(prefix));
-      const depth = new Map(selected.map(({ record }) => [record.key, record.key.split("/").length]));
-      // Deepest key first: a nested lane's repository root is its parent lane,
-      // so the child worktree must be removed while the parent still exists.
-      const records = selected.slice().sort((left, right) =>
-        (depth.get(right.record.key) ?? 0) - (depth.get(left.record.key) ?? 0)
-        || right.record.key.localeCompare(left.record.key));
-      const finalized: WorkflowWorkspaceRecord[] = [];
-      for (const { path, record } of records) {
-        const now = new Date().toISOString();
-        if (options.preserve === true) {
-          // A preserved slot is advertised as recoverable. Validate the
-          // concrete directory before recording that state; metadata-only
-          // preservation must never bless a substituted symlink or node.
-          await assertOwnedWorkspace(runRoot.canonical, record);
-          const preserved: WorkflowWorkspaceRecord = {
-            ...record,
-            phase: "preserved",
-            updatedAt: now,
-          };
-          await writeWorkspaceRecord(path, preserved, runRoot);
-          finalized.push(preserved);
-          continue;
-        }
-        const cleaning: WorkflowWorkspaceRecord = { ...record, phase: "cleaning", updatedAt: now };
-        await writeWorkspaceRecord(path, cleaning, runRoot);
-        await removeWorkspaceDirectory(cleaning, runRoot, runRoot.canonical);
-        // The lane branch is the durable record now: cleanup leaves no
-        // tombstone, so a later sweep finds nothing to re-read.
-        await removeWorkspaceRecord(path, runRoot);
+): Effect.Effect<readonly WorkflowWorkspaceRecord[], WorkflowError, Logging> {
+  return Effect.gen(function* () {
+    const runRoot = yield* canonicalRunRoot(runDir, false);
+    const all = yield* readWorkspaceRecords(runRoot, options.sourceCwd, options.keys);
+    const prefix = options.keyPrefix;
+    const selected = prefix === undefined
+      ? all
+      : all.filter(({ record }) => record.key.startsWith(prefix));
+    const depth = new Map(selected.map(({ record }) => [record.key, record.key.split("/").length]));
+    // Deepest key first: a nested lane's repository root is its parent lane,
+    // so the child worktree must be removed while the parent still exists.
+    const records = selected.slice().sort((left, right) =>
+      (depth.get(right.record.key) ?? 0) - (depth.get(left.record.key) ?? 0)
+      || right.record.key.localeCompare(left.record.key));
+    const finalized: WorkflowWorkspaceRecord[] = [];
+    for (const { path, record } of records) {
+      const now = new Date().toISOString();
+      if (options.preserve === true) {
+        // A preserved slot is advertised as recoverable. Validate the
+        // concrete directory before recording that state; metadata-only
+        // preservation must never bless a substituted symlink or node.
+        yield* assertOwnedWorkspace(runRoot.canonical, record);
+        const preserved: WorkflowWorkspaceRecord = {
+          ...record,
+          phase: "preserved",
+          updatedAt: now,
+        };
+        yield* writeWorkspaceRecord(path, preserved, runRoot);
+        finalized.push(preserved);
+        continue;
       }
-      return finalized;
-    },
-    catch: (cause) => cause instanceof WorkflowError
-      ? cause
-      : workflowError("schedule", runDir, errorMessage(cause)),
-  }).pipe(Effect.mapError((cause) => cause instanceof WorkflowError
-    ? cause
-    : workflowError("schedule", runDir, errorMessage(cause))));
+      const cleaning: WorkflowWorkspaceRecord = { ...record, phase: "cleaning", updatedAt: now };
+      yield* writeWorkspaceRecord(path, cleaning, runRoot);
+      yield* removeWorkspaceDirectory(cleaning, runRoot, runRoot.canonical);
+      // The lane branch is the durable record now: cleanup leaves no
+      // tombstone, so a later sweep finds nothing to re-read.
+      yield* removeWorkspaceRecord(path, runRoot);
+    }
+    return finalized;
+  }).pipe(Effect.mapError((failure) => failureAt(runDir, failure)));
 }
 
 /** Provenance of how a tournament winner was carried into the parent scope.
@@ -1115,27 +1234,34 @@ export interface WorkspaceLstatEntry {
   readonly contentHash?: string;
 }
 
-async function assertSafeWorkspaceAncestors(root: string, path: string): Promise<void> {
-  const segments = workspacePathSegments(path);
-  let current = resolve(root);
-  const rootInfo = await lstat(current);
-  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || resolve(await realpath(current)) !== current) {
-    throw workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory root");
-  }
-  const caseInsensitive = await isCaseInsensitiveFileSystem(current);
-  if (segments.some((segment) => isProtectedWorkspaceName(segment, caseInsensitive))) {
-    throw workflowError("schedule", root, `unsafe workspace rollback path: ${path}`);
-  }
-  for (const segment of segments.slice(0, -1)) {
-    current = join(current, segment);
-    const info = await lstat(current);
-    if (!info.isDirectory() || info.isSymbolicLink()) {
-      throw workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory ancestor");
+function assertSafeWorkspaceAncestors(root: string, path: string): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const segments = workspacePathSegments(path);
+    let current = resolve(root);
+    const rootInfo = yield* ioLeaf(io.lstat(current));
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+      return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory root"));
     }
-    if (resolve(await realpath(current)) !== current) {
-      throw workflowError("schedule", current, "workspace rollback refuses a symlink ancestor");
+    const rootRealpath = yield* ioLeaf(io.realpath(current));
+    if (resolve(rootRealpath) !== current) {
+      return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory root"));
     }
-  }
+    const caseInsensitive = yield* isCaseInsensitiveFileSystem(current);
+    if (segments.some((segment) => isProtectedWorkspaceName(segment, caseInsensitive))) {
+      return yield* Effect.fail(workflowError("schedule", root, `unsafe workspace rollback path: ${path}`));
+    }
+    for (const segment of segments.slice(0, -1)) {
+      current = join(current, segment);
+      const info = yield* ioLeaf(io.lstat(current));
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink or non-directory ancestor"));
+      }
+      const ancestorRealpath = yield* ioLeaf(io.realpath(current));
+      if (resolve(ancestorRealpath) !== current) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace rollback refuses a symlink ancestor"));
+      }
+    }
+  });
 }
 
 function safeWorkspaceNodePath(root: string, path: string): string {
@@ -1158,29 +1284,31 @@ function safeWorkspaceNodePath(root: string, path: string): string {
 /** Verify a run-owned slot without following a substituted directory. The
  * lexical check protects the record boundary; lstat plus realpath checks
  * protect every ancestor and the final slot against symlink replacement. */
-async function assertSafeWorkspaceDirectory(root: string, candidate: string): Promise<void> {
-  const canonicalRoot = await realpath(root);
-  const lexicalCandidate = resolve(candidate);
-  if (!pathWithin(canonicalRoot, lexicalCandidate)) {
-    throw workflowError("schedule", candidate, "workspace path escapes its execution directory");
-  }
+function assertSafeWorkspaceDirectory(root: string, candidate: string): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const canonicalRoot = yield* ioLeaf(io.realpath(root));
+    const lexicalCandidate = resolve(candidate);
+    if (!pathWithin(canonicalRoot, lexicalCandidate)) {
+      return yield* Effect.fail(workflowError("schedule", candidate, "workspace path escapes its execution directory"));
+    }
 
-  const segments = workspacePathSegments(relative(canonicalRoot, lexicalCandidate)).filter((segment) => segment !== "");
-  let current = canonicalRoot;
-  for (const segment of segments) {
-    current = join(current, segment);
-    const info = await lstat(current);
-    if (info.isSymbolicLink()) {
-      throw workflowError("schedule", current, "workspace slot refuses a symlink ancestor or directory substitution");
+    const segments = workspacePathSegments(relative(canonicalRoot, lexicalCandidate)).filter((segment) => segment !== "");
+    let current = canonicalRoot;
+    for (const segment of segments) {
+      current = join(current, segment);
+      const info = yield* ioLeaf(io.lstat(current));
+      if (info.isSymbolicLink()) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace slot refuses a symlink ancestor or directory substitution"));
+      }
+      if (!info.isDirectory()) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace slot has a non-directory ancestor"));
+      }
+      const actual = yield* ioLeaf(io.realpath(current));
+      if (resolve(actual) !== resolve(current) || !pathWithin(canonicalRoot, actual)) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace slot realpath escapes its execution directory"));
+      }
     }
-    if (!info.isDirectory()) {
-      throw workflowError("schedule", current, "workspace slot has a non-directory ancestor");
-    }
-    const actual = await realpath(current);
-    if (resolve(actual) !== resolve(current) || !pathWithin(canonicalRoot, actual)) {
-      throw workflowError("schedule", current, "workspace slot realpath escapes its execution directory");
-    }
-  }
+  });
 }
 
 /** The record path alone is not ownership: an interrupted cleanup can leave
@@ -1192,72 +1320,73 @@ async function assertSafeWorkspaceDirectory(root: string, candidate: string): Pr
  * still a check-then-use guard: a same-UID attacker can race the final
  * filesystem operation; eliminating that residual requires descriptor/openat2
  * sandboxing. */
-async function assertRunOwnedWorkspaceDirectory(
+function assertRunOwnedWorkspaceDirectory(
   root: string,
   candidate: string,
   gitRoot: string | undefined,
-): Promise<string> {
-  await assertSafeWorkspaceDirectory(root, candidate);
-  if (gitRoot === undefined) {
-    throw workflowError("schedule", candidate, "workspace slot has no owning repository");
-  }
-  let pointer: string;
-  try {
-    pointer = await readFile(join(candidate, ".git"), "utf8");
-  } catch (error) {
-    if (isMissingPathError(error)) {
-      throw workflowError("schedule", candidate, "workspace slot is not a run-owned worktree");
+): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    yield* assertSafeWorkspaceDirectory(root, candidate);
+    if (gitRoot === undefined) {
+      return yield* Effect.fail(workflowError("schedule", candidate, "workspace slot has no owning repository"));
     }
-    throw error;
-  }
-  const adminDir = /^gitdir:\s*(.+)$/mu.exec(pointer)?.[1];
-  if (adminDir === undefined) {
-    throw workflowError("schedule", candidate, "workspace slot is not a run-owned worktree");
-  }
-  const admin = resolve(candidate, adminDir);
-  const owner = await gitWorktreeAdminParent(gitRoot);
-  if (!pathWithin(owner, admin, false)) {
-    throw workflowError("schedule", candidate, `workspace slot worktree does not belong to ${gitRoot}`);
-  }
-  return gitRoot;
+    const pointer = yield* ioLeaf(io.readText(join(candidate, ".git"))).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.fail(
+        workflowError("schedule", candidate, "workspace slot is not a run-owned worktree"),
+      )),
+    );
+    const adminDir = /^gitdir:\s*(.+)$/mu.exec(pointer)?.[1];
+    if (adminDir === undefined) {
+      return yield* Effect.fail(workflowError("schedule", candidate, "workspace slot is not a run-owned worktree"));
+    }
+    const admin = resolve(candidate, adminDir);
+    const owner = yield* gitWorktreeAdminParent(gitRoot);
+    if (!pathWithin(owner, admin, false)) {
+      return yield* Effect.fail(workflowError("schedule", candidate, `workspace slot worktree does not belong to ${gitRoot}`));
+    }
+    return gitRoot;
+  });
 }
 
 /** The full lane-ownership rule, once: the directory is a run-owned worktree
  * of `record.gitRoot`, it is checked out on the record's lane branch, that
  * branch still points at the worktree's HEAD, and a source-owned lane's
  * repository is still the source's own. */
-async function assertOwnedWorkspace(
+function assertOwnedWorkspace(
   root: string,
   record: WorkflowWorkspaceRecord,
-): Promise<string> {
-  const gitRoot = await assertRunOwnedWorkspaceDirectory(root, record.cwd, record.gitRoot);
-  // One process: the worktree shares the repository's refs, so both the tip
-  // and the branch can be resolved from inside the lane.
-  const tips = await execFileAsync("git", [
-    "-C", record.cwd,
-    "rev-parse", "HEAD", `refs/heads/${record.laneBranch}`,
-  ], { encoding: "utf8" }).then((result) => result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)).catch(() => []);
-  if (tips.length !== 2 || tips[0] !== tips[1]) {
-    throw workflowError("schedule", record.cwd, `workspace slot is not checked out on its lane branch ${record.laneBranch}`);
-  }
-  if (record.strategy === "git-worktree") await assertGitRootBound(record.sourceCwd, gitRoot);
-  return gitRoot;
+): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const gitRoot = yield* assertRunOwnedWorkspaceDirectory(root, record.cwd, record.gitRoot);
+    // One process: the worktree shares the repository's refs, so both the tip
+    // and the branch can be resolved from inside the lane.
+    const tips = yield* ioLeaf(io.execFile("git", [
+      "-C", record.cwd,
+      "rev-parse", "HEAD", `refs/heads/${record.laneBranch}`,
+    ])).pipe(
+      Effect.map((result) => result.stdout.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)),
+      Effect.catchAll(() => Effect.succeed([] as string[])),
+    );
+    if (tips.length !== 2 || tips[0] !== tips[1]) {
+      return yield* Effect.fail(workflowError("schedule", record.cwd, `workspace slot is not checked out on its lane branch ${record.laneBranch}`));
+    }
+    if (record.strategy === "git-worktree") yield* assertGitRootBound(record.sourceCwd, gitRoot);
+    return gitRoot;
+  });
 }
 
-async function regularFileHash(root: string, path: string): Promise<string> {
-  await assertSafeWorkspaceAncestors(root, path);
-  const filePath = safeWorkspaceNodePath(root, path);
-  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
-  const handle = await open(filePath, flags);
-  try {
-    const info = await handle.stat();
+function regularFileHash(root: string, path: string): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    yield* assertSafeWorkspaceAncestors(root, path);
+    const filePath = yield* guard(() => safeWorkspaceNodePath(root, path));
+    // O_NOFOLLOW/O_NONBLOCK open, stat, read, and a close that cannot replace
+    // the operation result all live in the adapter.
+    const { info, content } = yield* ioLeaf(io.readFileNoFollow(filePath));
     if (!info.isFile()) {
-      throw workflowError("schedule", filePath, "workspace rollback refuses a non-regular file");
+      return yield* Effect.fail(workflowError("schedule", filePath, "workspace rollback refuses a non-regular file"));
     }
-    return createHash("sha256").update(await handle.readFile()).digest("hex");
-  } finally {
-    await handle.close();
-  }
+    return createHash("sha256").update(content).digest("hex");
+  });
 }
 
 function lstatEntryEqual(left: WorkspaceLstatEntry, right: WorkspaceLstatEntry): boolean {
@@ -1273,120 +1402,132 @@ function lstatEntryEqual(left: WorkspaceLstatEntry, right: WorkspaceLstatEntry):
  * symlinks, directory symlinks, and special nodes, while rollback must be able
  * to name and remove those nodes without reading through them.
  */
-export async function inventoryWorkspaceLstat(
+function inventoryWorkspaceLstatInternal(
   root: string,
   excluded: readonly string[] = [],
-): Promise<readonly WorkspaceLstatEntry[]> {
-  await realpath(root);
-  const caseInsensitive = await isCaseInsensitiveFileSystem(root);
-  const excludedUnder = excluded.map((entry) => resolve(entry));
-  const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
-  const reachable = (candidate: string): boolean =>
-    effectiveExcluded.every((entry) => !pathWithin(entry, resolve(candidate)));
-  const protectsExcludedDescendant = (candidate: string): boolean =>
-    effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
-  const entries: WorkspaceLstatEntry[] = [];
-  const rootInfo = await lstat(root);
-  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
-    throw workflowError("schedule", root, "workspace rollback refuses a symlink or non-directory root");
-  }
-  entries.push({ path: WORKSPACE_ROOT_PATH, kind: "directory", mode: rootInfo.mode & 0o7777 });
-
-  const visit = async (directory: string): Promise<void> => {
-    const directoryInfo = await lstat(directory);
-    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
-      throw workflowError("schedule", directory, "workspace rollback refuses a symlink or non-directory ancestor");
+): Effect.Effect<readonly WorkspaceLstatEntry[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    yield* ioLeaf(io.realpath(root));
+    const caseInsensitive = yield* isCaseInsensitiveFileSystem(root);
+    const excludedUnder = excluded.map((entry) => resolve(entry));
+    const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
+    const reachable = (candidate: string): boolean =>
+      effectiveExcluded.every((entry) => !pathWithin(entry, resolve(candidate)));
+    const protectsExcludedDescendant = (candidate: string): boolean =>
+      effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
+    const entries: WorkspaceLstatEntry[] = [];
+    const rootInfo = yield* ioLeaf(io.lstat(root));
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+      return yield* Effect.fail(workflowError("schedule", root, "workspace rollback refuses a symlink or non-directory root"));
     }
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (isProtectedWorkspaceName(entry.name, caseInsensitive)) continue;
-      const entryPath = join(directory, entry.name);
-      if (!reachable(entryPath)) continue;
-      const info = await lstat(entryPath);
-      const path = relative(root, entryPath);
-      const base = { path, mode: info.mode & 0o7777 };
-      if (info.isSymbolicLink()) {
-        // readlink does not resolve the target. Do not call realpath here.
-        entries.push({ ...base, kind: "symlink", symlinkTarget: await readlink(entryPath) });
-      } else if (info.isDirectory()) {
-        // Do not make an ancestor of an excluded run subtree a rollback root:
-        // removing that ancestor would also delete the evidence we promised to
-        // preserve. Non-excluded descendants are still inventoried below.
-        if (!protectsExcludedDescendant(entryPath)) entries.push({ ...base, kind: "directory" });
-        await visit(entryPath);
-      } else if (info.isFile()) {
-        entries.push({ ...base, kind: "file", contentHash: await regularFileHash(root, path) });
-      } else if (info.isFIFO()) {
-        // Never read a FIFO: doing so can block or consume another process's
-        // stream. The path is still part of the rollback inventory.
-        entries.push({ ...base, kind: "fifo" });
-      } else {
-        entries.push({ ...base, kind: "other" });
+    entries.push({ path: WORKSPACE_ROOT_PATH, kind: "directory", mode: rootInfo.mode & 0o7777 });
+
+    const visit = (directory: string): Effect.Effect<void, WorkspaceFailure> => Effect.gen(function* () {
+      const directoryInfo = yield* ioLeaf(io.lstat(directory));
+      if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) {
+        return yield* Effect.fail(workflowError("schedule", directory, "workspace rollback refuses a symlink or non-directory ancestor"));
       }
-    }
-  };
+      const children = yield* ioLeaf(io.readdir(directory));
+      for (const entry of children) {
+        if (isProtectedWorkspaceName(entry.name, caseInsensitive)) continue;
+        const entryPath = join(directory, entry.name);
+        if (!reachable(entryPath)) continue;
+        const info = yield* ioLeaf(io.lstat(entryPath));
+        const path = relative(root, entryPath);
+        const base = { path, mode: info.mode & 0o7777 };
+        if (info.isSymbolicLink()) {
+          // readlink does not resolve the target. Do not call realpath here.
+          entries.push({ ...base, kind: "symlink", symlinkTarget: yield* ioLeaf(io.readlink(entryPath)) });
+        } else if (info.isDirectory()) {
+          // Do not make an ancestor of an excluded run subtree a rollback root:
+          // removing that ancestor would also delete the evidence we promised to
+          // preserve. Non-excluded descendants are still inventoried below.
+          if (!protectsExcludedDescendant(entryPath)) entries.push({ ...base, kind: "directory" });
+          yield* visit(entryPath);
+        } else if (info.isFile()) {
+          entries.push({ ...base, kind: "file", contentHash: yield* regularFileHash(root, path) });
+        } else if (info.isFIFO()) {
+          // Never read a FIFO: doing so can block or consume another process's
+          // stream. The path is still part of the rollback inventory.
+          entries.push({ ...base, kind: "fifo" });
+        } else {
+          entries.push({ ...base, kind: "other" });
+        }
+      }
+    });
 
-  await visit(root);
-  return entries.sort((left, right) => left.path.localeCompare(right.path));
+    yield* visit(root);
+    return entries.sort((left, right) => left.path.localeCompare(right.path));
+  });
 }
 
 /** Diff two tolerant lstat inventories. Unsupported nodes are reported as
  * ordinary changed paths; no target is resolved and no special node is read. */
-export async function diffWorkspaceLstat(
+function diffWorkspaceLstatInternal(
   baselineRoot: string,
   candidateRoot: string,
   excluded: readonly string[] = [],
-): Promise<readonly WorkspaceContentChange[]> {
-  const [baseline, candidate] = await Promise.all([
-    inventoryWorkspaceLstat(baselineRoot, excluded),
-    inventoryWorkspaceLstat(candidateRoot, excluded),
-  ]);
-  const baselineByPath = new Map(baseline.map((entry) => [entry.path, entry]));
-  const candidateByPath = new Map(candidate.map((entry) => [entry.path, entry]));
-  const changes: WorkspaceContentChange[] = [];
-  for (const path of [...new Set([...baselineByPath.keys(), ...candidateByPath.keys()])].sort()) {
-    const before = baselineByPath.get(path);
-    const after = candidateByPath.get(path);
-    if (before === undefined) changes.push({ path, kind: "added" });
-    else if (after === undefined) changes.push({ path, kind: "deleted" });
-    else if (!lstatEntryEqual(before, after)) changes.push({ path, kind: "modified" });
-  }
-  return changes;
+): Effect.Effect<readonly WorkspaceContentChange[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const [baseline, candidate] = yield* Effect.all([
+      inventoryWorkspaceLstatInternal(baselineRoot, excluded),
+      inventoryWorkspaceLstatInternal(candidateRoot, excluded),
+    ], { concurrency: "unbounded" });
+    const baselineByPath = new Map(baseline.map((entry) => [entry.path, entry]));
+    const candidateByPath = new Map(candidate.map((entry) => [entry.path, entry]));
+    const changes: WorkspaceContentChange[] = [];
+    for (const path of [...new Set([...baselineByPath.keys(), ...candidateByPath.keys()])].sort()) {
+      const before = baselineByPath.get(path);
+      const after = candidateByPath.get(path);
+      if (before === undefined) changes.push({ path, kind: "added" });
+      else if (after === undefined) changes.push({ path, kind: "deleted" });
+      else if (!lstatEntryEqual(before, after)) changes.push({ path, kind: "modified" });
+    }
+    return changes;
+  });
 }
 
-async function removeWorkspaceLstatNode(root: string, path: string): Promise<void> {
-  safeWorkspaceNodePath(root, path);
-  await assertSafeWorkspaceAncestors(root, path);
-  await rm(safeWorkspaceNodePath(root, path), { recursive: true, force: true });
+function removeWorkspaceLstatNode(root: string, path: string): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    yield* guard(() => safeWorkspaceNodePath(root, path));
+    yield* assertSafeWorkspaceAncestors(root, path);
+    const node = yield* guard(() => safeWorkspaceNodePath(root, path));
+    yield* ioLeaf(io.rm(node, { recursive: true, force: true }));
+  });
 }
 
-async function copyWorkspaceLstatNode(
+function copyWorkspaceLstatNode(
   sourceRoot: string,
   targetRoot: string,
   path: string,
-): Promise<void> {
-  const source = safeWorkspaceNodePath(sourceRoot, path);
-  const target = safeWorkspaceNodePath(targetRoot, path);
-  await assertSafeWorkspaceAncestors(sourceRoot, path);
-  await assertSafeWorkspaceAncestors(targetRoot, path);
-  const info = await lstat(source);
-  if (info.isSymbolicLink()) {
-    await symlink(await readlink(source), target);
-    return;
-  }
-  if (info.isFile()) {
-    await cp(source, target, { dereference: false });
-    await chmod(target, info.mode & 0o7777);
-    return;
-  }
-  if (info.isDirectory()) {
-    await mkdir(target, { recursive: true });
-    for (const entry of await readdir(source, { withFileTypes: true })) {
-      await copyWorkspaceLstatNode(sourceRoot, targetRoot, join(path, entry.name));
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const source = yield* guard(() => safeWorkspaceNodePath(sourceRoot, path));
+    const target = yield* guard(() => safeWorkspaceNodePath(targetRoot, path));
+    yield* assertSafeWorkspaceAncestors(sourceRoot, path);
+    yield* assertSafeWorkspaceAncestors(targetRoot, path);
+    const info = yield* ioLeaf(io.lstat(source));
+    if (info.isSymbolicLink()) {
+      const target0 = yield* ioLeaf(io.readlink(source));
+      yield* ioLeaf(io.symlink(target0, target));
+      return;
     }
-    await chmod(target, info.mode & 0o7777);
-    return;
-  }
-  throw workflowError("schedule", source, "workspace rollback cannot recreate a special baseline node");
+    if (info.isFile()) {
+      yield* ioLeaf(io.cp(source, target, { dereference: false }));
+      yield* ioLeaf(io.chmod(target, info.mode & 0o7777));
+      return;
+    }
+    if (info.isDirectory()) {
+      yield* ioLeaf(io.mkdir(target, { recursive: true }));
+      const children = yield* ioLeaf(io.readdir(source));
+      for (const entry of children) {
+        yield* copyWorkspaceLstatNode(sourceRoot, targetRoot, join(path, entry.name));
+      }
+      yield* ioLeaf(io.chmod(target, info.mode & 0o7777));
+      return;
+    }
+    return yield* Effect.fail(workflowError("schedule", source, "workspace rollback cannot recreate a special baseline node"));
+  });
 }
 
 function isWorkspacePathAncestor(parent: string, child: string): boolean {
@@ -1403,154 +1544,187 @@ function workspacePathDepth(path: string): number {
 /** Restore a tolerant lstat diff without traversing symlink ancestors. This
  * exists for rollback only; it does not weaken `diffWorkspaceChangeSet()` or the
  * normal strict gate. */
-export async function restoreWorkspaceLstat(
+function restoreWorkspaceLstatInternal(
   targetRoot: string,
   baselineRoot: string,
   changes?: readonly WorkspaceContentChange[],
   excluded: readonly string[] = [],
-): Promise<void> {
-  const effectiveChanges = changes ?? await diffWorkspaceLstat(baselineRoot, targetRoot, excluded);
-  await assertSafeWorkspaceAncestors(targetRoot, "root");
-  await assertSafeWorkspaceAncestors(baselineRoot, "root");
-  const baselineRootInfo = await lstat(baselineRoot);
-  if (!baselineRootInfo.isDirectory() || baselineRootInfo.isSymbolicLink()) {
-    throw workflowError("schedule", baselineRoot, "workspace rollback baseline root is not a real directory");
-  }
-  for (const change of effectiveChanges) {
-    if (change.path !== WORKSPACE_ROOT_PATH) safeWorkspaceNodePath(targetRoot, change.path);
-  }
-  const ordered = [...effectiveChanges].sort((left, right) =>
-    workspacePathDepth(left.path) - workspacePathDepth(right.path) || left.path.localeCompare(right.path));
-  // Remove only the highest changed path in each subtree. If a baseline
-  // directory became a symlink (or FIFO), the diff also contains its former
-  // children as deleted; removing those children after the parent would
-  // either fail on a missing ancestor or risk traversing the replacement.
-  const roots = ordered.filter((change) =>
-    !ordered.some((candidate) => candidate.path !== change.path && isWorkspacePathAncestor(candidate.path, change.path)));
-  for (const change of roots) {
-    if (change.path !== WORKSPACE_ROOT_PATH) await removeWorkspaceLstatNode(targetRoot, change.path);
-  }
-
-  // Restoring a changed directory restores its complete baseline subtree.
-  for (const change of roots) {
-    if (change.path !== WORKSPACE_ROOT_PATH && change.kind !== "added") {
-      await copyWorkspaceLstatNode(baselineRoot, targetRoot, change.path);
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const effectiveChanges = changes ?? (yield* diffWorkspaceLstatInternal(baselineRoot, targetRoot, excluded));
+    yield* assertSafeWorkspaceAncestors(targetRoot, "root");
+    yield* assertSafeWorkspaceAncestors(baselineRoot, "root");
+    const baselineRootInfo = yield* ioLeaf(io.lstat(baselineRoot));
+    if (!baselineRootInfo.isDirectory() || baselineRootInfo.isSymbolicLink()) {
+      return yield* Effect.fail(workflowError("schedule", baselineRoot, "workspace rollback baseline root is not a real directory"));
     }
-  }
-  await chmod(targetRoot, baselineRootInfo.mode & 0o7777);
-  const remaining = await diffWorkspaceLstat(baselineRoot, targetRoot, excluded);
-  if (remaining.length > 0) {
-    throw workflowError("schedule", targetRoot, `workspace rollback verification failed: ${remaining.map((change) => change.path).join(", ")}`);
-  }
+    for (const change of effectiveChanges) {
+      if (change.path !== WORKSPACE_ROOT_PATH) yield* guard(() => safeWorkspaceNodePath(targetRoot, change.path));
+    }
+    const ordered = [...effectiveChanges].sort((left, right) =>
+      workspacePathDepth(left.path) - workspacePathDepth(right.path) || left.path.localeCompare(right.path));
+    // Remove only the highest changed path in each subtree. If a baseline
+    // directory became a symlink (or FIFO), the diff also contains its former
+    // children as deleted; removing those children after the parent would
+    // either fail on a missing ancestor or risk traversing the replacement.
+    const roots = ordered.filter((change) =>
+      !ordered.some((candidate) => candidate.path !== change.path && isWorkspacePathAncestor(candidate.path, change.path)));
+    for (const change of roots) {
+      if (change.path !== WORKSPACE_ROOT_PATH) yield* removeWorkspaceLstatNode(targetRoot, change.path);
+    }
+
+    // Restoring a changed directory restores its complete baseline subtree.
+    for (const change of roots) {
+      if (change.path !== WORKSPACE_ROOT_PATH && change.kind !== "added") {
+        yield* copyWorkspaceLstatNode(baselineRoot, targetRoot, change.path);
+      }
+    }
+    yield* ioLeaf(io.chmod(targetRoot, baselineRootInfo.mode & 0o7777));
+    const remaining = yield* diffWorkspaceLstatInternal(baselineRoot, targetRoot, excluded);
+    if (remaining.length > 0) {
+      return yield* Effect.fail(workflowError("schedule", targetRoot, `workspace rollback verification failed: ${remaining.map((change) => change.path).join(", ")}`));
+    }
+  });
 }
 
-async function collectContentPaths(
+function collectContentPaths(
   root: string,
   excluded: readonly string[] = [],
   directoryModes?: Map<string, number>,
-): Promise<readonly string[]> {
-  const paths: string[] = [];
-  const resolvedRoot = await realpath(root);
-  const caseInsensitive = await isCaseInsensitiveFileSystem(resolvedRoot);
-  const excludedUnder = excluded.map((entry) => resolve(entry));
-  // An exclusion only makes sense as a subtree *of this tree*. The shared
-  // source embeds its run-management directory (evidence/workspaces) as one
-  // such subtree, and infra names (.git/.piano-run.lock) are always skipped by
-  // name below. A winner slot is materialised *under* that same run directory,
-  // so its walking root is nested inside an exclusion path: applying that
-  // exclusion here would empty the whole winner tree. Only honour an exclusion
-  // that is properly contained within the walked root.
-  const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
-  const excludedRoots = [
-    join(resolvedRoot, ".git"),
-    ...await Promise.all(effectiveExcluded.map(async (entry) => realpath(entry).catch(() => entry))),
-  ];
-  const reachable = (candidate: string): boolean =>
-    effectiveExcluded.every((entry) => !pathWithin(entry, resolve(candidate)));
-  const protectsExcludedDescendant = (candidate: string): boolean =>
-    effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
-  const excludedTarget = (candidate: string): boolean =>
-    isProtectedWorkspacePath(resolvedRoot, candidate, caseInsensitive) ||
-    excludedRoots.some((entry) => pathWithin(entry, candidate));
-  const validateNode = async (entryPath: string, info: Awaited<ReturnType<typeof lstat>>): Promise<void> => {
-    if (info.isSymbolicLink()) {
-      const target = await realpath(entryPath);
-      if (!pathWithin(resolvedRoot, target) || excludedTarget(target)) {
-        throw workflowError("schedule", entryPath, `workspace content symlink targets excluded or external content: ${target}`);
-      }
-      const targetInfo = await stat(target);
-      if (!targetInfo.isFile()) {
-        throw workflowError("schedule", entryPath, "workspace content does not support directory symlinks or non-file targets");
-      }
-      return;
-    }
-    if (!info.isFile() && !info.isDirectory()) {
-      throw workflowError("schedule", entryPath, "workspace content contains an unsupported filesystem node");
-    }
-  };
-  const visit = async (directory: string): Promise<void> => {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const entryPath = join(directory, entry.name);
-      if (isProtectedWorkspaceName(entry.name, caseInsensitive)) continue;
-      if (!reachable(entryPath)) continue;
-      const info = await lstat(entryPath);
-      await validateNode(entryPath, info);
-      if (info.isDirectory()) {
-        if (!protectsExcludedDescendant(entryPath)) {
-          directoryModes?.set(relative(root, entryPath), info.mode & 0o7777);
+): Effect.Effect<readonly string[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const paths: string[] = [];
+    const resolvedRoot = yield* ioLeaf(io.realpath(root));
+    const caseInsensitive = yield* isCaseInsensitiveFileSystem(resolvedRoot);
+    const excludedUnder = excluded.map((entry) => resolve(entry));
+    // An exclusion only makes sense as a subtree *of this tree*. The shared
+    // source embeds its run-management directory (evidence/workspaces) as one
+    // such subtree, and infra names (.git/.piano-run.lock) are always skipped by
+    // name below. A winner slot is materialised *under* that same run directory,
+    // so its walking root is nested inside an exclusion path: applying that
+    // exclusion here would empty the whole winner tree. Only honour an exclusion
+    // that is properly contained within the walked root.
+    const effectiveExcluded = excludedUnder.filter((entry) => resolve(root) !== entry && !pathWithin(entry, resolve(root)));
+    const resolvedExclusions = yield* Effect.all(
+      effectiveExcluded.map((entry) => ioLeaf(io.realpath(entry)).pipe(Effect.catchAll(() => Effect.succeed(entry)))),
+      { concurrency: "unbounded" },
+    );
+    const excludedRoots = [
+      join(resolvedRoot, ".git"),
+      ...resolvedExclusions,
+    ];
+    const reachable = (candidate: string): boolean =>
+      effectiveExcluded.every((entry) => !pathWithin(entry, resolve(candidate)));
+    const protectsExcludedDescendant = (candidate: string): boolean =>
+      effectiveExcluded.some((entry) => pathWithin(resolve(candidate), entry));
+    const excludedTarget = (candidate: string): boolean =>
+      isProtectedWorkspacePath(resolvedRoot, candidate, caseInsensitive) ||
+      excludedRoots.some((entry) => pathWithin(entry, candidate));
+    const validateNode = (
+      entryPath: string,
+      info: WorkspaceStat,
+    ): Effect.Effect<void, WorkspaceFailure> => Effect.gen(function* () {
+      if (info.isSymbolicLink()) {
+        const target = yield* ioLeaf(io.realpath(entryPath));
+        if (!pathWithin(resolvedRoot, target) || excludedTarget(target)) {
+          return yield* Effect.fail(workflowError("schedule", entryPath, `workspace content symlink targets excluded or external content: ${target}`));
         }
-        await visit(entryPath);
-      } else paths.push(relative(root, entryPath));
-    }
-  };
-  await visit(root);
-  return paths.sort();
+        const targetInfo = yield* ioLeaf(io.stat(target));
+        if (!targetInfo.isFile()) {
+          return yield* Effect.fail(workflowError("schedule", entryPath, "workspace content does not support directory symlinks or non-file targets"));
+        }
+        return;
+      }
+      if (!info.isFile() && !info.isDirectory()) {
+        return yield* Effect.fail(workflowError("schedule", entryPath, "workspace content contains an unsupported filesystem node"));
+      }
+    });
+    const visit = (directory: string): Effect.Effect<void, WorkspaceFailure> => Effect.gen(function* () {
+      const children = yield* ioLeaf(io.readdir(directory));
+      for (const entry of children) {
+        const entryPath = join(directory, entry.name);
+        if (isProtectedWorkspaceName(entry.name, caseInsensitive)) continue;
+        if (!reachable(entryPath)) continue;
+        const info = yield* ioLeaf(io.lstat(entryPath));
+        yield* validateNode(entryPath, info);
+        if (info.isDirectory()) {
+          if (!protectsExcludedDescendant(entryPath)) {
+            directoryModes?.set(relative(root, entryPath), info.mode & 0o7777);
+          }
+          yield* visit(entryPath);
+        } else paths.push(relative(root, entryPath));
+      }
+    });
+    yield* visit(root);
+    return paths.sort();
+  });
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await lstat(path);
-    return true;
-  } catch (error) {
+function pathExists(path: string): Effect.Effect<boolean, WorkspaceFailure> {
+  return ioLeaf(io.lstat(path)).pipe(
+    Effect.as(true),
     // ENOTDIR means a non-directory ancestor already replaced this subtree
     // (a winner can turn `a/b` into a file at `a`), so no node exists here.
-    if (isMissingPathError(error) || (error as NodeJS.ErrnoException | undefined)?.code === "ENOTDIR") return false;
-    throw error;
-  }
+    Effect.catchIf(isGoneLeaf, () => Effect.succeed(false)),
+  );
 }
 
-async function sameFile(left: string, right: string): Promise<boolean> {
-  const [leftInfo, rightInfo] = await Promise.all([lstat(left), lstat(right)]).catch((error: unknown) => {
-    if (isMissingPathError(error)) return [undefined, undefined] as const;
-    throw error;
-  });
-  if (leftInfo === undefined || rightInfo === undefined) return false;
-  if (leftInfo.isSymbolicLink() || rightInfo.isSymbolicLink()) {
-    if (!leftInfo.isSymbolicLink() || !rightInfo.isSymbolicLink()) return false;
-    const [leftTarget, rightTarget] = await Promise.all([readlink(left), readlink(right)]);
-    return leftTarget === rightTarget;
+/** Exact byte equality, the comparison `Buffer.equals` performed before the
+ * read went through the io adapter (which returns Uint8Array). */
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
   }
-  if (!leftInfo.isFile() || !rightInfo.isFile()) return false;
-  if ((leftInfo.mode & 0o7777) !== (rightInfo.mode & 0o7777)) return false;
-  const [leftBuffer, rightBuffer] = await Promise.all([readFile(left), readFile(right)]);
-  return leftBuffer.equals(rightBuffer);
+  return true;
 }
 
-async function copyContentNode(source: string, destination: string): Promise<void> {
-  const info = await lstat(source);
-  if (info.isSymbolicLink()) {
-    const target = await readlink(source);
-    if (isAbsolute(target) || /^[A-Za-z]:[\\/]/u.test(target)) {
-      throw workflowError("schedule", source, "workspace content snapshot refuses absolute symlink targets");
+function sameFile(left: string, right: string): Effect.Effect<boolean, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const infos = yield* Effect.all([
+      ioLeaf(io.lstat(left)),
+      ioLeaf(io.lstat(right)),
+    ], { concurrency: "unbounded" }).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed([undefined, undefined] as const)),
+    );
+    const leftInfo = infos[0];
+    const rightInfo = infos[1];
+    if (leftInfo === undefined || rightInfo === undefined) return false;
+    if (leftInfo.isSymbolicLink() || rightInfo.isSymbolicLink()) {
+      if (!leftInfo.isSymbolicLink() || !rightInfo.isSymbolicLink()) return false;
+      const [leftTarget, rightTarget] = yield* Effect.all([
+        ioLeaf(io.readlink(left)),
+        ioLeaf(io.readlink(right)),
+      ], { concurrency: "unbounded" });
+      return leftTarget === rightTarget;
     }
-    await symlink(target, destination);
-    return;
-  }
-  if (!info.isFile()) {
-    throw workflowError("schedule", source, "workspace content can only copy regular files or file symlinks");
-  }
-  await cp(source, destination, { dereference: false });
-  await chmod(destination, info.mode & 0o7777);
+    if (!leftInfo.isFile() || !rightInfo.isFile()) return false;
+    if ((leftInfo.mode & 0o7777) !== (rightInfo.mode & 0o7777)) return false;
+    const [leftBuffer, rightBuffer] = yield* Effect.all([
+      ioLeaf(io.readFile(left)),
+      ioLeaf(io.readFile(right)),
+    ], { concurrency: "unbounded" });
+    return sameBytes(leftBuffer, rightBuffer);
+  });
+}
+
+function copyContentNode(source: string, destination: string): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const info = yield* ioLeaf(io.lstat(source));
+    if (info.isSymbolicLink()) {
+      const target = yield* ioLeaf(io.readlink(source));
+      if (isAbsolute(target) || /^[A-Za-z]:[\\/]/u.test(target)) {
+        return yield* Effect.fail(workflowError("schedule", source, "workspace content snapshot refuses absolute symlink targets"));
+      }
+      yield* ioLeaf(io.symlink(target, destination));
+      return;
+    }
+    if (!info.isFile()) {
+      return yield* Effect.fail(workflowError("schedule", source, "workspace content can only copy regular files or file symlinks"));
+    }
+    yield* ioLeaf(io.cp(source, destination, { dereference: false }));
+    yield* ioLeaf(io.chmod(destination, info.mode & 0o7777));
+  });
 }
 
 /** Freeze a strict, rollback-capable workspace snapshot. The strict content
@@ -1558,43 +1732,41 @@ async function copyContentNode(source: string, destination: string): Promise<voi
  * special nodes are rejected before anything is copied. The extra directory
  * metadata is ignored by the content gate but lets rollback restore empty
  * directories and permission modes exactly. */
-export async function snapshotWorkspaceLstat(
+function snapshotWorkspaceLstatInternal(
   sourceContentDir: string,
   snapshotDir: string,
   excludeUnder: readonly string[] = [],
-): Promise<void> {
-  const exists = await stat(snapshotDir).then(() => true, (error: unknown) => {
-    if (isMissingPathError(error)) return false;
-    throw error;
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const exists = yield* ioLeaf(io.stat(snapshotDir)).pipe(
+      Effect.as(true),
+      Effect.catchIf(isMissingLeaf, () => Effect.succeed(false)),
+    );
+    if (exists) return yield* Effect.fail(workflowError("schedule", snapshotDir, "workspace rollback snapshot already exists"));
+    const canonicalSourceRoot = yield* ioLeaf(io.realpath(resolve(sourceContentDir)));
+    const sourceInfo = yield* ioLeaf(io.lstat(canonicalSourceRoot));
+    if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
+      return yield* Effect.fail(workflowError("schedule", sourceContentDir, "workspace rollback snapshot requires a real directory root"));
+    }
+    const directoryModes = new Map<string, number>();
+    const paths = yield* collectContentPaths(canonicalSourceRoot, excludeUnder, directoryModes);
+    yield* ioLeaf(io.mkdir(snapshotDir, { recursive: true }));
+    for (const path of [...directoryModes.keys()].sort((left, right) =>
+      workspacePathDepth(left) - workspacePathDepth(right) || left.localeCompare(right))) {
+      yield* ioLeaf(io.mkdir(join(snapshotDir, path), { recursive: true }));
+    }
+    for (const path of paths) {
+      const destination = join(snapshotDir, path);
+      yield* ioLeaf(io.mkdir(dirname(destination), { recursive: true }));
+      yield* copyContentNode(join(canonicalSourceRoot, path), destination);
+    }
+    for (const [path, mode] of [...directoryModes.entries()].sort((left, right) =>
+      workspacePathDepth(right[0]) - workspacePathDepth(left[0]) || right[0].localeCompare(left[0]))) {
+      yield* ioLeaf(io.chmod(join(snapshotDir, path), mode));
+    }
+    yield* ioLeaf(io.chmod(snapshotDir, sourceInfo.mode & 0o7777));
   });
-  if (exists) throw workflowError("schedule", snapshotDir, "workspace rollback snapshot already exists");
-  const canonicalSourceRoot = await realpath(resolve(sourceContentDir));
-  const sourceInfo = await lstat(canonicalSourceRoot);
-  if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
-    throw workflowError("schedule", sourceContentDir, "workspace rollback snapshot requires a real directory root");
-  }
-  const directoryModes = new Map<string, number>();
-  const paths = await collectContentPaths(canonicalSourceRoot, excludeUnder, directoryModes);
-  await mkdir(snapshotDir, { recursive: true });
-  for (const path of [...directoryModes.keys()].sort((left, right) =>
-    workspacePathDepth(left) - workspacePathDepth(right) || left.localeCompare(right))) {
-    await mkdir(join(snapshotDir, path), { recursive: true });
-  }
-  for (const path of paths) {
-    const destination = join(snapshotDir, path);
-    await mkdir(dirname(destination), { recursive: true });
-    await copyContentNode(join(canonicalSourceRoot, path), destination);
-  }
-  for (const [path, mode] of [...directoryModes.entries()].sort((left, right) =>
-    workspacePathDepth(right[0]) - workspacePathDepth(left[0]) || right[0].localeCompare(left[0]))) {
-    await chmod(join(snapshotDir, path), mode);
-  }
-  await chmod(snapshotDir, sourceInfo.mode & 0o7777);
 }
-
-/** Freeze application content as a directory tree with the exact rollback
- * metadata `restoreWorkspaceLstat` consumes. Only the store-lane carry uses
- * this: baselines themselves are git commits below. */
 
 /** A frozen workspace content baseline: one git commit in the run's own
  * baseline store. The commit shares blobs across lanes and iterations instead
@@ -1611,13 +1783,15 @@ const PIANO_GIT_IDENTITY_ARGS = ["-c", "user.name=Piano", "-c", "user.email=pian
 
 /** The run-owned baseline store. Bare, so it never becomes part of a
  * workspace's content and never touches a host repository. */
-async function workspaceBaselineStore(runDir: string): Promise<string> {
-  const storeDir = workspaceStorePath(runDir);
-  if (!existsSync(join(storeDir, "HEAD"))) {
-    await mkdir(dirname(storeDir), { recursive: true });
-    await execFileAsync("git", ["init", "--bare", "--quiet", storeDir]);
-  }
-  return storeDir;
+function workspaceBaselineStore(runDir: string): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const storeDir = workspaceStorePath(runDir);
+    if (!(yield* io.exists(join(storeDir, "HEAD")))) {
+      yield* ioLeaf(io.mkdir(dirname(storeDir), { recursive: true }));
+      yield* ioLeaf(io.execFile("git", ["init", "--bare", "--quiet", storeDir]));
+    }
+    return storeDir;
+  });
 }
 
 /** A ref name under refs/piano/<runId>/, spelled so git accepts it. */
@@ -1625,59 +1799,61 @@ export function workspaceRefName(runId: string, suffix: string): string {
   return `refs/piano/${runId}/${suffix.replace(/[^A-Za-z0-9._/-]/g, "_").replace(/\.\./g, "~")}`;
 }
 
-async function readBaselineCommit(storeDir: string, refName: string): Promise<string | undefined> {
-  try {
-    const result = await execFileAsync("git", ["--git-dir", storeDir, "rev-parse", "--verify", "--quiet", refName], { encoding: "utf8" });
-    return result.stdout.trim();
-  } catch {
-    return undefined;
-  }
+function readBaselineCommit(storeDir: string, refName: string): Effect.Effect<string | undefined, WorkspaceFailure> {
+  return ioLeaf(io.execFile("git", ["--git-dir", storeDir, "rev-parse", "--verify", "--quiet", refName])).pipe(
+    Effect.map((result) => result.stdout.trim()),
+    Effect.catchAll(() => Effect.succeed(undefined)),
+  );
 }
 
 /** Index a workspace's content into one git tree, fail-closed: the walk is
  * the same validation and exclusion the directory snapshots used, and the
  * NUL pathspec feeds git exactly the paths it accepted. `gitArgs`/`env` pick
  * the owning repository — the run's store or the source itself. */
-async function writeContentTree(options: {
+function writeContentTree(options: {
   readonly contentDir: string;
   readonly excludeUnder: readonly string[];
   readonly scratchDir: string;
   readonly gitArgs: readonly string[];
   readonly env: NodeJS.ProcessEnv;
-}): Promise<string> {
-  const contentDir = await realpath(resolve(options.contentDir));
-  const paths = await collectContentPaths(contentDir, options.excludeUnder);
-  const pathspecPath = join(options.scratchDir, `piano-pathspec-${randomUUID()}`);
-  const indexPath = join(options.scratchDir, `piano-index-${randomUUID()}`);
-  const env = { ...options.env, GIT_INDEX_FILE: indexPath };
-  try {
-    await writeFile(pathspecPath, paths.map((path) => `${path}\0`).join(""), "utf8");
-    await execFileAsync("git", [
-      ...options.gitArgs,
-      "add", "-f",
-      "--pathspec-from-file", pathspecPath,
-      "--pathspec-file-nul",
-    ], { cwd: contentDir, env });
-    const result = await execFileAsync("git", [...options.gitArgs, "write-tree"], { env, encoding: "utf8" });
-    return result.stdout.trim();
-  } finally {
-    await rm(pathspecPath, { force: true });
-    await rm(indexPath, { force: true });
-  }
+}): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const contentDir = yield* ioLeaf(io.realpath(resolve(options.contentDir)));
+    const paths = yield* collectContentPaths(contentDir, options.excludeUnder);
+    const pathspecPath = join(options.scratchDir, `piano-pathspec-${randomUUID()}`);
+    const indexPath = join(options.scratchDir, `piano-index-${randomUUID()}`);
+    const env = { ...options.env, GIT_INDEX_FILE: indexPath };
+    return yield* Effect.gen(function* () {
+      yield* ioLeaf(io.writeFile(pathspecPath, paths.map((path) => `${path}\0`).join("")));
+      yield* ioLeaf(io.execFile("git", [
+        ...options.gitArgs,
+        "add", "-f",
+        "--pathspec-from-file", pathspecPath,
+        "--pathspec-file-nul",
+      ], { cwd: contentDir, env }));
+      const result = yield* ioLeaf(io.execFile("git", [...options.gitArgs, "write-tree"], { env }));
+      return result.stdout.trim();
+    }).pipe(Effect.ensuring(Effect.gen(function* () {
+      yield* ioLeaf(io.rm(pathspecPath, { force: true }));
+      yield* ioLeaf(io.rm(indexPath, { force: true }));
+    }).pipe(Effect.catchAll(() => Effect.void))));
+  });
 }
 
-async function writeWorkspaceTree(
+function writeWorkspaceTree(
   storeDir: string,
   sourceContentDir: string,
   excludeUnder: readonly string[],
-): Promise<string> {
-  const contentDir = await realpath(resolve(sourceContentDir));
-  return writeContentTree({
-    contentDir,
-    excludeUnder,
-    scratchDir: storeDir,
-    gitArgs: [],
-    env: { ...process.env, GIT_DIR: storeDir, GIT_WORK_TREE: contentDir },
+): Effect.Effect<string, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const contentDir = yield* ioLeaf(io.realpath(resolve(sourceContentDir)));
+    return yield* writeContentTree({
+      contentDir,
+      excludeUnder,
+      scratchDir: storeDir,
+      gitArgs: [],
+      env: { ...process.env, GIT_DIR: storeDir, GIT_WORK_TREE: contentDir },
+    });
   });
 }
 
@@ -1687,7 +1863,7 @@ async function writeWorkspaceTree(
  * simply leaves unreachable objects. A `parent` gives the commit its place in
  * the run's lineage — a lane's baseline hangs off the region's parent
  * baseline, which is what a later worktree fork of that lane reads. */
-export async function freezeWorkspaceBaseline(
+function freezeWorkspaceBaselineInternal(
   sourceContentDir: string,
   options: {
     readonly runDir: string;
@@ -1696,109 +1872,120 @@ export async function freezeWorkspaceBaseline(
     readonly refName?: string;
     readonly excludeUnder?: readonly string[];
   },
-): Promise<WorkspaceBaseline> {
-  const storeDir = await workspaceBaselineStore(options.runDir);
-  const prior = options.refName === undefined ? undefined : await readBaselineCommit(storeDir, options.refName);
-  if (prior !== undefined) return { runDir: options.runDir, commit: prior };
-  const tree = await writeWorkspaceTree(storeDir, sourceContentDir, options.excludeUnder ?? []);
-  const result = await execFileAsync("git", [
-    "--git-dir", storeDir,
-    ...PIANO_GIT_IDENTITY_ARGS,
-    "commit-tree", tree,
-    "-m", `piano: workspace baseline ${options.refName ?? "in-memory"}`,
-  ], { encoding: "utf8" });
-  const commit = result.stdout.trim();
-  if (options.refName !== undefined) {
-    await execFileAsync("git", ["--git-dir", storeDir, "update-ref", options.refName, commit, ""]);
-  }
-  return { runDir: options.runDir, commit };
+): Effect.Effect<WorkspaceBaseline, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const storeDir = yield* workspaceBaselineStore(options.runDir);
+    const prior = options.refName === undefined ? undefined : yield* readBaselineCommit(storeDir, options.refName);
+    if (prior !== undefined) return { runDir: options.runDir, commit: prior };
+    const tree = yield* writeWorkspaceTree(storeDir, sourceContentDir, options.excludeUnder ?? []);
+    const result = yield* ioLeaf(io.execFile("git", [
+      "--git-dir", storeDir,
+      ...PIANO_GIT_IDENTITY_ARGS,
+      "commit-tree", tree,
+      "-m", `piano: workspace baseline ${options.refName ?? "in-memory"}`,
+    ]));
+    const commit = result.stdout.trim();
+    if (options.refName !== undefined) {
+      yield* ioLeaf(io.execFile("git", ["--git-dir", storeDir, "update-ref", options.refName!, commit, ""]));
+    }
+    return { runDir: options.runDir, commit };
+  });
 }
 
 /** The concrete file delta from a frozen baseline to live content. Content is
  * compared the way git compares it — bytes plus the executable bit; other
  * permission bits and empty directories are not modeled. */
-export async function workspaceBaselineChanges(
+function workspaceBaselineChangesInternal(
   baseline: WorkspaceBaseline,
   candidateContentDir: string,
   excludeUnder: readonly string[] = [],
-): Promise<readonly WorkspaceContentChange[]> {
-  const storeDir = await workspaceBaselineStore(baseline.runDir);
-  const tree = await writeWorkspaceTree(storeDir, candidateContentDir, excludeUnder);
-  // -z keeps pathnames verbatim (no C-quoting of backslashes and the like),
-  // as `status\0path\0` pairs.
-  const result = await execFileAsync("git", [
-    "--git-dir", storeDir,
-    "diff-tree", "-r", "--name-status", "--no-renames", "-z",
-    baseline.commit, tree,
-  ], { encoding: "utf8" });
-  const fields = result.stdout.split("\0");
-  const changes: WorkspaceContentChange[] = [];
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const code = fields[index]!;
-    const path = fields[index + 1]!;
-    if (path === "") continue;
-    changes.push({ path, kind: code === "A" ? "added" : code === "D" ? "deleted" : "modified" });
-  }
-  return changes.sort((left, right) => left.path.localeCompare(right.path));
+): Effect.Effect<readonly WorkspaceContentChange[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const storeDir = yield* workspaceBaselineStore(baseline.runDir);
+    const tree = yield* writeWorkspaceTree(storeDir, candidateContentDir, excludeUnder);
+    // -z keeps pathnames verbatim (no C-quoting of backslashes and the like),
+    // as `status\0path\0` pairs.
+    const result = yield* ioLeaf(io.execFile("git", [
+      "--git-dir", storeDir,
+      "diff-tree", "-r", "--name-status", "--no-renames", "-z",
+      baseline.commit, tree,
+    ]));
+    const fields = result.stdout.split("\0");
+    const changes: WorkspaceContentChange[] = [];
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const code = fields[index]!;
+      const path = fields[index + 1]!;
+      if (path === "") continue;
+      changes.push({ path, kind: code === "A" ? "added" : code === "D" ? "deleted" : "modified" });
+    }
+    return changes.sort((left, right) => left.path.localeCompare(right.path));
+  });
 }
 
 /** Validate a delta path's parent chain and, for installs, create missing
  * directories. Returns false when an ancestor no longer exists and the caller
  * is deleting: the subtree is already gone, so there is nothing to remove.
  * A symlink or non-directory ancestor is refused before any mutation. */
-async function prepareWorkspaceDeltaPath(
+function prepareWorkspaceDeltaPath(
   targetRoot: string,
   path: string,
   create: boolean,
-): Promise<boolean> {
-  const segments = workspacePathSegments(path);
-  let current = resolve(targetRoot);
-  for (const segment of segments.slice(0, -1)) {
-    current = join(current, segment);
-    let info: Awaited<ReturnType<typeof lstat>>;
-    try {
-      info = await lstat(current);
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-      if (!create) return false;
-      await mkdir(current);
-      continue;
+): Effect.Effect<boolean, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const segments = workspacePathSegments(path);
+    let current = resolve(targetRoot);
+    for (const segment of segments.slice(0, -1)) {
+      current = join(current, segment);
+      const attempted = yield* ioLeaf(io.lstat(current)).pipe(Effect.either);
+      if (attempted._tag === "Left") {
+        if (!isMissingLeaf(attempted.left)) return yield* Effect.fail(attempted.left);
+        if (!create) return false;
+        yield* ioLeaf(io.mkdir(current));
+        continue;
+      }
+      const info = attempted.right;
+      if (!info.isDirectory() || info.isSymbolicLink()) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace carry refuses a symlink or non-directory ancestor"));
+      }
+      const actual = yield* ioLeaf(io.realpath(current));
+      if (resolve(actual) !== current) {
+        return yield* Effect.fail(workflowError("schedule", current, "workspace carry refuses a symlink or non-directory ancestor"));
+      }
     }
-    if (!info.isDirectory() || info.isSymbolicLink() || resolve(await realpath(current)) !== current) {
-      throw workflowError("schedule", current, "workspace carry refuses a symlink or non-directory ancestor");
-    }
-  }
-  return true;
+    return true;
+  });
 }
 
 /** Non-directory entries that differ between the pre-apply snapshot and the
  * target, excluding the delta itself. Directories are ignored on purpose: the
  * delta model is git trees, which never record empty directories or directory
  * modes. */
-async function undeclaredWorkspaceChanges(
+function undeclaredWorkspaceChanges(
   beforeDir: string,
   targetRoot: string,
   declared: ReadonlySet<string>,
   excluded: readonly string[],
-): Promise<readonly string[]> {
-  const [before, after] = await Promise.all([
-    inventoryWorkspaceLstat(beforeDir),
-    inventoryWorkspaceLstat(targetRoot, excluded),
-  ]);
-  const contentEntries = (entries: readonly WorkspaceLstatEntry[]): Map<string, WorkspaceLstatEntry> =>
-    new Map(entries.filter((entry) => entry.kind !== "directory").map((entry) => [entry.path, entry]));
-  const left = contentEntries(before);
-  const right = contentEntries(after);
-  const differing: string[] = [];
-  for (const path of new Set([...left.keys(), ...right.keys()])) {
-    if (declared.has(path)) continue;
-    const previous = left.get(path);
-    const current = right.get(path);
-    if (previous === undefined || current === undefined || !lstatEntryEqual(previous, current)) {
-      differing.push(path);
+): Effect.Effect<readonly string[], WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const [before, after] = yield* Effect.all([
+      inventoryWorkspaceLstatInternal(beforeDir),
+      inventoryWorkspaceLstatInternal(targetRoot, excluded),
+    ], { concurrency: "unbounded" });
+    const contentEntries = (entries: readonly WorkspaceLstatEntry[]): Map<string, WorkspaceLstatEntry> =>
+      new Map(entries.filter((entry) => entry.kind !== "directory").map((entry) => [entry.path, entry]));
+    const left = contentEntries(before);
+    const right = contentEntries(after);
+    const differing: string[] = [];
+    for (const path of new Set([...left.keys(), ...right.keys()])) {
+      if (declared.has(path)) continue;
+      const previous = left.get(path);
+      const current = right.get(path);
+      if (previous === undefined || current === undefined || !lstatEntryEqual(previous, current)) {
+        differing.push(path);
+      }
     }
-  }
-  return differing.sort();
+    return differing.sort();
+  });
 }
 
 /** Apply a winner delta to a live tree, fail-closed.
@@ -1808,87 +1995,86 @@ async function undeclaredWorkspaceChanges(
  * snapshotted before the first mutation, so a failure restores the pre-apply
  * tree and re-verifies it. This is the store-lane counterpart of a git
  * fast-forward: the program applies the delta and the program verifies it. */
-export async function applyWorkspaceChangeSet(
+function applyWorkspaceChangeSetInternal(
   targetRoot: string,
   changeSet: WorkspaceChangeSet,
   excluded: readonly string[] = [],
-): Promise<void> {
-  const target = resolve(targetRoot);
-  const staging = await mkdtemp(join(dirname(target), ".piano-carry-"));
-  const before = join(staging, "before");
-  let snapshotCreated = false;
-  let operationFailure: unknown;
-  let rollbackFailure: unknown;
-  let cleanupFailure: unknown;
-  try {
-    await snapshotWorkspaceLstat(target, before, excluded);
-    snapshotCreated = true;
-    // Deletions first: a winner may replace a directory with a file, and the
-    // copy would otherwise collide with the old subtree still in place.
-    for (const change of changeSet.changes) {
-      if (change.kind !== "deleted") continue;
-      const node = safeWorkspaceNodePath(target, change.path);
-      if (!await prepareWorkspaceDeltaPath(target, change.path, false)) continue;
-      await rm(node, { recursive: true, force: true });
-    }
-    const installed = changeSet.changes
-      .filter((change) => change.kind !== "deleted")
-      .sort((left, right) =>
-        workspacePathDepth(left.path) - workspacePathDepth(right.path) || left.path.localeCompare(right.path));
-    for (const change of installed) {
-      const destination = safeWorkspaceNodePath(target, change.path);
-      await prepareWorkspaceDeltaPath(target, change.path, true);
-      if (await pathExists(destination)) await rm(destination, { recursive: true, force: true });
-      await copyContentNode(join(changeSet.winnerContentDir, change.path), destination);
-    }
-    const applied = await diffWorkspaceChangeSet(target, changeSet);
-    if (!applied.equal) {
-      throw workflowError("schedule", target, `winner delta did not land at: ${applied.differing.join(", ")}`);
-    }
-    const undeclared = await undeclaredWorkspaceChanges(
-      before,
-      target,
-      new Set(changeSet.changes.map((change) => change.path)),
-      excluded,
-    );
-    if (undeclared.length > 0) {
-      throw workflowError("schedule", target, `winner delta changed undeclared paths: ${undeclared.join(", ")}`);
-    }
-  } catch (error) {
-    operationFailure = error;
+): Effect.Effect<void, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const target = resolve(targetRoot);
+    const staging = yield* ioLeaf(io.mkdtemp(join(dirname(target), ".piano-carry-")));
+    const before = join(staging, "before");
+    let snapshotCreated = false;
+    const operation = yield* Effect.gen(function* () {
+      yield* snapshotWorkspaceLstatInternal(target, before, excluded);
+      snapshotCreated = true;
+      // Deletions first: a winner may replace a directory with a file, and the
+      // copy would otherwise collide with the old subtree still in place.
+      for (const change of changeSet.changes) {
+        if (change.kind !== "deleted") continue;
+        const node = yield* guard(() => safeWorkspaceNodePath(target, change.path));
+        if (!(yield* prepareWorkspaceDeltaPath(target, change.path, false))) continue;
+        yield* ioLeaf(io.rm(node, { recursive: true, force: true }));
+      }
+      const installed = changeSet.changes
+        .filter((change) => change.kind !== "deleted")
+        .sort((left, right) =>
+          workspacePathDepth(left.path) - workspacePathDepth(right.path) || left.path.localeCompare(right.path));
+      for (const change of installed) {
+        const destination = yield* guard(() => safeWorkspaceNodePath(target, change.path));
+        yield* prepareWorkspaceDeltaPath(target, change.path, true);
+        if (yield* pathExists(destination)) yield* ioLeaf(io.rm(destination, { recursive: true, force: true }));
+        yield* copyContentNode(join(changeSet.winnerContentDir, change.path), destination);
+      }
+      const applied = yield* diffWorkspaceChangeSetInternal(target, changeSet);
+      if (!applied.equal) {
+        return yield* Effect.fail(workflowError("schedule", target, `winner delta did not land at: ${applied.differing.join(", ")}`));
+      }
+      const undeclared = yield* undeclaredWorkspaceChanges(
+        before,
+        target,
+        new Set(changeSet.changes.map((change) => change.path)),
+        excluded,
+      );
+      if (undeclared.length > 0) {
+        return yield* Effect.fail(workflowError("schedule", target, `winner delta changed undeclared paths: ${undeclared.join(", ")}`));
+      }
+    }).pipe(Effect.either);
+    let rollbackFailure: WorkspaceFailure | undefined;
     // Without a completed snapshot there is nothing to restore, and the target
     // is untouched: the snapshot step is the first filesystem write.
-    if (snapshotCreated) {
-      try {
-        await restoreWorkspaceLstat(target, before, undefined, excluded);
-      } catch (error) {
-        rollbackFailure = error;
+    if (operation._tag === "Left" && snapshotCreated) {
+      const rollback = yield* restoreWorkspaceLstatInternal(target, before, undefined, excluded).pipe(Effect.either);
+      if (rollback._tag === "Left") rollbackFailure = rollback.left;
+    }
+    let cleanupFailure: WorkflowError | undefined;
+    // A failed rollback keeps the snapshot: it is the only copy of the pre-apply
+    // tree, so the error names where it lives instead of deleting it.
+    if (rollbackFailure === undefined) {
+      const cleanup = yield* ioLeaf(io.rm(staging, { recursive: true, force: true })).pipe(Effect.either);
+      if (cleanup._tag === "Left") {
+        cleanupFailure = workflowError("schedule", staging, `workspace carry cleanup failed: ${errorMessage(rawCause(cleanup.left))}`);
       }
     }
-  }
-  // A failed rollback keeps the snapshot: it is the only copy of the pre-apply
-  // tree, so the error names where it lives instead of deleting it.
-  if (rollbackFailure === undefined) {
-    try {
-      await rm(staging, { recursive: true, force: true });
-    } catch (error) {
-      cleanupFailure = workflowError("schedule", staging, `workspace carry cleanup failed: ${errorMessage(error)}`);
+    if (operation._tag === "Left") {
+      const failures: unknown[] = [rawCause(operation.left)];
+      if (rollbackFailure !== undefined) {
+        failures.push(workflowError(
+          "schedule",
+          target,
+          `workspace carry rollback failed (pre-apply snapshot kept at ${before}): ${errorMessage(rawCause(rollbackFailure))}`,
+        ));
+      }
+      if (cleanupFailure !== undefined) failures.push(cleanupFailure);
+      if (failures.length > 1) {
+        return yield* Effect.fail(new WorkspaceLeafFailure({
+          cause: new AggregateError(failures, "workspace carry failed and recovery was incomplete"),
+        }));
+      }
+      return yield* Effect.fail(operation.left);
     }
-  }
-  if (operationFailure !== undefined) {
-    const failures = [operationFailure];
-    if (rollbackFailure !== undefined) {
-      failures.push(workflowError(
-        "schedule",
-        target,
-        `workspace carry rollback failed (pre-apply snapshot kept at ${before}): ${errorMessage(rollbackFailure)}`,
-      ));
-    }
-    if (cleanupFailure !== undefined) failures.push(cleanupFailure);
-    if (failures.length > 1) throw new AggregateError(failures, "workspace carry failed and recovery was incomplete");
-    throw operationFailure;
-  }
-  if (cleanupFailure !== undefined) throw cleanupFailure;
+    if (cleanupFailure !== undefined) return yield* Effect.fail(cleanupFailure);
+  });
 }
 
 /** Check only the winner delta against a target; unrelated parent files are
@@ -1898,68 +2084,75 @@ export async function applyWorkspaceChangeSet(
  * file with a directory at the same path (git reports `D a` plus `A a/child`).
  * That directory is the declaration's new parent, not the deleted node, so it
  * only counts as satisfied when the change set carries additions beneath it. */
-export async function diffWorkspaceChangeSet(
+function diffWorkspaceChangeSetInternal(
   targetContentDir: string,
   changeSet: WorkspaceChangeSet,
-): Promise<WorkspaceContentDiff> {
-  const differing: string[] = [];
-  for (const change of changeSet.changes) {
-    const target = join(targetContentDir, change.path);
-    if (change.kind === "deleted") {
-      if (!await pathExists(target)) continue;
-      const replacedByDirectory = changeSet.changes.some((other) =>
-        other.kind !== "deleted" && isWorkspacePathAncestor(change.path, other.path));
-      const isDirectory = await lstat(target).then((info) => info.isDirectory()).catch(() => false);
-      if (!(replacedByDirectory && isDirectory)) differing.push(change.path);
-      continue;
+): Effect.Effect<WorkspaceContentDiff, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const differing: string[] = [];
+    for (const change of changeSet.changes) {
+      const target = join(targetContentDir, change.path);
+      if (change.kind === "deleted") {
+        if (!(yield* pathExists(target))) continue;
+        const replacedByDirectory = changeSet.changes.some((other) =>
+          other.kind !== "deleted" && isWorkspacePathAncestor(change.path, other.path));
+        const isDirectory = yield* ioLeaf(io.lstat(target)).pipe(
+          Effect.map((info) => info.isDirectory()),
+          Effect.catchAll(() => Effect.succeed(false)),
+        );
+        if (!(replacedByDirectory && isDirectory)) differing.push(change.path);
+        continue;
+      }
+      if (!(yield* sameFile(target, join(changeSet.winnerContentDir, change.path)))) {
+        differing.push(change.path);
+      }
     }
-    if (!(await sameFile(target, join(changeSet.winnerContentDir, change.path)))) {
-      differing.push(change.path);
-    }
-  }
-  return { equal: differing.length === 0, differing };
+    return { equal: differing.length === 0, differing };
+  });
 }
 
 /** Commit the lane's remaining edits onto its branch and fast-forward the
  * source checkout onto it. The lane branch always keeps the commit, so a
  * failed fast-forward loses nothing. `changed` is false when the lane
  * committed no edits (its fork point is the winner). */
-async function mergeGitWorktreeWinner(
+function mergeGitWorktreeWinner(
   record: WorkflowWorkspaceRecord,
   gitRoot: string,
   sourceIdentity: WorkspaceDirectoryIdentity,
-): Promise<{ readonly commit: string; readonly changed: boolean; readonly merged: boolean; readonly reason?: string }> {
-  const { commit, changed } = await commitWorktreeChanges(
-    record.cwd,
-    `piano: apply winning tournament slot ${record.key}`,
-  );
-  // No edits: the fork point is the winner and is already on the source.
-  if (!changed) return { commit, changed, merged: true };
-  if (record.sourceBranch !== undefined) {
-    const current = await execFileAsync("git", ["-C", record.sourceCwd, "symbolic-ref", "--quiet", "--short", "HEAD"], { encoding: "utf8" })
-      .then((result) => result.stdout.trim())
-      .catch(() => "");
-    if (current !== record.sourceBranch) {
-      return {
-        commit,
-        changed,
-        merged: false,
-        reason: `source branch "${record.sourceBranch}" is no longer checked out (now "${current === "" ? "detached" : current}"); winner kept on ${record.laneBranch}`,
-      };
+): Effect.Effect<{ readonly commit: string; readonly changed: boolean; readonly merged: boolean; readonly reason?: string }, WorkspaceFailure> {
+  return Effect.gen(function* () {
+    const { commit, changed } = yield* commitWorktreeChanges(
+      record.cwd,
+      `piano: apply winning tournament slot ${record.key}`,
+    );
+    // No edits: the fork point is the winner and is already on the source.
+    if (!changed) return { commit, changed, merged: true };
+    if (record.sourceBranch !== undefined) {
+      const current = yield* ioLeaf(io.execFile("git", ["-C", record.sourceCwd, "symbolic-ref", "--quiet", "--short", "HEAD"])).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.catchAll(() => Effect.succeed("")),
+      );
+      if (current !== record.sourceBranch) {
+        return {
+          commit,
+          changed,
+          merged: false,
+          reason: `source branch "${record.sourceBranch}" is no longer checked out (now "${current === "" ? "detached" : current}"); winner kept on ${record.laneBranch}`,
+        };
+      }
     }
-  }
-  await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git merge");
-  try {
-    await execFileAsync("git", ["-C", gitRoot, "merge", "--ff-only", record.laneBranch], { encoding: "utf8" });
-    await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after Git merge");
-    return { commit, changed, merged: true };
-  } catch (cause) {
-    if (cause instanceof WorkflowError) throw cause;
+    yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before Git merge");
+    const merged = yield* Effect.gen(function* () {
+      yield* ioLeaf(io.execFile("git", ["-C", gitRoot, "merge", "--ff-only", record.laneBranch]));
+      yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after Git merge");
+    }).pipe(Effect.either);
+    if (merged._tag === "Right") return { commit, changed, merged: true };
+    if (merged.left instanceof WorkflowError) return yield* Effect.fail(merged.left);
     // The source advanced past the lane's fork point during the run, so a
     // fast-forward is impossible. The lane branch keeps the winner commit for
     // the operator to merge or inspect; cleanup removes only the worktree.
-    return { commit, changed, merged: false, reason: errorMessage(cause) };
-  }
+    return { commit, changed, merged: false, reason: errorMessage(rawCause(merged.left)) };
+  });
 }
 
 export interface WorkflowWinnerResult {
@@ -1985,77 +2178,170 @@ export function applyWinnerWorkspace(
   runDir: string,
   winnerKey: string,
   sourceCwd: string,
-): Effect.Effect<WorkflowWinnerResult, WorkflowError, FileSystem.FileSystem | Logging> {
-  return Effect.tryPromise({
-    try: async () => {
-      const runRoot = await canonicalRunRoot(runDir, false);
-      const sourceIdentity = await captureWorkspaceDirectoryIdentity(sourceCwd, "workspace source");
-      const source = sourceIdentity.canonical;
-      const run = runRoot.canonical;
-      const recordPath = workspaceRecordPath(run, winnerKey);
-      const record = await readWorkspaceRecord(recordPath, {
-        key: winnerKey,
-        cwd: workspacePath(run, winnerKey),
-        sourceCwd: source,
-      });
-      if (record === undefined) {
-        throw workflowError("schedule", run, `winner workspace "${winnerKey}" is not owned by this execution`);
-      }
-      let gitRoot: string;
-      try {
-        gitRoot = await assertOwnedWorkspace(run, record);
-      } catch (error) {
-        if (isMissingPathError(error)) {
-          throw workflowError("schedule", recordPath, `winner workspace is missing at ${record.cwd}`);
-        }
-        throw error;
-      }
-      const applying: WorkflowWorkspaceRecord = {
-        ...record,
-        phase: "applying",
-        updatedAt: new Date().toISOString(),
+): Effect.Effect<WorkflowWinnerResult, WorkflowError, Logging> {
+  return Effect.gen(function* () {
+    const runRoot = yield* canonicalRunRoot(runDir, false);
+    const sourceIdentity = yield* captureWorkspaceDirectoryIdentity(sourceCwd, "workspace source");
+    const source = sourceIdentity.canonical;
+    const run = runRoot.canonical;
+    const recordPath = workspaceRecordPath(run, winnerKey);
+    const record = yield* readWorkspaceRecord(recordPath, {
+      key: winnerKey,
+      cwd: workspacePath(run, winnerKey),
+      sourceCwd: source,
+    });
+    if (record === undefined) {
+      return yield* Effect.fail(workflowError("schedule", run, `winner workspace "${winnerKey}" is not owned by this execution`));
+    }
+    const gitRoot = yield* assertOwnedWorkspace(run, record).pipe(
+      Effect.catchIf(isMissingLeaf, () => Effect.fail(
+        workflowError("schedule", recordPath, `winner workspace is missing at ${record.cwd}`),
+      )),
+    );
+    const applying: WorkflowWorkspaceRecord = {
+      ...record,
+      phase: "applying",
+      updatedAt: new Date().toISOString(),
+    };
+    yield* writeWorkspaceRecord(recordPath, applying, runRoot);
+    yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
+    yield* assertCanonicalRunRoot(runRoot);
+    if (applying.strategy === "git-worktree") {
+      const merged = yield* mergeGitWorktreeWinner(applying, gitRoot, sourceIdentity);
+      const result: WorkflowWinnerResult = {
+        key: applying.key,
+        method: merged.changed === true ? "git-ff" : "git-no-changes",
+        commit: merged.commit,
+        ...(merged.merged === false ? { skipped: { reason: merged.reason ?? `source advanced; winner kept on ${applying.laneBranch}` } } : {}),
       };
-      await writeWorkspaceRecord(recordPath, applying, runRoot);
-      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source");
-      await assertCanonicalRunRoot(runRoot);
-      if (applying.strategy === "git-worktree") {
-        const merged = await mergeGitWorktreeWinner(applying, gitRoot, sourceIdentity);
-        const result: WorkflowWinnerResult = {
-          key: applying.key,
-          method: merged.changed === true ? "git-ff" : "git-no-changes",
-          commit: merged.commit,
-          ...(merged.merged === false ? { skipped: { reason: merged.reason ?? `source advanced; winner kept on ${applying.laneBranch}` } } : {}),
-        };
-        return result;
-      }
-      // The lane's fork commit is the parent's drift reference too: every
-      // sibling forked from it, so a parent change on any winner path is a
-      // genuine conflict and refuses the carry instead of clobbering it.
-      const baseline: WorkspaceBaseline = { runDir: run, commit: applying.baseCommit };
-      const [changes, parentChanges] = await Promise.all([
-        workspaceBaselineChanges(baseline, applying.cwd, [run]),
-        workspaceBaselineChanges(baseline, source, [run]),
-      ]);
-      const winnerPaths = new Set(changes.map((change) => change.path));
-      const conflicts = parentChanges.filter((change) => winnerPaths.has(change.path));
-      if (conflicts.length > 0) {
-        return {
-          key: applying.key,
-          method: "delta-applied" as const,
-          skipped: { reason: `the tournament parent changed after branch allocation at: ${conflicts.map((change) => change.path).join(", ")}` },
-        };
-      }
-      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before delta apply");
-      if (changes.length > 0) {
-        await applyWorkspaceChangeSet(source, { winnerContentDir: applying.cwd, changes }, [run]);
-      }
-      await assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after delta apply");
-      return { key: applying.key, method: "delta-applied" as const };
-    },
-    catch: (cause) => cause instanceof WorkflowError
-      ? cause
-      : workflowError("schedule", sourceCwd, errorMessage(cause)),
-  }).pipe(Effect.mapError((cause) => cause instanceof WorkflowError
-    ? cause
-    : workflowError("schedule", sourceCwd, errorMessage(cause))));
+      return result;
+    }
+    // The lane's fork commit is the parent's drift reference too: every
+    // sibling forked from it, so a parent change on any winner path is a
+    // genuine conflict and refuses the carry instead of clobbering it.
+    const baseline: WorkspaceBaseline = { runDir: run, commit: applying.baseCommit };
+    // Both comparisons index the winner into the shared store (each with its
+    // own index file), so both siblings must settle before the first failure
+    // is reported.
+    const [changesOutcome, parentOutcome] = yield* Effect.all([
+      workspaceBaselineChangesInternal(baseline, applying.cwd, [run]),
+      workspaceBaselineChangesInternal(baseline, source, [run]),
+    ], { concurrency: "unbounded", mode: "either" });
+    if (changesOutcome._tag === "Left") return yield* Effect.fail(changesOutcome.left);
+    if (parentOutcome._tag === "Left") return yield* Effect.fail(parentOutcome.left);
+    const changes = changesOutcome.right;
+    const parentChanges = parentOutcome.right;
+    const winnerPaths = new Set(changes.map((change) => change.path));
+    const conflicts = parentChanges.filter((change) => winnerPaths.has(change.path));
+    if (conflicts.length > 0) {
+      return {
+        key: applying.key,
+        method: "delta-applied" as const,
+        skipped: { reason: `the tournament parent changed after branch allocation at: ${conflicts.map((change) => change.path).join(", ")}` },
+      };
+    }
+    yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source before delta apply");
+    if (changes.length > 0) {
+      yield* applyWorkspaceChangeSetInternal(source, { winnerContentDir: applying.cwd, changes }, [run]);
+    }
+    yield* assertWorkspaceDirectoryIdentity(sourceIdentity, "workspace source after delta apply");
+    return { key: applying.key, method: "delta-applied" as const };
+  }).pipe(Effect.mapError((failure) => failureAt(sourceCwd, failure)));
+}
+
+export function prepareMapLaneFork(
+  sourceCwd: string,
+  options: {
+    readonly runDir: string;
+    readonly runId: string;
+    readonly jobOrdinal: number;
+    readonly frames: readonly WorkflowRuntimeFrame[];
+    readonly parent?: WorkflowWorkspaceBinding;
+  },
+): Effect.Effect<MapLaneFork, WorkflowError> {
+  return prepareMapLaneForkInternal(sourceCwd, options).pipe(
+    Effect.mapError((failure) => failureAt(sourceCwd, failure)),
+  );
+}
+
+export function inventoryWorkspaceLstat(
+  root: string,
+  excluded: readonly string[] = [],
+): Effect.Effect<readonly WorkspaceLstatEntry[], WorkflowError> {
+  return inventoryWorkspaceLstatInternal(root, excluded).pipe(
+    Effect.mapError((failure) => failureAt(root, failure)),
+  );
+}
+
+export function diffWorkspaceLstat(
+  baselineRoot: string,
+  candidateRoot: string,
+  excluded: readonly string[] = [],
+): Effect.Effect<readonly WorkspaceContentChange[], WorkflowError> {
+  return diffWorkspaceLstatInternal(baselineRoot, candidateRoot, excluded).pipe(
+    Effect.mapError((failure) => failureAt(baselineRoot, failure)),
+  );
+}
+
+export function restoreWorkspaceLstat(
+  targetRoot: string,
+  baselineRoot: string,
+  changes?: readonly WorkspaceContentChange[],
+  excluded: readonly string[] = [],
+): Effect.Effect<void, WorkflowError> {
+  return restoreWorkspaceLstatInternal(targetRoot, baselineRoot, changes, excluded).pipe(
+    Effect.mapError((failure) => failureAt(targetRoot, failure)),
+  );
+}
+
+export function snapshotWorkspaceLstat(
+  sourceContentDir: string,
+  snapshotDir: string,
+  excludeUnder: readonly string[] = [],
+): Effect.Effect<void, WorkflowError> {
+  return snapshotWorkspaceLstatInternal(sourceContentDir, snapshotDir, excludeUnder).pipe(
+    Effect.mapError((failure) => failureAt(snapshotDir, failure)),
+  );
+}
+
+export function freezeWorkspaceBaseline(
+  sourceContentDir: string,
+  options: {
+    readonly runDir: string;
+    readonly refName?: string;
+    readonly excludeUnder?: readonly string[];
+  },
+): Effect.Effect<WorkspaceBaseline, WorkflowError> {
+  return freezeWorkspaceBaselineInternal(sourceContentDir, options).pipe(
+    Effect.mapError((failure) => failureAt(sourceContentDir, failure)),
+  );
+}
+
+export function workspaceBaselineChanges(
+  baseline: WorkspaceBaseline,
+  candidateContentDir: string,
+  excludeUnder: readonly string[] = [],
+): Effect.Effect<readonly WorkspaceContentChange[], WorkflowError> {
+  return workspaceBaselineChangesInternal(baseline, candidateContentDir, excludeUnder).pipe(
+    Effect.mapError((failure) => failureAt(candidateContentDir, failure)),
+  );
+}
+
+export function applyWorkspaceChangeSet(
+  targetRoot: string,
+  changeSet: WorkspaceChangeSet,
+  excluded: readonly string[] = [],
+): Effect.Effect<void, WorkflowError> {
+  return applyWorkspaceChangeSetInternal(targetRoot, changeSet, excluded).pipe(
+    Effect.mapError((failure) => failureAt(targetRoot, failure)),
+  );
+}
+
+export function diffWorkspaceChangeSet(
+  targetContentDir: string,
+  changeSet: WorkspaceChangeSet,
+): Effect.Effect<WorkspaceContentDiff, WorkflowError> {
+  return diffWorkspaceChangeSetInternal(targetContentDir, changeSet).pipe(
+    Effect.mapError((failure) => failureAt(targetContentDir, failure)),
+  );
 }

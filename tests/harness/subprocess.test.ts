@@ -2737,7 +2737,7 @@ describe(" subprocess harness", () => {
           // The first assistant record means the child is mid-turn, blocked
           // on its next stdin line — steer exactly there.
           if (event.type === "message_end" && steerDelivery === undefined) {
-            steerPromise = channel.steer("go left instead").then((d) => { steerDelivery = d; });
+            steerPromise = Effect.runPromise(channel.steer("go left instead")).then((d) => { steerDelivery = d; });
           }
         },
       }, {
@@ -2758,7 +2758,7 @@ describe(" subprocess harness", () => {
       expect(frames[0]?.message?.content).toBe("do the task");
       expect(frames[1]?.message?.content).toBe("go left instead");
       // The completed session unbinds: later text finds no live turn.
-      expect(await channel.steer("too late")).toBe("no-active-turn");
+      expect(await Effect.runPromise(channel.steer("too late"))).toBe("no-active-turn");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2786,7 +2786,7 @@ describe(" subprocess harness", () => {
         Effect.provide(NodeFileSystem.layer),
       ));
       expect(Exit.isSuccess(exit)).toBe(true);
-      expect(await channel.steer("after close")).toBe("no-active-turn");
+      expect(await Effect.runPromise(channel.steer("after close"))).toBe("no-active-turn");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2820,7 +2820,7 @@ describe(" subprocess harness", () => {
           // stdin line — steer exactly there. dsh's native output is plain
           // text, so that half arrives as an unparsed record.
           if (event.type === "unknown" && steerDelivery === undefined) {
-            steerPromise = channel.steer("focus on the parser").then((d) => { steerDelivery = d; });
+            steerPromise = Effect.runPromise(channel.steer("focus on the parser")).then((d) => { steerDelivery = d; });
           }
         },
       }, {
@@ -2839,7 +2839,7 @@ describe(" subprocess harness", () => {
       // half proves the child resumed after the frame.
       if (Exit.isSuccess(exit)) expect(exit.value.text).toContain("PIANO_DSH_NATIVE_STEERED");
       // The completed session unbinds: later text finds no live turn.
-      expect(await channel.steer("already done")).toBe("no-active-turn");
+      expect(await Effect.runPromise(channel.steer("already done"))).toBe("no-active-turn");
       const frames = (await readFile(stdinLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type?: string; id?: string; text?: string });
       // The id is what the runner's ack correlates with, so its existence is
       // part of the frame's contract: without it a refusal could not be traced
@@ -2878,7 +2878,7 @@ describe(" subprocess harness", () => {
           // The turn's first half is out and the child is blocked on its next
           // stdin line — steer exactly there.
           if (event.type === "message_start" && steerDelivery === undefined) {
-            steerPromise = channel.steer("focus on the parser").then((d) => { steerDelivery = d; });
+            steerPromise = Effect.runPromise(channel.steer("focus on the parser")).then((d) => { steerDelivery = d; });
           }
         },
       }, {
@@ -2896,7 +2896,7 @@ describe(" subprocess harness", () => {
       // The steered half proves the child resumed after the steer frame.
       if (Exit.isSuccess(exit)) expect(exit.value.text).toBe("half steered");
       // The completed session unbinds: later text finds no live turn.
-      expect(await channel.steer("already done")).toBe("no-active-turn");
+      expect(await Effect.runPromise(channel.steer("already done"))).toBe("no-active-turn");
       // The task rides stdin as a prompt frame — never argv — and the steer
       // lands as its own frame carrying an id, which is what pi's RPC
       // correlates its `success` response with.
@@ -2945,7 +2945,7 @@ describe(" subprocess harness", () => {
         steering: channel,
         onEvent: (event) => {
           if (event.type === "message_start" && steerPromise === undefined) {
-            steerPromise = channel.steer("focus on the parser");
+            steerPromise = Effect.runPromise(channel.steer("focus on the parser"));
             steerPromise.catch(() => undefined);
           }
         },
@@ -2985,7 +2985,7 @@ describe(" subprocess harness", () => {
         onEvent: (event) => {
           events.push(event);
           if (event.type === "message_start" && steerPromise === undefined) {
-            steerPromise = channel.steer("focus on the parser");
+            steerPromise = Effect.runPromise(channel.steer("focus on the parser"));
             steerPromise.catch(() => undefined);
           }
         },

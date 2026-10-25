@@ -1,3 +1,6 @@
+import { Effect } from "effect";
+import type { AgentError } from "./errors.js";
+
 // Generic mid-turn steering contract for Piano harness backends.
 //
 // The interface is defined once, at the harness boundary, and every backend
@@ -22,16 +25,17 @@
 /** Outcome of a steering attempt: `delivered` means a live bound session
  * accepted the text into its running turn; `no-active-turn` means nothing was
  * listening (no turn running, or the active backend has no steering
- * implementation) and the caller should keep its queue semantics. A rejected
- * promise is a third answer: a live session refused the text (never swallow
+ * implementation) and the caller should keep its queue semantics. A failed
+ * effect is a third answer: a live session refused the text (never swallow
  * it — surface it to the developer). */
 export type SteerDelivery = "delivered" | "no-active-turn";
 
 /** What a harness backend binds: the live session's delivery primitive. Kept
  * minimal so a backend can adapt any native API (pi `session.steer`, a future
- * CLI control frame, an RPC call) behind it. */
+ * CLI control frame, an RPC call) behind it. The native Promise lives inside
+ * that adapter; the target itself is Effect. */
 export interface SteeringTarget {
-  steer(text: string): Promise<void>;
+  steer(text: string): Effect.Effect<void, AgentError>;
 }
 
 /** The channel threaded from the CLI down to the running worker. `steer`
@@ -40,7 +44,7 @@ export interface SteeringTarget {
  * overlapping stage sessions (retry, fan-out) never steal each other's
  * channel. */
 export interface SteeringChannel {
-  steer(text: string): Promise<SteerDelivery>;
+  steer(text: string): Effect.Effect<SteerDelivery, AgentError>;
   /** Attach a live session; returns the unbind. Call `bind(undefined)` (or
    * skip binding) when the backend cannot steer — the channel stays
    * reportably silent. */
@@ -53,10 +57,12 @@ export function createSteeringChannel(): SteeringChannel {
   let bound: SteeringTarget | undefined;
   let generation = 0;
   return {
-    async steer(text: string): Promise<SteerDelivery> {
-      if (text.trim() === "" || bound === undefined) return "no-active-turn";
-      await bound.steer(text);
-      return "delivered";
+    steer(text: string): Effect.Effect<SteerDelivery, AgentError> {
+      return Effect.suspend(() => {
+        const target = bound;
+        if (text.trim() === "" || target === undefined) return Effect.succeed("no-active-turn" as const);
+        return target.steer(text).pipe(Effect.as("delivered" as const));
+      });
     },
     bind(target: SteeringTarget | undefined): () => void {
       const token = ++generation;

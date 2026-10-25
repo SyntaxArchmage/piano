@@ -1,8 +1,7 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Effect } from "effect";
+import { errorMessage, io } from "@piano/base";
 import { NodeFileSystem } from "@effect/platform-node";
 import {
   DSH_API_KEY_ENV,
@@ -37,62 +36,73 @@ const PROBE_SESSION_ID = "session-00000000-0000-0000-0000-000000000000";
  *
  * Both messages are emitted before any model call, so the probe needs no
  * working credentials and costs one dsh startup. */
-export async function probeDshResumeCapability(
+export function probeDshResumeCapability(
   config: ResolvedHarnessConfig,
   timeoutMs = 30_000,
-): Promise<DshResumeProbe> {
-  const root = await mkdtemp(join(tmpdir(), "piano-dsh-resume-probe-"));
-  try {
-    const homes = await Effect.runPromise(
-      prepareHarnessHomes({
-        rootDir: join(root, "home"),
-        configs: { dsh: config },
-      }).pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-    const dshHome = homes.env.DSH_HOME;
-    if (dshHome === undefined) return { capability: "unknown", reason: "no dsh home was generated" };
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...homes.env,
-      [DSH_RESUME_SESSION_ENV]: PROBE_SESSION_ID,
-    };
-    if (config.apiKey !== undefined) {
-      const secret = /^[A-Z][A-Z0-9_]*$/.test(config.apiKey)
-        ? (env[config.apiKey] ?? config.apiKey)
-        : config.apiKey;
-      env[config.apiKeyEnv ?? DSH_API_KEY_ENV] = secret;
-    }
-    const args = [
-      "--profile", config.profile ?? "headless",
-      "--patch", dshResumeOverlayPath(dshHome),
-      "piano resume capability probe",
-    ];
-    const output = await new Promise<string>((resolvePromise) => {
-      execFile(
-        config.binPath ?? "dsh",
-        args,
-        { env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
-        (_error, stdout, stderr) => resolvePromise(`${stdout}\n${stderr}`),
-      );
-    });
-    if (output.includes("cannot resume")) {
-      return {
-        capability: "unsupported",
-        reason: "the installed dsh has no session-resume API (agents.resume); upgrade dsh to resume runs",
-      };
-    }
-    if (output.includes("could not resume")) return { capability: "supported" };
-    const tail = output.trim().split("\n").slice(-2).join(" ").slice(-300);
-    return {
-      capability: "unknown",
-      reason: tail === "" ? "the probe produced no output" : `probe output: ${tail}`,
-    };
-  } catch (error) {
-    return {
-      capability: "unknown",
-      reason: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    await rm(root, { recursive: true, force: true }).catch(() => undefined);
-  }
+): Effect.Effect<DshResumeProbe> {
+  return io.mkdtemp(join(tmpdir(), "piano-dsh-resume-probe-")).pipe(
+    Effect.flatMap((root) =>
+      Effect.gen(function* () {
+        const homes = yield* prepareHarnessHomes({
+          rootDir: join(root, "home"),
+          configs: { dsh: config },
+        });
+        const dshHome = homes.env.DSH_HOME;
+        if (dshHome === undefined) return { capability: "unknown", reason: "no dsh home was generated" } satisfies DshResumeProbe;
+        const env: NodeJS.ProcessEnv = {
+          ...process.env,
+          ...homes.env,
+          [DSH_RESUME_SESSION_ENV]: PROBE_SESSION_ID,
+        };
+        if (config.apiKey !== undefined) {
+          const secret = /^[A-Z][A-Z0-9_]*$/.test(config.apiKey)
+            ? (env[config.apiKey] ?? config.apiKey)
+            : config.apiKey;
+          env[config.apiKeyEnv ?? DSH_API_KEY_ENV] = secret;
+        }
+        const args = [
+          "--profile", config.profile ?? "headless",
+          "--patch", dshResumeOverlayPath(dshHome),
+          "piano resume capability probe",
+        ];
+        // A non-zero exit or timeout is probe data, not a failure: the wording
+        // the runner printed is the verdict being read.
+        const probe = yield* io.execFileResult(config.binPath ?? "dsh", args, {
+          env,
+          timeoutMs,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+        const output = `${probe.stdout}\n${probe.stderr}`;
+        if (output.includes("cannot resume")) {
+          return {
+            capability: "unsupported",
+            reason: "the installed dsh has no session-resume API (agents.resume); upgrade dsh to resume runs",
+          } satisfies DshResumeProbe;
+        }
+        if (output.includes("could not resume")) return { capability: "supported" } satisfies DshResumeProbe;
+        const tail = output.trim().split("\n").slice(-2).join(" ").slice(-300);
+        return {
+          capability: "unknown",
+          reason: tail === "" ? "the probe produced no output" : `probe output: ${tail}`,
+        } satisfies DshResumeProbe;
+      }).pipe(
+        Effect.ensuring(io.rm(root, { recursive: true, force: true }).pipe(Effect.catchAll(() => Effect.void))),
+      ),
+    ),
+    // A failed probe is a capability verdict, not an error: doctor must still
+    // print a report when the generated home or the child process cannot be
+    // produced. This also covers a mkdtemp failure.
+    Effect.catchAll((error) => Effect.succeed(unknownProbe(error))),
+    Effect.catchAllDefect((error) => Effect.succeed(unknownProbe(error))),
+    Effect.provide(NodeFileSystem.layer),
+  );
+}
+
+/** A failed probe is a capability verdict, not an error: doctor must still print
+ * a report when the generated home or the child process cannot be produced. */
+function unknownProbe(error: unknown): DshResumeProbe {
+  return {
+    capability: "unknown",
+    reason: errorMessage(error),
+  };
 }

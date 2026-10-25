@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { Effect } from "effect";
+import { io } from "@piano/base";
 
 /** Well-known system CA bundle locations, in the order distributions ship
  * them: Debian/Ubuntu, RHEL/CentOS/Fedora (and its p11-kit extract), openSUSE,
@@ -38,7 +39,10 @@ export function ensureSystemCaTrust(): void {
   const entry = process.argv[1];
   if (entry === undefined) return;
 
-  const bundle = SYSTEM_CA_BUNDLES.find((candidate) => existsSync(candidate));
+  // The bundle check runs before the Effect runtime exists (this function is
+  // called before `runCli` builds its runtime), so the io Effect is driven with
+  // Effect.runSync at that synchronous bootstrap edge.
+  const bundle = SYSTEM_CA_BUNDLES.find((candidate) => Effect.runSync(io.existsSync(candidate)));
   const env: NodeJS.ProcessEnv = { ...process.env, PIANO_CA_BOOTSTRAPPED: "1" };
   const execArgv = [...process.execArgv];
   if (bundle !== undefined) {
@@ -49,6 +53,10 @@ export function ensureSystemCaTrust(): void {
     return;
   }
 
+  // The one deliberate spawnSync: Node reads NODE_EXTRA_CA_CERTS at process
+  // start, so the only fix is to re-exec — and that must happen synchronously,
+  // before any Effect runtime exists. This call replaces the process rather
+  // than composing with it, so it cannot be an io.execFile Effect.
   const result = spawnSync(process.execPath, [...execArgv, entry, ...process.argv.slice(2)], {
     stdio: "inherit",
     env,

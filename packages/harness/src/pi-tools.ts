@@ -1,3 +1,5 @@
+import { Effect } from "effect";
+import { io } from "@piano/base";
 import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 
 /**
@@ -17,12 +19,36 @@ import { PI_CUSTOM_TOOL_NAMES } from "./tool-names.js";
 /** Max bytes of response body returned to the model; avoids flooding context. */
 const WEB_FETCH_MAX_BYTES = 200_000;
 
+/** Fetch one URL and render it as the tool's text result. The body is streamed
+ * with a byte cap so a huge page cannot flood the model's context. */
+function fetchWebPage(
+  url: string,
+  signal: AbortSignal,
+): Effect.Effect<{ readonly type: "tool-result"; readonly content: string }, Error> {
+  return Effect.gen(function* () {
+    const response = yield* io.fetchCappedText(url, { signal }, WEB_FETCH_MAX_BYTES);
+    const contentType = response.contentType;
+    const isText = /text|json|xml|javascript|yaml|markdown/i.test(contentType);
+    if (!isText) {
+      return { type: "tool-result" as const, content: `HTTP ${response.status} — content-type: ${contentType} (binary or non-text; not returned)` };
+    }
+    if (response.text === "" && !response.truncated) {
+      return { type: "tool-result" as const, content: `HTTP ${response.status} — empty body` };
+    }
+    // io's capped response carries no reason phrase; the status code is the
+    // stable part of the header (statusText is empty under HTTP/2 anyway).
+    const header = `HTTP ${response.status} — ${url}\n\n`;
+    const footer = response.truncated ? `\n\n[truncated at ${WEB_FETCH_MAX_BYTES} bytes]` : "";
+    return { type: "tool-result" as const, content: header + response.text + footer };
+  });
+}
+
 /** Build the customTools array for tools in request.tools that are piano-owned
  * (not built into the Pi SDK). Returns undefined when no custom tools are
  * needed so the caller can skip the option entirely. */
 export function buildCustomTools(
   requestTools: readonly string[] | undefined,
-  discuss: ((question: string) => Promise<string>) | undefined,
+  discuss: ((question: string) => Effect.Effect<string, unknown>) | undefined,
 ): object[] | undefined {
   const active = PI_CUSTOM_TOOL_NAMES.filter(
     (name) => requestTools === undefined || requestTools.includes(name),
@@ -42,11 +68,15 @@ export function buildCustomTools(
           question: { type: "string", description: "One focused question for the supervisor." },
         },
       },
-      async execute(
+      execute(
         _toolCallId: string,
         params: { question: string },
       ): Promise<{ type: "tool-result"; content: string }> {
-        return { type: "tool-result", content: await discuss(params.question) };
+        // The SDK's tool contract is a Promise; the supervisor call itself is
+        // Effect-native.
+        return Effect.runPromise(Effect.suspend(() => discuss(params.question)).pipe(
+          Effect.map((content) => ({ type: "tool-result" as const, content })),
+        ));
       },
     });
   }
@@ -64,7 +94,7 @@ export function buildCustomTools(
           timeout_ms: { type: "number", description: "Request timeout in milliseconds. Default: 15000." },
         },
       },
-      async execute(
+      execute(
         _toolCallId: string,
         params: { url: string; timeout_ms?: number },
         signal: AbortSignal | undefined,
@@ -76,50 +106,17 @@ export function buildCustomTools(
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         const linked = (): void => controller.abort();
         signal?.addEventListener("abort", linked, { once: true });
-        try {
-          const response = await fetch(params.url, { signal: controller.signal });
-          const contentType = response.headers.get("content-type") ?? "";
-          const isText = /text|json|xml|javascript|yaml|markdown/i.test(contentType);
-          if (!isText) {
-            return { type: "tool-result", content: `HTTP ${response.status} — content-type: ${contentType} (binary or non-text; not returned)` };
-          }
-          const reader = response.body?.getReader();
-          if (reader === undefined) {
-            return { type: "tool-result", content: `HTTP ${response.status} — empty body` };
-          }
-          const chunks: Uint8Array[] = [];
-          let total = 0;
-          let truncated = false;
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (total + value.byteLength > WEB_FETCH_MAX_BYTES) {
-              chunks.push(value.slice(0, WEB_FETCH_MAX_BYTES - total));
-              truncated = true;
-              break;
-            }
-            chunks.push(value);
-            total += value.byteLength;
-          }
-          reader.cancel().catch(() => undefined);
-          const text = new TextDecoder().decode(
-            chunks.reduce((a, b) => {
-              const merged = new Uint8Array(a.byteLength + b.byteLength);
-              merged.set(a);
-              merged.set(b, a.byteLength);
-              return merged;
-            }, new Uint8Array(0)),
-          );
-          const header = `HTTP ${response.status} ${response.statusText} — ${params.url}\n\n`;
-          const footer = truncated ? `\n\n[truncated at ${WEB_FETCH_MAX_BYTES} bytes]` : "";
-          return { type: "tool-result", content: header + text + footer };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return { type: "tool-result", content: `Error fetching ${params.url}: ${msg}` };
-        } finally {
-          clearTimeout(timer);
-          signal?.removeEventListener("abort", linked);
-        }
+        // The SDK's tool contract is a Promise; the fetch itself is Effect-native.
+        return Effect.runPromise(fetchWebPage(params.url, controller.signal).pipe(
+          Effect.catchAll((cause) => Effect.succeed({
+            type: "tool-result" as const,
+            content: `Error fetching ${params.url}: ${cause instanceof Error ? cause.message : String(cause)}`,
+          })),
+          Effect.ensuring(Effect.sync(() => {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", linked);
+          })),
+        ));
       },
     });
   }

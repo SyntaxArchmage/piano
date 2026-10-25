@@ -5,9 +5,8 @@
  * another run's transcript.
  */
 import { Effect } from "effect";
-import { readFileSync, statSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { io } from "@piano/base";
 import { logStreamPath, parseJsonRecord, traceStreamPath } from "@piano/logging";
 import { DriverError } from "./errors.js";
 
@@ -40,18 +39,22 @@ interface RunWorkspaceEvidence {
 /** Shared association probe: does this run directory reference `workspaceDir`
  * in any evidence stream it has emitted so far? `observed` distinguishes "no
  * reference yet" from "emitted evidence that names another workspace". */
-function inspectRunWorkspace(runsRoot: string, id: string, workspaceDir: string): RunWorkspaceEvidence {
-  let observed = false;
-  for (const path of runEvidencePaths(join(runsRoot, id))) {
-    try {
-      const content = readFileSync(path, "utf8");
+function inspectRunWorkspace(
+  runsRoot: string,
+  id: string,
+  workspaceDir: string,
+): Effect.Effect<RunWorkspaceEvidence> {
+  return Effect.gen(function* () {
+    let observed = false;
+    for (const path of runEvidencePaths(join(runsRoot, id))) {
+      // A partial run may not have emitted every evidence stream yet.
+      const content = yield* io.readText(path).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+      if (content === undefined) continue;
       observed = true;
       if (referencesWorkspace(content, workspaceDir)) return { observed, matches: true };
-    } catch {
-      // A partial run may not have emitted every evidence stream yet.
     }
-  }
-  return { observed, matches: false };
+    return { observed, matches: false };
+  });
 }
 
 /** Choose which newly created run directory a live-progress poller may bind
@@ -64,11 +67,17 @@ export function matchNewRunDir(
   runsRoot: string,
   createdIds: readonly string[],
   workspaceDir: string,
-): string | undefined {
-  if (createdIds.length === 1) return createdIds[0];
-  if (createdIds.length === 0) return undefined;
-  const matches = createdIds.filter((id) => inspectRunWorkspace(runsRoot, id, workspaceDir).matches);
-  return matches.length === 1 ? matches[0] : undefined;
+): Effect.Effect<string | undefined> {
+  if (createdIds.length === 1) return Effect.succeed(createdIds[0]);
+  if (createdIds.length === 0) return Effect.succeed(undefined);
+  return Effect.gen(function* () {
+    const matches: string[] = [];
+    for (const id of createdIds) {
+      const evidence = yield* inspectRunWorkspace(runsRoot, id, workspaceDir);
+      if (evidence.matches) matches.push(id);
+    }
+    return matches.length === 1 ? matches[0] : undefined;
+  });
 }
 
 export interface RunDirectoryAssociation {
@@ -77,69 +86,73 @@ export interface RunDirectoryAssociation {
   readonly candidates: readonly string[];
 }
 
+/** Whether `readdir` failed because the runs root does not exist yet. */
+function isMissingPathCause(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null &&
+    (cause as { readonly code?: unknown }).code === "ENOENT";
+}
+
 export function findNewRunDir(
   runsRoot: string,
   before: ReadonlySet<string>,
   workspaceDir: string,
   startedAt: number,
 ): Effect.Effect<RunDirectoryAssociation, DriverError> {
-  return Effect.tryPromise({
-    try: async () => {
-      let after: string[];
-      try {
-        after = await readdir(runsRoot);
-      } catch (cause) {
-        if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
-          return {
-            candidates: [],
-            reason: `no Piano run directory was created for workspace ${workspaceDir}`,
-          };
-        }
-        throw cause;
-      }
-      const created = after
-        .filter((id) => !before.has(id))
-        .filter((id) => {
-          try {
-            return statSync(join(runsRoot, id)).mtimeMs >= startedAt - 1_000;
-          } catch {
-            return false;
-          }
-        })
-        .sort();
-      if (created.length === 0) {
+  return Effect.gen(function* () {
+    const after = yield* io.readdirNames(runsRoot).pipe(
+      Effect.catchIf((cause) => isMissingPathCause(cause.cause), () => Effect.succeed(undefined)),
+      Effect.mapError((cause) => new DriverError({
+        message: `list Piano runs: ${String(new Error(cause.message))}`,
+        cause,
+      })),
+    );
+    if (after === undefined) {
+      return {
+        candidates: [],
+        reason: `no Piano run directory was created for workspace ${workspaceDir}`,
+      };
+    }
+    const created: string[] = [];
+    for (const id of after) {
+      if (before.has(id)) continue;
+      const info = yield* io.stat(join(runsRoot, id)).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
+      if (info !== undefined && info.mtimeMs >= startedAt - 1_000) created.push(id);
+    }
+    created.sort();
+    if (created.length === 0) {
+      return {
+        candidates: [],
+        reason: `no new Piano run directory was created for workspace ${workspaceDir}`,
+      };
+    }
+
+    // Concurrent evals can create several run directories during the same
+    // launch window. Associate by the durable workspace path emitted in the
+    // run log; when no unique match exists, fail closed rather than attaching
+    // another run's transcript to this case.
+    const inspected: { readonly id: string; readonly observed: boolean; readonly matches: boolean }[] = [];
+    for (const id of created) {
+      inspected.push({ id, ...(yield* inspectRunWorkspace(runsRoot, id, workspaceDir)) });
+    }
+    const matches = inspected.filter((candidate) => candidate.matches).map((candidate) => candidate.id);
+    if (created.length === 1) {
+      const candidate = inspected[0];
+      if (candidate?.observed === true && candidate.matches === false) {
         return {
-          candidates: [],
-          reason: `no new Piano run directory was created for workspace ${workspaceDir}`,
+          candidates: created,
+          reason: `new Piano run does not reference workspace ${workspaceDir}; candidates: ${created.join(", ")}`,
         };
       }
-
-      // Concurrent evals can create several run directories during the same
-      // launch window. Associate by the durable workspace path emitted in the
-      // run log; when no unique match exists, fail closed rather than attaching
-      // another run's transcript to this case.
-      const inspected = created.map((id) => ({ id, ...inspectRunWorkspace(runsRoot, id, workspaceDir) }));
-      const matches = inspected.filter((candidate) => candidate.matches).map((candidate) => candidate.id);
-      if (created.length === 1) {
-        const candidate = inspected[0];
-        if (candidate?.observed === true && candidate.matches === false) {
-          return {
-            candidates: created,
-            reason: `new Piano run does not reference workspace ${workspaceDir}; candidates: ${created.join(", ")}`,
-          };
-        }
-        return { path: join(runsRoot, created[0]!), candidates: created };
-      }
-      if (matches.length === 1) {
-        return { path: join(runsRoot, matches[0]!), candidates: created };
-      }
-      return {
-        candidates: created,
-        reason: matches.length === 0
-          ? `could not associate Piano run with workspace ${workspaceDir}; candidates: ${created.join(", ")}`
-          : `multiple Piano runs match workspace ${workspaceDir}; candidates: ${matches.join(", ")}`,
-      };
-    },
-    catch: (cause) => new DriverError({ message: `list Piano runs: ${String(cause)}`, cause }),
+      return { path: join(runsRoot, created[0]!), candidates: created };
+    }
+    if (matches.length === 1) {
+      return { path: join(runsRoot, matches[0]!), candidates: created };
+    }
+    return {
+      candidates: created,
+      reason: matches.length === 0
+        ? `could not associate Piano run with workspace ${workspaceDir}; candidates: ${created.join(", ")}`
+        : `multiple Piano runs match workspace ${workspaceDir}; candidates: ${matches.join(", ")}`,
+    };
   });
 }

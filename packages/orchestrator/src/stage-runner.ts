@@ -690,8 +690,10 @@ export function executeStage(
         },
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
         ...(node.stage.discuss !== true || request.discuss === undefined ? {} : {
-          discuss: async (question: string) => {
-            const answer = (await Effect.runPromise(request.discuss!({
+          // The supervisor channel and the worker contract are both Effect;
+          // the SDK tool's Promise adapter lives only in the harness.
+          discuss: (question: string) => Effect.map(
+            request.discuss!({
               stageId: node.id,
               invocationId: runtimeInvocationId(invocation),
               stage: node.stage.name,
@@ -700,9 +702,9 @@ export function executeStage(
               round: attempt,
               transcriptPath: actors.get(actorKey)?.transcriptPath ?? "",
               question,
-            }))).answer;
-            return answer;
-          },
+            }),
+            (decision) => decision.answer,
+          ),
         }),
       }, agentOptions).pipe(Effect.tapError((error) => {
         const cancelled = isCancellation(error);
@@ -768,7 +770,7 @@ export function executeStage(
       // transcript when its harness announced a session, so it is attributed
       // through that announcement rather than dropped.
       const attemptWorker = Either.isRight(workerOutcome) ? workerOutcome.right : announcedContinuations.get(actorKey);
-      const attemptUsage = transcriptTokenUsage(attemptWorker?.transcriptPath);
+      const attemptUsage = yield* transcriptTokenUsage(attemptWorker?.transcriptPath);
       yield* Effect.forEach(
         [
           ...attemptObservations,

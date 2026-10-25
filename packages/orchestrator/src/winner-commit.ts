@@ -1,11 +1,22 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { FileSystem } from "@effect/platform";
+import { io } from "@piano/base";
 import { isUnsafeWorkspaceRelativePath } from "@piano/contract";
 import { Effect, Either } from "effect";
 import { logger, TRACE, type Logging, type Source } from "@piano/logging";
 
-const execFileAsync = promisify(execFile);
+/** Leaf adapter: one `git` invocation behind one io Effect. Every git effect in
+ * this module composes this call, so the external process boundary stays
+ * exactly one call wide. A non-zero exit is an `IoError` carrying the child's
+ * own stderr, which `gitErrorDetails` reads. */
+function runGit(
+  cwd: string,
+  args: readonly string[],
+  options: { readonly maxBuffer?: number } = {},
+): Effect.Effect<io.CommandResult, io.IoError> {
+  return io.execFile("git", ["-C", cwd, ...args], options.maxBuffer === undefined ? {} : {
+    maxBuffer: options.maxBuffer,
+  });
+}
 
 /** ISSUE-017: orchestrator-owned winner auto-commit. When a workflow opts into
  * `autoCommit`, the loop executor stages and commits each KEEP round's
@@ -40,19 +51,19 @@ function porcelainPath(line: string): string | undefined {
 export function snapshotDirtyFiles(
   cwd: string,
 ): Effect.Effect<ReadonlySet<string>, never, never> {
-  return Effect.tryPromise(async () => {
-    const result = await execFileAsync(
-      "git",
-      ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=all"],
-      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
-    );
-    const dirty = new Set<string>();
-    for (const line of result.stdout.split(/\r?\n/u)) {
-      const path = porcelainPath(line);
-      if (path !== undefined) dirty.add(path);
-    }
-    return dirty;
-  }).pipe(Effect.catchAll(() => Effect.succeed(new Set<string>())));
+  return runGit(cwd, ["status", "--porcelain=v1", "--untracked-files=all"], {
+    maxBuffer: 32 * 1024 * 1024,
+  }).pipe(
+    Effect.map((result) => {
+      const dirty = new Set<string>();
+      for (const line of result.stdout.split(/\r?\n/u)) {
+        const path = porcelainPath(line);
+        if (path !== undefined) dirty.add(path);
+      }
+      return dirty as ReadonlySet<string>;
+    }),
+    Effect.catchAll(() => Effect.succeed<ReadonlySet<string>>(new Set<string>())),
+  );
 }
 
 /** Keep only the files auto-commit is allowed to stage: non-empty,
@@ -129,12 +140,11 @@ export function buildCommitMessage(input: WinnerCommitMessageInput): WinnerCommi
   return { subject, body };
 }
 
-/** Unwrap a rejection from `Effect.tryPromise` down to the underlying git
- * error. Effect wraps non-Cause rejections in a RuntimeException whose real
- * payload lives on `.cause`; execFile errors carry the useful text in
- * `.stderr`. Without this walk, a hook rejection logs only Effect's generic
- * "An unknown error occurred in Effect.tryPromise" and the run leaves no way
- * to tell WHY the commit failed (L4-2round evidence, run 20260902T085250). */
+/** Unwrap a failed git call down to the useful text. `io.execFile` reports an
+ * `IoError` carrying the child's stderr directly; older/wrapped rejections
+ * keep the real payload on `.cause`/`.error`. Without this walk, a hook
+ * rejection logs only a generic message and the run leaves no way to tell WHY
+ * the commit failed (L4-2round evidence, run 20260902T085250). */
 function gitErrorDetails(error: unknown): string {
   let node: unknown = error;
   let fallback: string | undefined;
@@ -163,20 +173,11 @@ export function commitRoundFiles(
       });
       return;
     }
-    const outcome = yield* Effect.tryPromise(async () => {
-      await execFileAsync("git", ["-C", cwd, "add", "--", ...files], { encoding: "utf8" });
-      await execFileAsync(
-        "git",
-        ["-C", cwd, "commit", "-m", message.subject, "-m", message.body],
-        { encoding: "utf8" },
-      );
-      const log = await execFileAsync(
-        "git",
-        ["-C", cwd, "log", "-1", "--name-only", "--format=%s"],
-        { encoding: "utf8" },
-      );
-      return log.stdout;
-    }).pipe(Effect.either);
+    const outcome = yield* Effect.either(Effect.gen(function* () {
+      yield* runGit(cwd, ["add", "--", ...files]);
+      yield* runGit(cwd, ["commit", "-m", message.subject, "-m", message.body]);
+      return yield* runGit(cwd, ["log", "-1", "--name-only", "--format=%s"]);
+    }));
     if (Either.isLeft(outcome)) {
       yield* WINNER_COMMIT_LOG.warn("auto.commit.failed", {
         data: { cwd, subject: message.subject, error: gitErrorDetails(outcome.left) },
@@ -186,15 +187,13 @@ export function commitRoundFiles(
       // would restore the STAGED (candidate) content instead of HEAD, silently
       // corrupting revert semantics. Best-effort unstage the exact paths we
       // added (worktree content is preserved); never fail on this either.
-      yield* Effect.tryPromise(async () => {
-        await execFileAsync("git", ["-C", cwd, "reset", "--quiet", "--", ...files], { encoding: "utf8" });
-      }).pipe(
+      yield* runGit(cwd, ["reset", "--quiet", "--", ...files]).pipe(
         Effect.catchAll(() => Effect.void),
       );
       return;
     }
     yield* WINNER_COMMIT_LOG.info("auto.commit.committed", {
-      data: { cwd, subject: message.subject, log: outcome.right },
+      data: { cwd, subject: message.subject, log: outcome.right.stdout },
     });
   }));
 }

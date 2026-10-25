@@ -73,7 +73,7 @@ describe("pi discuss wiring", () => {
       const result = await Effect.runPromise(executeAgent({
         cwd: root,
         prompt: "design",
-        discuss: async (question) => { asked = question; return "use the narrow option"; },
+        discuss: (question) => Effect.sync(() => { asked = question; return "use the narrow option"; }),
       }, {
         sdk: sdkLoaderFixture(root, "discuss", { session: (options) => { sessionOptions = options; } }),
         ...TEST_MODEL,
@@ -1460,7 +1460,7 @@ describe(" pi sdk steering", () => {
 
   it("delivers mid-turn text into the live pi session's steer", async () => {
     const outcome = await runSteeringCase("deliver", true, async (channel, steered) => {
-      expect(await channel.steer("focus on the test file first")).toBe("delivered");
+      expect(await Effect.runPromise(channel.steer("focus on the test file first"))).toBe("delivered");
       expect(steered).toEqual(["focus on the test file first"]);
     });
     expect(outcome).toBe("settled");
@@ -1468,7 +1468,7 @@ describe(" pi sdk steering", () => {
 
   it("answers no-active-turn while the session is live but the SDK cannot steer", async () => {
     const outcome = await runSteeringCase("unsupported", false, async (channel, steered) => {
-      expect(await channel.steer("ignored")).toBe("no-active-turn");
+      expect(await Effect.runPromise(channel.steer("ignored"))).toBe("no-active-turn");
       expect(steered).toEqual([]);
     });
     expect(outcome).toBe("settled");
@@ -1497,7 +1497,7 @@ describe(" pi sdk steering", () => {
       fake.closeTurn();
       await running;
       // The completion cleanup unbound the session; steering must not find it.
-      expect(await channel.steer("too late")).toBe("no-active-turn");
+      expect(await Effect.runPromise(channel.steer("too late"))).toBe("no-active-turn");
       expect(fake.steered).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });

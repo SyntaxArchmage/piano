@@ -10,21 +10,34 @@ import { createSession, Logging, loggingService } from "../../packages/logging/s
 import {
   allocateMapWorkspace,
   applyWinnerWorkspace,
-  applyWorkspaceChangeSet,
+  applyWorkspaceChangeSet as applyWorkspaceChangeSetEffect,
   cleanupMapWorkspaces,
-  freezeWorkspaceBaseline,
-  prepareMapLaneFork,
-  workspaceBaselineChanges,
+  freezeWorkspaceBaseline as freezeWorkspaceBaselineEffect,
+  prepareMapLaneFork as prepareMapLaneForkEffect,
+  workspaceBaselineChanges as workspaceBaselineChangesEffect,
   workspaceRefName,
 } from "../../packages/orchestrator/src/index.js";
 import {
-  diffWorkspaceLstat,
-  inventoryWorkspaceLstat,
-  restoreWorkspaceLstat,
-  snapshotWorkspaceLstat,
+  createLaneNumberAllocator,
+  diffWorkspaceLstat as diffWorkspaceLstatEffect,
+  inventoryWorkspaceLstat as inventoryWorkspaceLstatEffect,
+  restoreWorkspaceLstat as restoreWorkspaceLstatEffect,
+  snapshotWorkspaceLstat as snapshotWorkspaceLstatEffect,
 } from "../../packages/orchestrator/src/workspace.js";
 
 const execFileAsync = promisify(execFile);
+
+// The workspace primitives now hand back Effects. These tests still drive them
+// as plain promises; the shims keep every existing assertion unchanged.
+const runInProcess = <A>(effect: Effect.Effect<A, unknown>): Promise<A> => Effect.runPromise(effect);
+const prepareMapLaneFork = (...args: Parameters<typeof prepareMapLaneForkEffect>) => runInProcess(prepareMapLaneForkEffect(...args));
+const inventoryWorkspaceLstat = (...args: Parameters<typeof inventoryWorkspaceLstatEffect>) => runInProcess(inventoryWorkspaceLstatEffect(...args));
+const diffWorkspaceLstat = (...args: Parameters<typeof diffWorkspaceLstatEffect>) => runInProcess(diffWorkspaceLstatEffect(...args));
+const restoreWorkspaceLstat = (...args: Parameters<typeof restoreWorkspaceLstatEffect>) => runInProcess(restoreWorkspaceLstatEffect(...args));
+const snapshotWorkspaceLstat = (...args: Parameters<typeof snapshotWorkspaceLstatEffect>) => runInProcess(snapshotWorkspaceLstatEffect(...args));
+const freezeWorkspaceBaseline = (...args: Parameters<typeof freezeWorkspaceBaselineEffect>) => runInProcess(freezeWorkspaceBaselineEffect(...args));
+const workspaceBaselineChanges = (...args: Parameters<typeof workspaceBaselineChangesEffect>) => runInProcess(workspaceBaselineChangesEffect(...args));
+const applyWorkspaceChangeSet = (...args: Parameters<typeof applyWorkspaceChangeSetEffect>) => runInProcess(applyWorkspaceChangeSetEffect(...args));
 
 async function sessionFor(root: string, runRoot: string) {
   return Effect.runPromise(
@@ -710,16 +723,36 @@ describe(" workspace lifecycle", () => {
       expect(fork.sourceBranch).toBe(
         (await execFileAsync("git", ["-C", root, "branch", "--show-current"], { encoding: "utf8" })).stdout.trim(),
       );
+      // The walker hands allocation one cached Effect: it is resolved only
+      // when a slot actually needs a lane, and both slots share that run.
+      let forkRuns = 0;
+      const forkEffect = await Effect.runPromise(Effect.cached(Effect.suspend(() => {
+        forkRuns += 1;
+        return Effect.succeed(fork);
+      })));
       const first = await runEffect(session, allocateMapWorkspace(
         session.runDir, "dirty",
         1, frames, root,
 
-        { mnemonic: "test", fork },));
+        { mnemonic: "test", fork: forkEffect },));
       const second = await runEffect(session, allocateMapWorkspace(
         session.runDir, "dirty",
         1, [{ kind: "map", regionId: "tournament", slot: 1 }], root,
 
-        { mnemonic: "test", fork },));
+        { mnemonic: "test", fork: forkEffect },));
+      expect(forkRuns).toBe(1);
+      // A resume that rebinds an existing slot never runs the fork at all.
+      let unusedForkRuns = 0;
+      const unusedFork = await Effect.runPromise(Effect.cached(Effect.suspend(() => {
+        unusedForkRuns += 1;
+        return Effect.succeed(fork);
+      })));
+      const rebound = await runEffect(session, allocateMapWorkspace(
+        session.runDir, "dirty",
+        1, frames, root,
+        { mnemonic: "test", fork: unusedFork },));
+      expect(rebound.cwd).toBe(first.cwd);
+      expect(unusedForkRuns).toBe(0);
 
       await expect(readFile(join(first.cwd, "tracked.txt"), "utf8")).resolves.toBe("unsaved\n");
       await expect(readFile(join(second.cwd, "untracked.txt"), "utf8")).resolves.toBe("untracked\n");
@@ -770,6 +803,26 @@ describe(" workspace lifecycle", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(runRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("hands consecutive lane numbers to concurrent cold callers", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-lane-allocator-"));
+    try {
+      await execFileAsync("git", ["init", "-q", root]);
+      const allocator = createLaneNumberAllocator();
+      // Every caller starts cold: one shared scan reserves lane 0 and the
+      // concurrent waiters take the following hints.
+      const numbers = await Effect.runPromise(Effect.all(
+        [0, 1, 2, 3].map(() => allocator.next({ scanRoot: root, commonRoot: root, mnemonic: "test" })),
+        { concurrency: "unbounded" },
+      ));
+      expect(numbers.slice().sort((left, right) => left - right)).toEqual([0, 1, 2, 3]);
+      // The hint keeps advancing after the scan settles.
+      const next = await Effect.runPromise(allocator.next({ scanRoot: root, commonRoot: root, mnemonic: "test" }));
+      expect(next).toBe(4);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -1431,6 +1484,16 @@ describe("workspace baselines as commits", () => {
       await rm(runDir, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
       await rm(source, { recursive: true, force: true });
+    }
+  });
+
+  it("routes primitive failures through the Effect error channel", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-effect-error-"));
+    try {
+      const error = await Effect.runPromise(Effect.flip(inventoryWorkspaceLstatEffect(join(root, "missing"))));
+      expect(error).toMatchObject({ _tag: "WorkflowError", phase: "schedule" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
