@@ -61,6 +61,16 @@ export interface ChildStdinBridge {
   onControl(control: ChildStdinControl): void;
 }
 
+function raceWithTimeout(promise: Promise<void>, milliseconds: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    void promise.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 /** Offer one stdout line to the bridge as a possible response frame. Returns
  * true when a pending write claimed it. */
 function consumeResponse(line: string, settle: (value: JsonRecord) => boolean): boolean {
@@ -110,6 +120,10 @@ export function runChild(
     let windDownArmed = false;
     let windDownTimer: NodeJS.Timeout | undefined;
     let settled = false;
+    // Resolves on the child's close. The interruption finalizer awaits it so a
+    // detached harness tree cannot outlive the process that owns this effect.
+    let resolveClosed: (() => void) | undefined;
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
     const terminate = (signal: NodeJS.Signals): void => {
       if (process.platform !== "win32" && child.pid !== undefined) {
         try {
@@ -141,6 +155,7 @@ export function runChild(
     const finish = (code: number | null, signal: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
+      resolveClosed?.();
       if (lineBuffer.trim() !== "") consume(lineBuffer);
       lineBuffer = "";
       // The child is gone, so no response can still arrive: anything still
@@ -264,12 +279,22 @@ export function runChild(
       }
     });
     // An interrupted run never reaches a normal close, so the child would keep
-    // running past the effect that owns it. Terminate the adapter tree on the
-    // way out; a run that already answered has nothing left to stop.
-    return Effect.sync(() => {
+    // running past the effect that owns it. Terminate the adapter tree and hold
+    // the finalizer until it is actually gone: the runtime exits as soon as
+    // this effect settles, so returning immediately would leave a detached
+    // child (and its tools) behind. A child that already answered has nothing
+    // left to stop.
+    return Effect.uninterruptible(Effect.promise(async () => {
       if (!settled) onAbort();
+      // onAbort arms a 2s SIGKILL; wait for it, then force one more bounded
+      // wait so a wedged pipe cannot hold the finalizer forever.
+      await raceWithTimeout(closed, 2_500);
+      if (!settled) {
+        terminate("SIGKILL");
+        await raceWithTimeout(closed, 1_000);
+      }
       request.signal?.removeEventListener("abort", onAbort);
-    });
+    }).pipe(Effect.catchAllDefect(() => Effect.void)));
   });
 }
 
