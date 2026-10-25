@@ -8,7 +8,7 @@ import { Effect } from "effect";
 import { readFileSync, statSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { logStreamPathCandidates, parseJsonRecord, traceStreamPathCandidates } from "@piano/logging";
+import { logStreamPath, parseJsonRecord, traceStreamPath } from "@piano/logging";
 import { DriverError } from "./errors.js";
 
 function containsValue(value: unknown, expected: string): boolean {
@@ -27,15 +27,9 @@ function referencesWorkspace(raw: string, workspaceDir: string): boolean {
   return false;
 }
 
-/** The evidence streams that carry a run's workspace reference: the logging
- * seam's current `system-log/` spellings first, then the legacy root files
- * (including the retired progress ledger old runs still carry). */
+/** The evidence streams that carry a run's workspace reference. */
 function runEvidencePaths(runDir: string): readonly string[] {
-  return [
-    ...logStreamPathCandidates(runDir),
-    ...traceStreamPathCandidates(runDir),
-    join(runDir, "progress.jsonl"),
-  ];
+  return [logStreamPath(runDir), traceStreamPath(runDir)];
 }
 
 interface RunWorkspaceEvidence {

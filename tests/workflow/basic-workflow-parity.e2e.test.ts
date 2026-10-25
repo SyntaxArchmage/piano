@@ -180,7 +180,7 @@ async function runTui(workspace: string, home: string, prompt: string, before: R
         try {
           const ids = (await readdir(runs)).filter((id) => !before.has(id));
           if (ids.length === 1) {
-            const trajectory = (parseTrajectory(await readFile(join(runs, ids[0] ?? "", "trajectory.jsonl"), "utf8")) ?? {}) as { status?: string };
+            const trajectory = (parseTrajectory(await readFile(join(runs, ids[0] ?? "", "system-log", "trajectory.jsonl"), "utf8")) ?? {}) as { status?: string };
             if (trajectory.status === "completed") {
               finished = true;
               child.stdin.write("/exit\r");

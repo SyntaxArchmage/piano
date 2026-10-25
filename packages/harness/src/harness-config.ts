@@ -56,12 +56,12 @@ interface ConfigRecord {
 /** A config value with content. Beyond the shared empty check this drops the
  * template's `CHANGE_ME` placeholder, and trims, because a hand-edited JSON
  * file collects whitespace that no harness wants to receive. The placeholder
- * is compared against the raw value, so a configured `" CHANGE_ME "` trims to
- * a literal the harness is then free to reject. */
+ * is matched after trimming, so padded whitespace cannot smuggle a template
+ * credential past the filter. */
 function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" && value !== "CHANGE_ME"
-    ? value.trim()
-    : undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed !== "" && trimmed !== "CHANGE_ME" ? trimmed : undefined;
 }
 
 /** The default user-config path. `agentConfigPath` lets an env override swap

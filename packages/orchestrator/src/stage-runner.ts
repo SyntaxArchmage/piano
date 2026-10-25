@@ -11,6 +11,7 @@ import { Duration, Either, Effect } from "effect";
 import { TRACE, failureDetails, isCancellation, type Logging } from "@piano/logging";
 import {
   failedAttemptContinuation,
+  transcriptTokenUsage,
   type AgentContinuation,
   type AgentEvent,
   type AgentHarnessOptions,
@@ -759,11 +760,27 @@ export function executeStage(
         workspaceKind: workspace.kind,
         ...(workspace.recordPath === undefined ? {} : { workspaceRecordPath: workspace.recordPath }),
       }).pipe(Effect.either);
+      // Token accounting is one snapshot per attempt, read from the actor
+      // transcript at the end of the turn. The per-call `usage` events the
+      // harness streamed serve the live counters and the side panel; a stream
+      // of per-call values cannot state what the attempt cost in total, so the
+      // durable file is the source here. A failed attempt still has a
+      // transcript when its harness announced a session, so it is attributed
+      // through that announcement rather than dropped.
+      const attemptWorker = Either.isRight(workerOutcome) ? workerOutcome.right : announcedContinuations.get(actorKey);
+      const attemptUsage = transcriptTokenUsage(attemptWorker?.transcriptPath);
       yield* Effect.forEach(
-        attemptObservations,
+        [
+          ...attemptObservations,
+          ...(attemptUsage === undefined ? [] : [{
+            type: "token_usage" as const,
+            context: trajectoryContext(attempt),
+            usage: attemptUsage,
+          }]),
+        ],
         (observation) => workflowTrajectory.observe(attributeTrajectoryObservation(
           observation,
-          Either.isRight(workerOutcome) ? workerOutcome.right : undefined,
+          attemptWorker,
         )),
         { discard: true },
       );

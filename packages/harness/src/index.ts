@@ -63,7 +63,7 @@ export {
   webSearchExtensionFactory,
   type PiWebSearchOptions,
 } from "./pi-web-search.js";
-export { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
+export { canonicalTranscriptText, mergeCanonicalTranscript, transcriptTokenUsage } from "./canonical-transcript.js";
 export {
   createSteeringChannel,
   type SteerDelivery,

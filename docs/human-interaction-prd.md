@@ -333,6 +333,8 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
   2. **立即**：修正 `recipes/workflows/coding-team.yml:27` 与其注释；修正或加固 `evals/workloads/coding-team-questions-claude-gpt-5.6-luna-max/case.yaml`（给它一条能观测 discuss 被调用的断言）。
   3. **专项**：按 §3.3 给 claude/pi-cli 补 MCP server、给 dsh 补 `userQuestions` provider，让 discuss 真正覆盖多 harness（§7 P2）。
 
+- **已处理（2026-10-25）**：第 1 步落地为 compile 期拒绝（不支持 discuss 的 harness，或 pi 阶段未把 `discuss` 列入 `tools`）；第 2 步的 team recipe 已移除 inert 声明；两个 coding-team eval case 改跑 pi（`team-pi` 与新增的 `team-pi-mimo`），case id 改为 `coding-team-questions-pi-*`，题面能力因此可满足。**仍待**：给该 case 一条能观测 discuss 被调用的断言（workspace 目前是空壳，programmatic readout 看不到 tool call）。
+
 ### 6.4 signoff 没有任何 shipped recipe 在用
 
 - 证据：`grep -rn "signoff" recipes/` → 0 命中；只在 `docs/proposals/07-prompt-skill-evolution.md`、`docs/proposals/worker-before-after-primitives.md`、`docs/uml-ascii-diagrams.txt` 里提到。

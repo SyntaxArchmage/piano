@@ -42,13 +42,13 @@ const abortedDshOnlyModels = new Set([
   "deepseek-flash",
   "mimo-v2.6-pro",
 ]);
-/** Coding-team cells name their own hand-written recipe in recipes/workflows/
- * — the generator never emits those. `model` is the coding lanes' model (the
- * architect stage is mimo-v2.6-pro in every team recipe), so the deepseek-flash
- * and mimo-v2.6-pro cells pair the same task against both coding models. */
+/** Coding-team cells name their own hand-written recipe in recipes/workflows/.
+ * The task measures the supervisor `discuss` primitive, which only the
+ * in-process pi harness can mount, so both cells use pi recipes. `model` is the
+ * coding lanes' model (the architect stage is mimo-v2.6-pro in both). */
 const codingTeamCells = [
-  { harness: "claude", model: "deepseek-flash", effort: "max", codingTeam: true, workflow: "team-claude" },
-  { harness: "claude", model: "mimo-v2.6-pro", effort: "max", codingTeam: true, workflow: "team-claude-mimo" },
+  { harness: "pi", model: "deepseek-flash", effort: "max", codingTeam: true, workflow: "team-pi" },
+  { harness: "pi", model: "mimo-v2.6-pro", effort: "max", codingTeam: true, workflow: "team-pi-mimo" },
 ];
 const efforts = ["medium", "max"];
 const tools = {

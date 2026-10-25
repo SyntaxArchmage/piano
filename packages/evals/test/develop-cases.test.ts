@@ -44,8 +44,8 @@ const abortedDshOnlyModels = new Set([
  * directly instead of joining a generated sweep, so the sweep-membership rules
  * below do not constrain them. */
 const handPickedWorkflows = new Set([
-  "../../../recipes/workflows/team-claude.yml",
-  "../../../recipes/workflows/team-claude-mimo.yml",
+  "../../../recipes/workflows/team-pi.yml",
+  "../../../recipes/workflows/team-pi-mimo.yml",
 ]);
 describe("develop eval cases", () => {
   it("keeps every generated case self-describing and uniquely addressable", async () => {
@@ -84,13 +84,13 @@ describe("develop eval cases", () => {
     const cases = await Effect.runPromise(
       loadCases(DEFAULT_EVALS_ROOT, { group: "develop" }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
-    const codingCase = cases.find((kase) => kase.id === "coding-team-questions-claude-deepseek-flash-max");
+    const codingCase = cases.find((kase) => kase.id === "coding-team-questions-pi-deepseek-flash-max");
     expect(codingCase).toMatchObject({
       prompt: expect.stringContaining("discuss primitive"),
-      workflow: "../../../recipes/workflows/team-claude.yml",
+      workflow: "../../../recipes/workflows/team-pi.yml",
       dimensions: {
         task: "coding-team-questions",
-        harness: "claude",
+        harness: "pi",
         model: "deepseek-flash",
         effort: "max",
       },
@@ -101,13 +101,13 @@ describe("develop eval cases", () => {
     const cases = await Effect.runPromise(
       loadCases(DEFAULT_EVALS_ROOT, { group: "develop" }).pipe(Effect.provide(NodeFileSystem.layer)),
     );
-    const mimoCase = cases.find((kase) => kase.id === "coding-team-questions-claude-mimo-v2.6-pro-max");
+    const mimoCase = cases.find((kase) => kase.id === "coding-team-questions-pi-mimo-v2.6-pro-max");
     expect(mimoCase).toMatchObject({
       prompt: expect.stringContaining("discuss primitive"),
-      workflow: "../../../recipes/workflows/team-claude-mimo.yml",
+      workflow: "../../../recipes/workflows/team-pi-mimo.yml",
       dimensions: {
         task: "coding-team-questions",
-        harness: "claude",
+        harness: "pi",
         model: "mimo-v2.6-pro",
         effort: "max",
       },

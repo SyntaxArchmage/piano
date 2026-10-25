@@ -8,7 +8,7 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { abortableSleep, type AgentEvent } from "@piano/harness";
 import { TRACE, type Logging } from "@piano/logging";
-import type { TokenUsage, TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
+import type { TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
 import type { WorkflowProgressPlan, WorkflowProgressProjection, WorkflowProgressStageCount } from "./progress.js";
 import {
   ContractValidationError,
@@ -100,9 +100,6 @@ export function trajectoryAgentObservation(
   context: TrajectoryRecordContext,
 ): WorkflowObservation | undefined {
   const monotonicMs = performance.now();
-  if (event.type === "usage") {
-    return { type: "token_usage", context, usage: normalizedUsage(event) };
-  }
   if (event.type === "tool_execution_start") {
     return {
       type: "tool_call_started",
@@ -254,26 +251,6 @@ export function workflowProgressPlan(
     plannedStages: Object.values(stageCounts).reduce((sum, count) => sum + count.planned, 0),
     stageCounts,
   };
-}
-
-function normalizedUsage(event: Extract<AgentEvent, { readonly type: "usage" }>): TokenUsage {
-  const input = usageNumber(event.usage.input);
-  const output = usageNumber(event.usage.output);
-  const cacheRead = usageNumber(event.usage.cacheRead);
-  const cacheWrite = usageNumber(event.usage.cacheWrite);
-  return {
-    input,
-    output,
-    cacheRead,
-    cacheWrite,
-    total: event.usage.totalTokens === undefined
-      ? input + output + cacheRead + cacheWrite
-      : usageNumber(event.usage.totalTokens),
-  };
-}
-
-function usageNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
 export function projectionString(result: InternalStageResult, id: string): string | undefined {

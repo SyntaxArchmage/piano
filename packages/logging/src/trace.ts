@@ -1,15 +1,10 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, FiberRef } from "effect";
-import { streamPathCandidates, traceStreamPath } from "@piano/base";
+import { traceStreamPath } from "@piano/base";
 import { errorMessage, failureDetails, TraceWriteError, type FailureDetails } from "./errors.js";
 import { appendJsonlLine } from "./jsonl.js";
 
 export { traceStreamPath };
-
-/** Read candidates for the trace stream: current layout first, legacy second. */
-export function traceStreamPathCandidates(runDir: string): readonly string[] {
-  return streamPathCandidates(runDir, "trace.jsonl");
-}
 
 export interface TraceSpan {
   traceId: string;

@@ -7,18 +7,16 @@ import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
 import { execFile } from "node:child_process";
 import { cp, mkdir, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { workloadsDir } from "./case-loader.js";
 import { DriverError } from "./errors.js";
 import type { CodeChangeMetrics, EvalCase } from "./types.js";
 
-// Run target: workspace templates are copied into and executed under a
-// dedicated user-level eval root, NOT the caller's cwd. The source material
+// Run target: workspace templates are copied into and executed under the
+// evals root the pipeline names, NOT the caller's cwd. The source material
 // under `evals/workloads/<case>/workspace` is read-only; the agent's edits,
 // `state/`, `bench/`, and `reports/` must land in an isolated per-run sandbox
 // so they never mutate the checked-in template (ISSUE-016).
-export const DEFAULT_WORKSPACE_ROOT = join(homedir(), ".piano", "evals");
 
 function runGit(cwd: string, args: readonly string[]): Promise<string> {
   return new Promise((resolve, reject) => {

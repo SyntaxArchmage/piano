@@ -1,4 +1,4 @@
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,16 +7,12 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { execFile } from "node:child_process";
 import {
   copyWorkspaceTemplate,
-  DEFAULT_WORKSPACE_ROOT,
   measureWorkspaceChanges,
   prepareWorkspaceDiffBaseline,
 } from "../src/workspace.js";
 import { DEFAULT_EVALS_ROOT, loadCase } from "../src/case-loader.js";
 import type { EvalCase } from "../src/types.js";
 
-// A global module-level constant is evaluated once; cache the observed default
-// before any test mutates the environment.
-const observedRoot = DEFAULT_WORKSPACE_ROOT;
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
@@ -46,13 +42,6 @@ function fakeCase(id: string): EvalCase {
 }
 
 describe("eval workspace destination (ISSUE-016)", () => {
-  it("defaults to the user-level eval root, not the caller's cwd", () => {
-    // The whole point of ISSUE-016: the copy+execute target must live under
-    // ~/.piano/evals so agent edits never mutate the checked-in case material.
-    expect(observedRoot).toBe(join(homedir(), ".piano", "evals"));
-    expect(observedRoot).not.toBe(process.cwd());
-  });
-
   it("copies the workspace template under the eval root, leaving the source untouched", async () => {
     const runSetId = "eval-test";
     const workspaceRoot = await mkdtemp(join(tmpdir(), "piano-eval-workspace-"));

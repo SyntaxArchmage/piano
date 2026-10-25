@@ -203,6 +203,39 @@ describe("run-reader", () => {
     });
   });
 
+  it("counts a shared session transcript once across its invocations", async () => {
+    // Resumed invocations of one actor write to the same transcript; folding
+    // every stage snapshot as-is would count the conversation once per stage.
+    const runDir = await baseRunDir("piano-run-reader-shared-session-");
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    const transcriptPath = join(runDir, "session.jsonl");
+    await writeFile(transcriptPath, [
+      JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:00.000Z", message: { role: "user", content: "go" } }),
+      JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: "ok" } }),
+      JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", content: "done" } }),
+    ].join("\n") + "\n", "utf8");
+    await writeFile(join(runDir, "system-log", "invocations.jsonl"), ["inv-0001", "inv-0002"].map((ref, index) => JSON.stringify({
+      version: 1,
+      kind: "invocation-accepted",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      runId: "eval-run",
+      jobOrdinal: index + 1,
+      ref,
+      invocationId: `resume@loop/iter-${index}`,
+      stageId: "loop.resume",
+      stage: "loop",
+      worker: "w",
+      sessionId: "session-1",
+      transcriptPath,
+      text: "done",
+      workspace: { key: "shared", cwd: "/tmp/workspace", kind: "shared" },
+    })).join("\n") + "\n", "utf8");
+
+    const result = await run(readRunTrace(runDir));
+    expect(result.stages).toHaveLength(2);
+    expect(result.messages).toEqual({ count: 3, rounds: 2 });
+  });
+
   it("reads recorder streams as evidence and reports an unreadable stream", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-run-reader-unreadable-"));
     await mkdir(join(runDir, "system-log"), { recursive: true });

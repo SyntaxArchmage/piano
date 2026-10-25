@@ -24,6 +24,12 @@ const TEAMS = [
     laneTools: ["read", "bash", "edit", "write", "find", "grep", "ls"],
   },
   {
+    file: "team-pi-mimo.yml",
+    harness: "pi",
+    architectTools: ["read", "bash", "edit", "write", "find", "grep", "ls", "web_search", "discuss"],
+    laneTools: ["read", "bash", "edit", "write", "find", "grep", "ls"],
+  },
+  {
     file: "team-dsh.yml",
     harness: "dsh",
     architectTools: ["read", "bash", "edit", "write", "glob", "grep", "web_search", "ask_user_question"],

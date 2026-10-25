@@ -1512,7 +1512,9 @@ async function pathExists(path: string): Promise<boolean> {
     await lstat(path);
     return true;
   } catch (error) {
-    if (isMissingPathError(error)) return false;
+    // ENOTDIR means a non-directory ancestor already replaced this subtree
+    // (a winner can turn `a/b` into a file at `a`), so no node exists here.
+    if (isMissingPathError(error) || (error as NodeJS.ErrnoException | undefined)?.code === "ENOTDIR") return false;
     throw error;
   }
 }
@@ -1890,7 +1892,12 @@ export async function applyWorkspaceChangeSet(
 }
 
 /** Check only the winner delta against a target; unrelated parent files are
- * outside this gate and therefore cannot force destructive whole-tree sync. */
+ * outside this gate and therefore cannot force destructive whole-tree sync.
+ *
+ * A deleted path may still exist as a directory when the winner replaced a
+ * file with a directory at the same path (git reports `D a` plus `A a/child`).
+ * That directory is the declaration's new parent, not the deleted node, so it
+ * only counts as satisfied when the change set carries additions beneath it. */
 export async function diffWorkspaceChangeSet(
   targetContentDir: string,
   changeSet: WorkspaceChangeSet,
@@ -1899,7 +1906,11 @@ export async function diffWorkspaceChangeSet(
   for (const change of changeSet.changes) {
     const target = join(targetContentDir, change.path);
     if (change.kind === "deleted") {
-      if (await pathExists(target)) differing.push(change.path);
+      if (!await pathExists(target)) continue;
+      const replacedByDirectory = changeSet.changes.some((other) =>
+        other.kind !== "deleted" && isWorkspacePathAncestor(change.path, other.path));
+      const isDirectory = await lstat(target).then((info) => info.isDirectory()).catch(() => false);
+      if (!(replacedByDirectory && isDirectory)) differing.push(change.path);
       continue;
     }
     if (!(await sameFile(target, join(changeSet.winnerContentDir, change.path)))) {

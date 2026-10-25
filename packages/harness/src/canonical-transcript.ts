@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { parseJsonRecord } from "@piano/logging";
 import type { HarnessName } from "./harness-config.js";
 import { asRecord, jsonValue, numberValue, stringValue, type JsonRecord } from "./json-narrowing.js";
 
@@ -164,6 +166,61 @@ function mapUsage(
     if (value !== undefined) mapped[canonical] = value;
   }
   return Object.keys(mapped).length > 0 ? mapped : undefined;
+}
+
+/** The additive counters one actor transcript records. Structurally the
+ * trajectory recorder's `TokenUsage`, restated here so the harness floor stays
+ * free of a dependency on the package that consumes it. */
+export interface TranscriptTokenUsage {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly total: number;
+}
+
+/** The additive counters one actor transcript records, summed. Every harness
+ * writes per-call usage into this file in the canonical vocabulary (this
+ * module's writers map the native names onto it; pi's own session already uses
+ * them), so it is the one durable statement of what a conversation cost — a
+ * stream of per-call values cannot describe a cumulative total on its own.
+ *
+ * `total` is derived from the four counters instead of read from a native
+ * total, because native totals disagree: pi's is per call, dsh's is
+ * session-cumulative, and neither is this sum. Returns `undefined` when the
+ * file is missing or records no usage. */
+export function transcriptTokenUsage(path: string | undefined): TranscriptTokenUsage | undefined {
+  if (path === undefined) return undefined;
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  const total: Record<(typeof CANONICAL_USAGE_KEYS)[number], number> = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+  };
+  let recorded = false;
+  for (const line of raw.split("\n")) {
+    const record = parseJsonRecord(line);
+    if (record === undefined) continue;
+    const usage = asRecord(asRecord(record.message)?.usage) ?? asRecord(record.usage);
+    if (usage === undefined) continue;
+    const input = numberValue(usage.input);
+    const output = numberValue(usage.output);
+    const cacheRead = numberValue(usage.cacheRead);
+    const cacheWrite = numberValue(usage.cacheWrite);
+    if (input === undefined && output === undefined && cacheRead === undefined && cacheWrite === undefined) continue;
+    recorded = true;
+    total.input += input ?? 0;
+    total.output += output ?? 0;
+    total.cacheRead += cacheRead ?? 0;
+    total.cacheWrite += cacheWrite ?? 0;
+  }
+  return recorded ? { ...total, total: total.input + total.output + total.cacheRead + total.cacheWrite } : undefined;
 }
 
 function claudeMessageRecords(line: string): JsonRecord[] {

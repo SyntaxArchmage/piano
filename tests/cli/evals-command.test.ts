@@ -104,7 +104,7 @@ describe("piano evals --report (offline analysis)", () => {
       }
       const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
       try {
-        await Effect.runPromise(evalsCommand(["--report", "--case", "tuning-case", "--delta"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report", "--case", "tuning-case", "--delta"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
         const text = output.mock.calls.map((call) => String(call[0])).join("");
         expect(text).toContain("Workflow evals report");
         // --case scopes which cases enter the board; it does not relabel them.
@@ -119,7 +119,7 @@ describe("piano evals --report (offline analysis)", () => {
       }
       // An unknown run set fails with a clear message.
       const missing = await Effect.runPromiseExit(
-        evalsCommand(["--report", "--runset", "eval-19990101T000000.000"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+        evalsCommand(["--report", "--runset", "eval-19990101T000000.000"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(missing._tag).toBe("Failure");
     } finally {
@@ -148,7 +148,7 @@ describe("piano evals --report (offline analysis)", () => {
       }
       const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
       try {
-        await Effect.runPromise(evalsCommand(["--report", "--group", "tuning", "--delta"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report", "--group", "tuning", "--delta"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
         const text = output.mock.calls.map((call) => String(call[0])).join("");
         // The tuning-case row comes from its newest occurrence (0102, value
         // 12), even though agentic-only run sets are newer; its Δ reference is
@@ -163,7 +163,7 @@ describe("piano evals --report (offline analysis)", () => {
         expect(text).toContain("+20.0%");
         output.mockClear();
         // A skipped stub row never counts toward a matching selection either.
-        await Effect.runPromise(evalsCommand(["--report", "--group", "agentic", "--delta"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report", "--group", "agentic", "--delta"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
         const agentic = output.mock.calls.map((call) => String(call[0])).join("");
         expect(agentic).toContain("run set: eval-20260103T000000.000");
         expect(agentic).toContain("eval-20260102T000000.000 → eval-20260103T000000.000 (agentic-case#1)");
@@ -173,7 +173,7 @@ describe("piano evals --report (offline analysis)", () => {
         // each keep their own group, so the board splits into one table per
         // group instead of one table named after the keyword.
         output.mockClear();
-        await Effect.runPromise(evalsCommand(["--report", "--group", "tflops", "--delta"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report", "--group", "tflops", "--delta"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
         const board = output.mock.calls.map((call) => String(call[0])).join("");
         expect(board).toContain("run set: gathered eval-20260102T000000.000..eval-20260103T000000.000");
         expect(board).toContain("Matrix (agentic)");
@@ -188,7 +188,7 @@ describe("piano evals --report (offline analysis)", () => {
         expect(board).toContain("eval-20260102T000000.000 → eval-20260103T000000.000 (agentic-case#1)");
         expect(board).toContain("+2.0000"); // tuning-case 10 → 12 between its records
         // --case scopes the same way.
-        await Effect.runPromise(evalsCommand(["--report", "--case", "tuning-case"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report", "--case", "tuning-case"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
       } finally {
         output.mockRestore();
       }
@@ -198,14 +198,14 @@ describe("piano evals --report (offline analysis)", () => {
       const stored = JSON.parse(await readFile(runSetReportPath(root, "eval-20260104T000000.000"), "utf8"));
       const output2 = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
       try {
-        await Effect.runPromise(evalsCommand(["--report"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
         const text = output2.mock.calls.map((call) => String(call[0])).join("");
         expect(text).toContain("run set: eval-20260104T000000.000");
         expect(text).toBe(formatReport(stored, { details: false }) + "\n");
         expect(text).not.toContain("# Cases");
         output2.mockClear();
         // --details restores the per-case process print.
-        await Effect.runPromise(evalsCommand(["--report", "--details"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
+        await Effect.runPromise(evalsCommand(["--report", "--details"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
         const detailed = output2.mock.calls.map((call) => String(call[0])).join("");
         expect(detailed).toContain("# Cases");
         expect(detailed).toBe(formatReport(stored) + "\n");
@@ -214,7 +214,7 @@ describe("piano evals --report (offline analysis)", () => {
       }
       // A selection no persisted run set holds fails cleanly.
       const missing = await Effect.runPromiseExit(
-        evalsCommand(["--report", "--group", "nope"], { historyRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+        evalsCommand(["--report", "--group", "nope"], { outputRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(missing._tag).toBe("Failure");
     } finally {

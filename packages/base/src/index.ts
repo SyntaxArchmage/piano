@@ -18,7 +18,6 @@ export {
   logStreamPath,
   runStatusPath,
   sessionsRoot,
-  streamPathCandidates,
   traceStreamPath,
   trajectoryStreamPath,
   workspaceRecordPath,

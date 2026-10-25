@@ -68,12 +68,14 @@ const DIMENSION_KEYS = new Set(["task", "harness", "model", "effort"] as const);
 type RecordOf = Record<string, unknown>;
 
 /** A performance readout is one atomic capability. Partial declarations are
- * rejected by parseCaseConfig so callers never need a task-family flag. */
+ * rejected by parseCaseConfig so callers never need a task-family flag. The
+ * grader-owned baseline is optional: a run-scoped measurement (the
+ * workflow-perf family scores the run itself) has no meaningful pre-run
+ * baseline to take, so it records none rather than borrowing another run's. */
 export function hasPerformanceReadout(
   kase: Pick<EvalCase, "metric" | "readout">,
 ): boolean {
   return kase.metric !== undefined &&
-    kase.readout.baselineCommand !== undefined &&
     kase.readout.benchmarkCommand !== undefined &&
     kase.readout.metricPattern !== undefined;
 }
@@ -275,7 +277,6 @@ export function parseCaseConfig(
           : yield* parseWorkload(document.workload, path);
         const performanceFields = [
           ["metric", metric],
-          ["readout.baselineCommand", readout.baselineCommand],
           ["readout.benchmarkCommand", readout.benchmarkCommand],
           ["readout.metricPattern", readout.metricPattern],
         ] as const;
@@ -284,7 +285,7 @@ export function parseCaseConfig(
           if (missing !== undefined) {
             return yield* fail(
               path,
-              `performance readout requires metric, readout.baselineCommand, readout.benchmarkCommand, and readout.metricPattern (missing ${missing})`,
+              `performance readout requires metric, readout.benchmarkCommand, and readout.metricPattern (missing ${missing})`,
             );
           }
         }

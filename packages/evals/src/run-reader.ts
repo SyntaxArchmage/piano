@@ -35,27 +35,14 @@ import type {
   WorkflowBenchmarkPoint,
 } from "./types.js";
 
-/** Fold per-invocation message counts from the stage transcripts. */
-function foldMessages(stages: readonly StageObservation[]): MessageCounts {
-  // Stages that resume one session share its transcript; the same
-  // conversation must not be counted once per stage. Keep the largest
-  // snapshot per transcript (counts only grow as the session does).
-  const byTranscript = new Map<string, { count: number; rounds: number }>();
-  for (const stage of stages) {
-    const transcript = stage.transcript;
-    if (transcript === undefined) continue;
-    const key = stage.transcriptPath ?? stage.invocationId;
-    const prior = byTranscript.get(key);
-    byTranscript.set(key, {
-      count: Math.max(prior?.count ?? 0, transcript.messageCount),
-      rounds: Math.max(prior?.rounds ?? 0, transcript.assistantMessageCount),
-    });
-  }
+/** Fold one conversation's counts: the per-path analyses already dedupe the
+ * stages that resume the same session. */
+function foldMessages(transcripts: Iterable<TranscriptMetrics>): MessageCounts {
   let count = 0;
   let rounds = 0;
-  for (const entry of byTranscript.values()) {
-    count += entry.count;
-    rounds += entry.rounds;
+  for (const transcript of transcripts) {
+    count += transcript.messageCount;
+    rounds += transcript.assistantMessageCount;
   }
   return { count, rounds };
 }
@@ -234,7 +221,7 @@ export function readRunTrace(
     return {
       complete: status?.status === "completed" && issues.length === 0,
       issues,
-      messages: foldMessages(stages),
+      messages: foldMessages(transcripts.values()),
       tokens: tokenRecorder.score(tokens),
       tools: toolRecorder.score(tools),
       duration: durationRecorder.score(durations),

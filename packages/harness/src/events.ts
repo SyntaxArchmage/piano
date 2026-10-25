@@ -129,6 +129,10 @@ type AgentEventPayload =
       readonly result: unknown;
       readonly isError: boolean;
     }
+  /** One API call's token counters, for the live counter and the trajectory
+   * panel. Accounting does not read this stream: token totals come from the
+   * actor transcript at attempt end (`transcriptTokenUsage`), because a series
+   * of per-call values cannot state what the attempt cost. */
   | { readonly type: "usage"; readonly usage: AgentUsage }
   | {
       readonly type: "queue_update";

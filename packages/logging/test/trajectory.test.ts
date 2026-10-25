@@ -16,7 +16,7 @@ describe("TrajectoryWriter", () => {
   it("persists a bounded, metrics-compatible trajectory for complex SDK events", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-trajectory-"));
     roots.push(root);
-    const path = join(root, "runs", "run-1", "trajectory.jsonl");
+    const path = join(root, "runs", "run-1", "system-log", "trajectory.jsonl");
     const writer = new TrajectoryWriter("run-1", path);
     const circular: Record<string, unknown> = { count: 1n };
     circular.self = circular;

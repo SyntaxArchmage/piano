@@ -1,6 +1,6 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { streamPathCandidates, trajectoryStreamPath } from "@piano/base";
+import { trajectoryStreamPath } from "@piano/base";
 import type { TurnOutcome } from "@piano/base";
 import { errorMessage, TrajectoryWriteError } from "./errors.js";
 import { appendJsonlLine, parseRunStreamLines } from "./jsonl.js";
@@ -36,25 +36,16 @@ export interface TrajectoryDocument {
    * session cwd after `/workspace`. */
   readonly workspaceCwd?: string;
   readonly turns?: readonly TrajectoryTurn[];
-  /** How many stream records this document already includes.
-   *
-   * A write appends its record and then rewrites the document, so a crash
-   * between the two leaves the document short by the record that landed.
-   * Counting them is what lets a reader fold exactly the records the document
-   * is missing, rather than guessing from timestamps — two writes can share a
-   * millisecond, and a guess would drop one of them.
-   *
-   * Absent on a document written before this field existed, which reads the
-   * same as zero: a document that includes no records at all. */
 }
 
-/** Write input for one turn. `turns` is writer-owned because `eventCount` can
- * only be measured after this turn's events are merged and compacted. */
+/** Write input for one turn. `turns` is derived when the stream is folded: a
+ * record's `eventCount` is where that turn's prompt sits in the merged ledger,
+ * which only the fold can measure. */
 export type TrajectoryWriteInput =
   & Omit<TrajectoryDocument, "version" | "runId" | "updatedAt" | "turns">
   & {
-    /** Prompt text for this turn. Omit to update the document without
-     * appending a turn entry. */
+    /** Prompt text for this turn. Omit to record a non-turn update (a
+     * rename, a session-id backfill) without appending a turn entry. */
     readonly prompt?: string;
   };
 
@@ -85,12 +76,6 @@ export interface TrajectoryStreamRecord {
 }
 
 export { trajectoryStreamPath };
-
-/** Read candidates for the trajectory stream: current layout first, legacy
- * second, so runs recorded before the directory split stay replayable. */
-export function trajectoryStreamPathCandidates(runDir: string): readonly string[] {
-  return streamPathCandidates(runDir, "trajectory.jsonl");
-}
 
 /** Append one record to the trajectory stream beside a document path.
  *
@@ -227,7 +212,7 @@ function compactTrajectoryMessage(value: unknown): unknown {
   } catch {
     // A provider may expose an event message with a throwing getter or proxy.
     // Fall back to the generic bounded reader so one malformed field cannot
-    // prevent the trajectory document from being persisted.
+    // prevent the trajectory record from being persisted.
     return compactTrajectoryValue(value);
   }
 }
@@ -537,7 +522,7 @@ export function foldTrajectoryStream(
   };
   const status = newest("status");
   const promptLength = newest("promptLength");
-  // A stream that never said how a run ended does not describe a document.
+  // A stream that never said how a run ended does not describe a run.
   if (status === undefined || promptLength === undefined) return undefined;
 
   return {
@@ -555,7 +540,7 @@ export function foldTrajectoryStream(
     ...(newest("workspaceCwd") === undefined ? {} : { workspaceCwd: newest("workspaceCwd") }),
     // Last, and after `workflowPath`, because the log picker reads a bounded
     // tail of this file rather than the whole of it — a run's events are the
-    // bulk of the document and they sit between. A document that put the
+    // bulk of the record and they sit between. A record that put the
     // status anywhere else would show a failed run without saying so.
     status,
   };
@@ -594,7 +579,7 @@ function mergeTrajectoryLedgers(ledgers: readonly (readonly unknown[])[]): reado
 function stringifyTrajectory(value: unknown): string {
   // Values have already been recursively bounded. Keep the final guard so a
   // future event variant produces a typed write error instead of a malformed
-  // trajectory document.
+  // trajectory record.
   const content = JSON.stringify(value);
   if (content === undefined) throw new TypeError("trajectory could not be serialized");
   return content;
@@ -614,14 +599,8 @@ export class TrajectoryWriter {
     return Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const now = new Date().toISOString();
-      // The record lands before the document rewritten from it: a failure
-      // between the two must leave the document stale, not the record missing.
-      //
-      // The rewrite is the whole write's cost — it merges the run so far and
-      // serializes it — so this is what still makes a write grow with the run.
-      // It is kept because the document is what a reader reads directly; a run
-      // without one falls back to folding the stream, which cannot describe a
-      // run whose stream began after its document did.
+      // Recorders fold the stream, so a write is one appended record: no
+      // summary document is rewritten, and a crash can only shorten the tail.
       yield* appendTrajectoryRecord(fileSystem, path, {
         version: 1,
         runId,

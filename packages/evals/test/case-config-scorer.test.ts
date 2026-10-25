@@ -79,6 +79,19 @@ describe("parseCaseConfig", () => {
     expect(Exit.isFailure(result)).toBe(true);
   });
 
+  it("parses a run-scoped performance readout without a baseline command", () => {
+    // The workflow-perf family measures the run itself; there is no clean
+    // pre-run baseline to take, so the baseline stays optional.
+    const runScoped = MINIMAL_CASE
+      .replace("  verifyCommand:", "  benchmarkCommand: node metric.mjs\n  metricPattern: 'overhead: ([0-9.]+)'\n  verifyCommand:")
+      .replace("tags:", "metric:\n  name: overhead\n  direction: lower\ntags:");
+    const result = Effect.runSyncExit(parseCaseConfig(runScoped, "case.yaml"));
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (!Exit.isSuccess(result)) return;
+    expect(result.value.readout.baselineCommand).toBeUndefined();
+    expect(result.value.metric).toEqual({ name: "overhead", direction: "lower" });
+  });
+
   it("rejects an invalid metric pattern before execution", () => {
     const invalid = MINIMAL_CASE.replace("  verifyCommand:", "  metricPattern: '[unclosed'\n  verifyCommand:");
     const result = Effect.runSyncExit(parseCaseConfig(invalid, "case.yaml"));

@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AgentHarnessOptions } from "./agent-contract.js";
 import { AgentError } from "./errors.js";
 
@@ -91,7 +91,14 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+/** The installed pi SDK package directory. `PIANO_PI_SDK_ROOT` is the explicit
+ * deployment override — it names `.../@earendil-works/pi-coding-agent` itself —
+ * so an install without npm never needs the `npm root -g` shell-out. The
+ * npm-derived path is cached for the process; an explicit root is not, so a
+ * long-lived process can retarget it (and tests can vary it). */
 function sdkRoot(): string {
+  const override = process.env.PIANO_PI_SDK_ROOT;
+  if (override !== undefined && override.trim() !== "") return resolve(override.trim());
   if (sdkRootCache === undefined) {
     sdkRootCache = join(execSync("npm root -g", { encoding: "utf8" }).trim(), "@earendil-works/pi-coding-agent");
   }

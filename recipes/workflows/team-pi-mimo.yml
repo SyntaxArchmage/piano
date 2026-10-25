@@ -1,0 +1,51 @@
+version: 3
+
+# Three-step repository-grounded coding workflow (pi harness), mimo-v2.6-pro
+# coding lanes: architect -> developer tournament -> review-and-fix.
+# The team-pi.yml sibling that swaps the coding lanes' model — implement and
+# review run mimo-v2.6-pro instead of deepseek-flash — so the develop matrix
+# can pair one task against both coding models. `discuss` is a pi-only custom
+# tool and is mounted on the architect; the reviewer owns the final fix after
+# inspecting the selected candidate.
+workflow:
+  name: team-pi-mimo
+  nodes:
+    - stage:
+        name: architect
+        worker: coding-architect
+        harness: pi
+        model: mimo-v2.6-pro
+        thinkingLevel: max
+        discuss: true
+        tools: [read, bash, edit, write, find, grep, ls, web_search, discuss]
+        handoff: architecture.json
+        validate: true
+        from: []
+    - tournament:
+        name: candidates
+        from: [architect]
+        over: architect.implementation_plan
+        count: 2
+        entry: implement
+        exit: implement
+        nodes:
+          - stage:
+              name: implement
+              worker: coding-developer
+              harness: pi
+              model: mimo-v2.6-pro
+              thinkingLevel: max
+              tools: [read, bash, edit, write, find, grep, ls]
+              handoff: candidate-input.json
+              validate: true
+              from: []
+    - stage:
+        name: review
+        worker: coding-reviewer
+        harness: pi
+        model: mimo-v2.6-pro
+        thinkingLevel: max
+        tools: [read, bash, edit, write, find, grep, ls]
+        handoff: review-input.json
+        validate: true
+        from: [candidates]

@@ -4060,15 +4060,23 @@ workflow:
             },
             records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
           }));
-          request.onEvent?.({
-            type: "usage",
-            usage: { input: attempt * 6, output: attempt * 4, totalTokens: attempt * 10 },
-          });
           request.onEvent?.({ type: "tool_execution_start", toolCallId: `call-${attempt}`, toolName: "bash", args: {} });
           request.onEvent?.({ type: "tool_execution_end", toolCallId: `call-${attempt}`, toolName: "bash", result: "ok", isError: false });
+          // Token accounting reads the actor's transcript at attempt end, so
+          // the fixture writes what a real harness would: one canonical usage
+          // record per model call.
+          const transcriptPath = join(root, `measure-${attempt}.jsonl`);
+          await writeFile(transcriptPath, JSON.stringify({
+            type: "message",
+            message: {
+              role: "assistant",
+              content: `attempt ${attempt}`,
+              usage: { input: attempt * 6, output: attempt * 4 },
+            },
+          }) + "\n", "utf8");
           return {
             sessionId: `measure-${attempt}`,
-            transcriptPath: `/tmp/measure-${attempt}.jsonl`,
+            transcriptPath,
             text: `attempt ${attempt}`,
             continuation: continuation(`measure-${attempt}`),
           };

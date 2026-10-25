@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Reads the most recent piano run and decomposes wall-clock into the 5
-// speedup-me buckets. Outputs a single metric line for the evals framework.
+// Measures the piano run this workspace launched: wall-clock decomposed into
+// the 5 speedup-me buckets, minus LLM inference. Outputs a single metric line
+// for the evals framework.
 //
 // Usage: node runtime-metric.mjs [runsRoot]
 //   runsRoot defaults to ~/.piano/runs
@@ -11,23 +12,25 @@ import { homedir } from "node:os";
 
 const runsRoot = process.argv[2] ?? join(homedir(), ".piano", "runs");
 
-if (!existsSync(runsRoot)) {
-  console.log("runtime_overhead_ms: 0");
-  process.exit(0);
+// The metric is wall-clock overhead and lower-is-better: a fabricated 0 would
+// read as a perfect run. Every failure below exits non-zero instead, so the
+// readout has no value and the case reports a missing metric.
+function fail(message) {
+  console.error(`# ${message}`);
+  console.error("runtime_overhead_ms: n/a");
+  process.exit(1);
 }
 
-// The run's streams live under system-log/; older runs kept them at the root.
-const logPathOf = (dir) => [
-  join(dir, "system-log", "log.jsonl"),
-  join(dir, "log.jsonl"),
-].find((path) => existsSync(path));
+if (!existsSync(runsRoot)) fail(`runs root ${runsRoot} does not exist`);
 
-const ids = readdirSync(runsRoot).filter((d) => {
-  try { return logPathOf(join(runsRoot, d)) !== undefined; } catch { return false; }
-}).sort();
+const streamPathOf = (dir, name) => join(dir, "system-log", name);
 
-// Prefer the run this workspace belongs to: concurrent eval cases create
-// their own runs, and "newest" would measure another case's work.
+const logPathOf = (dir) => streamPathOf(dir, "log.jsonl");
+
+const ids = readdirSync(runsRoot).filter((d) => existsSync(logPathOf(join(runsRoot, d)))).sort();
+
+// The run this workspace belongs to: concurrent eval cases create their own
+// runs, and another run's work (or a stale one) is not this case's metric.
 const statusOf = (dir) => {
   try { return JSON.parse(readFileSync(join(dir, "status.json"), "utf8")); } catch { return undefined; }
 };
@@ -36,26 +39,19 @@ const owned = (id) => {
   return typeof workspaceCwd === "string" && workspaceCwd === process.cwd();
 };
 
-if (ids.length === 0) {
-  console.log("runtime_overhead_ms: 0");
-  process.exit(0);
-}
+const ownedId = ids.findLast(owned);
+if (ownedId === undefined) fail(`no completed run recorded this workspace (${process.cwd()}) under ${runsRoot}`);
 
-const runDir = join(runsRoot, ids.findLast(owned) ?? ids[ids.length - 1]);
+const runDir = join(runsRoot, ownedId);
 
 function parseJsonl(path) {
-  try {
-    return readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => {
-      try { return JSON.parse(l); } catch { return null; }
-    }).filter(Boolean);
-  } catch { return []; }
+  return readFileSync(path, "utf8").split("\n").filter(Boolean).map((l) => {
+    try { return JSON.parse(l); } catch { return null; }
+  }).filter(Boolean);
 }
 
-const traceLines = parseJsonl(
-  [join(runDir, "system-log", "trace.jsonl"), join(runDir, "trace.jsonl")]
-    .find((path) => existsSync(path)) ?? join(runDir, "trace.jsonl"),
-);
-const logLines = parseJsonl(logPathOf(runDir) ?? join(runDir, "log.jsonl"));
+const traceLines = parseJsonl(streamPathOf(runDir, "trace.jsonl"));
+const logLines = parseJsonl(logPathOf(runDir));
 
 // --- bucket 1: LLM inference (sendPrompt spans) ---
 let llmMs = 0;

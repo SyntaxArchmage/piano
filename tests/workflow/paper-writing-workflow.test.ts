@@ -200,8 +200,8 @@ describe("paper-writing workflow template", () => {
 
     for (const stage of compiled.stages) {
       expect(stage.stage.retry).toEqual(RETRY_POLICY);
-      // `discuss` is a pi-only custom tool; on the subprocess harnesses it is
-      // silently inert, which would degrade the alignment into a one-shot guess.
+      // `discuss` is a pi-only custom tool; other harnesses are rejected at
+      // load rather than silently degrading the alignment into a one-shot guess.
       expect(stage.stage.harness).toBe("pi");
       expect(stage.stage.validate).toBe(true);
       // `max` is asked for, with the caveat recorded in the workflow header: on
