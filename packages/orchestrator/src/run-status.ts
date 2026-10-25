@@ -15,9 +15,10 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { parseJsonRecord, parseTrajectory, trajectoryStreamPathCandidates, type TrajectoryDocument } from "@piano/logging";
+import { parseJsonRecord, parseTrajectory, type TrajectoryDocument } from "@piano/logging";
 import {
   runStatusPath,
+  trajectoryStreamPath,
   writeFileAtomic,
   type JobOutcome,
   type RunLifecycleStatus,
@@ -255,17 +256,15 @@ export function refreshRunStatus(
   });
 }
 
-/** The raw trajectory stream, first candidate that is present. */
+/** The raw trajectory stream, or `undefined` when the run never wrote one. */
 function readTrajectoryText(
   runDir: string,
 ): Effect.Effect<string | undefined, never, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    for (const path of trajectoryStreamPathCandidates(runDir)) {
-      const text = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => undefined));
-      if (text !== undefined) return text;
-    }
-    return undefined;
+    return yield* fileSystem.readFileString(trajectoryStreamPath(runDir)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    );
   });
 }
 

@@ -25,12 +25,12 @@ async function makeWorkloads(root: string, ids: readonly string[]) {
   }
 }
 
-async function readPersistedReport(historyRoot: string) {
-  const ids = await Effect.runPromise(listRunSetIds(historyRoot).pipe(Effect.provide(NodeFileSystem.layer)));
+async function readPersistedReport(outputRoot: string) {
+  const ids = await Effect.runPromise(listRunSetIds(outputRoot).pipe(Effect.provide(NodeFileSystem.layer)));
   const [runSet] = ids;
   if (runSet === undefined) throw new Error("no run set persisted");
   return await Effect.runPromise(
-    readRunSetReport(historyRoot, runSet).pipe(Effect.provide(NodeFileSystem.layer)),
+    readRunSetReport(outputRoot, runSet).pipe(Effect.provide(NodeFileSystem.layer)),
   );
 }
 
@@ -47,8 +47,8 @@ function runOptions(overrides: Partial<Parameters<typeof runEvalPipeline>[0]> = 
 
 // An interrupted `piano evals` run (the eval matrix killer: a process-group
 // teardown mid-sweep) must still leave every FINISHED case visible to
-// `--report`: the pipeline persists report.json and per-case history as each
-// case lands, not only once at the end of the whole invocation.
+// `--report`: the pipeline persists report.json as each case lands, not only
+// once at the end of the whole invocation.
 describe("run pipeline per-case persistence", () => {
   it("keeps the first case's report and history when a later case fails", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-evals-persist-"));
@@ -59,15 +59,13 @@ describe("run pipeline per-case persistence", () => {
           ? Effect.succeed(caseFixture(10, { caseId: "case-a", group: "tuning-cuda" }))
           : Effect.fail(new DriverError({ message: "interrupted" }));
       const exit = await Effect.runPromiseExit(
-        runEvalPipeline(runOptions(), { root, historyRoot: root, runCase }).pipe(
+        runEvalPipeline(runOptions(), { root, outputRoot: root, runCase }).pipe(
           Effect.provide(NodeFileSystem.layer),
         ),
       );
       expect(exit._tag).toBe("Failure");
       const report = await readPersistedReport(root);
       expect(report.cases.map((row: { caseId: string }) => row.caseId)).toEqual(["case-a"]);
-      const history = await readFile(join(root, "case-a", "history.jsonl"), "utf8");
-      expect(history.trim().split("\n")).toHaveLength(1);
       expect(await readdir(join(root, "case-b")).catch(() => [])).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -81,7 +79,7 @@ describe("run pipeline per-case persistence", () => {
       const runCase = (_r: string, kase: { id: string }) =>
         Effect.succeed(caseFixture(10, { caseId: kase.id, group: "tuning-cuda" }));
       await Effect.runPromise(
-        runEvalPipeline(runOptions(), { root, historyRoot: root, runCase }).pipe(
+        runEvalPipeline(runOptions(), { root, outputRoot: root, runCase }).pipe(
           Effect.provide(NodeFileSystem.layer),
         ),
       );
@@ -110,7 +108,7 @@ describe("run pipeline per-case persistence", () => {
       };
       await Effect.runPromise(
         runEvalPipeline(runOptions({ skipExisting: true, parallel: 2 }), {
-          root, historyRoot: root,
+          root, outputRoot: root,
           runCase,
         }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
@@ -135,7 +133,7 @@ describe("run pipeline per-case persistence", () => {
         return caseFixture(10, { caseId: kase.id, group: "tuning-cuda" });
       });
       await Effect.runPromise(
-        runEvalPipeline(runOptions({ parallel: 2 }), { root, historyRoot: root, runCase }).pipe(
+        runEvalPipeline(runOptions({ parallel: 2 }), { root, outputRoot: root, runCase }).pipe(
           Effect.provide(NodeFileSystem.layer),
         ),
       );
@@ -159,19 +157,22 @@ describe("run pipeline baseline replay", () => {
       await writeFile(join(root, "case-a", "baseline.json"), JSON.stringify({
         baseline: { value: 10, rawOutput: "TFLOPS: 10", passed: true },
       }), "utf8");
-      const seen: (EvalRunOptions | undefined)[] = [];
+      const seen: EvalRunOptions[] = [];
       const runCase = (_r: string, _kase: { id: string }, opts: EvalRunOptions) => {
         seen.push(opts);
         return Effect.succeed(caseFixture(10, { caseId: "case-a", group: "tuning-cuda" }));
       };
       await Effect.runPromise(
         runEvalPipeline(runOptions({ replayBaseline: true }), {
-          root, historyRoot: root,
+          root, outputRoot: root,
           runCase,
         }).pipe(Effect.provide(NodeFileSystem.layer)),
       );
       expect(seen).toHaveLength(1);
       expect(seen[0]?.baseline?.value).toBe(10);
+      // One root parameter: an injected evals root keeps each case's copied
+      // workspace beside its report instead of under the user's home.
+      expect(seen[0]?.workspaceRoot).toBe(root);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -183,7 +184,7 @@ describe("run pipeline baseline replay", () => {
       await makeWorkloads(root, ["case-a"]);
       const error = await Effect.runPromise(
         runEvalPipeline(runOptions({ replayBaseline: true }), {
-          root, historyRoot: root,
+          root, outputRoot: root,
           runCase: () => Effect.succeed(caseFixture(10, { caseId: "case-a", group: "tuning-cuda" })),
         }).pipe(Effect.flip, Effect.provide(NodeFileSystem.layer)),
       );
@@ -199,7 +200,7 @@ describe("run pipeline baseline replay", () => {
       await makeWorkloads(root, ["case-a"]);
       const result = await Effect.runPromise(
         runEvalPipeline(runOptions({ dryRun: true, replayBaseline: true }), {
-          root, historyRoot: root,
+          root, outputRoot: root,
           runCase: (_r: string, kase: { id: string }) =>
             Effect.succeed(caseFixture(0, { caseId: kase.id, group: "tuning-cuda", status: "skipped" })),
         }).pipe(Effect.provide(NodeFileSystem.layer)),

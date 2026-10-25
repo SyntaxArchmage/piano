@@ -41,9 +41,9 @@ async function writeRun(root: string, runId: string, document: Record<string, un
 /** A run recorded only in its append-only stream, as every new run is. */
 async function writeStreamRun(root: string, runId: string, records: readonly unknown[]): Promise<void> {
   const runDir = join(root, runId);
-  await mkdir(runDir, { recursive: true });
+  await mkdir(join(runDir, "system-log"), { recursive: true });
   await writeFile(
-    join(runDir, "trajectory.jsonl"),
+    join(runDir, "system-log", "trajectory.jsonl"),
     records.map((record) => `${JSON.stringify(record)}\n`).join(""),
     "utf8",
   );
@@ -173,29 +173,6 @@ describe("readResumeContext", () => {
     expect(context.turns[1]?.error).toEqual({ type: "Interrupt", message: "cancelled by user" });
   });
 
-  it("degrades a run recorded before turns existed to a single turn", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
-    await writeRun(root, "run-d", {
-      version: 1,
-      runId: "run-d",
-      updatedAt: "2026-08-01T00:00:00.000Z",
-      status: "completed",
-      promptLength: 12,
-      events: [
-        { type: "message_start", message: { role: "user", content: [{ type: "text", text: "what is 2+2?" }] } },
-        { type: "done" },
-      ],
-    });
-
-    const context = await Effect.runPromise(
-      readResumeContext(root, "run-d").pipe(Effect.provide(NodeFileSystem.layer)),
-    );
-
-    expect(context.turns).toHaveLength(1);
-    expect(context.turns[0]?.prompt).toBe("what is 2+2?");
-    expect(context.turns[0]?.events).toHaveLength(2);
-  });
-
   it("strips the appended workflow stage context from a replayed prompt", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeRun(root, "run-e", {
@@ -217,7 +194,8 @@ describe("readResumeContext", () => {
   it("fails with a typed storage error when the trajectory is missing or malformed", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await mkdir(join(root, "run-f"), { recursive: true });
-    await writeFile(join(root, "run-f", "trajectory.jsonl"), "{not json\n", "utf8");
+    await mkdir(join(root, "run-f", "system-log"), { recursive: true });
+    await writeFile(join(root, "run-f", "system-log", "trajectory.jsonl"), "{not json\n", "utf8");
 
     for (const runId of ["run-f", "absent"]) {
       const exit = await Effect.runPromiseExit(

@@ -291,22 +291,10 @@ export class TokenUsageRecorder implements TrajectoryRecorder<TokenUsageRecord, 
 
   observe(observation: WorkflowObservation) {
     if (observation.type === "token_usage") {
-      const key = attemptKey(observation);
-      // Harnesses may emit several cumulative usage snapshots per turn, and a
-      // trailing frame can omit fields an earlier frame carried (e.g. a CLI
-      // `result` frame with only `total_tokens` after a `message_end` usage).
-      // Merge field-wise maxima instead of last-write-wins so no frame's
-      // counts are lost; cumulative usage never legitimately decreases.
-      const existing = this.latestByAttempt.get(key);
-      this.latestByAttempt.set(key, existing === undefined
-        ? observation.usage
-        : {
-            input: Math.max(existing.input, observation.usage.input),
-            output: Math.max(existing.output, observation.usage.output),
-            cacheRead: Math.max(existing.cacheRead, observation.usage.cacheRead),
-            cacheWrite: Math.max(existing.cacheWrite, observation.usage.cacheWrite),
-            total: Math.max(existing.total, observation.usage.total),
-          });
+      // One attempt reports at most one snapshot, read from its transcript when
+      // the turn ends. A second observation for the same attempt is a second
+      // reading of the same file, so the latest is also the most complete.
+      this.latestByAttempt.set(attemptKey(observation), observation.usage);
       return Effect.void;
     }
     if (observation.type !== "stage_attempt_finished") return Effect.void;
@@ -396,7 +384,7 @@ export class SelectionRecorder implements TrajectoryRecorder<SelectionRecord, Se
 }
 
 /** Fraction of referee decisions whose winner reached the parent scope
- * (merged or worker-consolidated); undefined when no decision was recorded
+ * (merged or delta-applied); undefined when no decision was recorded
  * (non-tournament run, or a tournament region that never finalized). */
 export function selectionApplyRate(score: SelectionScore | undefined): number | undefined {
   if (score === undefined || score.count === 0) return undefined;

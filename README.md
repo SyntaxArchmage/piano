@@ -129,7 +129,9 @@ piano -p --json --workflow recipes/workflows/coding-pi.yml "print the code tree 
 The adapter a stage runs on is its `harness` field; when omitted it defaults
 to the workflow harness — `PIANO_HARNESS`, then the root `harness` in
 `~/.piano/agent.config.json`, then `pi`. `pi` is the in-process SDK adapter;
-`pi-cli`, `claude`, and `dsh` are the subprocess adapters.
+`pi-cli`, `claude`, and `dsh` are the subprocess adapters. The `pi` adapter
+finds the installed SDK through `npm root -g`; set `PIANO_PI_SDK_ROOT` to the
+SDK package directory to skip that lookup on installs without npm.
 
 Model and thinking-level resolution is a fallback chain. For any stage, the
 effective `model` and `thinkingLevel` are selected in this order:
@@ -573,7 +575,7 @@ imperative graph hidden in code.
 | `handoff` | no | Names the immutable context artifact this stage produces for consumers. |
 | `validate` | no | `true` loads the selected worker's optional `contract.json`; omit for no validation. |
 | `signoff` | no | `true` requires a human to approve each accepted attempt before its result is published. |
-| `discuss` | no | `true` exposes Piano's `discuss` tool so the stage can ask the human questions. Custom-tool support is `pi`-only; on `pi-cli`, `claude`, and `dsh` the field is silently inert. **The tool must also be named in `tools`.** `discuss: true` supplies the callback, but the stage's `tools` list is the allowlist the session is created with, so a stage that sets the flag without listing `discuss` runs with the tool unmounted — it never asks anything and the failure is invisible. The same applies to the `pi` extension tools: `web_search` is mounted only when a stage declares it. |
+| `discuss` | no | `true` exposes Piano's `discuss` tool so the stage can ask the human questions. Custom-tool support is `pi`-only: a workflow that sets the flag on `pi-cli`, `claude`, `dsh`, or `codex` is rejected at load, and so is a `pi` stage that sets the flag without naming `discuss` in `tools` (the list is the session's allowlist, so the tool would never be mounted). A run without a supervisor channel is rejected before any stage starts. The same allowlist rule applies to the `pi` extension tool `web_search`. |
 | `memory` | no | Defaults to `true`; reuses the stage actor's transcript across loop iterations, retries, and resumed prompts. `false` starts each worker turn in a new harness session while preserving handoff, contract, and other stage context. |
 | `retry` | no | Per-stage retry policy for a failed attempt — see [Retry](#retry). |
 | `model` | no | Stage model override. |
@@ -913,10 +915,12 @@ the case `CHEAT` and prevents acceptance. Add `--details` only when you need
 the per-case process output.
 
 The `develop` group contains two repository bug-fix tasks plus a focused
-`coding-team-questions` case. The latter runs `recipes/workflows/team-claude.yml`
-and checks that the architect resolves both supervisor questions before the
-implementation tournament. The generated bug-fix workflows each have one
-`coding` stage with the `basic` worker. Pi covers all configured models at
+`coding-team-questions` case. The latter runs `recipes/workflows/team-pi.yml`
+(or `team-pi-mimo.yml` for the mimo coding lanes) and checks that the architect
+resolves both supervisor questions before the implementation tournament; the
+question channel is Piano's `discuss` tool, which only the pi harness mounts.
+The generated bug-fix workflows each have one `coding` stage with the `basic`
+worker. Pi covers all configured models at
 `medium` and `max`; Claude and DSH additionally cover the flash and Luna models.
 Equivalent source-tree commands are `npm run evals:develop` and
 `npm run evals:develop:report`.

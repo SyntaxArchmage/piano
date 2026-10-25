@@ -75,10 +75,10 @@ describe("develop eval commands", () => {
   });
 
   it("reports only persisted develop results", async () => {
-    const historyRoot = await mkdtemp(join(tmpdir(), "piano-develop-report-"));
-    temporaryRoots.push(historyRoot);
+    const outputRoot = await mkdtemp(join(tmpdir(), "piano-develop-report-"));
+    temporaryRoots.push(outputRoot);
     const runSetId = "eval-20260909T000000.000";
-    const runSetDir = join(historyRoot, runSetId);
+    const runSetDir = join(outputRoot, runSetId);
     await mkdir(runSetDir, { recursive: true });
     const developCase = {
       id: "footer-workflow-column-width-pi-deepseek-v4-flash-max",
@@ -103,7 +103,7 @@ describe("develop eval commands", () => {
     await writeFile(join(runSetDir, "report.json"), `${JSON.stringify(report)}\n`, "utf8");
     const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await Effect.runPromise(evalsCommand(["--report", "--group", "develop"], { historyRoot }).pipe(
+    await Effect.runPromise(evalsCommand(["--report", "--group", "develop"], { outputRoot }).pipe(
       Effect.provide(NodeFileSystem.layer),
     ));
 

@@ -53,7 +53,9 @@ export interface ArtifactReadout {
   verifyCommand: string;
   /** Benchmark command — emits a metric line (relative to copied workspace). */
   benchmarkCommand?: string;
-  /** Grader-owned clean-workspace baseline command, run before the agent. */
+  /** Grader-owned clean-workspace baseline command, run before the agent.
+   * Omit for a run-scoped measurement (the workflow-perf family): there is no
+   * meaningful pre-run baseline, so none is recorded. */
   baselineCommand?: string;
   /** Regex to extract the numeric metric from benchmarking output. */
   metricPattern?: string;
@@ -514,18 +516,17 @@ export interface EvalSummary {
   cases: EvalCaseSummary[];
 }
 
-export interface EvalHistoryEntry {
-  kind: "baseline" | "run";
+/** The pinned baseline a `--replay-baseline` run starts from, kept beside the
+ * case's report. A run set's report records what a run measured; this records
+ * what the next one must be compared against, and which run pinned it. */
+export interface PinnedBaseline {
+  kind: "baseline";
   caseId: string;
   runSetId: string;
   trial: number;
   recordedAt: string;
   variant?: string;
-  status: CaseResult["status"];
-  baseline?: BenchmarkMeasurement;
-  comparison?: BenchmarkComparison;
-  scorecard?: CaseScorecard;
-  evidence?: EvidenceAssessment;
+  baseline: BenchmarkMeasurement;
 }
 
 export interface VariantResult {
@@ -544,12 +545,13 @@ export interface VariantComparison {
 
 /** Options controlling a full evals run. */
 export interface EvalRunOptions {
-  /** Where workspace templates get copied and executed (defaults to ~/.piano/evals). */
-  workspaceRoot?: string;
+  /** Where workspace templates get copied and executed. The pipeline passes
+   * its output root, so a run's sandboxes sit beside its report. */
+  workspaceRoot: string;
   /** Parent run-set id used to isolate every copied workspace. */
-  runSetId?: string;
+  runSetId: string;
   /** One-based independent sample number. */
-  trial?: number;
+  trial: number;
   /** Use a previously pinned baseline instead of executing the baseline command. */
   baseline?: BenchmarkMeasurement;
   /** Optional label used by history and variant comparison. */

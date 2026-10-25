@@ -35,13 +35,6 @@ export function invocationStreamPath(runDir: string): string {
   return join(systemLogDir(runDir), "invocations.jsonl");
 }
 
-/** A stream's paths in read order: the current spelling under `system-log/`
- * first, then the legacy one at the run's root. Every reader asks this, so a
- * run written by either layout is readable by both. */
-export function streamPathCandidates(runDir: string, name: string): readonly string[] {
-  return [join(systemLogDir(runDir), name), join(runDir, name)];
-}
-
 /** The run's single state document, written whole and atomically. */
 export function runStatusPath(runDir: string): string {
   return join(runDir, "status.json");

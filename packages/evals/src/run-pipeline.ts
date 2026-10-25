@@ -14,17 +14,16 @@ import { errorMessage, writeFileAtomic } from "@piano/base";
 import { DEFAULT_EVALS_ROOT, loadCases } from "./case-loader.js";
 import { DriverError } from "./errors.js";
 import { usableBenchmarkValue } from "./evidence.js";
-import {
-  DEFAULT_EVAL_HISTORY_ROOT,
-  appendEvalHistory,
-  readBaseline,
-  recordBaseline,
-} from "./history.js";
+import { readBaseline, recordBaseline } from "./baseline.js";
 import { runCase } from "./run-case.js";
 import { formatCompactTokens } from "./report.js";
-import { historyEntryFromResult } from "./evidence.js";
 import { buildReport } from "./scorer.js";
-import { defaultRunSetId, readPersistedRunSets, runSetReportPath } from "./runset.js";
+import {
+  DEFAULT_EVALS_OUTPUT_ROOT,
+  defaultRunSetId,
+  readPersistedRunSets,
+  runSetReportPath,
+} from "./runset.js";
 import type { CaseResult, EvalCase, EvalReport, EvalRunOptions } from "./types.js";
 
 /** Case-execution seam: the real `runCase` by default. */
@@ -50,17 +49,13 @@ export interface RunPipelineOptions {
 }
 
 export interface RunPipelineDeps {
-  /** Case material root (the `--root` flag); defaults to the package's
-   * `workloads/` root. */
+  /** Case material root (the `--root` flag); defaults to the checked-in
+   * `evals/` tree. Read-only. */
   readonly root?: string;
-  /** Root holding `<runSetId>/report.json` and per-case history; injectable so
-   * the persistence path can be pointed at fixtures. Defaults to the
-   * user-level evals root. */
-  readonly historyRoot?: string;
-  /** Where workspace templates get copied and executed; injectable so a run
-   * can keep its workspaces outside the user-level evals root. Defaults to
-   * `~/.piano/evals`. */
-  readonly workspaceRoot?: string;
+  /** Where output lands: `<runSetId>/report.json`, per-case pinned baselines,
+   * and the copied workspaces. Injectable so tests can point it at a fixture
+   * directory. Defaults to the user-level evals home. */
+  readonly outputRoot?: string;
   /** Case-execution seam (defaults to the real `runCase`); injectable so the
    * per-case persistence path is testable without running a harness. */
   readonly runCase?: RunCaseFn;
@@ -90,9 +85,9 @@ function asDriverError(cause: unknown): DriverError {
  * count: it is a dry run rather than an execution attempt. Malformed reports
  * are already skipped by `readPersistedRunSets`. */
 function existingCaseIds(
-  historyRoot: string,
+  outputRoot: string,
 ): Effect.Effect<ReadonlySet<string>, never, FileSystem.FileSystem> {
-  return readPersistedRunSets(historyRoot).pipe(Effect.map((reports) => {
+  return readPersistedRunSets(outputRoot).pipe(Effect.map((reports) => {
     const existing = new Set<string>();
     for (const report of reports) {
       for (const kase of report.cases) {
@@ -117,22 +112,22 @@ export function runEvalPipeline(
   deps: RunPipelineDeps = {},
 ): Effect.Effect<RunPipelineResult, DriverError, FileSystem.FileSystem> {
   const root = deps.root ?? DEFAULT_EVALS_ROOT;
-  const historyRoot = deps.historyRoot ?? DEFAULT_EVAL_HISTORY_ROOT;
+  const outputRoot = deps.outputRoot ?? DEFAULT_EVALS_OUTPUT_ROOT;
   const runOne = deps.runCase ?? runCase;
   return Effect.gen(function* () {
     const selectedCases = yield* loadCases(root, { group: options.group, caseId: options.caseId });
     if (selectedCases.length === 0) return { kind: "no-cases" };
-    const existing = options.skipExisting ? yield* existingCaseIds(historyRoot) : undefined;
+    const existing = options.skipExisting ? yield* existingCaseIds(outputRoot) : undefined;
     const cases = existing === undefined
       ? selectedCases
       : selectedCases.filter((kase) => !existing.has(kase.id));
     if (cases.length === 0) return { kind: "no-pending" };
 
     const runSetId = defaultRunSetId();
-    const reportPath = runSetReportPath(historyRoot, runSetId);
+    const reportPath = runSetReportPath(outputRoot, runSetId);
     const persistenceSemaphore = Effect.unsafeMakeSemaphore(1);
     // A kill between cases must not lose finished ones: every completed case
-    // is persisted (run-set report.json + per-case history) as it lands, so an
+    // is persisted into the run set's report.json as it lands, so an
     // interrupted run leaves a valid partial report behind and the offline
     // `--report` board sees its cases.
     const completed: CaseResult[] = [];
@@ -150,16 +145,15 @@ export function runEvalPipeline(
           mapError: (cause, step) =>
             new DriverError({ message: `cannot persist eval report (${step}): ${errorMessage(cause)}`, cause }),
         });
-        yield* appendEvalHistory(historyRoot, historyEntryFromResult(result, runSetId)).pipe(Effect.mapError(asDriverError));
         if (options.recordBaseline && usableBenchmarkValue(result.baseline) !== undefined) {
-          yield* recordBaseline(historyRoot, result, runSetId).pipe(Effect.mapError(asDriverError));
+          yield* recordBaseline(outputRoot, result, runSetId).pipe(Effect.mapError(asDriverError));
         }
       });
 
     const results = yield* Effect.forEach(expandEvalRunCells(cases, options.trials), ({ kase, trial }) =>
       Effect.gen(function* () {
         const pinned = options.replayBaseline && !options.dryRun
-          ? yield* readBaseline(historyRoot, kase.id).pipe(Effect.mapError(asDriverError))
+          ? yield* readBaseline(outputRoot, kase.id).pipe(Effect.mapError(asDriverError))
           : undefined;
         if (options.replayBaseline && !options.dryRun && pinned === undefined) {
           return yield* Effect.fail(new DriverError({ message: `no pinned baseline for case "${kase.id}"` }));
@@ -170,7 +164,7 @@ export function runEvalPipeline(
           trial,
           ...(pinned === undefined ? {} : { baseline: pinned }),
           ...(options.variant === undefined ? {} : { variant: options.variant }),
-          ...(deps.workspaceRoot === undefined ? {} : { workspaceRoot: deps.workspaceRoot }),
+          workspaceRoot: outputRoot,
           ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
           // Live progress goes to the caller's sink (stderr in the CLI).
           ...(deps.onProgress === undefined ? {} : { onProgress: deps.onProgress }),

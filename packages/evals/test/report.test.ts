@@ -502,13 +502,14 @@ describe("delta board", () => {
     /* eslint-enable no-control-regex */
   });
 
-  it("keeps a NEW row for a case whose previous record is missing", () => {
+  it("renders a case's single record with every Δ cell missing", () => {
     const output = formatDeltaTables([{ current: comparable({}), currentRunSet: "eval-20260102T000000.000" }]);
-    expect(output).toContain("no previous record → eval-20260102T000000.000 (tuning-case#1)");
-    expect(output).toContain("NEW");
-    // No invented zero: with no reference there is no Δ to print at all.
+    expect(output).toContain("n/a → eval-20260102T000000.000 (tuning-case#1)");
+    // No invented zero and no invented reference: every cell is missing.
     expect(output).not.toContain("+0.0%");
-    expect(output).not.toContain("—");
+    const row = output.split("\n").find((line) => line.startsWith("  tuning-case#1"))!;
+    expect(row).toMatch(/—/);
+    expect(row).not.toContain("+");
   });
 
   it("uses the case's own matrix columns and grouping for developer cases", () => {

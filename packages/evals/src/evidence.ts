@@ -12,7 +12,6 @@ import type {
   EvidenceAvailability,
   EvidenceIssue,
   EvalJudge,
-  EvalHistoryEntry,
   JudgeGrade,
   TimingSummary,
   TranscriptMetrics,
@@ -447,7 +446,11 @@ export function buildCaseScorecard(
   const evidenceScore = evidence.evidencePass ? 1 : 0;
   const performance = performanceScore(comparison);
   const judgeBacked = judges.length > 0;
-  const automaticDimensions = result.metric === undefined
+  // The performance dimension is baseline-relative; a case whose metric has no
+  // usable baseline (a run-scoped measurement such as runtime overhead) has
+  // nothing to compare against, so the dimension stays out of the composite
+  // instead of entering it as a zero.
+  const automaticDimensions = result.metric === undefined || comparison.baseline === undefined
     ? [correctness, execution, evidenceScore]
     : [correctness, execution, evidenceScore, performance];
   const quality = judgeBacked
@@ -526,22 +529,3 @@ export function compareVariants(results: readonly CaseResult[]): readonly Varian
   });
 }
 
-export function historyEntryFromResult(
-  result: CaseResult,
-  runSetId: string,
-  recordedAt = new Date().toISOString(),
-): EvalHistoryEntry {
-  return {
-    kind: "run",
-    caseId: result.caseId,
-    runSetId,
-    trial: result.trial,
-    recordedAt,
-    ...(result.variant === undefined ? {} : { variant: result.variant }),
-    status: result.status,
-    ...(result.baseline === undefined ? {} : { baseline: result.baseline }),
-    ...(result.baselineComparison === undefined ? {} : { comparison: result.baselineComparison }),
-    ...(result.scorecard === undefined ? {} : { scorecard: result.scorecard }),
-    ...(result.evidence === undefined ? {} : { evidence: result.evidence }),
-  };
-}

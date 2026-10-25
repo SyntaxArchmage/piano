@@ -39,10 +39,7 @@ describe("evals evidence discovery across run layouts", () => {
     }
   });
 
-  it("resolves the run's evidence streams through system-log/ and the legacy root", async () => {
-    // The audience-split layout moved the streams under system-log/: a reader
-    // that still named the root spellings reported every new run as evidence-
-    // missing while the files sat one directory below.
+  it("resolves the run's evidence streams under system-log/", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "piano-evals-evidence-paths-"));
     try {
       await mkdir(join(runDir, "system-log"), { recursive: true });
@@ -54,21 +51,6 @@ describe("evals evidence discovery across run layouts", () => {
         tracePath: join(runDir, "system-log", "trace.jsonl"),
         trajectoryPath: join(runDir, "system-log", "trajectory.jsonl"),
       });
-
-      // A run that predates the split stays readable through its root files.
-      const legacy = await mkdtemp(join(tmpdir(), "piano-evals-evidence-legacy-"));
-      try {
-        for (const name of ["log.jsonl", "trace.jsonl", "trajectory.jsonl"]) {
-          await writeFile(join(legacy, name), "{}\n");
-        }
-        expect(evidencePaths(legacy)).toMatchObject({
-          logPath: join(legacy, "log.jsonl"),
-          tracePath: join(legacy, "trace.jsonl"),
-          trajectoryPath: join(legacy, "trajectory.jsonl"),
-        });
-      } finally {
-        await rm(legacy, { recursive: true, force: true });
-      }
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }

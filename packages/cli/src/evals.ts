@@ -19,9 +19,11 @@
  * board of every persisted case matching the keyword (group name or grader
  * tag), each taken from its newest run set, rendered as one matrix. `--delta`
  * adds a per-case Δ board next to that matrix: every metric the case's own
- * matrix reports, as a `Δvalue`/`Δ%` cell pair between the case's latest
- * record and its previous one. The delta needs a selection to scope it, so it
- * requires `--group` or `--case` and refuses `--runset`. The default output is
+ * matrix reports, as a `Δvalue`/`Δ%` cell pair between the case's two latest
+ * runs — never across cases, and never against a pair the caller picks. A case
+ * recorded once has no reference, so its Δ cells are missing. The delta needs
+ * a selection to scope it, so it requires `--group` or `--case` and refuses
+ * `--runset`. The default output is
  * the matrix plus the score summary; `--details` adds the per-case process
  * print (status, cost, stage and progress lines).
  *
@@ -189,7 +191,7 @@ export function parseEvalsArgs(args: readonly string[]): Effect.Effect<EvalsArgs
       return Effect.fail(new CliArgumentError({ message: `--delta needs a selection; add --group <group> or --case <id>\n${usage}` }));
     }
     if (runSet !== undefined) {
-      return Effect.fail(new CliArgumentError({ message: `--delta diffs every case against its own previous record; it cannot be combined with --runset\n${usage}` }));
+      return Effect.fail(new CliArgumentError({ message: `--delta always diffs each case against its own previous run; it cannot be combined with --runset\n${usage}` }));
     }
   }
   return Effect.succeed({
@@ -213,8 +215,8 @@ export function parseEvalsArgs(args: readonly string[]): Effect.Effect<EvalsArgs
 
 interface EvalsCommandDeps {
   /** Root holding `<runSetId>/report.json`; injectable so the report path can
-   * be pointed at fixtures. Defaults to the user-level evals root. */
-  readonly historyRoot?: string;
+   * be pointed at fixtures. Defaults to the user-level evals home. */
+  readonly outputRoot?: string;
   /** Case-execution seam (defaults to the real `runCase`); injectable so the
    * per-case persistence path is testable without running a harness. */
   readonly runCase?: RunCaseFn;
@@ -232,7 +234,7 @@ export function evalsCommand(
   return parseEvalsArgs(args).pipe(
     Effect.flatMap((opts) => Effect.gen(function* () {
       if (opts.report) {
-        const text = yield* reportRunSet(opts, deps.historyRoot).pipe(
+        const text = yield* reportRunSet(opts, deps.outputRoot).pipe(
           Effect.mapError(toCliError),
         );
         yield* Effect.sync(() => stdout.write(text));
@@ -240,7 +242,7 @@ export function evalsCommand(
       }
       const result = yield* runEvalPipeline(opts, {
         ...(opts.root === undefined ? {} : { root: opts.root }),
-        ...(deps.historyRoot === undefined ? {} : { historyRoot: deps.historyRoot }),
+        ...(deps.outputRoot === undefined ? {} : { outputRoot: deps.outputRoot }),
         ...(deps.runCase === undefined ? {} : { runCase: deps.runCase }),
         // Live progress goes to stderr so stdout stays the pure report.
         onProgress: (line) => stderr.write(`${line}\n`),

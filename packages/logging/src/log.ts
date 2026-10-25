@@ -1,17 +1,10 @@
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { logStreamPath, streamPathCandidates } from "@piano/base";
+import { logStreamPath } from "@piano/base";
 import { errorMessage, LogWriteError } from "./errors.js";
 import { appendJsonlLine } from "./jsonl.js";
 
 export { logStreamPath };
-
-/** Read candidates for the ops-log stream: the current layout first, then the
- * pre-audience layout, so runs recorded before the directory split stay
- * readable. Writers use {@link logStreamPath} only. */
-export function logStreamPathCandidates(runDir: string): readonly string[] {
-  return streamPathCandidates(runDir, "log.jsonl");
-}
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 

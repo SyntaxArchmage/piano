@@ -133,6 +133,13 @@ function scoreText(value: number | undefined): string | undefined {
   return value === undefined ? undefined : value.toFixed(3);
 }
 
+/** The baseline-relative performance score, when the case has one to show.
+ * A metric with no usable baseline carries no comparison, and the scorecard's
+ * placeholder zero there means N/A. */
+function performanceTrack(kase: CaseResult): number | undefined {
+  return kase.scorecard?.baseline?.baseline === undefined ? undefined : kase.scorecard.performance;
+}
+
 function numberText(value: number | undefined, digits: number): string | undefined {
   return value === undefined ? undefined : value.toFixed(digits);
 }
@@ -154,7 +161,7 @@ function testIntegrityColor(kase: CaseResult): string | undefined {
 
 /** The best metric value measured during the run, from the trajectory's
  * benchmark score for the case's own metric. Undefined when the run recorded
- * no benchmark (legacy or non-performance cases). A visible gap against
+ * no benchmark (non-performance cases). A visible gap against
  * `final` means the delivered artifact does not hold the run's best result
  * (e.g. tuning-protocol deviations); the report only shows both numbers. */
 function runBest(kase: CaseResult): number | undefined {
@@ -404,18 +411,18 @@ const TUNING_MATRIX_FAMILY: MatrixFamily = {
       delta: { of: (kase) => kase.baselineComparison?.relativeImprovement, scale: "points", better: "higher" },
     },
     {
-      // A case without a performance readout has no metric; the scorecard's 0
-      // there means N/A (same signal as quality excluding the dimension).
+      // The performance score is baseline-relative: a case without a
+      // performance readout, or one whose metric has no usable baseline (a
+      // run-scoped measurement), has nothing to compare and reads N/A.
       header: "perf",
       pad: 2,
       width: 6,
-      text: (kase) => scoreText(kase.metric === undefined ? undefined : kase.scorecard?.performance),
-      color: (kase) => (kase.scorecard === undefined ? undefined : colorFor(kase.scorecard.performance)),
-      delta: {
-        of: (kase) => (kase.metric === undefined ? undefined : kase.scorecard?.performance),
-        scale: "points",
-        better: "higher",
+      text: (kase) => scoreText(performanceTrack(kase)),
+      color: (kase) => {
+        const value = performanceTrack(kase);
+        return value === undefined ? undefined : colorFor(value);
       },
+      delta: { of: (kase) => performanceTrack(kase), scale: "points", better: "higher" },
     },
     {
       header: "traj",
@@ -936,7 +943,7 @@ function formatMatrixSection(section: MatrixSection, family: MatrixFamily): stri
  * same-group runs compared dim by dim — outcome, scores, and cost. A group
  * under `minCases` renders nothing, so a stored run set never shows a
  * single-case matrix while an assembled selection view passes 1 to force it.
- * Missing dimensions render as — (legacy runs). */
+ * A case without dimensions renders as —. */
 function formatMatrixTables(cases: readonly CaseResult[], minCases = 2): string[] {
   const lines: string[] = [];
   for (const [group, groupCases] of groupSorted(cases, (kase) => kase.group)) {
@@ -1037,7 +1044,7 @@ export function formatReport(
       .filter(([key]) => kase.metric === undefined || seriesName(key) === kase.metric.name);
     if (seriesEntries.length > 0) {
       for (const [key, series] of seriesEntries) {
-        lines.push(`    ${DIM}${formatSeriesLine(key, series, benchmarkScore?.score?.[key], kase.scorecard?.performance)}${RST}`);
+        lines.push(`    ${DIM}${formatSeriesLine(key, series, benchmarkScore?.score?.[key], performanceTrack(kase))}${RST}`);
       }
     } else if (points.length > 0) {
       lines.push(`    ${DIM}metrics: ${points.map((point) => `iter${point.iteration ?? "?"} ${point.name}=${point.value}${point.unit === undefined ? "" : ` ${point.unit}`}`).join(" → ")}${RST}`);
@@ -1107,17 +1114,18 @@ function firstPassRate(kase: CaseResult): number | undefined {
  * metric contributes a `Δvalue` cell (arithmetic for raw magnitudes,
  * percentage points for 0..1 scores and rates) and a `Δ%` cell (the relative
  * change), both signed and colored by which way is an improvement. A case
- * whose previous record is missing keeps a row marked NEW, and a metric with
- * no reading on either side renders — rather than a misleading zero.
+ * recorded only once has no reference, so every cell renders — rather than a
+ * misleading zero.
  */
 
-/** One case's latest record paired with its previous one. The two sides can
+/** One case's latest record paired with the one before it. The two sides can
  * come from different run sets: a selection takes each case's newest
  * occurrence wherever it lives, and this case's own previous occurrence is its
  * predecessor — not the run set that happens to precede the newest one. */
 export interface DeltaRecord {
   readonly current: CaseResult;
-  /** Previous stored record of the same case; absent on a first run. */
+  /** The same case's run before the current one; absent when the case has
+   * only ever been recorded once. Cases never compare against each other. */
   readonly previous?: CaseResult;
   readonly currentRunSet: string;
   readonly previousRunSet?: string;
@@ -1148,17 +1156,19 @@ function deltaTone(rule: DeltaRule, current: CaseResult, previous: CaseResult, d
 
 /** The two Δ cells of one metric. Both sides need a reading, and the percent
  * cell also needs a non-zero reference — without them the change is unknown,
- * which is not the same as zero. */
+ * which is not the same as zero. A case with no earlier run has no reference
+ * at all, so every cell reads as missing rather than as a change. */
 function deltaCells(
   column: MatrixColumn,
   current: CaseResult,
-  previous: CaseResult,
+  previous: CaseResult | undefined,
   valueWidth: number,
   percentWidth: number,
 ): readonly [string, string] {
   const rule = column.delta!;
   const dashValue = "—".padStart(valueWidth);
   const dashPercent = "—".padStart(percentWidth);
+  if (previous === undefined) return [dashValue, dashPercent];
   const cur = rule.of(current);
   const prev = rule.of(previous);
   if (cur === undefined || prev === undefined) return [dashValue, dashPercent];
@@ -1183,7 +1193,7 @@ function deltaCells(
 function deltaProvenance(family: MatrixFamily, records: readonly DeltaRecord[]): string[] {
   const byPair = new Map<string, string[]>();
   for (const record of records) {
-    const pair = `${record.previousRunSet ?? "no previous record"} → ${record.currentRunSet}`;
+    const pair = `${record.previousRunSet ?? "n/a"} → ${record.currentRunSet}`;
     byPair.set(pair, [...(byPair.get(pair) ?? []), family.rowKey(record.current)]);
   }
   const lines: string[] = [];
@@ -1244,7 +1254,7 @@ function formatDeltaSection(
     .join("");
   const transitionBlanks = " ".repeat((slotWidth + transitionPad) * transitions.length);
   const transitionCells = (record: DeltaRecord) => transitions.map((transition) => {
-    const state = transition.of(record.current, record.previous!);
+    const state = record.previous === undefined ? undefined : transition.of(record.current, record.previous);
     const padding = " ".repeat(transitionPad);
     return state === undefined
       ? " ".repeat(slotWidth + transitionPad)
@@ -1259,13 +1269,8 @@ function formatDeltaSection(
     lines.push(`  ${DIM}${keyBlank}${transitionBlanks}${metrics.map(() => `${"Δval".padStart(DELTA_VALUE_WIDTH)}${"Δ%".padStart(DELTA_PERCENT_WIDTH)}`).join("")}${RST}`);
   }
   for (const record of records) {
-    const previous = record.previous;
-    if (previous === undefined) {
-      lines.push(`  ${keyTextOf(record)}${DIM}NEW${RST}`);
-      continue;
-    }
     const cells = metrics.map((column) => deltaCells(
-      column, record.current, previous, DELTA_VALUE_WIDTH, percentWidth,
+      column, record.current, record.previous, DELTA_VALUE_WIDTH, percentWidth,
     ));
     if (stacked) {
       lines.push(`  ${keyTextOf(record)}${tag("Δval")}${transitionCells(record)}${cells.map(([value]) => value).join("")}`);

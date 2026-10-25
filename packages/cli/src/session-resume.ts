@@ -19,7 +19,7 @@ import { readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { TurnOutcome } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
-import { parseTrajectory, trajectoryStreamPathCandidates, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
+import { parseTrajectory, trajectoryStreamPath, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
 import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrator";
 import { LogsStorageError } from "./errors.js";
 
@@ -72,17 +72,14 @@ export async function readRunRow(runDir: string): Promise<RunSummary | undefined
  * not there at all counts against it — one that cannot be read is not evidence
  * of absence, so the run stays listed. */
 async function hasTrajectory(runDir: string): Promise<boolean> {
-  for (const path of trajectoryStreamPathCandidates(runDir)) {
-    try {
-      await readFile(path, "utf8");
-      return true;
-    } catch (cause) {
-      // A candidate that is not there is simply the wrong layout; any other
-      // failure still counts as evidence the run recorded something.
-      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") return true;
-    }
+  try {
+    await readFile(trajectoryStreamPath(runDir), "utf8");
+    return true;
+  } catch (cause) {
+    // Absence is simply no trajectory; any other failure still counts as
+    // evidence the run recorded something.
+    return (cause as NodeJS.ErrnoException).code !== "ENOENT";
   }
-  return false;
 }
 
 /** The run's state document, or `undefined` when it is missing, unreadable, or
@@ -116,39 +113,6 @@ function isEvent(value: unknown): value is AgentEvent {
     typeof (value as { type?: unknown }).type === "string";
 }
 
-function eventText(content: unknown): string | undefined {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-  for (const part of content) {
-    if (part !== null && typeof part === "object" && (part as { type?: string }).type === "text") {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === "string") return text;
-    }
-  }
-  return undefined;
-}
-
-/** Recover a prompt from a document written before `turns` existed: the stage
- * context event carries the user message, and `message_start` carries it for
- * runs whose events were captured before compaction dropped that type. */
-function legacyPrompt(events: readonly unknown[]): string | undefined {
-  for (const event of events) {
-    if (!isEvent(event)) continue;
-    const record = event as unknown as Record<string, unknown>;
-    if (record.type === "context") {
-      const context = record.context as { userMessage?: unknown } | undefined;
-      if (typeof context?.userMessage === "string") return context.userMessage;
-    } else if (record.type === "message_start") {
-      const message = record.message as { role?: string; content?: unknown } | undefined;
-      if (message?.role === "user") {
-        const text = eventText(message.content);
-        if (text !== undefined) return text;
-      }
-    }
-  }
-  return undefined;
-}
-
 /** The prompt a stage received carries appended workflow context. Show only the
  * user's own text, which is everything before that marker. */
 function stripStageContext(prompt: string): string {
@@ -171,17 +135,14 @@ function readTrajectory(
   runsRoot: string,
   runId: string,
 ): Effect.Effect<Partial<TrajectoryDocument>, LogsStorageError, FileSystem.FileSystem> {
-  const candidates = trajectoryStreamPathCandidates(join(runsRoot, runId));
-  const path = candidates[0]!;
+  const path = trajectoryStreamPath(join(runsRoot, runId));
   const storageError = (message: string): LogsStorageError =>
     new LogsStorageError({ operation: "read-trajectory", path, message });
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const read = (candidate: string) =>
-      fileSystem.readFileString(candidate).pipe(Effect.catchAll(() => Effect.succeed(undefined)));
-    // Current layout first, then the pre-audience layout: old runs stay
-    // replayable, while new runs only ever write the first candidate.
-    const stream = (yield* read(candidates[0]!)) ?? (yield* read(candidates[1]!));
+    const stream = yield* fileSystem.readFileString(path).pipe(
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    );
     const parsed = parseTrajectory(stream);
     if (parsed !== undefined) return parsed;
     return yield* Effect.fail(storageError(
@@ -221,35 +182,24 @@ export function readResumeContext(
 ): Effect.Effect<ResumeContext, LogsStorageError, FileSystem.FileSystem> {
   return readTrajectory(runsRoot, runId).pipe(Effect.map((document): ResumeContext => {
     const allEvents = Array.isArray(document.events) ? document.events : [];
-    const recorded = Array.isArray(document.turns) ? document.turns : undefined;
-    const status = document.status ?? "completed";
+    const recorded = document.turns ?? [];
     const failure = failureOf(document.error);
     const turns: ResumeTurn[] = [];
-    if (recorded !== undefined && recorded.length > 0) {
-      let start = 0;
-      recorded.forEach((turn, index) => {
-        // eventCount is cumulative, so a turn owns the slice between the
-        // previous boundary and its own. Clamp: a document written by an older
-        // build, or truncated mid-write, must not produce a reversed slice.
-        const end = Math.min(Math.max(turn.eventCount, start), allEvents.length);
-        const last = index === recorded.length - 1;
-        turns.push({
-          prompt: stripStageContext(turn.prompt),
-          status: turn.status,
-          events: allEvents.slice(start, end).filter(isEvent),
-          ...(last && failure !== undefined && turn.status !== "completed" ? { error: failure } : {}),
-        });
-        start = end;
-      });
-    } else if (allEvents.length > 0) {
-      const events = allEvents.filter(isEvent);
+    let start = 0;
+    recorded.forEach((turn, index) => {
+      // eventCount is cumulative, so a turn owns the slice between the
+      // previous boundary and its own. Clamp: a truncated stream must not
+      // produce a reversed slice.
+      const end = Math.min(Math.max(turn.eventCount, start), allEvents.length);
+      const last = index === recorded.length - 1;
       turns.push({
-        prompt: stripStageContext(legacyPrompt(allEvents) ?? ""),
-        status,
-        events,
-        ...(failure !== undefined && status !== "completed" ? { error: failure } : {}),
+        prompt: stripStageContext(turn.prompt),
+        status: turn.status,
+        events: allEvents.slice(start, end).filter(isEvent),
+        ...(last && failure !== undefined && turn.status !== "completed" ? { error: failure } : {}),
       });
-    }
+      start = end;
+    });
     return {
       runId,
       ...(typeof document.name === "string" ? { name: document.name } : {}),

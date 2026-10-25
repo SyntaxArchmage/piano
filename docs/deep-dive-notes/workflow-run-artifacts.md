@@ -23,7 +23,7 @@
 │   ├── dsh/patches/<model>.patch.yml    ⑤ 每模型一个，dsh --patch 用
 │   ├── dsh/sessions/<key>/<id>/*.jsonl(.zstd)  ⑥ dsh CLI 自己写，Piano 只读回
 │   └── claude/                          ⑦ CLAUDE_CONFIG_DIR（claude自己的会话在此）
-├── evals/<caseId>/history.jsonl|baseline.json  ⑧ 仅 piano evals 时写
+├── evals/<caseId>/baseline.json  ⑧ 仅 piano evals --record-baseline 时写
 └── runs/<runId>/                        ← 每次 run 的目录（session.ts:26-28,63-64）
     │    runId = <UTC时间戳>-<hex6>
     ├── log.jsonl            ⑨  结构化日志，逐行append；含agent.event调试行
@@ -80,4 +80,4 @@
 - **stream-json 解析结果不落独立文件**：claude 的每行 JSON 只原样进 ㉔；归一化后走内存事件 → ⑪/⑨/⑱-㉒。
 - **⑫ 只有一份状态**：`progress.jsonl` 与 `progress.json` 都已退休，每条 progress 记录由 `applyRunStatusRecord` 直接折进 `status.json`；证据仍在 `system-log/` 的三条流里，`status.json` 是它们的折叠结果而不是第二份真相。
 - **agent 生成的非代码文件**（workspace 内，recipe 规定）：如 `reports/verify.json` 与 benchmark 原始输出由 agent 写；**`rounds/iter-NNN.json` 与 `state/tuning-state.json` 由 orchestrator 写**（`materializeGpuPromotion`，workflow-execution.ts:870,894），agent 被告知不许碰。另外 winner 自动 commit 进的是 workspace 的 git 历史，不是 run 文件。
-- **evals 的分数不在 runDir 里**：run 内只有轨迹，评分发生在读取侧，只有 `~/.piano/evals/<case>/history.jsonl`、`baseline.json` 和 `report.json`（cli/src/evals.ts:180-181）落盘。
+- **evals 的分数不在 runDir 里**：run 内只有轨迹，评分发生在读取侧，只有 `~/.piano/evals/<case>/baseline.json`、`~/.piano/evals/<runSetId>/report.json` 与工作区落盘。

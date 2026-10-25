@@ -16,7 +16,6 @@ workflow:
         harness: claude
         model: mimo-v2.6-pro
         thinkingLevel: max
-        discuss: true
         tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
         handoff: architecture.json
         validate: true

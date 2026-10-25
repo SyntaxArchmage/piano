@@ -23,14 +23,12 @@ import {
 import { DriverError } from "./errors.js";
 import {
   copyWorkspaceTemplate,
-  DEFAULT_WORKSPACE_ROOT,
   measureWorkspaceChanges,
   prepareWorkspaceDiffBaseline,
 } from "./workspace.js";
 import { matchNewRunDir, findNewRunDir } from "./run-locator.js";
 import { progressTickLine, readStatus, runShell, shellQuote, substituteCommand } from "./launcher.js";
 import { evalMetricsAvailable, readRunStatusSummary, readRunTrace } from "./run-reader.js";
-import { defaultRunSetId } from "./runset.js";
 import type {
   CaseResult,
   EvalCase,
@@ -38,9 +36,9 @@ import type {
 } from "./types.js";
 import {
   defaultRunsRoot,
-  logStreamPathCandidates,
-  traceStreamPathCandidates,
-  trajectoryStreamPathCandidates,
+  logStreamPath,
+  traceStreamPath,
+  trajectoryStreamPath,
 } from "@piano/logging";
 
 // A workflow with a full performance readout can legitimately run many loop
@@ -129,19 +127,17 @@ export function runCase(
   kase: EvalCase,
   opts: EvalRunOptions,
 ): Effect.Effect<CaseResult, DriverError, FileSystem.FileSystem> {
-  const workspaceRoot = opts.workspaceRoot ?? DEFAULT_WORKSPACE_ROOT;
-  const runSetId = opts.runSetId ?? defaultRunSetId();
-  const trial = opts.trial ?? 1;
+  const { runSetId, trial } = opts;
   return Effect.gen(function* () {
     if (opts.dryRun) {
-      const dry = yield* dryRunCase(root, kase, workspaceRoot, runSetId, trial);
+      const dry = yield* dryRunCase(root, kase, opts.workspaceRoot, runSetId, trial);
       return finalizeCaseResult({
         ...dry,
         ...(kase.metric === undefined ? {} : { metric: kase.metric }),
         ...(opts.variant === undefined ? {} : { variant: opts.variant }),
       }, kase);
     }
-    const workspaceDir = yield* copyWorkspaceTemplate(root, kase, workspaceRoot, join(runSetId, `trial-${trial}`));
+    const workspaceDir = yield* copyWorkspaceTemplate(root, kase, opts.workspaceRoot, join(runSetId, `trial-${trial}`));
     if (kase.prepareCommand !== undefined) {
       const prepared = yield* Effect.tryPromise({
         try: () => runShell(kase.prepareCommand!, workspaceDir, 10 * 60 * 1000),
@@ -287,23 +283,16 @@ export function runCase(
   });
 }
 
-/** The first present path of a run's evidence stream — current `system-log/`
- * layout first, the legacy root spelling second. Falls back to the primary
- * spelling so a missing stream is reported against where it would be. */
-function resolveEvidencePath(candidates: readonly string[]): string {
-  return candidates.find((path) => pathExists(path)) ?? candidates[0]!;
-}
-
 export function evidencePaths(runDir: string): Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript"> {
   // The stream is the run's trajectory record; the document it used to be
   // folded into is gone, so the path names the stream.
-  const trajectoryPath = resolveEvidencePath(trajectoryStreamPathCandidates(runDir));
+  const trajectoryPath = trajectoryStreamPath(runDir);
   const transcriptPath = findTranscriptPath(runDir);
   return {
     runDir,
     ...(existsSync(trajectoryPath) ? { trajectoryPath } : {}),
-    logPath: resolveEvidencePath(logStreamPathCandidates(runDir)),
-    tracePath: resolveEvidencePath(traceStreamPathCandidates(runDir)),
+    logPath: logStreamPath(runDir),
+    tracePath: traceStreamPath(runDir),
     ...(transcriptPath === undefined ? {} : { transcriptPath, transcript: analyzeTranscriptFile(transcriptPath) }),
   };
 }

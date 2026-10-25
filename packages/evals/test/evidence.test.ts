@@ -255,7 +255,6 @@ describe(" evidence and scorecard", () => {
     // The workflow-perf family measures runtime overhead with the grader's
     // benchmark command; the workflow itself has no metric contract to record.
     const graderMeasured = result({
-      artifact: { verified: true, value: 45 },
       trace: { ...result().trace!, benchmarks: [] },
     });
     const assessment = assessCaseEvidence(graderMeasured, {
@@ -300,6 +299,18 @@ describe(" evidence and scorecard", () => {
       artifact: { verified: true },
     }));
 
+    expect(scorecard.performance).toBe(0);
+    expect(scorecard.quality).toBe(1);
+  });
+
+  it("keeps a baseline-less metric out of the composite instead of scoring it zero", () => {
+    // Run-scoped measurements (runtime overhead) have no baseline to compare
+    // against; entering the dimension as 0 would halve an otherwise perfect
+    // case's quality.
+    const scorecard = buildCaseScorecard(result({
+      baseline: undefined,
+      artifact: { verified: true, value: 12 },
+    }));
     expect(scorecard.performance).toBe(0);
     expect(scorecard.quality).toBe(1);
   });

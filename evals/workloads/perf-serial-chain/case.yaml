@@ -15,7 +15,6 @@ readout:
   compileCommand: "true"
   verifyCommand: "true"
   benchmarkCommand: "node runtime-metric.mjs"
-  baselineCommand: "node runtime-metric.mjs"
   metricPattern: "runtime_overhead_ms: ([0-9.]+)"
 metric:
   name: runtime_overhead_ms

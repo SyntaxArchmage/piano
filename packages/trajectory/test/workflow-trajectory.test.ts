@@ -188,22 +188,22 @@ describe("WorkflowTrajectory", () => {
     expect(recorder.score(records).total).toBe(15);
   });
 
-  it("merges usage snapshots within one attempt without losing earlier fields", async () => {
-    // A subprocess harness may emit a full usage at message_end and a
-    // totals-only frame at result; last-write-wins would zero the counts.
-    const runDir = await mkdtemp(join(tmpdir(), "piano-trajectory-usage-merge-"));
+  it("takes the attempt's last usage snapshot as its total", async () => {
+    // One attempt reports one transcript-derived snapshot; a second reading of
+    // the same file supersedes the first rather than being merged into it.
+    const runDir = await mkdtemp(join(tmpdir(), "piano-trajectory-usage-"));
     roots.push(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "execution-1"));
     await run(trajectory.observe({ type: "stage_attempt_started", context: context(0), monotonicMs: 0 }));
     await run(trajectory.observe({ type: "token_usage", context: context(0), usage: { input: 120, output: 30, cacheRead: 0, cacheWrite: 0, total: 150 } }));
-    await run(trajectory.observe({ type: "token_usage", context: context(0), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 152 } }));
+    await run(trajectory.observe({ type: "token_usage", context: context(0), usage: { input: 121, output: 31, cacheRead: 0, cacheWrite: 0, total: 152 } }));
     await run(trajectory.observe({ type: "stage_attempt_finished", context: context(0), monotonicMs: 1, outcome: "accepted" }));
     await run(trajectory.close("completed"));
 
     const recorder = new TokenUsageRecorder(runDir);
     const records = await run(recorder.read(runDir));
     expect(records).toHaveLength(1);
-    expect(records[0]?.reported).toEqual({ input: 120, output: 30, cacheRead: 0, cacheWrite: 0, total: 152 });
+    expect(records[0]?.reported).toEqual({ input: 121, output: 31, cacheRead: 0, cacheWrite: 0, total: 152 });
   });
 
   it("isolates a recorder failure and marks its stream incomplete", async () => {

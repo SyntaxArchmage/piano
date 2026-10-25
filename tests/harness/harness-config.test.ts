@@ -87,6 +87,28 @@ describe(" harness configuration boundary", () => {
     }
   });
 
+  it("treats a whitespace-padded placeholder as unconfigured and trims real values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-harness-sentinel-"));
+    const path = join(root, "agent.config.json");
+    try {
+      await writeFile(path, JSON.stringify({
+        apiKey: "  CHANGE_ME  ",
+        model: "  deepseek-v4-flash  ",
+      }), "utf8");
+      vi.stubEnv("PIANO_USER_AGENT_CONFIG", path);
+      const placeholder = resolveHarnessConfig("pi");
+      // A padded template value is still a placeholder, never a credential.
+      expect(placeholder.apiKey).toBeUndefined();
+      expect(placeholder.model).toBe("deepseek-v4-flash");
+
+      await writeFile(path, JSON.stringify({ apiKey: "  secret-key  " }), "utf8");
+      expect(resolveHarnessConfig("pi").apiKey).toBe("secret-key");
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves root Pi SDK settings for model diagnostics", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-harness-config-"));
     const path = join(root, "agent.config.json");

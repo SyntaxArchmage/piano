@@ -7,9 +7,9 @@
 
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { matchesSelectionKeyword } from "./case-loader.js";
-import { DEFAULT_EVAL_HISTORY_ROOT } from "./history.js";
 import { formatDeltaTables, formatReport, type DeltaRecord } from "./report.js";
 import { buildReport } from "./scorer.js";
 import type { CaseResult, EvalReport } from "./types.js";
@@ -18,6 +18,11 @@ import type { CaseResult, EvalReport } from "./types.js";
  * `eval-` + UTC-ish local timestamp. Filtering by shape keeps hand-made
  * workspace dirs (and legacy `eval-single-*` scratch dirs) out of the list. */
 const RUN_SET_ID_RE = /^eval-\d{8}T\d{6}\.\d{3}$/;
+
+/** Where `piano evals` writes its output: one run set per report, one pinned
+ * baseline per case, and each case's copied workspace. Distinct from
+ * `DEFAULT_EVALS_ROOT`, the checked-in case material this output comes from. */
+export const DEFAULT_EVALS_OUTPUT_ROOT = join(homedir(), ".piano", "evals");
 
 /** Where one run set's report is persisted. Single spelling for every reader
  * and writer of `report.json`. */
@@ -107,7 +112,7 @@ export interface RunSetReportOptions {
  * running anything. With no selection it renders the stored report verbatim;
  * with `--group`/`--case` it gathers every persisted case matching the
  * keyword — a group family name (`tuning` covers `tuning-cuda` too) or a
- * grader tag — taking each case's newest occurrence across run sets, so
+ * grader tag — taking each case's newest occurrence as the row, so
  * `--group tflops` shows all tagged cases even when they live in different
  * groups and were run in different sessions. Each case keeps its own group: a
  * keyword selects cases, it does not re-label them, and a case's group is what
@@ -115,11 +120,11 @@ export interface RunSetReportOptions {
  * name therefore renders each group in that family with its own family's
  * columns. `delta` appends the Δ board next to that matrix: every metric the
  * case's own matrix reports, as a `Δvalue`/`Δ%` cell pair between the case's
- * latest record and its previous one.
+ * two latest runs. Cases never compare against each other.
  */
 export function reportRunSet(
   opts: RunSetReportOptions,
-  historyRoot = DEFAULT_EVAL_HISTORY_ROOT,
+  outputRoot = DEFAULT_EVALS_OUTPUT_ROOT,
 ): Effect.Effect<string, Error, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const selection = [
@@ -129,11 +134,11 @@ export function reportRunSet(
     if (selection === "") {
       // No selection: render the newest (or explicit) stored report verbatim.
       // `delta` cannot reach here — it requires a selection.
-      const currentId = opts.runSet ?? (yield* listRunSetIds(historyRoot))[0];
+      const currentId = opts.runSet ?? (yield* listRunSetIds(outputRoot))[0];
       if (currentId === undefined) {
-        return yield* Effect.fail(new Error(`no persisted eval reports under ${historyRoot}`));
+        return yield* Effect.fail(new Error(`no persisted eval reports under ${outputRoot}`));
       }
-      const current = yield* readRunSetReport(historyRoot, currentId);
+      const current = yield* readRunSetReport(outputRoot, currentId);
       return formatReport(current, { details: opts.details }) + "\n";
     }
     // Selection: assemble a board of every persisted case matching the
@@ -143,7 +148,7 @@ export function reportRunSet(
       && (opts.group === undefined || matchesSelectionKeyword(kase.group, kase.tags, opts.group))
       && (opts.caseId === undefined || kase.caseId === opts.caseId);
     type Occurrence = { readonly id: string; readonly at: string; readonly kase: CaseResult };
-    const reports = yield* readPersistedRunSets(historyRoot);
+    const reports = yield* readPersistedRunSets(outputRoot);
     const occurrences = new Map<string, Occurrence[]>();
     for (const report of reports) {
       for (const kase of report.cases) {
@@ -155,9 +160,17 @@ export function reportRunSet(
         else list.push(occurrence);
       }
     }
+    // Each case compares against itself and nothing else: its newest record
+    // and the one before it (occurrences are newest first). Δ always diffs the
+    // two latest runs — the caller refuses to pin a run set alongside it — and
+    // a case with a single record has no reference, so every Δ cell reads as
+    // missing.
     const chosen = [...occurrences.values()].flatMap((list) => {
-      const current = opts.runSet === undefined ? list[0] : list.find((o) => o.id === opts.runSet);
-      return current === undefined ? [] : [{ current, prior: list.find((o) => o.id < current.id) }];
+      const index = opts.runSet === undefined
+        ? 0
+        : list.findIndex((occurrence) => occurrence.id === opts.runSet);
+      if (index < 0) return [];
+      return [{ current: list[index]!, prior: list[index + 1] }];
     });
     if (chosen.length === 0) {
       return yield* Effect.fail(new Error(opts.runSet !== undefined
@@ -173,10 +186,10 @@ export function reportRunSet(
     );
     const text = formatReport(currentReport, { minMatrixCases: 1, details: opts.details }) + "\n";
     if (!opts.delta) return text;
-    // Each row diffs against its own previous occurrence, so a case that was
-    // run twice in different sessions still compares against the right
-    // baseline. The records keep their own group, so the Δ board is grouped
-    // and columned exactly like the matrix printed above it.
+    // Each row diffs against its own preceding run — the case's second-latest
+    // record — so a case run twice in different sessions still compares
+    // against itself. The records keep their own group, so the Δ board is
+    // grouped and columned exactly like the matrix printed above it.
     const records: DeltaRecord[] = chosen.map((row) => ({
       current: row.current.kase,
       currentRunSet: row.current.id,

@@ -1225,6 +1225,103 @@ describe("workspace baselines as commits", () => {
     }
   });
 
+  it("replaces nodes whose kind changed and preserves the winner's mode", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-delta-kinds-"));
+    const winner = await mkdtemp(join(tmpdir(), "piano-delta-kinds-winner-"));
+    try {
+      // file -> directory
+      await writeFile(join(source, "a-node"), "old file\n");
+      await mkdir(join(winner, "a-node"), { recursive: true });
+      await writeFile(join(winner, "a-node", "child.txt"), "child\n");
+      // directory -> file
+      await mkdir(join(source, "b-node"), { recursive: true });
+      await writeFile(join(source, "b-node", "child.txt"), "old child\n");
+      await writeFile(join(winner, "b-node"), "new file\n");
+      // file -> symlink
+      await writeFile(join(source, "c-link.txt"), "plain\n");
+      await writeFile(join(source, "target.txt"), "target\n");
+      await writeFile(join(winner, "target.txt"), "target\n");
+      await symlink("target.txt", join(winner, "c-link.txt"));
+      // executable bit only
+      await writeFile(join(source, "d-run.sh"), "#!/bin/sh\n");
+      await writeFile(join(winner, "d-run.sh"), "#!/bin/sh\n");
+      await chmod(join(winner, "d-run.sh"), 0o755);
+
+      await applyWorkspaceChangeSet(source, {
+        winnerContentDir: winner,
+        changes: [
+          { path: "a-node", kind: "deleted" },
+          { path: "a-node/child.txt", kind: "added" },
+          { path: "b-node", kind: "added" },
+          { path: "b-node/child.txt", kind: "deleted" },
+          { path: "c-link.txt", kind: "modified" },
+          { path: "d-run.sh", kind: "modified" },
+        ],
+      });
+
+      expect((await lstat(join(source, "a-node"))).isDirectory()).toBe(true);
+      await expect(readFile(join(source, "a-node", "child.txt"), "utf8")).resolves.toBe("child\n");
+      expect((await lstat(join(source, "b-node"))).isFile()).toBe(true);
+      await expect(readFile(join(source, "b-node"), "utf8")).resolves.toBe("new file\n");
+      expect((await lstat(join(source, "c-link.txt"))).isSymbolicLink()).toBe(true);
+      await expect(readlink(join(source, "c-link.txt"))).resolves.toBe("target.txt");
+      expect((await lstat(join(source, "d-run.sh"))).mode & 0o777).toBe(0o755);
+    } finally {
+      await rm(source, { recursive: true, force: true });
+      await rm(winner, { recursive: true, force: true });
+    }
+  });
+
+  it("retargets a symlink instead of following it", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-delta-link-"));
+    const winner = await mkdtemp(join(tmpdir(), "piano-delta-link-winner-"));
+    try {
+      for (const directory of [source, winner]) {
+        await writeFile(join(directory, "one.txt"), "one\n");
+        await writeFile(join(directory, "two.txt"), "two\n");
+      }
+      await symlink("one.txt", join(source, "link.txt"));
+      await symlink("two.txt", join(winner, "link.txt"));
+
+      await applyWorkspaceChangeSet(source, {
+        winnerContentDir: winner,
+        changes: [{ path: "link.txt", kind: "modified" }],
+      });
+
+      expect((await lstat(join(source, "link.txt"))).isSymbolicLink()).toBe(true);
+      await expect(readlink(join(source, "link.txt"))).resolves.toBe("two.txt");
+      // The old target is an ordinary parent file and must survive.
+      await expect(readFile(join(source, "one.txt"), "utf8")).resolves.toBe("one\n");
+    } finally {
+      await rm(source, { recursive: true, force: true });
+      await rm(winner, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to write through a symlink ancestor and leaves the tree untouched", async () => {
+    const source = await mkdtemp(join(tmpdir(), "piano-delta-link-ancestor-"));
+    const winner = await mkdtemp(join(tmpdir(), "piano-delta-link-ancestor-winner-"));
+    try {
+      await mkdir(join(source, "inside"), { recursive: true });
+      await writeFile(join(source, "inside", "keep.txt"), "keep\n");
+      await symlink("inside", join(source, "dir"));
+      await mkdir(join(winner, "dir"), { recursive: true });
+      await writeFile(join(winner, "dir", "new.txt"), "must not land\n");
+
+      await expect(applyWorkspaceChangeSet(source, {
+        winnerContentDir: winner,
+        changes: [{ path: "dir/new.txt", kind: "added" }],
+      })).rejects.toThrow(/symlink|non-directory ancestor/u);
+
+      expect((await lstat(join(source, "dir"))).isSymbolicLink()).toBe(true);
+      await expect(stat(join(source, "inside", "new.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(join(source, "inside", "keep.txt"), "utf8")).resolves.toBe("keep\n");
+    } finally {
+      await rm(source, { recursive: true, force: true });
+      await rm(winner, { recursive: true, force: true });
+    }
+  });
+
   it("restores the pre-apply tree when a delta path cannot be written", async () => {
     if (process.getuid?.() === 0) return; // root bypasses the directory mode
     const source = await mkdtemp(join(tmpdir(), "piano-delta-rollback-"));

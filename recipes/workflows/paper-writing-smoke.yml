@@ -140,21 +140,19 @@ workflow:
     - stage:
         name: prepare
         worker: paper-prepare
-        # pi carries Piano's `discuss` tool; on the subprocess harnesses the
-        # field is silently inert, which would turn an interactive alignment
-        # into a one-shot guess. The stage's `tools` list below names the tool
-        # as well — see the comment there.
+        # pi carries Piano's `discuss` tool; the subprocess harnesses cannot
+        # mount it, so the workflow would be rejected at load there. The
+        # stage's `tools` list below names the tool as well — see the comment
+        # there; omitting it is also a load error.
         harness: pi
         model: gpt-5.6-luna
         thinkingLevel: max
         # `discuss` must appear in BOTH places. The `discuss: true` flag below
         # supplies the callback; this list is the allowlist the session is
         # created with, and a tool that is not in it is not mounted however many
-        # flags ask for it. Leaving it out is a silent failure — the stage runs,
-        # never asks anything, and the interactive alignment the whole workflow
-        # is built around quietly does not happen. A real run proved this: the
-        # first version of this file omitted it, `discuss: true` was set, and
-        # the worker reported "no discuss tool was exposed in this invocation"
+        # flags ask for it. Leaving it out is rejected at load today; before
+        # that check existed it was a silent failure — a real run had the
+        # worker report "no discuss tool was exposed in this invocation"
         # before deciding all twelve open questions by itself.
         tools: [read, bash, edit, write, find, grep, ls, discuss]
         discuss: true
