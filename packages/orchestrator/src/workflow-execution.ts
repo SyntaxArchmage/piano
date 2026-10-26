@@ -82,6 +82,7 @@ import {
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
 import { nextJobOrdinal, readRunStatus, runStatusPath, type RunStatus } from "./run-status.js";
+import type { SystemOneProvider } from "@piano/system-one";
 import {
   buildCommitMessage,
   commitFiles,
@@ -156,6 +157,9 @@ export interface WorkflowExecutionRequest {
   readonly signoff?: (request: WorkflowSignoffRequest) => Effect.Effect<WorkflowSignoffDecision, WorkflowError>;
   /** Supervisor discussion channel for stages declaring `discuss: true`. */
   readonly discuss?: (request: WorkflowDiscussRequest) => Effect.Effect<WorkflowDiscussDecision, WorkflowError>;
+  /** Local System One provider. Omitted uses the default Laya service at
+   * `PIANO_LAYA_URL`; only stages declaring `skippable: true` call it. */
+  readonly systemOne?: SystemOneProvider;
   /** Optional plugin contract for map-slot winner application. No fixed
    * aggregate stage is introduced into the workflow DSL. */
   readonly workspace?: WorkflowWorkspaceLifecycleOptions;
@@ -625,7 +629,6 @@ export function executeWorkflow(
     const executionRequest: WorkflowExecutionRequest = continueJob === request.continueJob
       ? request
       : { ...request, continueJob };
-    const knownLoopIterations = new Map<string, number>();
     // The lane namespace is the run's task identity. A resumed run keeps the
     // one it recorded; a new run takes the caller's value, else a preflight
     // summary when the workflow has lanes, else the workflow's own mnemonic.
@@ -778,7 +781,6 @@ export function executeWorkflow(
       announcedContinuations,
       actorContexts,
       counters,
-      knownLoopIterations,
       progressSemaphore,
       signoffSemaphore,
       semaphoreForActor,

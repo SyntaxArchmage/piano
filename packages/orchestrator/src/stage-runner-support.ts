@@ -177,13 +177,12 @@ export function workflowProgressProjection(
   invocation: WorkflowRuntimeInvocation,
   plan: WorkflowProgressPlan,
   completedByStage: ReadonlyMap<string, number>,
-  knownLoopIterations: ReadonlyMap<string, number> = new Map(),
 ): WorkflowProgressProjection {
   const regionsById = regionIndex(compiled.regions);
   // A duration-bound loop's denominator is only knowable from the run itself,
   // so the plan is re-derived whenever this invocation sits inside one. The
   // frames carry exactly the missing input: which iteration is running now.
-  const effectiveLoopIterations = new Map(knownLoopIterations);
+  const effectiveLoopIterations = new Map<string, number>();
   for (const frame of invocation.frames) {
     if (frame.kind !== "loop") continue;
     const frameRegion = regionsById.get(frame.regionId);

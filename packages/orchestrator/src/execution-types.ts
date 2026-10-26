@@ -49,6 +49,19 @@ export interface WorkflowStageExecutionResult {
    * repair turn. The stage is still accepted: the worker's text and session
    * stand, but consumers are told the result could not be validated. */
   readonly validationWarning?: StageValidationWarning;
+  /** Set when a System One model skipped this stage. The result is the last
+   * accepted earlier result, not a fresh worker turn. */
+  readonly skipped?: StageSkipDecision;
+}
+
+/** Evidence attached to a stage whose worker turn was skipped. The acceptance
+ * still points at the earlier result the downstream consumers received. */
+export interface StageSkipDecision {
+  readonly reason: string;
+  readonly model: string;
+  readonly confidence: number;
+  readonly sourceInvocationId: string;
+  readonly sourceIteration?: number;
 }
 
 export interface InternalStageResult extends WorkflowStageExecutionResult {
@@ -72,6 +85,16 @@ export interface UpstreamValidationWarning {
   readonly worker: string;
   readonly contractPath?: string;
   readonly message: string;
+}
+
+/** A skipped upstream stage whose earlier accepted result was reused. */
+export interface UpstreamSkippedStage {
+  readonly stageId: string;
+  readonly reason: string;
+  readonly model: string;
+  readonly confidence: number;
+  readonly sourceInvocationId: string;
+  readonly sourceIteration?: number;
 }
 
 /** A reviewer note that reached this stage from one of its direct upstream

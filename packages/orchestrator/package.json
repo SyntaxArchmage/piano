@@ -12,6 +12,7 @@
     "@piano/contract": "0.1.0",
     "@piano/dashboard": "0.1.0",
     "@piano/logging": "0.1.0",
+    "@piano/system-one": "0.1.0",
     "@piano/trajectory": "0.1.0",
     "@piano/workers": "0.1.0",
     "effect": "3.22.1",

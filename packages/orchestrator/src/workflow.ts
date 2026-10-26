@@ -18,6 +18,16 @@ export type WorkflowHarness = HarnessName;
 /** The canonical in-process agent harness. */
 export const PI_WORKFLOW_HARNESS = "pi";
 
+/** Opt-in System One decision for one loop stage. The model id is resolved
+ * against the installed provider registry at run time; compile only proves
+ * that the selector is well-formed and sits inside a loop. */
+export interface WorkflowStageDecision {
+  /** Local provider id; omitted means the Laya service. */
+  readonly model?: string;
+  /** Wall-clock cap for one provider call, in seconds. */
+  readonly timeout?: number;
+}
+
 export interface WorkflowStage {
   readonly name: string;
   readonly worker: string;
@@ -58,6 +68,12 @@ export interface WorkflowStage {
   /** Retry this stage's failed attempts instead of failing the run. See
    * `WorkflowRetry`. Absent keeps the engine default. */
   readonly retry?: WorkflowRetry;
+  /** Let this loop stage ask a System One model whether to run, skip, or
+   * defer its turn. Omitted keeps the stage unconditional. */
+  readonly decision?: WorkflowStageDecision;
+  /** Opt this loop stage into a System One skip decision. The default provider
+   * is Laya; `decision` only overrides its timeout/model. */
+  readonly skippable?: boolean;
 }
 
 /** A `loop` region: repeat child nodes entry→exit until its bound is reached.
@@ -236,9 +252,12 @@ const STAGE_KEYS = new Set([
   "epilogue",
   "timeout",
   "retry",
+  "decision",
+  "skippable",
 ]);
 const LOOP_KEYS = new Set(["name", "from", "entry", "exit", "feedback", "iterations", "duration", "nodes"]);
 const RETRY_KEYS = new Set(["attempts", "backoff", "backoffMax"]);
+const DECISION_KEYS = new Set(["model", "timeout"]);
 const TOURNAMENT_KEYS = new Set(["name", "from", "over", "count", "parallel", "entry", "exit", "nodes"]);
 const NODE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
@@ -431,6 +450,31 @@ function optionalThinkingLevel(
   return Effect.succeed(value.thinkingLevel as ThinkingLevel);
 }
 
+/** `stage.decision` in its one legal shape. The model id is deliberately an
+ * opaque string: the provider registry, not the parser, owns which local
+ * models are installed. */
+function parseStageDecision(
+  value: unknown,
+  path: string,
+): Effect.Effect<WorkflowStageDecision | undefined, WorkflowError> {
+  if (value === undefined) return Effect.succeed(undefined);
+  const decision = asRecord(value);
+  if (decision === undefined) return fail("parse", path, "stage.decision must be an object");
+  return Effect.gen(function* () {
+    yield* rejectUnknown(decision, DECISION_KEYS, "stage.decision", path);
+    const model = decision.model === undefined
+      ? "laya"
+      : yield* requiredString(decision.model, "stage.decision.model", path);
+    const timeout = decision.timeout === undefined
+      ? undefined
+      : yield* positiveInteger(decision.timeout, "stage.decision.timeout", path);
+    return {
+      model,
+      ...(timeout === undefined ? {} : { timeout }),
+    } satisfies WorkflowStageDecision;
+  });
+}
+
 function parseStage(
   value: unknown,
   path: string,
@@ -499,6 +543,9 @@ function parseStage(
     if (stage.memory !== undefined && typeof stage.memory !== "boolean") {
       return yield* fail("parse", path, "stage.memory must be a boolean");
     }
+    if (stage.skippable !== undefined && typeof stage.skippable !== "boolean") {
+      return yield* fail("parse", path, "stage.skippable must be a boolean");
+    }
     const prologue = stage.prologue === undefined
       ? undefined
       : yield* requiredString(stage.prologue, "stage.prologue", path);
@@ -509,6 +556,10 @@ function parseStage(
       ? undefined
       : yield* positiveInteger(stage.timeout, "stage.timeout", path);
     const retry = yield* parseRetry(stage.retry, path);
+    const decision = yield* parseStageDecision(stage.decision, path);
+    if (decision !== undefined && stage.skippable !== true) {
+      return yield* fail("parse", path, "stage.decision requires stage.skippable: true");
+    }
     return {
       name,
       worker,
@@ -524,6 +575,8 @@ function parseStage(
       ...(epilogue === undefined ? {} : { epilogue }),
       ...(timeout === undefined ? {} : { timeout }),
       ...(retry === undefined ? {} : { retry }),
+      ...(decision === undefined ? {} : { decision }),
+      ...(stage.skippable === undefined ? {} : { skippable: stage.skippable }),
     };
   });
 }
@@ -1034,7 +1087,17 @@ export function compileWorkflow(
       if (ordered === undefined) {
         throw scopeError(sourcePath, "workflow graph cannot be topologically ordered");
       }
+      const regionsById = regionIndex(lowered.regions);
       for (const leaf of ordered) {
+        if (leaf.stage.skippable === true || leaf.stage.decision !== undefined) {
+          const enclosing = regionAncestors(regionsById, leaf.parentId);
+          if (!enclosing.some((region) => region.kind === "loop")) {
+            throw scopeError(
+              sourcePath,
+              `stage "${leaf.stage.name}" declares skippable/decision but is not inside a loop`,
+            );
+          }
+        }
         if (leaf.stage.discuss === true) {
           if (!isKnownToolName(leaf.stage.harness, "discuss")) {
             throw scopeError(
