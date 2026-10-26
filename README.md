@@ -31,6 +31,17 @@ craft a workflow graph, then inspect and evaluate the results.
 ```bash
 git clone <repo-url> piano
 cd piano
+bash scripts/setup.sh
+```
+
+`scripts/setup.sh` installs the Node dependencies, links the CLI, and installs
+the default System One model (Laya) into an isolated Python environment. The
+Laya English checkpoint is downloaded during setup, so the first workflow does
+not pay that cost. Set `PIANO_SKIP_LAYA=1` to skip the model installation.
+
+To install the Node side manually instead:
+
+```bash
 npm install
 ```
 
@@ -49,6 +60,16 @@ npm run link:cli
 written outside your home directory, so the command stays private to you.
 `link:cli` does the same through the npm global prefix for a machine-wide
 install.
+
+The optional System One decision model (Laya) can also be installed separately:
+
+```bash
+bash scripts/setup-laya.sh   # venv, CPU-only torch, laya[serve], English checkpoint
+```
+
+The first `skippable` stage starts the installed local inference service
+automatically. `scripts/serve-laya.sh` runs it manually instead;
+`PIANO_LAYA_URL` points Piano at an already-running compatible endpoint.
 
 The launcher starts `piano` from a prebuilt bundle of the CLI. The bundle is
 built on first use and rebuilt whenever a source file or the lock file no longer
@@ -573,6 +594,9 @@ after the process exits. The shipped GPU tuning templates opt in;
       attempts: unbounded
       backoff: 30
       backoffMax: 900
+    skippable: true              # let the local System One model skip this loop stage
+    decision:                    # optional selector for the skip decision
+      model: laya                # default: laya
     from: [idea, implement]      # scheduling dependencies in this scope
 ```
 
@@ -592,6 +616,8 @@ after the process exits. The shipped GPU tuning templates opt in;
 | `prologue` | no | Prompt text appended to this stage's first prompt, read just before the worker starts. Plain text: never parsed, never validated, never part of a result. Falls back to the worker's `recipes/<worker>/prologue.md`. |
 | `epilogue` | no | One follow-up message sent to the same actor session after the stage is accepted. Same session, so it sees the work it is tidying up; ungraded, so it cannot change the result or fail the stage. Falls back to the worker's `recipes/<worker>/epilogue.md`. |
 | `timeout` | no | Per-stage wall-clock timeout in seconds. |
+| `skippable` | no | `true` lets a stage inside a loop ask the local System One model whether this iteration should skip its worker turn. A skipped stage reuses its previous accepted result, and downstream prompts are told the result is stale. The engine starts the installed Laya service on the first decision; if it cannot start, the stage runs normally. |
+| `decision` | no | Provider settings for `skippable`: `model` (default `laya`) and `timeout` (seconds). A stage that declares `decision` must also declare `skippable: true`; both are rejected outside a loop. The model's choice is authoritative; Piano only records its confidence. |
 
 `prologue` and `epilogue` are the two places a workflow speaks to the worker in
 its own words, framing the stage before and after its graded work. Both are
