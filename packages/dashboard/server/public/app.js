@@ -512,8 +512,9 @@ function drawChart() {
         d: path,
         fill: "none",
         stroke: series.color,
-        "stroke-width": 1.2,
-        "stroke-opacity": 0.3,
+        "stroke-width": 1.6,
+        "stroke-opacity": 0.58,
+        "stroke-dasharray": "5 4",
         "stroke-linejoin": "round",
         "data-role": "lane-trace",
       }));
@@ -523,12 +524,12 @@ function drawChart() {
       const circle = s("circle", {
         cx: sx(xOf(point)),
         cy: sy(point.value),
-        r: dense ? 1.8 : 2.4,
+        r: dense ? 2 : 2.6,
         fill: failed ? "#141922" : series.color,
         stroke: series.color,
         "stroke-width": failed ? 1.2 : 0,
-        "fill-opacity": 0.5,
-        "stroke-opacity": 0.5,
+        "fill-opacity": 0.68,
+        "stroke-opacity": 0.68,
       });
       chart.append(circle);
       layoutPoints.push({ point, series, px: sx(xOf(point)), py: sy(point.value) });
