@@ -625,11 +625,39 @@ function tooltipRow(label, value) {
   return h("div", { class: "t-row" }, h("span", {}, label), h("b", {}, value));
 }
 
+function shortCommit(commit) {
+  return commit.slice(0, 8);
+}
+
+function tooltipLink(url, text, title) {
+  return h("a", { href: url, target: "_blank", rel: "noreferrer noopener", title }, text);
+}
+
+/** Prefer the point's workspace evidence. Only when it has none does the
+ * run's workflow repository apply, and that fallback is labelled as such so a
+ * lane point is never mistaken for the current checkout. */
+function gitContext(record) {
+  const local = record?.git;
+  if (local !== undefined && (local.branch !== undefined || local.commit !== undefined)) {
+    return { ...local, fallback: false };
+  }
+  const repository = state.data?.repository;
+  if (repository !== undefined && (repository.branch !== undefined || repository.commit !== undefined)) {
+    return { ...repository, commitKind: "repo", fallback: true };
+  }
+  return undefined;
+}
+
+function commitLabel(kind) {
+  return kind === "iteration" ? "Commit" : kind === "base" ? "Commit (base)" : "Commit (repo HEAD)";
+}
+
 function showTooltip(item, event, metric) {
   const tooltip = $("#tooltip");
   const wrap = $("#chart-wrap");
   const point = item.point;
   const record = point.record;
+  const git = gitContext(record);
   const rows = [
     h("div", { class: "t-title" }, h("span", { class: "dot", style: `background:${item.series.color}` }), item.series.label),
     tooltipRow("Value", `${fmtNumber(point.value)}${unitSuffix(metric.unit)}`),
@@ -637,6 +665,20 @@ function showTooltip(item, event, metric) {
     tooltipRow("Time", fmtTimestamp(record.timestamp)),
     point.prev !== undefined ? tooltipRow("Δ prev", deltaText(point.value - point.prev, metric.direction)) : null,
     Number.isFinite(record.metric.median) && record.metric.median !== point.value ? tooltipRow("Median", fmtNumber(record.metric.median)) : null,
+    git?.branch !== undefined
+      ? tooltipRow(
+        git.fallback ? "Branch (repo)" : "Branch",
+        git.branchUrl === undefined ? git.branch : tooltipLink(git.branchUrl, git.branch, `open branch ${git.branch}`),
+      )
+      : null,
+    git?.commit !== undefined
+      ? tooltipRow(
+        commitLabel(git.commitKind),
+        git.commitUrl === undefined
+          ? shortCommit(git.commit)
+          : tooltipLink(git.commitUrl, shortCommit(git.commit), `open commit ${git.commit}`),
+      )
+      : null,
     record.decision !== undefined ? tooltipRow("Decision", record.decision) : null,
     record.stage !== undefined ? tooltipRow("Stage", record.stage) : null,
     record.source === "result" ? tooltipRow("Source", "result JSON") : null,

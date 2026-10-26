@@ -14,6 +14,7 @@
 // appear on the same curve without changing its contract. The browser code in
 // public/ draws the SVG chart; this file only serves JSON and static assets.
 
+import { execFile } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { homedir, networkInterfaces } from "node:os";
@@ -249,6 +250,7 @@ async function detailSignature(runDir) {
   const files = [
     "status.json",
     "system-log/invocations.jsonl",
+    "system-log/log.jsonl",
     "invocations.jsonl",
     "eval-metrics/benchmark.jsonl",
     "trajectories/benchmark.jsonl",
@@ -266,6 +268,8 @@ async function detailSignature(runDir) {
   }
   const results = await stat(join(runDir, "results")).catch(() => undefined);
   if (results !== undefined) parts.push(`results:${results.mtimeMs}`);
+  const workspaces = await stat(join(runDir, "workspace-records")).catch(() => undefined);
+  if (workspaces !== undefined) parts.push(`workspace-records:${workspaces.mtimeMs}`);
   return parts.join("|");
 }
 
@@ -387,6 +391,147 @@ async function deriveMetrics(runDir, acceptedByRef, benchmarkInvocations) {
   return points;
 }
 
+/** Git metadata is best-effort. A run may have no repository (e.g. an eval
+ * workspace copied from a tarball), and the dashboard must stay read-only and
+ * useful without one. */
+function runGit(cwd, args) {
+  return new Promise((resolvePromise) => {
+    execFile("git", ["-C", cwd, ...args], { timeout: 1200, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      resolvePromise(error === null ? stdout.trim() : undefined);
+    });
+  });
+}
+
+/** Turn an origin URL into the browser page for the repository. SSH remotes
+ * are mapped to HTTPS; an unrecognised transport yields no link rather than a
+ * guessed one. */
+function webUrlForRemote(remote) {
+  if (typeof remote !== "string") return undefined;
+  const value = remote.trim().replace(/\.git$/u, "");
+  if (value === "") return undefined;
+  const scp = /^git@([^:]+):(.+)$/u.exec(value);
+  if (scp !== null) return `https://${scp[1]}/${scp[2]}`;
+  const ssh = /^ssh:\/\/git@([^/]+)\/(.+)$/u.exec(value);
+  if (ssh !== null) return `https://${ssh[1]}/${ssh[2]}`;
+  return /^https?:\/\//u.test(value) ? value : undefined;
+}
+
+async function readRepository(workflowPath) {
+  if (typeof workflowPath !== "string" || workflowPath.trim() === "") return undefined;
+  const directory = dirname(resolve(workflowPath));
+  const root = await runGit(directory, ["rev-parse", "--show-toplevel"]);
+  if (root === undefined) return undefined;
+  const [branch, commit, remote] = await Promise.all([
+    runGit(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
+    runGit(root, ["rev-parse", "HEAD"]),
+    runGit(root, ["remote", "get-url", "origin"]),
+  ]);
+  if (commit === undefined) return undefined;
+  const webUrl = webUrlForRemote(remote);
+  return {
+    ...(branch === undefined || branch === "" ? {} : { branch }),
+    commit,
+    ...(webUrl === undefined ? {} : { webUrl }),
+  };
+}
+
+function workflowPathFromLog(records) {
+  let fallback;
+  for (const record of records) {
+    const attributes = record?.attributes;
+    const path = attributes?.path ?? attributes?.workflowPath;
+    if (typeof path !== "string" || path.trim() === "") continue;
+    if (record?.event === "workflow.loaded") return path;
+    if (fallback === undefined && record?.event === "cli.started") fallback = path;
+  }
+  return fallback;
+}
+
+async function readWorkspaceRecords(runDir) {
+  const root = join(runDir, "workspace-records");
+  const names = await readdir(root).catch(() => []);
+  const records = [];
+  for (const name of names) {
+    const value = await readJson(join(root, name, "record.json"));
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) records.push(value);
+  }
+  return records;
+}
+
+function loopFrameOf(instanceId) {
+  if (typeof instanceId !== "string") return undefined;
+  const frames = [...instanceId.matchAll(/(?:^|\/)([^/]+)\/iter-(\d+)(?=\/|$)/gu)];
+  const last = frames.at(-1);
+  return last === undefined ? undefined : { regionId: last[1], iteration: Number(last[2]) };
+}
+
+function loopCommitFor(regions, frame) {
+  if (frame === undefined) return undefined;
+  for (const region of Object.values(regions ?? {})) {
+    if (region?.regionKind !== "loop" || region.regionId !== frame.regionId) continue;
+    const commit = Array.isArray(region.commits)
+      ? region.commits.find((entry) => entry?.iteration === frame.iteration)?.commit
+      : undefined;
+    if (typeof commit === "string" && commit !== "") return commit;
+  }
+  return undefined;
+}
+
+function workspaceForRecord(record, workspaces) {
+  const instance = typeof record.instanceId === "string" ? record.instanceId : undefined;
+  if (instance === undefined) return undefined;
+  for (let index = workspaces.length - 1; index >= 0; index -= 1) {
+    const value = workspaces[index];
+    if (typeof value.key === "string" && (value.key === instance || value.key.endsWith(`/${instance}`))) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function runRegions(status) {
+  const regions = {};
+  for (const job of Array.isArray(status.jobs) ? status.jobs : []) {
+    if (job?.regions !== null && typeof job?.regions === "object") Object.assign(regions, job.regions);
+  }
+  return regions;
+}
+
+/** Point-level provenance: a tournament lane's branch and its fork commit.
+ * A loop iteration's commit is only used for non-lane points, because the
+ * commit lands in the shared workspace after the winner carry and does not
+ * describe a losing lane's candidate. A point without workspace evidence gets
+ * no `git` object; the dashboard then falls back to the run's workflow
+ * repository instead of inventing a lane. */
+function gitForRecord(record, repository, workspaces, regions) {
+  const workspace = workspaceForRecord(record, workspaces);
+  const lanePoint = Number.isInteger(record.mapSlot);
+  const iterationCommit = lanePoint ? undefined : loopCommitFor(regions, loopFrameOf(record.instanceId));
+  const branch = workspace?.laneBranch ?? workspace?.sourceBranch;
+  const commit = iterationCommit ?? workspace?.baseCommit;
+  if ((typeof branch !== "string" || branch === "") && (typeof commit !== "string" || commit === "")) {
+    return undefined;
+  }
+  const webUrl = repository?.webUrl;
+  return {
+    ...(typeof branch === "string" && branch !== ""
+      ? {
+        branch,
+        ...(webUrl === undefined ? {} : {
+          branchUrl: `${webUrl}/tree/${branch.split("/").map(encodeURIComponent).join("/")}`,
+        }),
+      }
+      : {}),
+    ...(typeof commit === "string" && commit !== ""
+      ? {
+        commit,
+        commitKind: iterationCommit === undefined ? "base" : "iteration",
+        ...(webUrl === undefined ? {} : { commitUrl: `${webUrl}/commit/${commit}` }),
+      }
+      : {}),
+  };
+}
+
 async function readRunDetail(root, runId, cache) {
   const runDir = resolve(root, runId);
   if (basename(runDir) !== runId || !runDir.startsWith(`${resolve(root)}${sep}`)) {
@@ -397,12 +542,13 @@ async function readRunDetail(root, runId, cache) {
   if (cached !== undefined && cached.signature === signature) return cached.value;
   const status = await readJson(join(runDir, "status.json"));
   if (status === undefined) return undefined;
-  const [benchmark, tokens, durations, selections, invocations] = await Promise.all([
+  const [benchmark, tokens, durations, selections, invocations, log] = await Promise.all([
     readStream(runDir, "benchmark.jsonl"),
     readStream(runDir, "token-usage.jsonl"),
     readStream(runDir, "duration.jsonl"),
     readStream(runDir, "selection.jsonl"),
     readInvocationStream(runDir),
+    readJsonl(join(runDir, "system-log", "log.jsonl")),
   ]);
   const acceptedByRef = new Map();
   for (const record of invocations.records) {
@@ -412,6 +558,16 @@ async function readRunDetail(root, runId, cache) {
   }
   const benchmarkInvocations = new Set(benchmark.records.map((record) => record.invocationId));
   const derived = await deriveMetrics(runDir, acceptedByRef, benchmarkInvocations);
+  const workflowPath = typeof status.workflowPath === "string" && status.workflowPath !== ""
+    ? status.workflowPath
+    : workflowPathFromLog(log.records);
+  const repository = await readRepository(workflowPath);
+  const workspaces = await readWorkspaceRecords(runDir);
+  const regions = runRegions(status);
+  const withGit = (record) => {
+    const git = gitForRecord(record, repository, workspaces, regions);
+    return git === undefined ? record : { ...record, git };
+  };
   const warnings = [];
   for (const [label, stream] of [["benchmark", benchmark], ["token-usage", tokens], ["duration", durations], ["selection", selections]]) {
     if (stream.invalid > 0) warnings.push(`${label}.jsonl: skipped ${stream.invalid} malformed line(s)`);
@@ -419,9 +575,10 @@ async function readRunDetail(root, runId, cache) {
   const value = {
     runId,
     status: summarizeStatus(status),
+    ...(repository === undefined ? {} : { repository }),
     records: {
-      benchmark: benchmark.records,
-      derived,
+      benchmark: benchmark.records.map(withGit),
+      derived: derived.map(withGit),
       tokenUsage: tokens.records,
       duration: durations.records,
       selection: selections.records,

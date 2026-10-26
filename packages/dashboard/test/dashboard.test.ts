@@ -1,10 +1,13 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureDashboard, readDashboardState, stopDashboard } from "../src/index.js";
 import { createDashboardServer, type DashboardServer } from "../server/piano-dashboard.mjs";
 
+const execFile = promisify(execFileCallback);
 const RUN_ID = "20261026T100000-dash01";
 
 function benchmarkRecord(overrides: Record<string, unknown> = {}): string {
@@ -92,14 +95,38 @@ function invocationRecord(): string {
 async function makeRunsRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "piano-dashboard-test-"));
   const runDir = join(root, RUN_ID);
+  const repoDir = join(root, "workflow-repo");
+  const workflowPath = join(repoDir, "gpu-cuda-tuning-tournament.yml");
   await mkdir(join(runDir, "eval-metrics"), { recursive: true });
   await mkdir(join(runDir, "system-log"), { recursive: true });
   await mkdir(join(runDir, "results"), { recursive: true });
+  await mkdir(join(runDir, "workspace-records", "job-1%2Ftune%2Fiter-0%2Ftune.race%2Fslot-0"), { recursive: true });
+  await mkdir(repoDir, { recursive: true });
+  await writeFile(workflowPath, "version: 3\n");
+  await execFile("git", ["init", "-q", "-b", "main", repoDir]);
+  await execFile("git", ["-C", repoDir, "add", "."]);
+  await execFile("git", [
+    "-C", repoDir,
+    "-c", "user.name=Piano Test",
+    "-c", "user.email=test@example.com",
+    "-c", "commit.gpgsign=false",
+    "commit", "-qm", "fixture",
+  ]);
+  await execFile("git", ["-C", repoDir, "remote", "add", "origin", "git@github.com:acme/piano.git"]);
+  await writeFile(
+    join(runDir, "workspace-records", "job-1%2Ftune%2Fiter-0%2Ftune.race%2Fslot-0", "record.json"),
+    `${JSON.stringify({
+      version: 3,
+      key: "job-1/tune/iter-0/tune.race/slot-0",
+      laneBranch: "tuna/test/lane-0",
+      baseCommit: "a".repeat(40),
+    })}\n`,
+  );
   await writeFile(join(runDir, "status.json"), `${JSON.stringify({
     runId: RUN_ID,
     status: "running",
     updatedAt: "2026-10-26T10:04:00.000Z",
-    workflowPath: "/models/gpu-cuda-tuning-tournament.yml",
+    workflowPath,
     mnemonic: "test-run",
     plannedStages: 10,
     completedStages: 4,
@@ -114,7 +141,22 @@ async function makeRunsRoot(): Promise<string> {
       iteration: 1,
     },
     invocationTime: { "setup@root": { stageId: "setup", completedMs: 1000 } },
-    jobs: [{ jobOrdinal: 1, accepted: [{}, {}], attempts: { "setup@root": 1 } }],
+    jobs: [{
+      jobOrdinal: 1,
+      accepted: [{}, {}],
+      attempts: { "setup@root": 1 },
+      regions: {
+        tune: {
+          kind: "region-finalized",
+          regionId: "tune",
+          regionKind: "loop",
+          instance: "tune",
+          outcome: "bound-iterations",
+          iterations: 1,
+          commits: [{ iteration: 0, commit: "b".repeat(40) }],
+        },
+      },
+    }],
     actors: {
       [`v2/${RUN_ID}/pi/cuda-benchmark-store/tune.race/slot-0`]: {
         harness: "pi",
@@ -175,8 +217,18 @@ describe("dashboard server", () => {
       jobs: Array<{ jobOrdinal: number; outcome?: string; accepted: number }>;
       harnesses: Record<string, string>;
     };
+    repository?: { branch?: string; commit: string; webUrl?: string };
     records: {
-      benchmark: Array<{ mapSlot?: number }>;
+      benchmark: Array<{
+        mapSlot?: number;
+        git?: {
+          branch?: string;
+          commit?: string;
+          commitKind?: "iteration" | "base" | "repo";
+          branchUrl?: string;
+          commitUrl?: string;
+        };
+      }>;
       derived: Array<{
         iteration?: number;
         metric: { name: string; unit: string; direction: string; best: number };
@@ -227,6 +279,23 @@ describe("dashboard server", () => {
       [`v2/${RUN_ID}/dsh/topsop-v2-evaluate/root`]: "dsh",
     });
     expect(JSON.stringify(detail)).not.toContain("secret.jsonl");
+
+    // The workflow checkout and the tournament lane are separate provenance:
+    // the point uses the lane branch and its fork commit, while the run
+    // exposes the repository page as a fallback.
+    expect(detail.repository).toMatchObject({
+      branch: "main",
+      webUrl: "https://github.com/acme/piano",
+    });
+    expect(detail.repository?.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(detail.records.benchmark[0]?.git).toMatchObject({
+      branch: "tuna/test/lane-0",
+      commit: "a".repeat(40),
+      commitKind: "base",
+      branchUrl: "https://github.com/acme/piano/tree/tuna/test/lane-0",
+      commitUrl: `https://github.com/acme/piano/commit/${"a".repeat(40)}`,
+    });
+    expect(detail.records.benchmark[1]?.git).toBeUndefined();
 
     // The topsop-style result contributes three derived metrics.
     const derived = detail.records.derived;
