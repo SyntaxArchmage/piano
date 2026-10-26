@@ -547,11 +547,12 @@ imperative graph hidden in code.
 Set `monitor: true` in the `workflow` block to start a read-only web dashboard
 beside the run. It is off by default and cannot fail the run. The server reads
 `~/.piano/runs`, plots `benchmark/v1` metrics (plus performance-shaped fields
-found in `results/*.json`), draws one curve per tournament lane, and summarizes
-harness, token usage, and stage time. It outlives the run, so a remote browser
-can keep reading the evidence after the process exits. The shipped GPU tuning
-templates opt in; `piano dashboard [--run <id>]` prints the URL (port 7317 by
-default) and `piano dashboard --stop` stops it.
+found in `results/*.json`) as a best-so-far step curve, keeps each tournament
+lane as a faint step trace, and summarizes harness, token usage, and stage
+time. It outlives the run, so a remote browser can keep reading the evidence
+after the process exits. The shipped GPU tuning templates opt in;
+`piano dashboard [--run <id>]` prints the URL (port 7317 by default) and
+`piano dashboard --stop` stops it.
 
 ### Stage
 

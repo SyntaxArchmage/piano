@@ -161,8 +161,10 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 22px 40px; }
   opacity: 1;
 }
 .legend-chip.hidden { opacity: 0.38; text-decoration: line-through; }
-.legend-chip .swatch { width: 10px; height: 10px; border-radius: 3px; }
+.legend-chip.primary { border-color: #39424f; color: var(--text); }
+.legend-chip .swatch { width: 10px; height: 10px; border-radius: 3px; opacity: 0.62; }
 .legend-chip .dash { width: 14px; height: 0; border-top: 2px dashed rgba(255, 255, 255, 0.45); }
+.legend-chip .core-line { width: 16px; height: 2px; border-radius: 1px; background: #e8eef8; }
 
 .chart-wrap { position: relative; margin-top: 8px; user-select: none; }
 #chart { width: 100%; height: 400px; display: block; cursor: grab; touch-action: none; }

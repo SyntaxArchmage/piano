@@ -3,6 +3,12 @@ const PALETTE = [
   "#e0b341", "#4bb8c9", "#d46a5e", "#8fa94a", "#b98af0",
 ];
 
+// The incumbent curve is the story; lane colors are provenance, so they are
+// always drawn faintly and the best-so-far step line is drawn last, in a
+// neutral color that reads the same in non-tournament and tournament runs.
+const CORE_COLOR = "#e8eef8";
+const CORE_AREA = "rgba(232, 238, 248, 0.055)";
+
 const state = {
   runs: [],
   runId: null,
@@ -328,6 +334,51 @@ function integerTicks(min, max) {
   return ticks;
 }
 
+/** Step-after path: a measured value holds until the next measurement. Tuning
+ * curves are not straight-line interpolations, so every series uses this. */
+function stepPath(points) {
+  if (points.length === 0) return "";
+  let path = `M ${points[0].x} ${points[0].y}`;
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    path += ` L ${current.x} ${previous.y} L ${current.x} ${current.y}`;
+  }
+  return path;
+}
+
+/** The incumbent over time, across every lane (including ones the legend has
+ * hidden). The line holds flat between improvements and extends to the last
+ * measurement, so it reads as the run's best result rather than as a lane. */
+function buildBestSteps(metric) {
+  const points = [];
+  for (const record of plottable()) {
+    if (metricKey(record.metric) !== metric.key) continue;
+    const parsed = Date.parse(record.timestamp);
+    const t = Number.isFinite(parsed) ? parsed : 0;
+    const iter = Number.isInteger(record.iteration) ? record.iteration : null;
+    points.push({ x: xOf({ t, iter }), t, iter, value: record.metric.best, record });
+  }
+  points.sort((a, b) => a.x - b.x || a.t - b.t);
+  const steps = [];
+  let best;
+  let previous;
+  let bestRecord;
+  for (const point of points) {
+    const improved = best === undefined || (metric.direction === "higher" ? point.value > best : point.value < best);
+    if (!improved) continue;
+    previous = best;
+    best = point.value;
+    bestRecord = point.record;
+    steps.push({ ...point, value: best, prev: previous });
+  }
+  const last = points.at(-1);
+  if (last !== undefined && steps.length > 0 && last.x > steps.at(-1).x) {
+    steps.push({ ...last, value: best, prev: undefined, record: bestRecord, extended: true });
+  }
+  return steps;
+}
+
 function drawChart() {
   const chart = $("#chart");
   const wrap = $("#chart-wrap");
@@ -347,14 +398,13 @@ function drawChart() {
   }
   const allSeries = buildAllSeries();
   const visibleSeries = allSeries.filter((series) => !state.hidden.has(series.key));
-  const allPoints = visibleSeries.flatMap((series) => series.points.map((point) => ({ series, point })));
+  const allPoints = allSeries.flatMap((series) => series.points.map((point) => ({ series, point })));
   if (allPoints.length === 0) {
-    empty.textContent = allSeries.length === 0
-      ? `No measurements for ${metric.name} yet. They appear as stages are accepted.`
-      : "All lanes are hidden — click a legend chip to show one.";
+    empty.textContent = `No measurements for ${metric.name} yet. They appear as stages are accepted.`;
     empty.classList.remove("hidden");
     return;
   }
+  const bestSteps = buildBestSteps(metric);
   empty.classList.add("hidden");
 
   const xValues = allPoints.map((item) => xOf(item.point));
@@ -372,17 +422,19 @@ function drawChart() {
     x0 = a;
     x1 = b;
   }
-  const inView = allPoints.filter((item) => {
-    const value = xOf(item.point);
-    return value >= x0 && value <= x1;
-  });
-  if (inView.length === 0) {
+  const inWindow = (value) => value >= x0 && value <= x1;
+  const visibleInView = allPoints.filter((item) => !state.hidden.has(item.series.key) && inWindow(xOf(item.point)));
+  const inViewBest = bestSteps.filter((step) => inWindow(step.x));
+  if (visibleInView.length === 0 && inViewBest.length === 0) {
     empty.textContent = "No points in this zoom window — double-click the chart to reset.";
     empty.classList.remove("hidden");
     return;
   }
 
-  const values = inView.map((item) => item.point.value);
+  const values = [
+    ...visibleInView.map((item) => item.point.value),
+    ...inViewBest.map((step) => step.value),
+  ];
   let y0 = Math.min(...values);
   let y1 = Math.max(...values);
   if (y1 === y0) {
@@ -430,61 +482,94 @@ function drawChart() {
     chart.append(label);
   }
 
-  // Best-so-far envelope across every visible lane.
-  const ordered = inView.slice().sort((a, b) => xOf(a.point) - xOf(b.point));
-  let best;
-  const envelope = [];
-  for (const item of ordered) {
-    const value = item.point.value;
-    best = best === undefined ? value : (metric.direction === "higher" ? Math.max(best, value) : Math.min(best, value));
-    envelope.push({ x: xOf(item.point), y: best });
-  }
-  const collapsed = [];
-  for (const entry of envelope) {
-    if (collapsed.length > 0 && collapsed[collapsed.length - 1].x === entry.x) collapsed[collapsed.length - 1] = entry;
-    else collapsed.push(entry);
-  }
-  if (collapsed.length > 1) {
-    let path = `M ${sx(collapsed[0].x)} ${sy(collapsed[0].y)}`;
-    for (let index = 1; index < collapsed.length; index += 1) {
-      const previous = collapsed[index - 1];
-      path += ` L ${sx(collapsed[index].x)} ${sy(previous.y)} L ${sx(collapsed[index].x)} ${sy(collapsed[index].y)}`;
-    }
-    chart.append(s("path", {
-      d: path,
-      fill: "none",
-      stroke: "rgba(255,255,255,0.34)",
-      "stroke-width": 1.5,
-      "stroke-dasharray": "5 5",
-    }));
+  // Faint area under the incumbent, then lane provenance, then the incumbent
+  // step line on top. Lanes are context; the best-so-far line is the result.
+  const corePoints = inViewBest.map((step) => ({ x: sx(step.x), y: sy(step.value) }));
+  if (corePoints.length > 1) {
+    const path = stepPath(corePoints);
+    const area = `${path} L ${corePoints.at(-1).x} ${height - margin.bottom} L ${corePoints[0].x} ${height - margin.bottom} Z`;
+    chart.append(s("path", { d: area, fill: CORE_AREA, stroke: "none" }));
   }
 
-  const dense = inView.length > 700;
+  const dense = visibleInView.length > 700;
   const layoutPoints = [];
-  for (const series of visibleSeries) {
-    const points = series.points.filter((point) => {
-      const value = xOf(point);
-      return value >= x0 && value <= x1;
+  // Core points are first so a tie in hit-testing reports the incumbent.
+  for (const step of inViewBest) {
+    layoutPoints.push({
+      point: step,
+      series: { key: "best-so-far", label: "best so far", color: CORE_COLOR },
+      px: sx(step.x),
+      py: sy(step.value),
     });
+  }
+
+  for (const series of visibleSeries) {
+    const points = series.points.filter((point) => inWindow(xOf(point)));
     if (points.length === 0) continue;
     if (points.length > 1) {
-      const path = points.map((point, index) => `${index === 0 ? "M" : "L"} ${sx(xOf(point))} ${sy(point.value)}`).join(" ");
-      chart.append(s("path", { d: path, fill: "none", stroke: series.color, "stroke-width": 2, "stroke-linejoin": "round" }));
+      const path = stepPath(points.map((point) => ({ x: sx(xOf(point)), y: sy(point.value) })));
+      chart.append(s("path", {
+        d: path,
+        fill: "none",
+        stroke: series.color,
+        "stroke-width": 1.2,
+        "stroke-opacity": 0.3,
+        "stroke-linejoin": "round",
+        "data-role": "lane-trace",
+      }));
     }
     for (const point of points) {
       const failed = /FAIL|DISCARD|BLOCKED/.test(String(point.record.decision ?? ""));
       const circle = s("circle", {
         cx: sx(xOf(point)),
         cy: sy(point.value),
-        r: dense ? 2 : 3.2,
+        r: dense ? 1.8 : 2.4,
         fill: failed ? "#141922" : series.color,
         stroke: series.color,
-        "stroke-width": failed ? 1.5 : 0,
-        opacity: 0.95,
+        "stroke-width": failed ? 1.2 : 0,
+        "fill-opacity": 0.5,
+        "stroke-opacity": 0.5,
       });
       chart.append(circle);
       layoutPoints.push({ point, series, px: sx(xOf(point)), py: sy(point.value) });
     }
+  }
+
+  // Incumbent step line, drawn last and identical in both modes.
+  if (corePoints.length > 0) {
+    if (corePoints.length > 1) {
+      chart.append(s("path", {
+        d: stepPath(corePoints),
+        fill: "none",
+        stroke: CORE_COLOR,
+        "stroke-width": 2.6,
+        "stroke-linejoin": "round",
+        "data-role": "best-so-far",
+      }));
+    }
+    const last = inViewBest.at(-1);
+    chart.append(s("circle", {
+      cx: sx(last.x),
+      cy: sy(last.value),
+      r: 4,
+      fill: CORE_COLOR,
+      stroke: "#0d1016",
+      "stroke-width": 1.5,
+      "data-role": "best-so-far-point",
+    }));
+    const label = s("text", {
+      x: sx(last.x) + 8,
+      y: sy(last.value) - 9,
+      fill: CORE_COLOR,
+      "font-size": 11,
+      "font-weight": 600,
+    });
+    label.textContent = `${fmtNumber(last.value)}${unitSuffix(metric.unit)}`;
+    if (sx(last.x) > width - margin.right - 96) {
+      label.setAttribute("x", String(sx(last.x) - 8));
+      label.setAttribute("text-anchor", "end");
+    }
+    chart.append(label);
   }
 
   state.hoverRing = s("circle", { r: 6, fill: "none", stroke: "#ffffff", "stroke-width": 1.5, opacity: 0, "pointer-events": "none" });
@@ -651,11 +736,11 @@ function renderLegend() {
     return;
   }
   const chips = [
-    h("span", { class: "legend-chip", style: "cursor:default" }, h("span", { class: "dash" }), "best so far"),
+    h("span", { class: "legend-chip primary", style: "cursor:default" }, h("span", { class: "core-line" }), "best so far · step"),
     ...series.map((item) => h("button", {
       type: "button",
-      class: `legend-chip${state.hidden.has(item.key) ? " hidden" : ""}`,
-      title: `${item.points.length} measurement${item.points.length === 1 ? "" : "s"}`,
+      class: `legend-chip lane${state.hidden.has(item.key) ? " hidden" : ""}`,
+      title: `${item.points.length} measurement${item.points.length === 1 ? "" : "s"} · click to hide lane`,
       onclick: () => {
         if (state.hidden.has(item.key)) state.hidden.delete(item.key);
         else state.hidden.add(item.key);

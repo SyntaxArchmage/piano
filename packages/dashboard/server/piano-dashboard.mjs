@@ -45,11 +45,19 @@ function text(response, status, body, type = "text/plain; charset=utf-8") {
 }
 
 async function staticFile(name, type) {
+  const url = new URL(name, PUBLIC_DIR);
+  const entry = await stat(url).catch(() => undefined);
+  if (entry === undefined) throw new Error(`missing dashboard asset ${name}`);
   const cached = STATIC.get(name);
-  if (cached !== undefined) return cached;
-  const body = await readFile(new URL(name, PUBLIC_DIR), "utf8");
-  STATIC.set(name, { body, type });
-  return { body, type };
+  if (cached !== undefined && cached.mtimeMs === entry.mtimeMs && cached.size === entry.size) {
+    return cached;
+  }
+  // Re-read on mtime/size change: editing the UI takes effect on the next
+  // browser reload without restarting the already-running server.
+  const body = await readFile(url, "utf8");
+  const value = { body, type, mtimeMs: entry.mtimeMs, size: entry.size };
+  STATIC.set(name, value);
+  return value;
 }
 
 async function readJson(path) {
