@@ -449,7 +449,7 @@ export function executeStage(
     }
     const resources = yield* stageResources();
     const directDependencies = dependsOnByStage.get(node.id) ?? [];
-    const asyncInputs = yield* asyncQueue.collect(directDependencies);
+    const asyncInputs = yield* asyncQueue.consume(directDependencies);
     const stageInputs = mergeStageInputs(inputs, asyncInputs);
     const asyncPendingStages = yield* asyncQueue.pendingFor(directDependencies);
     // A skippable loop stage asks the System One model on every visit. The
