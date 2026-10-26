@@ -59,6 +59,16 @@ describe("io", () => {
     expect(result).toMatchObject({ code: 3, stderr: "boom\n" });
     await expect(Effect.runPromise(io.execFile("bash", ["-lc", "echo ok"]))).resolves.toMatchObject({ code: 0, stdout: "ok\n" });
   });
+
+  it("starts a detached process and exposes its pid", async () => {
+    const child = await Effect.runPromise(io.spawnDetached(process.execPath, ["-e", "setTimeout(() => {}, 5000)"]));
+    expect(child.pid).toBeGreaterThan(0);
+    try {
+      process.kill(child.pid, "SIGKILL");
+    } catch {
+      // The child already exited.
+    }
+  });
 });
 
 describe("io.runShell", () => {

@@ -315,6 +315,53 @@ export function runShell(command: string, cwd: string, timeoutMs?: number): Effe
   });
 }
 
+/** Start a process that outlives the caller and returns its pid. Used for
+ * local model services: the service owns its own lifetime; the caller only
+ * needs a reliable "it started" signal. */
+export interface DetachedProcess {
+  readonly pid: number;
+}
+
+export function spawnDetached(
+  file: string,
+  args: readonly string[],
+  options: { readonly cwd?: string; readonly env?: NodeJS.ProcessEnv } = {},
+): Effect.Effect<DetachedProcess, IoError> {
+  return Effect.async<DetachedProcess, IoError>((resume) => {
+    let settled = false;
+    const child = spawn(file, [...args], {
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+      detached: true,
+      stdio: "ignore",
+    });
+    const finish = (effect: Effect.Effect<DetachedProcess, IoError>): void => {
+      if (settled) return;
+      settled = true;
+      resume(effect);
+    };
+    child.once("error", (cause) => finish(Effect.fail(ioError("spawn", file, cause))));
+    child.once("spawn", () => {
+      const pid = child.pid;
+      if (pid === undefined) {
+        finish(Effect.fail(new IoError({ operation: "spawn", path: file, message: "spawned process has no pid" })));
+        return;
+      }
+      child.unref();
+      finish(Effect.succeed({ pid }));
+    });
+    return Effect.sync(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // The child already exited.
+      }
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Synchronous adapters (pre-runtime bootstrap and synchronous UI contracts)
 // ---------------------------------------------------------------------------
