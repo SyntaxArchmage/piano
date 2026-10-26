@@ -18,6 +18,7 @@ version: 3
 # workflow under a different name with that single switch flipped to `false`.
 workflow:
   name: gpu-cuda-tuning-tournament
+  monitor: true
   nodes:
     - stage:
         name: setup

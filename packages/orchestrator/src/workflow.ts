@@ -143,6 +143,11 @@ export interface WorkflowDocument {
      * Overridable per run with `--mnemonic`; also the fallback when the
      * preflight task summary is unavailable. */
     readonly mnemonic?: string;
+    /** Start the read-only web dashboard beside every execution of this
+     * workflow. Default false: monitoring is opt-in and the run is unaffected
+     * when the dashboard cannot start. The server outlives the run so a remote
+     * browser can keep reading its evidence. */
+    readonly monitor?: boolean;
     readonly nodes: readonly WorkflowNode[];
   };
 }
@@ -210,10 +215,12 @@ export interface CompiledWorkflow {
   /** Root scope of the compiled region tree. Same leaf/region objects as
    * `stages`/`regions`, nested once at compile time. */
   readonly nodes: readonly WorkflowRuntimeNode[];
+  /** Start the web dashboard for this run; see WorkflowDocument. */
+  readonly monitor: boolean;
 }
 
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
-const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes"]);
+const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes", "monitor"]);
 const STAGE_KEYS = new Set([
   "name",
   "worker",
@@ -640,8 +647,11 @@ export function parseWorkflow(
         const mnemonic = workflow.mnemonic === undefined
           ? undefined
           : yield* identifier(workflow.mnemonic, "workflow.mnemonic", sourcePath);
+        const monitor = workflow.monitor === undefined
+          ? false
+          : yield* optionalBoolean(workflow, "monitor", sourcePath);
         const nodes = yield* parseNodes(workflow.nodes, sourcePath);
-        return { version: 3 as const, workflow: { name, ...(mnemonic === undefined ? {} : { mnemonic }), nodes } };
+        return { version: 3 as const, workflow: { name, ...(mnemonic === undefined ? {} : { mnemonic }), monitor, nodes } };
       });
     }),
   );
@@ -1049,6 +1059,7 @@ export function compileWorkflow(
         stages: ordered,
         regions: lowered.regions,
         nodes: lowered.nodes,
+        monitor: document.workflow.monitor === true,
       };
     },
     catch: (cause) => cause instanceof WorkflowError

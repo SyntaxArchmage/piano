@@ -5,6 +5,7 @@ version: 3
 # proven gateway model deepseek-v4-flash pinned per stage.
 workflow:
   name: gpu-cuda-tuning-dsh
+  monitor: true
   nodes:
     - stage:
         name: setup

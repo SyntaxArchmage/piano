@@ -4,6 +4,7 @@ version: 3
 # Every stage starts a fresh worker turn; automatic inputs and tournament topology are unchanged.
 workflow:
   name: gpu-cuda-tuning-tournament-dsh-memory-false
+  monitor: true
   nodes:
     - stage:
         name: setup

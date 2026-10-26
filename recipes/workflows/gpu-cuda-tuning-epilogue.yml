@@ -4,6 +4,7 @@ version: 3
 # follow-up directly so the workflow shows what every worker will record.
 workflow:
   name: gpu-cuda-tuning-epilogue
+  monitor: true
   nodes:
     - stage:
         name: setup

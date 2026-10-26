@@ -542,6 +542,17 @@ Start with a few stages, then add loops or parallel alternatives as the tuning
 process grows. A workflow is a first-class, diffable file rather than an
 imperative graph hidden in code.
 
+### Monitor
+
+Set `monitor: true` in the `workflow` block to start a read-only web dashboard
+beside the run. It is off by default and cannot fail the run. The server reads
+`~/.piano/runs`, plots `benchmark/v1` metrics (plus performance-shaped fields
+found in `results/*.json`), draws one curve per tournament lane, and summarizes
+harness, token usage, and stage time. It outlives the run, so a remote browser
+can keep reading the evidence after the process exits. The shipped GPU tuning
+templates opt in; `piano dashboard [--run <id>]` prints the URL (port 7317 by
+default) and `piano dashboard --stop` stops it.
+
 ### Stage
 
 ```yaml

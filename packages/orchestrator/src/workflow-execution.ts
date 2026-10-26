@@ -1,6 +1,8 @@
 import type { TurnOutcome } from "@piano/base";
+import { ensureDashboard } from "@piano/dashboard";
 import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
+import { dirname } from "node:path";
 import {
   failureDetails,
   isCancellation,
@@ -554,6 +556,24 @@ export function executeWorkflow(
       ));
     }
     yield* createExecutionDirectory(request.runDir);
+    // Monitoring is a sidecar, never a run dependency: a missing server script
+    // or a busy port leaves the workflow untouched. The server is shared by
+    // every run under this runs root, so repeated prompts reuse it.
+    if (compiled.monitor) {
+      yield* Effect.tryPromise({
+        try: () => ensureDashboard({ runId, runsRoot: dirname(request.runDir) }),
+        catch: (cause) => new Error(errorMessage(cause)),
+      }).pipe(
+        Effect.tap((handle) => handle === undefined
+          ? WORKFLOW_LOG.warn("dashboard.unavailable", { data: { runId } })
+          : WORKFLOW_LOG.info("dashboard.ready", {
+            data: { url: handle.url, port: handle.port, reused: handle.reused },
+          })),
+        Effect.catchAll((cause) => WORKFLOW_LOG.warn("dashboard.failed", {
+          data: { error: errorMessage(cause) },
+        })),
+      );
+    }
     const progressPlan = workflowProgressPlan(compiled);
     // A process can die after announcing its execution but before installing
     // the finalizer, leaving the run `running` with nothing working it. One

@@ -4,6 +4,7 @@ version: 3
 # gpu-cuda-tuning template; both share the same deterministic stage protocol.
 workflow:
   name: gpu-triton-tuning
+  monitor: true
   nodes:
     - stage:
         name: setup

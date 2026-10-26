@@ -4,6 +4,7 @@ version: 3
 # Same thinking effort as the existing CUDA tournament variants.
 workflow:
   name: gpu-cuda-tuning-tournament-dsh-deepseek-flash
+  monitor: true
   nodes:
     - stage:
         name: setup

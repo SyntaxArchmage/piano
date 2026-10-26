@@ -19,5 +19,39 @@ export default tseslint.config(
       globals: { process: "readonly", console: "readonly" },
     },
   },
+  {
+    // The dashboard server is a plain Node ESM sidecar, started outside tsx.
+    files: ["packages/dashboard/server/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        process: "readonly",
+        console: "readonly",
+        URL: "readonly",
+        setTimeout: "readonly",
+        fetch: "readonly",
+        AbortSignal: "readonly",
+      },
+    },
+  },
+  {
+    // The browser bundle is served as-is; it has no build step and no imports.
+    files: ["packages/dashboard/server/public/**/*.js"],
+    languageOptions: {
+      globals: {
+        document: "readonly",
+        window: "readonly",
+        fetch: "readonly",
+        location: "readonly",
+        history: "readonly",
+        URLSearchParams: "readonly",
+        ResizeObserver: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        requestAnimationFrame: "readonly",
+        Intl: "readonly",
+        Node: "readonly",
+      },
+    },
+  },
   { ignores: ["**/dist/", "scripts/"] }
 );

@@ -27,6 +27,10 @@ const ARTIFACT_NAMES = [
   "piano.js",
   "pi-web-search.js",
   "dsh-resume-runner.mjs",
+  "piano-dashboard.mjs",
+  "public/index.html",
+  "public/app.js",
+  "public/style.css",
 ];
 const STAMP_NAME = ".fingerprint";
 const STAGING_PREFIX = ".staging-";
@@ -71,6 +75,9 @@ export async function collectInputs(root = defaultRoot) {
     // it is an input of the build even though esbuild never inlines it.
     inputs.push(join(root, "packages", entry.name, "package.json"));
   }
+  // The dashboard sidecar is published beside the bundle rather than inlined:
+  // a separate process must be able to start it from a plain `.mjs` file.
+  await walk(join(root, "packages", "dashboard", "server"), inputs);
   inputs.push(...extraInputs(root));
   return inputs.sort();
 }
@@ -139,6 +146,8 @@ async function buildInto(staging, root) {
     logLevel: "silent",
   });
   await cp(join(root, "packages", "harness", "src", "dsh-resume-runner.mjs"), join(staging, "dsh-resume-runner.mjs"));
+  await cp(join(root, "packages", "dashboard", "server", "piano-dashboard.mjs"), join(staging, "piano-dashboard.mjs"));
+  await cp(join(root, "packages", "dashboard", "server", "public"), join(staging, "public"), { recursive: true });
 }
 
 /** Build the bundle and the fingerprint that goes with it. Files land through a
@@ -165,7 +174,9 @@ export async function buildBundle(distDir = defaultDistDir, root = defaultRoot) 
     await buildInto(staging, root);
     await writeFile(join(staging, STAMP_NAME), stamp);
     for (const name of [...ARTIFACT_NAMES, STAMP_NAME]) {
-      await rename(join(staging, name), join(distDir, name));
+      const target = join(distDir, name);
+      if (name.includes("/")) await mkdir(dirname(target), { recursive: true });
+      await rename(join(staging, name), target);
     }
   } finally {
     await rm(staging, { recursive: true, force: true });
