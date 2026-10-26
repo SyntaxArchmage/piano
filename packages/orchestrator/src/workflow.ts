@@ -60,6 +60,10 @@ export interface WorkflowStage {
    * a worklog entry, tidying up — so its outcome is not evidence and its
    * failure never fails the stage. */
   readonly epilogue?: string;
+  /** Run this loop stage as a queued background task. The scheduler continues
+   * without its result; downstream stages collect whatever has finished and
+   * may join it in a later iteration. */
+  readonly async?: boolean;
   /** Whole-stage wall-clock cap in seconds. When exceeded the stage fails
    * (and its agent session is aborted). Guards against a single runaway agent
    * tool call (e.g. a filesystem-wide `find`) blocking the whole run with no
@@ -250,6 +254,7 @@ const STAGE_KEYS = new Set([
   "memory",
   "prologue",
   "epilogue",
+  "async",
   "timeout",
   "retry",
   "decision",
@@ -546,6 +551,12 @@ function parseStage(
     if (stage.skippable !== undefined && typeof stage.skippable !== "boolean") {
       return yield* fail("parse", path, "stage.skippable must be a boolean");
     }
+    if (stage.async !== undefined && typeof stage.async !== "boolean") {
+      return yield* fail("parse", path, "stage.async must be a boolean");
+    }
+    if (stage.async === true && stage.skippable === true) {
+      return yield* fail("parse", path, "stage.async and stage.skippable cannot be combined");
+    }
     const prologue = stage.prologue === undefined
       ? undefined
       : yield* requiredString(stage.prologue, "stage.prologue", path);
@@ -577,6 +588,7 @@ function parseStage(
       ...(retry === undefined ? {} : { retry }),
       ...(decision === undefined ? {} : { decision }),
       ...(stage.skippable === undefined ? {} : { skippable: stage.skippable }),
+      ...(stage.async === undefined ? {} : { async: stage.async }),
     };
   });
 }
@@ -1089,12 +1101,12 @@ export function compileWorkflow(
       }
       const regionsById = regionIndex(lowered.regions);
       for (const leaf of ordered) {
-        if (leaf.stage.skippable === true || leaf.stage.decision !== undefined) {
+        if (leaf.stage.skippable === true || leaf.stage.decision !== undefined || leaf.stage.async === true) {
           const enclosing = regionAncestors(regionsById, leaf.parentId);
           if (!enclosing.some((region) => region.kind === "loop")) {
             throw scopeError(
               sourcePath,
-              `stage "${leaf.stage.name}" declares skippable/decision but is not inside a loop`,
+              `stage "${leaf.stage.name}" declares skippable/decision/async but is not inside a loop`,
             );
           }
         }

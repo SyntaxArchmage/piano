@@ -83,6 +83,7 @@ import {
 } from "./progress.js";
 import { nextJobOrdinal, readRunStatus, runStatusPath, type RunStatus } from "./run-status.js";
 import type { SystemOneProvider } from "@piano/system-one";
+import { AsyncStageQueue } from "./async-stage-queue.js";
 import {
   buildCommitMessage,
   commitFiles,
@@ -770,6 +771,7 @@ export function executeWorkflow(
     };
 
     /** Everything the stage runner reaches outside itself. */
+    const asyncQueue = new AsyncStageQueue();
     const stageRunnerContext: StageRunnerContext = {
       request: executionRequest,
       loaded,
@@ -781,6 +783,7 @@ export function executeWorkflow(
       announcedContinuations,
       actorContexts,
       counters,
+      asyncQueue,
       progressSemaphore,
       signoffSemaphore,
       semaphoreForActor,
@@ -964,7 +967,8 @@ export function executeWorkflow(
         statusPath: runStatusPath(request.runDir),
       };
     });
-    const cleanupAfterExit = (preserveSlots: boolean) => finalizeWorkspaces(preserveSlots).pipe(
+    const cleanupAfterExit = (preserveSlots: boolean) => Effect.suspend(() => asyncQueue.shutdown()).pipe(
+      Effect.zipRight(finalizeWorkspaces(preserveSlots)),
       Effect.tapError((error) => WORKFLOW_LOG.error("workspace.cleanup.failed", {
         outcome: "failure",
         data: { runId, error: failureDetails(error) },

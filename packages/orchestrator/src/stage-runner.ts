@@ -90,6 +90,7 @@ import {
   type ProfilingRoundContext,
 } from "./system-one-skip.js";
 import { defaultSystemOneProvider } from "@piano/system-one";
+import type { AsyncStageQueue } from "./async-stage-queue.js";
 import type {
   WorkflowExecutionError,
   WorkflowExecutionRequest,
@@ -119,6 +120,7 @@ export interface StageRunnerContext {
   readonly announcedContinuations: Map<string, AgentContinuation>;
   readonly actorContexts: Map<string, ActorExecutionContext>;
   readonly counters: StageRunnerCounters;
+  readonly asyncQueue: AsyncStageQueue;
   readonly progressSemaphore: Effect.Semaphore;
   readonly signoffSemaphore: Effect.Semaphore;
   readonly semaphoreForActor: (actorKey: string) => Effect.Semaphore;
@@ -201,8 +203,24 @@ function previousRoundContext(inputs: readonly InternalStageResult[]): Profiling
   return undefined;
 }
 
-/** The frame index of the innermost loop, or -1. */
-function lastLoopFrameIndex(frames: readonly WorkflowRuntimeFrame[]): number {
+/** Merge static handoff inputs with whatever async predecessors have finished.
+ * The same acceptance is never written twice. */
+function mergeStageInputs(
+  staticInputs: readonly InternalStageResult[],
+  asyncInputs: readonly InternalStageResult[],
+): readonly InternalStageResult[] {
+  const seen = new Set(staticInputs.map((input) => input.acceptance.id));
+  return [
+    ...staticInputs,
+    ...asyncInputs.filter((input) => {
+      if (seen.has(input.acceptance.id)) return false;
+      seen.add(input.acceptance.id);
+      return true;
+    }),
+  ];
+}
+
+/** The frame index of the innermost loop, or -1. */function lastLoopFrameIndex(frames: readonly WorkflowRuntimeFrame[]): number {
   for (let index = frames.length - 1; index >= 0; index -= 1) {
     if (frames[index]?.kind === "loop") return index;
   }
@@ -263,6 +281,7 @@ export function executeStage(
     announcedContinuations,
     actorContexts,
     counters,
+    asyncQueue,
     progressSemaphore,
     signoffSemaphore,
     semaphoreForActor,
@@ -429,6 +448,10 @@ export function executeStage(
       ));
     }
     const resources = yield* stageResources();
+    const directDependencies = dependsOnByStage.get(node.id) ?? [];
+    const asyncInputs = yield* asyncQueue.collect(directDependencies);
+    const stageInputs = mergeStageInputs(inputs, asyncInputs);
+    const asyncPendingStages = yield* asyncQueue.pendingFor(directDependencies);
     // A skippable loop stage asks the System One model on every visit. The
     // engine does not impose "no improvement" or any other trigger: it gives
     // the model the bounded context it has and treats the answer as the
@@ -439,7 +462,7 @@ export function executeStage(
       const model = decisionConfig?.model ?? "laya";
       const timeout = decisionConfig?.timeout ?? 5;
       const provider = request.systemOne ?? defaultSystemOneProvider(model);
-      const previousRound = previousRoundContext(inputs);
+      const previousRound = previousRoundContext(stageInputs);
       const loopIndex = lastLoopFrameIndex(frames);
       const loopFrame = loopIndex < 0 ? undefined : frames[loopIndex];
       let previousAcceptance: AcceptedInvocation | undefined;
@@ -575,13 +598,13 @@ export function executeStage(
     // Upstream results are routed automatically: a stage with direct or
     // inherited inputs gets one standard inputs.json, and a stage with none
     // gets no file at all.
-    const inputsPath = inputs.length === 0
+    const inputsPath = stageInputs.length === 0
       ? undefined
       : yield* writeInputsContext(
         request.runDir,
         invocation,
         ref,
-        inputs.map((input) => input.acceptance),
+        stageInputs.map((input) => input.acceptance),
         workspace,
       );
     const mapItemPath = mapItem === undefined
@@ -603,7 +626,7 @@ export function executeStage(
         instanceId: runtimeInstanceId(frames) ?? "root",
         actorKey,
         workspace,
-        inputCount: inputs.length,
+        inputCount: stageInputs.length,
         harness: node.stage.harness,
         ...((request.model ?? stageModel) === undefined ? {} : { requestedModel: request.model ?? stageModel }),
         ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined ? {} : { requestedThinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
@@ -617,7 +640,7 @@ export function executeStage(
         id: runtimeInvocationId(invocation),
         actorKey,
         workspace,
-        inputCount: inputs.length,
+        inputCount: stageInputs.length,
         ...((request.model ?? stageModel) === undefined ? {} : { requestedModel: request.model ?? stageModel }),
         ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined ? {} : { requestedThinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
         ...(inputsPath === undefined ? {} : { inputsPath }),
@@ -705,7 +728,7 @@ export function executeStage(
      * was never told about. This is the delivery half of the same table
      * `consumers` is built from. */
     const declaredDependencies = new Set(dependsOnByStage.get(node.id) ?? []);
-    const reviewNotes: readonly StageReviewNote[] = inputs.flatMap((input) =>
+    const reviewNotes: readonly StageReviewNote[] = stageInputs.flatMap((input) =>
       input.reviewNote === undefined || !declaredDependencies.has(input.stageId)
         ? []
         : [{ stageId: input.stageId, note: input.reviewNote }]);
@@ -713,7 +736,7 @@ export function executeStage(
      * reviewer note, a warning is not filtered by declared dependencies: an
      * inherited result inside a loop or tournament is still input this stage
      * must not trust. */
-    const upstreamValidationWarnings: readonly UpstreamValidationWarning[] = inputs.flatMap((input) =>
+    const upstreamValidationWarnings: readonly UpstreamValidationWarning[] = stageInputs.flatMap((input) =>
       input.validationWarning === undefined
         ? []
         : [{
@@ -726,7 +749,7 @@ export function executeStage(
         }]);
     /** Upstream stages whose worker turn was skipped by System One. Their
      * result is an earlier accepted result; the prompt must say so. */
-    const upstreamSkippedStages: readonly UpstreamSkippedStage[] = inputs.flatMap((input) =>
+    const upstreamSkippedStages: readonly UpstreamSkippedStage[] = stageInputs.flatMap((input) =>
       input.skipped === undefined
         ? []
         : [{ stageId: input.stageId, ...input.skipped }]);
@@ -896,6 +919,7 @@ export function executeStage(
           reviewNotes,
           upstreamValidationWarnings,
           upstreamSkippedStages,
+          asyncPendingStages,
           request.model ?? stageModel,
           request.thinkingLevel ?? node.stage.thinkingLevel,
           prologue,

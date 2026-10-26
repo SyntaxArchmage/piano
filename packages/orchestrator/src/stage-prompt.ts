@@ -39,6 +39,7 @@ export function stagePrompt(
   reviewNotes: readonly StageReviewNote[],
   upstreamValidationWarnings: readonly UpstreamValidationWarning[],
   upstreamSkippedStages: readonly UpstreamSkippedStage[],
+  asyncPendingStages: readonly string[],
   model: string | undefined,
   thinkingLevel: ThinkingLevel | undefined,
   prologue: string | undefined,
@@ -91,6 +92,14 @@ export function stagePrompt(
           : `\`${skipped.sourceInvocationId}\` from iteration ${skipped.sourceIteration}`;
         return `- after \`${skipped.stageId}\`: skipped by \`${skipped.model}\` (confidence ${skipped.confidence.toFixed(2)}); reusing ${source}. ${skipped.reason}`;
       }),
+    );
+  }
+  if (asyncPendingStages.length > 0) {
+    lines.push(
+      "",
+      "## Pending asynchronous upstream stages",
+      "These upstream stages are still running in the background. This turn starts without their results; collect them when they finish.",
+      ...asyncPendingStages.map((stageId) => `- \`${stageId}\``),
     );
   }
   if (model !== undefined || thinkingLevel !== undefined) {
