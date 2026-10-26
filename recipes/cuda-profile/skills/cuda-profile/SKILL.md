@@ -20,7 +20,7 @@ profiling entrypoint on exactly that promoted source.
 4. Classify at least one bottleneck as `compute`, `memory`, `occupancy`, or
    `launch`, with a concise citation to the measured evidence. If verification
    or timing cannot run, return `status: blocked` with the real blocker.
-5. Write the requested `profile-report` JSON using measured values only; never
+5. Write the result JSON for this stage using measured values only; never
    turn an unavailable counter into zero.
 
 Do not replace a failed profile with intuition, a prior round's numbers, or

@@ -53,9 +53,9 @@ export function evalMetricsPath(runDir: string, file: string): string {
   return join(evalMetricsDir(runDir), file);
 }
 
-/** Immutable worker-contract snapshots, named by their own digest. */
-export function contractSnapshotPath(runDir: string, digest: string): string {
-  return join(runDir, "contracts", `${digest}.json`);
+/** The run-local worker-contract copy, named by the worker that owns it. */
+export function contractSnapshotPath(runDir: string, worker: string): string {
+  return join(runDir, "contracts", `${worker}.json`);
 }
 
 /** The agent-written validation result of one attempt. The path is the published

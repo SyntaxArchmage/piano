@@ -23,9 +23,8 @@ workflow:
         nodes:
           - stage:
               name: propose
-              worker: basic
+              worker: triton-idea
               harness: pi-cli
-              validate: optimization-proposal
               from: []
           - tournament:
               name: race
@@ -39,11 +38,9 @@ workflow:
                     name: implement
                     worker: basic
                     harness: pi-cli
-                    handoff: strategy.json
                     from: []
                 - stage:
                     name: bench
                     worker: triton-benchmark-store
                     harness: pi-cli
-                    validate: true
                     from: [implement]

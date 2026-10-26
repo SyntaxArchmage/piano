@@ -1,0 +1,54 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "type": "object",
+    "required": ["run_id", "summary"],
+    "properties": {
+      "run_id": { "type": "string" },
+      "summary": { "type": "string" },
+      "outcome": { "enum": ["improved", "neutral", "regressed", "unmeasured", "write_only"] },
+      "ranking": { "type": "array", "items": { "type": "string" } },
+      "winner": { "type": ["string", "null"] },
+      "progress_record": {
+        "type": "object",
+        "required": ["file_path", "current_status", "entry"],
+        "properties": {
+          "file_path": { "type": "string", "minLength": 1 },
+          "current_status": { "enum": ["implementing", "debugging", "optimizing", "stable"] },
+          "entry": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "additionalProperties": false,
+    "allOf": [{
+      "if": {
+        "type": "object",
+        "properties": { "outcome": { "enum": ["improved", "neutral"] } },
+        "required": ["outcome"]
+      },
+      "then": {
+        "type": "object",
+        "required": ["progress_record"],
+        "properties": { "progress_record": {} }
+      }
+    }]
+  },
+  "example": {
+    "run_id": "run-id",
+    "summary": "short summary",
+    "outcome": "improved",
+    "progress_record": {
+      "file_path": "tests/operator_test.py",
+      "current_status": "stable",
+      "entry": "R1: baseline recorded"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      { "id": "progress-record.path", "pointer": "/progress_record/file_path", "format": "string", "required": false }
+    ]
+  }
+}

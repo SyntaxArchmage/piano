@@ -1,0 +1,62 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "target_operator",
+      "device",
+      "analysis"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "ready",
+          "timing-only",
+          "blocked"
+        ]
+      },
+      "target_operator": {
+        "type": "string"
+      },
+      "device": {
+        "type": "object"
+      },
+      "metrics": {
+        "type": "object"
+      },
+      "bottlenecks": {
+        "type": "array"
+      },
+      "analysis": {
+        "type": "string"
+      },
+      "raw_path": {
+        "type": "string"
+      },
+      "blocker": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "status": "timing-only",
+    "target_operator": "kernel.py:run",
+    "device": {
+      "name": "GPU",
+      "architecture": "sm_86"
+    },
+    "analysis": "timing-derived"
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": false
+      }
+    ]
+  }
+}

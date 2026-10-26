@@ -312,6 +312,17 @@ describe("TrajectoryPanel component", () => {
     expect(output).not.toContain("piano: workflow completed");
   });
 
+  it("labels a worker-contract validation failure", () => {
+    const panel = new TrajectoryPanel(darkTheme);
+    panel.start("hello");
+    panel.complete({
+      status: "failed",
+      error: { type: "ContractValidationError", message: "result failed validator" },
+    });
+    const output = panel.render(80).map(stripAnsi).join("\n");
+    expect(output).toContain("piano: validation failed");
+  });
+
   it("normalizes non-finite component widths before rendering outcomes", () => {
     const panel = new TrajectoryPanel(darkTheme);
     panel.start("hello");

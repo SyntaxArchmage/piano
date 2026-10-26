@@ -11,8 +11,8 @@ is `brief.manuscript.state_dir`, relative to `brief.manuscript.root` — use the
 one the brief names rather than inventing a directory, because every later stage
 looks for the spec exactly there.
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in the `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read the `paper-brief` result from there.
 
 ## 1. Build the reference set

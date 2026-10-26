@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
-import { HARNESS_NAMES } from "@piano/harness";
+import { HARNESS_NAMES, toolGrantsCapability } from "@piano/harness";
 import {
   compileWorkerContract,
   WorkerContractLoadError,
@@ -17,7 +17,6 @@ import {
   compileWorkflow,
   parseWorkflow,
   type WorkflowDocument,
-  type WorkflowStage,
 } from "./workflow.js";
 
 /** The user-level Piano root; logging owns this constant. */
@@ -115,32 +114,18 @@ const PARSE_SOURCE: Source = {
   function: "parseWorkflow",
 };
 
-function warnLegacyValidation(
-  workflowPath: string,
-  stages: readonly WorkflowStage[],
-): void {
-  const legacyStages = stages.filter(
-    (stage): stage is WorkflowStage & { readonly validate: string } =>
-      typeof stage.validate === "string",
-  );
-  if (legacyStages.length === 0) return;
-  const usages = legacyStages
-    .map((stage) => `stage "${stage.name}" (${stage.validate})`)
-    .join(", ");
-  process.emitWarning(
-    `Workflow "${workflowPath}" uses deprecated string-valued validation at ${usages}. ` +
-      "Move each schema to recipes/<worker>/contract.json and use validate: true; " +
-      "legacy named contracts will be removed in a future release.",
-    {
-      code: "PIANO_LEGACY_WORKER_CONTRACT",
-      type: "DeprecationWarning",
-    },
-  );
-}
-
 export function workerResourcesKey(worker: string, harness: string): string {
   return `${worker}\u0000${harness}`;
 }
+
+/** Registry directories that hold repository metadata rather than a worker
+ * plugin. A workflow naming one as its worker would mistake the registry's own
+ * folders (above all the flat `contracts/` folder) for a worker. */
+const RESERVED_RECIPE_DIRECTORIES: ReadonlySet<string> = new Set([
+  "contracts",
+  "eval-workflows",
+  "workflows",
+]);
 
 /** Validate a skill name per the Agent Skills spec: lowercase letters, digits,
  * hyphens, non-empty. */
@@ -254,26 +239,29 @@ function discoverSkills(
  * Resolve a stage's worker to its `recipes/<worker>/` directory and discover
  * the worker's resources: an optional `system-prompt.md`, an optional `agents.md`
  * shared context file plus this stage's `agents.<harness>.md` appendix, and
- * every valid `skills/<name>/SKILL.md`. Callers opt into compiling the optional
- * contract when the stage uses `validate: true`. This is worker-bound discovery
- * — the stage DSL no longer carries system_prompt/skills/contextFiles paths. By
- * default `recipes/` below the installed Piano root is the plugin registry, never
- * the target project cwd, `~/.piano` persistent state, or dirname(workflowPath).
+ * every valid `skills/<name>/SKILL.md`. A worker-owned contract in the flat
+ * `recipes/contracts/` folder is compiled when present — contract presence is
+ * the only gate. This is worker-bound discovery — the stage DSL no longer
+ * carries system_prompt/skills/contextFiles paths. By default `recipes/` below
+ * the installed Piano root is the plugin registry, never the target project
+ * cwd, `~/.piano` persistent state, or dirname(workflowPath).
  */
 export function resolveWorkerResources(
   worker: string,
   recipeRepositoryRoot = defaultRecipeRepositoryRoot,
   absoluteWorkflowPath: string,
   harness: string,
-  options: { readonly loadContract?: boolean } = {},
 ): Effect.Effect<WorkerResources, WorkflowError, FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(worker) || worker === "workflows") {
+    const reserved = RESERVED_RECIPE_DIRECTORIES.has(worker);
+    if (reserved || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(worker)) {
       return yield* Effect.fail(workflowError(
         "load",
         absoluteWorkflowPath,
-        `worker "${worker}" must name one plugin directory under recipes`,
+        reserved
+          ? `worker "${worker}" must name one worker plugin directory under recipes; "${worker}" is a reserved recipes directory, not a worker plugin`
+          : `worker "${worker}" must name one plugin directory under recipes`,
       ));
     }
     const resolvedRecipesRoot = resolve(recipeRepositoryRoot, recipesDir);
@@ -281,50 +269,57 @@ export function resolveWorkerResources(
     if (!pathWithin(resolvedRecipesRoot, workerDir)) {
       return yield* Effect.fail(workflowError("load", absoluteWorkflowPath, `worker "${worker}" resolves to an unsafe path outside ${resolvedRecipesRoot}`));
     }
+    const contractPath = join(resolvedRecipesRoot, "contracts", `${worker}.json`);
     const workerExists = yield* fileSystem.exists(workerDir).pipe(
       Effect.mapError((cause) => mapFsError(workerDir, cause)),
     );
-    if (!workerExists) {
-      return yield* Effect.fail(workflowError("load", absoluteWorkflowPath, `worker "${worker}" has no recipes directory at ${workerDir}`));
-    }
-    const workerInfo = yield* fileSystem.stat(workerDir).pipe(
-      Effect.mapError((cause) => mapFsError(workerDir, cause)),
+    const contractExists = yield* fileSystem.exists(contractPath).pipe(
+      Effect.mapError((cause) => mapFsError(contractPath, cause)),
     );
-    if (workerInfo.type !== "Directory") {
-      return yield* Effect.fail(workflowError("load", absoluteWorkflowPath, `worker "${worker}" must resolve to a recipes directory at ${workerDir}`));
+    // A worker is a recipes directory (prompts, context, skills) and/or a
+    // contract in the flat contracts folder. Either one names it; neither is
+    // an unknown worker.
+    if (!workerExists && !contractExists) {
+      return yield* Effect.fail(workflowError("load", absoluteWorkflowPath, `worker "${worker}" has no recipes directory at ${workerDir} and no contract at ${contractPath}`));
+    }
+    if (workerExists) {
+      const workerInfo = yield* fileSystem.stat(workerDir).pipe(
+        Effect.mapError((cause) => mapFsError(workerDir, cause)),
+      );
+      if (workerInfo.type !== "Directory") {
+        return yield* Effect.fail(workflowError("load", absoluteWorkflowPath, `worker "${worker}" must resolve to a recipes directory at ${workerDir}`));
+      }
     }
 
     const systemPromptPath = join(workerDir, "system-prompt.md");
-    const hasSystemPrompt = yield* fileSystem.exists(systemPromptPath).pipe(
+    const hasSystemPrompt = workerExists && (yield* fileSystem.exists(systemPromptPath).pipe(
       Effect.mapError((cause) => mapFsError(systemPromptPath, cause)),
-    );
+    ));
 
     const agentsPath = join(workerDir, "agents.md");
-    const hasAgents = yield* fileSystem.exists(agentsPath).pipe(
+    const hasAgents = workerExists && (yield* fileSystem.exists(agentsPath).pipe(
       Effect.mapError((cause) => mapFsError(agentsPath, cause)),
-    );
+    ));
 
     // The shared agents.md always comes first; the harness appendix is appended
     // right after it so per-harness rules extend, rather than replace, the
     // shared worker context.
-    const appendixPath = yield* harnessAppendixPath(workerDir, harness, absoluteWorkflowPath);
+    const appendixPath = workerExists
+      ? yield* harnessAppendixPath(workerDir, harness, absoluteWorkflowPath)
+      : undefined;
     const contextFilePaths = [
       ...(hasAgents ? [agentsPath] : []),
       ...(appendixPath === undefined ? [] : [appendixPath]),
     ];
 
-    const skills = yield* discoverSkills(join(workerDir, "skills"));
+    const skills = workerExists ? yield* discoverSkills(join(workerDir, "skills")) : [];
     // Front and back matter a worker wants on every stage it runs. They are
     // deliberately NOT context files: those are files the harness hands to the
     // agent, so listing these would surface the same text twice — once inline
     // in the prompt and again as a file the stage is told to read.
-    const prologue = yield* readPromptResource(fileSystem, workerDir, "prologue.md");
-    const epilogue = yield* readPromptResource(fileSystem, workerDir, "epilogue.md");
-    const contractPath = join(workerDir, "contract.json");
-    const hasContract = options.loadContract === true && (yield* fileSystem.exists(contractPath).pipe(
-      Effect.mapError((cause) => mapFsError(contractPath, cause)),
-    ));
-    const contract = hasContract
+    const prologue = workerExists ? yield* readPromptResource(fileSystem, workerDir, "prologue.md") : undefined;
+    const epilogue = workerExists ? yield* readPromptResource(fileSystem, workerDir, "epilogue.md") : undefined;
+    const contract = contractExists
       ? yield* fileSystem.readFileString(contractPath).pipe(
         Effect.mapError((cause) => mapFsError(contractPath, cause)),
         Effect.flatMap((source) => Effect.try({
@@ -369,12 +364,11 @@ export function loadWorkflow(
     // Validate every plugin eagerly so a malformed workflow cannot defer a
     // missing worker failure until an unrelated predecessor finishes. The
     // harness appendix is discovered per stage, so an unknown agents.<xxx>.md
-    // suffix also fails here.
+    // suffix also fails here. Every stage reads its worker's contract when one
+    // exists: contract presence is what turns validation on, so a malformed
+    // contract or invalid example fails here rather than only on stages that
+    // opt in. A missing contract leaves the stage unvalidated.
     const stages = compiled.stages.map((entry) => entry.stage);
-    yield* Effect.sync(() => warnLegacyValidation(absoluteWorkflowPath, stages));
-    const contractKeys = new Set(stages
-      .filter((stage) => stage.validate === true)
-      .map((stage) => workerResourcesKey(stage.worker, stage.harness)));
     const resourceEntries = yield* Effect.forEach(
       stages,
       (stage) => resolveWorkerResources(
@@ -382,15 +376,20 @@ export function loadWorkflow(
         recipeRepositoryRoot,
         absoluteWorkflowPath,
         stage.harness,
-        { loadContract: contractKeys.has(workerResourcesKey(stage.worker, stage.harness)) },
       ).pipe(
-        Effect.flatMap((resources) => stage.validate === true && resources.contract === undefined
-          ? Effect.fail(workflowError(
-            "load",
-            absoluteWorkflowPath,
-            `stage "${stage.name}" uses validate: true but worker "${stage.worker}" has no contract.json`,
-          ))
-          : Effect.succeed([workerResourcesKey(stage.worker, stage.harness), resources] as const)),
+        Effect.flatMap((resources) => {
+          if (resources.contract !== undefined && stage.tools !== undefined &&
+            !stage.tools.some((tool) =>
+              toolGrantsCapability(stage.harness, tool, "write") ||
+              toolGrantsCapability(stage.harness, tool, "exec"))) {
+            return Effect.fail(workflowError(
+              "load",
+              absoluteWorkflowPath,
+              `stage "${stage.name}" has a worker contract at ${resources.contract.path} and must allow write or bash to create its result`,
+            ));
+          }
+          return Effect.succeed([workerResourcesKey(stage.worker, stage.harness), resources] as const);
+        }),
       ),
     );
     return {

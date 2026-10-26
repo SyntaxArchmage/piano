@@ -228,7 +228,7 @@ async function assertRunEvidence(
     "Treat that directory as the only mutable task workspace. Do not edit the Piano source tree or run evidence outside it.\n" +
     "The orchestrator injected the following context files; read them before acting:\n" +
     "(none)\n" +
-    "Handoff files are immutable upstream evidence; write new artifacts only in the current workspace or the requested result path.",
+    "Injected context files are immutable upstream evidence; write new artifacts only in the current workspace or the requested result path.",
   );
   const contextWorkflow = record(contextEvents[0]?.workflow);
   expect(contextWorkflow).toMatchObject({

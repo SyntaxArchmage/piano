@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import {
+  benchmarkRecordReadSchema,
   benchmarkRecordSchema,
   durationRecordSchema,
   selectionRecordSchema,
@@ -26,7 +27,6 @@ import type {
   TrajectoryStreamDescriptor,
   WorkflowObservation,
 } from "./types.js";
-import { TrajectoryRecordError } from "./types.js";
 
 function attemptKey(observation: { readonly context: { readonly runId: string; readonly invocationId: string; readonly attempt: number } }): string {
   const context = observation.context;
@@ -123,12 +123,6 @@ export class BenchmarkRecorder implements TrajectoryRecorder<BenchmarkRecord, Be
 
   observe(observation: WorkflowObservation) {
     if (observation.type !== "stage_accepted" || observation.metrics.length === 0) return Effect.void;
-    if (observation.contract === undefined) {
-      return Effect.fail(new TrajectoryRecordError(
-        "trajectories/benchmark.jsonl",
-        "accepted metrics require a contract reference",
-      ));
-    }
     return Effect.forEach(observation.metrics, (metric) => appendRecord(
       this.runDir,
       this.descriptor,
@@ -138,13 +132,12 @@ export class BenchmarkRecorder implements TrajectoryRecorder<BenchmarkRecord, Be
         kind: "benchmark" as const,
         metric: metric.value,
         pointer: metric.pointer,
-        contract: observation.contract!,
       },
     ), { discard: true });
   }
 
   read(runDir: string) {
-    return readRecords(runDir, this.descriptor, benchmarkRecordSchema);
+    return readRecords(runDir, this.descriptor, benchmarkRecordReadSchema);
   }
 
   score(records: readonly BenchmarkRecord[]): BenchmarkScore {

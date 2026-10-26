@@ -11,10 +11,10 @@
  recipes/<worker>/ 目录                代码模板                     运行时产物
 ┌────────────────────────┐   ┌─────────────────────────┐   ┌──────────────────────┐
 │ system-prompt.md (可选) │   │ stagePrompt()            │   │ contract snapshot    │
-│ agents.md               │   │  workflow-execution.ts   │   │  (validate:true 时)   │
-│ agents.<harness>.md     │   │   :454-517               │   │ handoff-context.json │
-│ skills/<n>/SKILL.md     │   │ 原始用户 prompt           │   │  (上游 producer 证据) │
-│ contract.json           │   │  (TUI / --prompt 透传)    │   │ map-item.json        │
+│ agents.md               │   │  workflow-execution.ts   │   │  (contract 存在时)    │
+│ agents.<harness>.md     │   │   :454-517               │   │ inputs.json          │
+│ skills/<n>/SKILL.md     │   │ 原始用户 prompt           │   │  (上游 acceptance 证据) │
+│ contract (recipes/contracts/) │   │  (TUI / --prompt 透传)    │   │ map-item.json        │
 └───────────┬────────────┘   └───────────┬─────────────┘   └──────────┬─────────┘
             │ resolveWorkerResources     │                            │
             │ workflow-file.ts:242-320   │                            │
@@ -67,15 +67,15 @@
  · The orchestrator injected the following context files; read them:
      - recipes/<worker>/agents.md
      - recipes/<worker>/agents.<harness>.md      (若存在)
-     - <runDir>/contracts/<digest>.json          (contract snapshot, validate:true)
-     - <invocation>/handoff-context/<name>.json  (上游 handoff / winner 证据)
+     - <runDir>/contracts/<worker>.json          (contract snapshot, worker contract 存在时)
+     - <invocation context dir>/inputs.json     (上游自动 inputs / winner 证据)
      - <invocation>/.../map-item.json            (map over 的当前迭代项)
 
 ## Reviewer guidance                  ← 仅当上游 stage 被 continue 且留了 note (:629-638)
  · 人类审阅者放行上游 stage 时写的话，只递给**直接消费该 stage 的那些 stage**
  · 逐条格式：`- after \`<stageId>\`: <note>`；无 note 时整段不出现
 ## Agent configuration                 ← 仅当设了 model/thinkingLevel (:642-648)
-## Required validation result          ← 仅 validate stage (:649-660)
+## Required validation result          ← 仅 worker 有 contract 的 stage (:649-660)
  · contract id、resultPath、workerContractGuidance() 生成的 JSON 形状示例
 ## Validation repair required          ← 仅结果被拒重跑 (:661-669)
 ## Sign-off retry                      ← 仅人工要求重跑该 worker (:670-681)
@@ -91,13 +91,13 @@
 
 ## 值得注意的边界
 
-- **节点级 prompt 文本只有两个来源**：`stage.prologue` / `stage.epilogue`（见下），以及 recipe 目录的 system-prompt/agents/skills/contract。除此之外 yaml 只声明 worker/harness/tools/from/validate/map 等结构性字段。
-- **`prologue` 与 `epilogue` 是一对「非证据」原语**：`prologue` 追加在首轮 `stagePrompt()` 末尾（`## Prologue`），`epilogue` 则在 stage **accept 之后**作为一次续跑 turn 发出（prompt 就是 `epilogue` 原文，不是 stagePrompt）。两者都是纯提示词，从不被解析或校验，也不进入 result/handoff —— 这正是它们能承载随意散文（worklog、收尾）而不污染严谨证据链的原因。`epilogue` 的失败不影响已验收的 stage。
+- **节点级 prompt 文本只有两个来源**：`stage.prologue` / `stage.epilogue`（见下），以及 recipe 目录的 system-prompt/agents/skills/contract。除此之外 yaml 只声明 worker/harness/tools/from/map 等结构性字段。
+- **`prologue` 与 `epilogue` 是一对「非证据」原语**：`prologue` 追加在首轮 `stagePrompt()` 末尾（`## Prologue`），`epilogue` 则在 stage **accept 之后**作为一次续跑 turn 发出（prompt 就是 `epilogue` 原文，不是 stagePrompt）。两者都是纯提示词，从不被解析或校验，也不进入 result/acceptance —— 这正是它们能承载随意散文（worklog、收尾）而不污染严谨证据链的原因。`epilogue` 的失败不影响已验收的 stage。
 - **续跑不重发历史**：同一 actor 的后续 turn 通过 `--resume <sessionId>` / `--session <transcriptPath>` 恢复内层 harness 自己的会话（`subprocess.ts:902, 870`），上一轮内容不重新拼进 prompt。`epilogue` 依靠的就是这一点 —— 它看得见自己刚才做了什么。
-- **"上一轮 winner 摘要"** 不是一个文本段，而是 `writeHandoffContext` 写出的不可变 JSON（含 producer 的 accepted text、resultPayload、contract projections 等，`handoff.ts:116-140`），走上面 contextFilePaths 通道进入 prompt；tournament 后还有一个单独的一次性 consolidation prompt（`workflow-execution.ts:1297-1310`）指示 winner 把自己 workspace 的改动应用到父目录。
+- **"上一轮 winner 摘要"** 不是一个文本段，而是 `writeInputsContext` 写出的不可变 JSON（含 producer 的 accepted text、resultPayload、contract projections 等，`acceptance.ts`），走上面 contextFilePaths 通道进入 prompt；tournament 后还有一个单独的一次性 consolidation prompt（`workflow-execution.ts:1297-1310`）指示 winner 把自己 workspace 的改动应用到父目录。
 - **CLI 侧的帧边界**：`packages/cli/src/session-resume.ts:92-95` 用 `"\n\n## Workflow stage context"` 这个 marker 把编排注入的脚手架从用户原文中剥掉，供历史展示/回放。
 
-一句话总结：**总 prompt = 用户原始任务（被 stagePrompt 包上 stage/contract/handoff 护栏 + 可能的人类审阅指引）+ recipe 目录里的 system-prompt/agents/skills/contract 快照经 `# <path>` 内联成的系统附录**，路由方式随 harness（claude/pi-cli/dsh/pi-SDK）而异但内容集合一致。
+一句话总结：**总 prompt = 用户原始任务（被 stagePrompt 包上 stage/contract/inputs 护栏 + 可能的人类审阅指引）+ recipe 目录里的 system-prompt/agents/skills/contract 快照经 `# <path>` 内联成的系统附录**，路由方式随 harness（claude/pi-cli/dsh/pi-SDK）而异但内容集合一致。
 
 ## signoff 的两个决定如何进入 prompt
 
@@ -105,10 +105,10 @@
 
 | 决定 | 对 stage 结果的影响 | 用户输入去哪里 |
 | --- | --- | --- |
-| `continue` | 发布本次 attempt（写 handoff、progress） | 存在 `InternalStageResult.reviewNote` 上，只进入**直接消费者**的 `## Reviewer guidance` |
+| `continue` | 发布本次 attempt（写 acceptance、progress） | 存在 `InternalStageResult.reviewNote` 上，只进入**直接消费者**的 `## Reviewer guidance` |
 | `retry` | `attempt += 1; continue`，重开同一 actor session | 进入该 stage **下一次 attempt** 的 `## Sign-off retry` |
 
 两个边界是刻意的：
 
-- **note 不进 handoff 记录**。handoff 是 worker 的不可变证据，而 prompt 自己就写着 “Handoff files are immutable upstream evidence”；把人类的口头指示混进证据链会污染下游的判断。
+- **note 不进 acceptance 记录**。acceptance 是 worker 的不可变证据，而 prompt 自己就写着 “Injected context files are immutable upstream evidence”；把人类的口头指示混进证据链会污染下游的判断。
 - **note 只走一条边**。消费者判定与投递判定都取自编译后的 `dependsOn`（而非 stage 自己的 `from:`，因为 compile 会把 region 的 `from:` 折进其 entry leaf）。同一张表既生成对话框里“note goes to: …”的提示，也决定谁真的读到它，两者不可能不一致。

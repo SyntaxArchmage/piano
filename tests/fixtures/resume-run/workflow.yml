@@ -31,9 +31,8 @@ workflow:
         nodes:
           - stage:
               name: propose
-              worker: basic
+              worker: triton-idea
               harness: codex
-              validate: optimization-proposal
               from: []
           - tournament:
               name: race
@@ -47,11 +46,9 @@ workflow:
                     name: implement
                     worker: basic
                     harness: codex
-                    handoff: strategy.json
                     from: []
                 - stage:
                     name: bench
                     worker: triton-benchmark-store
                     harness: codex
-                    validate: true
                     from: [implement]

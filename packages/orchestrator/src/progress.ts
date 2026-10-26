@@ -164,6 +164,15 @@ export interface WorkflowProgressExecutionFinishRecord {
   readonly error?: string;
 }
 
+/** One loop iteration's orchestrator commit: the iteration index and the hash
+ * the iteration's workspace changes landed in. Recorded on the loop's
+ * `region-finalized` evidence so a resumed or audited run can find the
+ * commit without reading the log. */
+export interface WorkflowLoopCommitRecord {
+  readonly iteration: number;
+  readonly commit: string;
+}
+
 /** One region's exit, recorded exactly once when the region leaves the
  * schedule: which instance ended, why, and — for a tournament — who won.
  * A continue reads it to skip a completed region instead of re-running its
@@ -205,6 +214,9 @@ export interface WorkflowProgressRegionFinalizedRecord {
   readonly incumbent?: SelectionIncumbent;
   /** Completed iterations for a loop region at the moment it exited. */
   readonly iterations?: number;
+  /** Commits the loop made, in iteration order. A non-git workspace records
+   * none: it has no commit target. */
+  readonly commits?: readonly WorkflowLoopCommitRecord[];
 }
 
 /** Everything a writer must supply for a `region-finalized` transition; the

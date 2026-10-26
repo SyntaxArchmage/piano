@@ -1,20 +1,16 @@
-export { AgentError, type AgentFailureKind } from "./errors.js";
+export { AgentError } from "./errors.js";
 export {
   AGENT_RETRY_DELAYS_MS,
   abortableSleep,
   failedAttemptContinuation,
   withAgentRetries,
   withFailedContinuation,
-  type AgentContinuationFlag,
-  type AgentRetryAttempt,
   type AgentRetryNotice,
-  type AgentRetryOutcome,
 } from "./retry.js";
 export { defaultPiConfigPath, executeAgent } from "./pi.js";
 export {
   piAvailable,
   piLoadable,
-  type PiHarnessOptions,
   type PiModule,
 } from "./pi-sdk.js";
 export {
@@ -26,22 +22,17 @@ export {
 } from "./agent-contract.js";
 export {
   agentConfigPath,
-  defaultAgentConfigPath,
   configuredWorkflowHarness,
   describeHarness,
   HARNESS_NAMES,
   isHarnessName,
   resolveHarnessConfig,
   resolveSupportedModels,
-  type HarnessDescriptor,
   type HarnessName,
   type ResolvedHarnessConfig,
 } from "./harness-config.js";
 export {
-  CLAUDE_TOOL_NAMES,
-  CLAUDE_BARE_UNAVAILABLE_TOOLS,
   CODEX_TOOL_NAMES,
-  DSH_TOOL_NAMES,
   harnessToolNames,
   isKnownToolName,
   PI_TOOL_NAMES,
@@ -61,14 +52,12 @@ export {
   piWebSearchExtensionPath,
   runPiWebSearch,
   webSearchExtensionFactory,
-  type PiWebSearchOptions,
 } from "./pi-web-search.js";
-export { canonicalTranscriptText, mergeCanonicalTranscript, transcriptTokenUsage } from "./canonical-transcript.js";
+export { transcriptTokenUsage } from "./canonical-transcript.js";
 export {
   createSteeringChannel,
   type SteerDelivery,
   type SteeringChannel,
-  type SteeringTarget,
 } from "./steering.js";
 export {
   probeDshResumeCapability,
@@ -82,8 +71,6 @@ export {
   dshWebSearchOffPatchPath,
   DSH_RESUME_SESSION_ENV,
   HarnessHomeError,
-  type HarnessHomes,
-  type HarnessHomeOptions,
 } from "./harness-home.js";
 export { eventMetadata } from "./event-metadata.js";
 export {
@@ -97,10 +84,6 @@ export {
   type AgentEvent,
   type AgentMessageEvent,
   type AgentMessage,
-  type AgentResourceEvent,
-  type AgentResourceInfo,
-  type AgentResourceKind,
   type AgentUsage,
-  type AgentWorkflowMetadata,
   type ThinkingLevel,
 } from "./events.js";

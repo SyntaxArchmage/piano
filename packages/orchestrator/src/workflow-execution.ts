@@ -17,7 +17,6 @@ import {
 } from "@piano/harness";
 import { WorkerError } from "@piano/workers";
 import {
-  ContractValidationError,
   WorkerContractValidationError,
 } from "@piano/contract";
 import {
@@ -40,7 +39,6 @@ import { errorMessage, WorkflowError, workflowError } from "./errors.js";
 import type {
   ActorExecutionContext,
   ActorState,
-  InternalStageResult,
   WorkflowStageExecutionResult,
 } from "./execution-types.js";
 import {
@@ -56,16 +54,13 @@ import {
   type WalkerWorkspaceState,
 } from "./scope-walker.js";
 import {
-  projectionNumber,
-  projectionString,
-  resultProjectionValue,
   workflowProgressPlan,
 } from "./stage-runner-support.js";
 import type { WorkflowExecutionContinuation } from "./workflow-resume.js";
 import { runId as normalizeExecutionId } from "./workflow-runtime.js";
 import {
-  type HandoffMapItem,
-} from "./handoff.js";
+  type WorkflowMapItem,
+} from "./acceptance.js";
 import {
   readInvocationRecords,
 } from "./invocations.js";
@@ -80,18 +75,21 @@ import {
   finalizeWorkflowProgress,
   initializeWorkflowProgress,
   reconcileCrashedRun,
+  type WorkflowLoopCommitRecord,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowRegionFinalizedPayload,
 } from "./progress.js";
 import { nextJobOrdinal, readRunStatus, runStatusPath, type RunStatus } from "./run-status.js";
 import {
   buildCommitMessage,
-  commitRoundFiles,
+  commitFiles,
   extractTicket,
-  safeChangedFiles,
+  gitWorkspaceRoot,
+  planLoopCommit,
   snapshotDirtyFiles,
-  type WinnerCommitMessageInput,
-} from "./winner-commit.js";
+  workspaceChanges,
+  type CommitMessageInput,
+} from "./loop-commit.js";
 
 export interface WorkflowExecutionRequest {
   readonly runDir: string;
@@ -174,7 +172,7 @@ export interface WorkflowSignoffRequest {
    * retry round. */
   readonly round: number;
   /** Path to the validated result JSON inside the run directory, when the
-   * stage validates. */
+   * stage's worker has a contract. */
   readonly resultPath?: string;
   /** Transcript the reviewer can inspect for full detail. */
   readonly transcriptPath: string;
@@ -221,7 +219,7 @@ export interface WorkflowDiscussDecision {
 export interface WorkflowWorkspaceCandidate {
   readonly key: string;
   readonly workspace: WorkflowWorkspaceBinding;
-  readonly mapItem: HandoffMapItem;
+  readonly mapItem: WorkflowMapItem;
   readonly stages: readonly WorkflowStageExecutionResult[];
 }
 
@@ -250,6 +248,9 @@ export interface WorkflowWorkspaceLifecycleOptions {
 export interface LoadAndExecuteWorkflowRequest extends WorkflowExecutionRequest {
   readonly root: string;
   readonly workflowPath?: string;
+  /** Recipe repository root override, mirroring `loadWorkflow`'s argument.
+   * Omitted callers use the installed registry. */
+  readonly recipeRepositoryRoot?: string;
 }
 
 export interface WorkflowExecutionResult {
@@ -280,7 +281,6 @@ export interface WorkflowExecutionResult {
 export type WorkflowExecutionError =
   | WorkflowError
   | WorkerError
-  | ContractValidationError
   | WorkerContractValidationError;
 
 
@@ -411,9 +411,10 @@ const reclaimAbandonedSlots = (
 
 
 
-/** Execute a workflow with runtime expansion. Handoff data and continuation
- * state live in distinct stores: records move between stages, while a harness
- * continuation is only ever reopened for the same actor/lane. */
+/** Execute a workflow with runtime expansion. Acceptance records and
+ * continuation state live in distinct stores: records move between stages,
+ * while a harness continuation is only ever reopened for the same
+ * actor/lane. */
 export function loadAndExecuteWorkflow(
   request: LoadAndExecuteWorkflowRequest,
 ): Effect.Effect<
@@ -422,8 +423,8 @@ export function loadAndExecuteWorkflow(
   FileSystem.FileSystem | Logging
 > {
   const load = request.workflowPath === undefined
-    ? loadDefaultWorkflow(request.root)
-    : loadWorkflow(request.workflowPath, request.root);
+    ? loadDefaultWorkflow(request.root, request.recipeRepositoryRoot)
+    : loadWorkflow(request.workflowPath, request.root, request.recipeRepositoryRoot);
   return TRACE(
     request.workflowPath === undefined ? LOAD_SOURCE : EXPLICIT_LOAD_SOURCE,
     load,
@@ -445,8 +446,8 @@ export function loadAndExecuteWorkflow(
  * It runs here (after compile, before any worker) because `compileWorkflow`
  * only sees the DSL; the exit contract's declared `outputs.metrics` is
  * resolvable only once worker resources are loaded alongside the compiled
- * region boundaries. Only a validating (`validate: true`) leaf exit stage is a
- * contender; non-validating handoff exits never project a referee signal.
+ * region boundaries. Only a leaf exit whose worker has a contract is a
+ * contender; a contract-less exit never projects a referee signal.
  */
 function validateTournamentExitMetricArity(
   loaded: LoadedWorkflow,
@@ -457,7 +458,7 @@ function validateTournamentExitMetricArity(
   for (const region of compiled.regions) {
     if (region.kind !== "map") continue;
     const exitLeaf = exitStagesById.get(region.exitStageId);
-    if (exitLeaf === undefined || exitLeaf.stage.validate !== true) continue;
+    if (exitLeaf === undefined) continue;
     const contract = loaded.workerResources?.get(
       workerResourcesKey(exitLeaf.stage.worker, exitLeaf.stage.harness),
     )?.contract;
@@ -465,7 +466,7 @@ function validateTournamentExitMetricArity(
     const metricIds = contract.manifest.outputs.metrics.map((metric) => metric.pointer).join(", ");
     offenders.push(
       `tournament "${region.name}" exit stage "${exitLeaf.stage.name}": ` +
-      `worker "${contract.manifest.id}" declares ${contract.manifest.outputs.metrics.length} ` +
+      `worker "${contract.worker}" declares ${contract.manifest.outputs.metrics.length} ` +
       `output metric(s) [${metricIds}]`,
     );
   }
@@ -539,13 +540,12 @@ export function executeWorkflow(
         "workflow has discuss stages but this run has no discuss channel (a supervisor channel is required)",
       ));
     }
-    // ISSUE-017: opt-in per-workflow winner auto-commit. Snapshot the dirty
-    // files at run start so each round's commit never sweeps in pre-existing
-    // user / other-task changes.
-    const autoCommit = compiled.autoCommit === true;
-    const preExistingDirty = autoCommit
-      ? yield* snapshotDirtyFiles(sharedWorkspace.cwd)
-      : new Set<string>();
+    // A loop commits every iteration. Snapshot the dirty files at run start so
+    // each iteration's commit never sweeps in pre-existing user / other-task
+    // changes. A non-git workspace snapshots as empty and later reports that
+    // it has no commit target; a git workspace whose status cannot be read
+    // fails the run here rather than risking that sweep.
+    const preExistingDirty = yield* snapshotDirtyFiles(sharedWorkspace.cwd);
     if (compiled.stages.length === 0) {
       return yield* Effect.fail(workflowError(
         "schedule",
@@ -787,152 +787,81 @@ export function executeWorkflow(
       }).pipe(Effect.asVoid)));
 
 
-    interface AmbiguousCommitProjection {
-      readonly id: string;
-      readonly producers: readonly {
-        readonly stageId: string;
-        readonly invocationId: string;
-      }[];
-    }
-
-    interface RoundWinnerCommitExtraction {
-      readonly facts?: {
-        readonly files: readonly string[];
-        readonly input: WinnerCommitMessageInput;
-      };
-      readonly ambiguous?: readonly AmbiguousCommitProjection[];
-    }
-
-    function projectionProducers(
-      stages: readonly InternalStageResult[],
-      id: string,
-    ): readonly InternalStageResult[] {
-      return stages.filter((result) => result.projections?.some((projection) => projection.id === id) === true);
-    }
-
-    /** ISSUE-017: extract winner-commit facts for one KEEP round. Every value
-     * comes from an explicit producer-contract projection; resultPayload is
-     * retained for audit/handoff compatibility but is never inspected here.
-     * Returns no facts when the round was not a KEEP or produced no changed
-     * files after the pre-existing-dirty suppression. A projection with more
-     * than one stage producer is ambiguous: fail closed instead of combining
-     * values from whichever stage happened to appear first. */
-    function roundWinnerCommitFacts(
-      stages: readonly InternalStageResult[],
+    /** Build the neutral loop commit message: the loop's own identity (region
+     * name, iteration) and how many files the commit carries. Tuning
+     * projections are deliberately not read: shipped contracts produce none,
+     * and a commit message must not depend on optional worker output. */
+    function loopCommitMessage(
+      region: { readonly name: string },
       iteration: number,
+      changedFiles: number,
       prompt: string,
-      dirty: ReadonlySet<string>,
-    ): RoundWinnerCommitExtraction {
-      const requiredProjections = ["workspace.changed-files", "round.decision"];
-      const producers = new Map(requiredProjections.map((id) => [id, projectionProducers(stages, id)]));
-      const ambiguous = requiredProjections.flatMap((id) => {
-        const matches = producers.get(id) ?? [];
-        return matches.length < 2 ? [] : [{
-          id,
-          producers: matches.map((result) => ({ stageId: result.stageId, invocationId: result.id })),
-        }];
-      });
-      if (ambiguous.length > 0) return { ambiguous };
-
-      const implementation = producers.get("workspace.changed-files")?.[0];
-      const measure = producers.get("round.decision")?.[0];
-      if (implementation === undefined || measure === undefined || projectionString(measure, "round.decision") !== "KEEP") return {};
-      const changedFiles = resultProjectionValue(implementation, "workspace.changed-files");
-      if (!Array.isArray(changedFiles)) return {};
-      const files = safeChangedFiles(
-        changedFiles.filter((file): file is string => typeof file === "string"),
-        dirty,
-      );
-      if (files.length === 0) return {};
-      const operator = projectionString(implementation, "build.target") ?? "operator";
-      const latency = projectionNumber(measure, "profile.kernel-latency-us")?.toFixed(2);
-      const rw = projectionNumber(measure, "profile.llc-rw-bandwidth-gbps")?.toFixed(2);
-      const regressionValue = projectionNumber(measure, "round.regression-pp");
-      const regression = regressionValue === undefined ? undefined : `${regressionValue}pp`;
-      const verifyStatus = resultProjectionValue(measure, "verification.passed") === true ? "verify passed" : "verify failed";
-      const test = [
-        latency !== undefined && rw !== undefined ? `${latency}us / ${rw} GB/s` : undefined,
-        regression,
-        verifyStatus,
-      ].filter((part): part is string => part !== undefined).join("; ");
+    ): CommitMessageInput {
       const ticket = extractTicket(prompt);
+      const fileCount = changedFiles === 1 ? "1 changed file" : `${changedFiles} changed files`;
       return {
-        facts: {
-          files,
-          input: {
-            ...(ticket === undefined ? {} : { ticket }),
-            operator,
-            iteration,
-            hypothesis: projectionString(measure, "round.hypothesis") ?? "",
-            solution: projectionString(implementation, "change.summary") ?? "",
-            test,
-          },
-        },
+        ...(ticket === undefined ? {} : { ticket }),
+        operator: region.name,
+        iteration,
+        hypothesis: `loop "${region.name}" iteration ${iteration} completed`,
+        solution: `commit ${fileCount} after loop "${region.name}" iteration ${iteration}`,
+        test: "not reported",
       };
     }
 
-    /** Commit one KEEP round's winner files with the winner-commit template
-     * (no push). Never fails — see `commitRoundFiles`. */
-    function commitRoundWinner(
-      stages: readonly InternalStageResult[],
+    /** Commit one loop iteration's workspace changes. The workspace is scanned
+     * at commit time — never a worker-declared file list — so files an agent
+     * wrote outside its declared result (a memory/notes document, a state
+     * file, an untracked artifact) are included. Pre-existing dirty files are
+     * excluded; an unchanged workspace is a logged no-op; a non-git workspace
+     * is a logged skip with no commit target. A commit that still fails after
+     * `COMMIT_MAX_ATTEMPTS` fails the run. */
+    function commitLoopIteration(
+      region: { readonly id: string; readonly name: string },
       iteration: number,
       prompt: string,
       dirty: ReadonlySet<string>,
       cwd: string,
-    ): Effect.Effect<void, never, Logging | FileSystem.FileSystem> {
-      const extraction = roundWinnerCommitFacts(stages, iteration, prompt, dirty);
-      if (extraction.ambiguous !== undefined) {
-        return WORKFLOW_LOG.warn("auto.commit.skipped", {
-          outcome: "skipped",
+    ): Effect.Effect<WorkflowLoopCommitRecord | undefined, WorkflowError, Logging | FileSystem.FileSystem> {
+      return Effect.gen(function* () {
+        const root = yield* gitWorkspaceRoot(cwd);
+        if (root === undefined) {
+          yield* WORKFLOW_LOG.warn("auto.commit.skipped", {
+            outcome: "skipped",
+            data: { reason: "not-a-git-worktree", cwd, loop: region.name, iteration },
+          });
+          return undefined;
+        }
+        const changes = yield* workspaceChanges(cwd).pipe(
+          Effect.mapError((cause) => workflowError(
+            "schedule",
+            cwd,
+            `cannot read workspace changes for loop "${region.name}" iteration ${iteration}: ${errorMessage(cause)}`,
+          )),
+        );
+        const plan = planLoopCommit(changes, dirty);
+        if (plan.changed.length === 0) {
+          yield* WORKFLOW_LOG.info("auto.commit.skipped", {
+            outcome: "skipped",
+            data: { reason: "no-changes", cwd, loop: region.name, iteration },
+          });
+          return undefined;
+        }
+        const message = buildCommitMessage(loopCommitMessage(region, iteration, plan.changed.length, prompt));
+        const result = yield* commitFiles(root, plan, message);
+        yield* WORKFLOW_LOG.info("auto.commit.committed", {
+          outcome: "success",
           data: {
-            reason: "ambiguous projection producers",
-            projections: extraction.ambiguous,
+            cwd,
+            loop: region.name,
+            iteration,
+            commit: result.commit,
+            subject: result.subject,
+            files: plan.changed.length,
           },
         });
-      }
-      if (extraction.facts === undefined) return Effect.void;
-      return commitRoundFiles(cwd, extraction.facts.files, buildCommitMessage(extraction.facts.input));
-    }
-
-    /** ISSUE-017: follow-up commit for the summary stage's progress-record
-     * write-back (progress records stay separate from per-round source
-     * commits). `[Docs]` type. */
-    function commitSummaryProgressRecord(
-      stages: readonly InternalStageResult[],
-      prompt: string,
-      dirty: ReadonlySet<string>,
-      cwd: string,
-    ): Effect.Effect<void, never, Logging | FileSystem.FileSystem> {
-      const producers = projectionProducers(stages, "progress-record.path");
-      if (producers.length > 1) {
-        return WORKFLOW_LOG.warn("auto.commit.skipped", {
-          outcome: "skipped",
-          data: {
-            reason: "ambiguous projection producers",
-            projections: [{
-              id: "progress-record.path",
-              producers: producers.map((result) => ({ stageId: result.stageId, invocationId: result.id })),
-            }],
-          },
-        });
-      }
-      const result = producers[0];
-      if (result === undefined) return Effect.void;
-      const filePath = projectionString(result, "progress-record.path");
-      if (filePath === undefined) return Effect.void;
-      const files = safeChangedFiles([filePath], dirty);
-      if (files.length === 0) return Effect.void;
-      const ticket = extractTicket(prompt);
-      return commitRoundFiles(cwd, files, buildCommitMessage({
-        type: "Docs",
-        ...(ticket === undefined ? {} : { ticket }),
-        operator: "tuning",
-        iteration: 0,
-        hypothesis: "progress record write-back after tuning summary",
-        solution: `record the run outcome at ${filePath}`,
-        test: "tuning run",
-        impactArea: "ops",
-      }));
+        return { iteration, commit: result.commit };
+      });
     }
 
     const runExecution = Effect.gen(function* () {
@@ -951,11 +880,10 @@ export function executeWorkflow(
       const walker = createScopeWalker({
         stageRunnerContext,
         persistRegionFinalized,
-        autoCommit,
         preExistingDirty,
         workspaceState,
-        commitRoundWinner: (stages, iteration, prompt, dirty, cwd) =>
-          commitRoundWinner(stages, iteration, prompt, dirty, cwd),
+        commitLoopIteration: (region, _stages, iteration, prompt, dirty, cwd) =>
+          commitLoopIteration(region, iteration, prompt, dirty, cwd),
       });
       const completed = yield* walker.executeScope(
         compiled.nodes,
@@ -976,13 +904,9 @@ export function executeWorkflow(
       // and allowed to fail; the record of what happened is none of those, and
       // a cleanup that wedges must not be able to leave the run looking live.
       //
-      // `commitSummaryProgressRecord` is not cleanup: it is work whose failure
-      // changes the outcome, so it stays on this side of the record. The
-      // workspace sweep that used to sit here was cleanup in the middle of
-      // that work, and `cleanupAfterFailure` below runs it on every path.
-      if (autoCommit) {
-        yield* commitSummaryProgressRecord(completed.stages, request.prompt, preExistingDirty, sharedWorkspace.cwd);
-      }
+      // Only loops commit. A stage outside a loop that writes files leaves
+      // them in the workspace; a workflow that needs that committed needs a
+      // loop (or a separate explicit step), not a second commit path here.
       yield* finalizeWorkflowProgress(request.runDir, runId, "completed").pipe(
         Effect.catchAll(() => Effect.void),
       );

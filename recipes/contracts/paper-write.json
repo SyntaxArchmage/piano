@@ -1,0 +1,127 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["status", "unit", "files_changed", "compiles", "compile_command", "numbers_used", "placeholders_used", "qc"],
+    "properties": {
+      "unit": { "type": "string", "minLength": 1 },
+      "status": {
+        "description": "\"ok\" for a normal round. \"blocked\" only when the manuscript cannot be made to build at all: the loop then stops instead of spending the remaining budget writing into a tree that does not compile. Required, so that leaving the tree buildable is a statement the result makes rather than a field it can omit.",
+        "enum": ["ok", "blocked"]
+      },
+      "build_blocker": {
+        "type": "string",
+        "minLength": 15,
+        "description": "Required with status \"blocked\": the file, the error, and why it cannot be fixed from here."
+      },
+      "files_changed": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+      "compiles": { "type": "boolean", "description": "Whether the brief's compile command succeeded on the manuscript as you left it. Must be true unless the result declares status \"blocked\"; the contract enforces this." },
+      "compile_command": { "type": "string", "minLength": 1, "description": "Verbatim from brief.json; reported with its outcome." },
+      "paragraphs_written": { "type": "integer", "minimum": 0 },
+      "numbers_used": {
+        "type": "array",
+        "description": "Every numeral introduced this round, with the file it came from. A number without a source is a fabrication.",
+        "items": {
+          "type": "object",
+          "required": ["value", "source", "where"],
+          "properties": {
+            "value": { "type": "string", "minLength": 1 },
+            "source": { "type": "string", "minLength": 1 },
+            "where": { "type": "string", "minLength": 1, "description": "e.g. §3.2 ¶4" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "placeholders_used": {
+        "type": "array",
+        "description": "The brief's placeholder ids whose macro this round wrote into the manuscript, e.g. [\"ph-prod-speedup\"]. A placeholder site is not a number: emit \\ph{<id>} and report the id here, and never put a value at that site. paper-audit matches this list against the sites actually present in the text, so a site written without being reported is the same class of defect as an unreported numeral — and a number written at a registered site is worse than either.",
+        "items": { "type": "string" }
+      },
+      "qc": {
+        "type": "object",
+        "required": ["structure", "numbers", "voice"],
+        "properties": {
+          "structure": { "type": "string", "minLength": 4, "description": "What the structural pass changed, or 'skipped: <reason>'." },
+          "numbers": { "type": "string", "minLength": 4 },
+          "voice": { "type": "string", "minLength": 4 }
+        },
+        "additionalProperties": false
+      },
+      "unwritten": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["paragraph", "reason"],
+          "properties": {
+            "paragraph": { "type": "string", "minLength": 2 },
+            "reason": { "type": "string", "minLength": 10, "description": "The missing evidence, not a lack of time." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "storyline_deviations": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Where the prose departs from the confirmed plan. Silent departure is the defect this field exists to catch."
+      }
+    },
+    "additionalProperties": false,
+    "allOf": [{
+      "if": { "type": "object", "required": ["status"], "properties": { "status": { "const": "blocked" } } },
+      "then": {
+        "type": "object",
+        "required": ["build_blocker"],
+        "properties": { "build_blocker": {} }
+      }
+    }],
+    "x-piano-assertions": [
+      {
+        "path": "/compiles",
+        "message": "compiles must be true: a stage may not finish with a manuscript that does not build. Fix the build, or report status \"blocked\" with a build_blocker naming the file and the error.",
+        "when": { "op": "not", "args": [{ "op": "eq", "args": [{ "path": "/status" }, "blocked"] }] },
+        "test": { "path": "/compiles" }
+      },
+      {
+        "path": "/compiles",
+        "message": "status \"blocked\" asserts that the manuscript cannot be built, so a blocked result must report compiles: false. A spurious block stops the loop and spends the rest of the budget doing nothing.",
+        "when": { "op": "eq", "args": [{ "path": "/status" }, "blocked"] },
+        "test": { "op": "not", "args": [{ "path": "/compiles" }] }
+      }
+    ]
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": false
+      }
+    ]
+  },
+  "example": {
+    "status": "ok",
+    "unit": "§3.2",
+    "files_changed": ["main.tex", "sections/design.tex"],
+    "compiles": true,
+    "compile_command": "make",
+    "paragraphs_written": 6,
+    "numbers_used": [
+      { "value": "353", "source": "docs/check-taxonomy.md", "where": "§3.2 ¶2" },
+      { "value": "3-8s", "source": "tuning/logs/compile-timing.json", "where": "§3.2 ¶3" }
+    ],
+    "placeholders_used": ["ph-prod-speedup"],
+    "qc": {
+      "structure": "Split the original ¶4, which carried both the check taxonomy and the diagnostic format; the taxonomy now ends ¶3 and the diagnostic format opens ¶4.",
+      "numbers": "Checked all 7 numerals against their sources; corrected 61.5% to 61.4% in ¶5 to match the source's precision.",
+      "voice": "Replaced a 'In order to' opener with the reference spec's consequence-first form; removed two instances of 'leverage' from the banned list."
+    },
+    "unwritten": [
+      { "paragraph": "§3.2-¶7", "reason": "The diagnostic latency comparison needs the nsys trace that §5.4 has not produced yet." }
+    ],
+    "storyline_deviations": [
+      "¶6 states the check count before the mechanism because the reverse read as a claim with no antecedent; the storyline's ordering is preserved everywhere else."
+    ]
+  }
+}

@@ -7,7 +7,7 @@ import { compileWorkflow, parseWorkflow } from "../../packages/orchestrator/src/
 /**
  * The team workflow family: one graph shape (architect -> developer
  * tournament -> review-and-fix) shipped once per harness. The files must stay
- * siblings — same workers, same handoffs, same metric-bearing tournament
+ * siblings — same workers, same automatic inputs, same metric-bearing tournament
  * exit — and differ only in harness-native tool names.
  */
 const TEAMS = [
@@ -69,19 +69,16 @@ describe("team workflow family", () => {
         worker: "coding-architect",
         harness: team.harness,
         tools: [...team.architectTools],
-        validate: true,
       });
       expect(implement).toMatchObject({
         worker: "coding-developer",
         harness: team.harness,
         tools: [...team.laneTools],
-        validate: true,
       });
       expect(review).toMatchObject({
         worker: "coding-reviewer",
         harness: team.harness,
         tools: [...team.laneTools],
-        validate: true,
       });
 
       // The tournament stays metric-bearing: lanes implement only, and the

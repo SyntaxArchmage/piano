@@ -19,7 +19,7 @@ the promoted best.
    genuinely different workaround. Archive every failed attempt through the
    harness.
 5. Stop after a passing candidate or an exhausted truthful failure, and write
-   the requested `verification-report`. Its verdict is `pass` only if compile,
+   the result JSON for this stage. Its verdict is `pass` only if compile,
    run, and numeric check all pass.
 
 Never disable verification, loosen a case-controlled tolerance, edit the

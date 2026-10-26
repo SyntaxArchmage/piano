@@ -1,0 +1,142 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["status", "resolved", "deferred", "rejected", "files_changed", "compiles"],
+    "properties": {
+      "status": {
+        "description": "\"ok\" for a normal round. \"blocked\" only when the manuscript cannot be made to build at all: the loop then stops rather than spending the remaining budget on a tree that does not compile. Required, so that leaving the tree buildable is a statement the result makes rather than a field it can omit.",
+        "enum": ["ok", "blocked"]
+      },
+      "build_blocker": {
+        "type": "string",
+        "minLength": 15,
+        "description": "Required with status \"blocked\": the file, the error, and why it cannot be fixed from here."
+      },
+      "resolved": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "change"],
+          "properties": {
+            "id": { "type": "string", "minLength": 2, "description": "The audit or review issue id this closes." },
+            "change": { "type": "string", "minLength": 10 },
+            "where": { "type": "string" },
+            "reverified": { "type": "boolean", "description": "True when a touched number was compared back to its source file." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "deferred": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "needs", "reason"],
+          "properties": {
+            "id": { "type": "string", "minLength": 2 },
+            "needs": {
+              "enum": ["experiment", "figure", "datum", "storyline", "decision"],
+              "description": "What has to exist before this can be fixed."
+            },
+            "reason": { "type": "string", "minLength": 15, "description": "The specific missing artifact, so the next round can target it." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "rejected": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "reason"],
+          "properties": {
+            "id": { "type": "string", "minLength": 2 },
+            "reason": { "type": "string", "minLength": 15, "description": "Why the issue is wrong." },
+            "clarified": { "type": "string", "description": "The edit that stops the next reader making the same misreading." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "files_changed": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+      "compiles": { "type": "boolean" },
+      "compile_command": { "type": "string" },
+      "page_count": { "type": "number", "exclusiveMinimum": 0 },
+      "incidental_changes": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Edits no issue asked for. Listed so the reviewer can see how a revision can introduce new defects."
+      }
+    },
+    "additionalProperties": false,
+    "allOf": [{
+      "if": { "type": "object", "required": ["status"], "properties": { "status": { "const": "blocked" } } },
+      "then": {
+        "type": "object",
+        "required": ["build_blocker"],
+        "properties": { "build_blocker": {} }
+      }
+    }],
+    "x-piano-assertions": [
+      {
+        "path": "/compiles",
+        "message": "compiles must be true: this stage is the last one that may leave the manuscript unbuildable. Fix the build, or report status \"blocked\" with a build_blocker naming the file and the error.",
+        "when": { "op": "not", "args": [{ "op": "eq", "args": [{ "path": "/status" }, "blocked"] }] },
+        "test": { "path": "/compiles" }
+      },
+      {
+        "path": "/compiles",
+        "message": "status \"blocked\" asserts that the manuscript cannot be built, so a blocked result must report compiles: false. A spurious block stops the loop and spends the rest of the budget doing nothing.",
+        "when": { "op": "eq", "args": [{ "path": "/status" }, "blocked"] },
+        "test": { "op": "not", "args": [{ "path": "/compiles" }] }
+      }
+    ]
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": false
+      }
+    ]
+  },
+  "example": {
+    "status": "ok",
+    "resolved": [
+      {
+        "id": "A1",
+        "change": "Replaced the 2.3x geomean in §1 ¶4 with 1.64x, and removed the same figure from the abstract, which stated it a second time.",
+        "where": "§1 ¶4, Abstract",
+        "reverified": true
+      },
+      {
+        "id": "R2",
+        "change": "Narrowed the abstract's scope sentence to sparse GEMM and noted the dense results as future work in §7.",
+        "where": "Abstract, §7 ¶2",
+        "reverified": false
+      }
+    ],
+    "deferred": [
+      {
+        "id": "R1",
+        "needs": "experiment",
+        "reason": "Table 3 needs a baseline tuned at the evaluated shapes; the round's shape set is fixed by the harness, so this needs a re-run rather than an edit."
+      }
+    ],
+    "rejected": [
+      {
+        "id": "R7",
+        "reason": "The reviewer read §4.2's 'no library call' as excluding the reference path, which §4.2 explicitly permits two sentences later.",
+        "clarified": "Moved the reference-path exception to the sentence that states the rule, so it cannot be read past."
+      }
+    ],
+    "files_changed": ["main.tex", "sections/design.tex"],
+    "compiles": true,
+    "compile_command": "make",
+    "page_count": 10.75,
+    "incidental_changes": [
+      "Fixed a broken \\autoref in §5.1 found while fixing A1's surrounding text."
+    ]
+  }
+}

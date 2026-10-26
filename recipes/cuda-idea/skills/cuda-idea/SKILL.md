@@ -6,8 +6,8 @@ description: Select one evidence-backed, non-repeated CUDA kernel optimization f
 # CUDA idea
 
 Read the fresh profile and the harness-owned history before forming a proposal.
-For a runnable round, emit an `optimization-proposal` whose `strategies` array
-contains exactly one strategy.
+For a runnable round, emit the result JSON for this stage; its `strategies`
+array contains exactly one strategy.
 
 1. Identify the promoted base and inspect the complete current kernel before
    selecting a change.

@@ -5,20 +5,21 @@ name in a workflow resolves to the directory with the same name:
 
 ```text
 recipes/
+  contracts/
+    <worker-name>.json      # optional declarative result schema + metric/projection outputs
   <worker-name>/
     system-prompt.md        # optional; absent = Pi default prompt
     agents.md               # optional shared worker context
     agents.<harness>.md     # optional per-harness appendix (pi, pi-cli, claude, dsh, codex)
-    contract.json           # optional declarative result schema + metric/projection outputs
     skills/
       <skill-name>/
         SKILL.md            # Agent Skills file
 ```
 
-Worker artifacts are configuration, not workflows. A worker directory must
-exist, while each file above is optional except for `SKILL.md` inside an
-existing skill directory. Skill names use lowercase letters, digits, and
-hyphens and must match their directory name.
+Worker artifacts are configuration, not workflows. A worker is named by its
+directory and/or its contract file, while each file above is optional except
+for `SKILL.md` inside an existing skill directory. Skill names use lowercase
+letters, digits, and hyphens and must match their directory name.
 
 An `agents.<harness>.md` appendix is injected immediately after the shared
 `agents.md` — but only for stages that run that harness, so a stage on `pi`
@@ -118,7 +119,8 @@ prepare (discuss) ──▶ calibrate ──▶ ┌─ polish loop (duration 259
   title and core claim, the code and data that back it, the contributions, the
   target venue with its template and page limit, and — the field the whole
   workflow is built around — which **finished papers** are the standard to
-  match. It writes `brief.json`, which every later stage reads.
+  match. Its contract-validated result is the brief every later stage receives
+  through its automatic inputs context.
   - Before it asks anything, it reads **`PROMPT.md`** from the workspace root if
     one exists: the document an author writes once, usually after talking a
     design through, so that the run starts from settled decisions instead of the
@@ -200,28 +202,38 @@ checks and the honest final report).
 
 ## Workflow data flow
 
-`from` only expresses scheduling dependencies. A stage that needs predecessor
-evidence declares `handoff`; Piano then writes an invocation-private context
-file containing immutable producer records. Handoffs are not session resume.
-Within one execution, an actor resumes only its own logical stage (and map
-lane, where applicable).
+`from` expresses scheduling dependencies and routes upstream results. When a
+stage has predecessor inputs, Piano writes one standard `inputs.json` beneath
+that invocation's private context directory and injects it into the stage
+prompt; the file contains immutable acceptance records. The name and location
+are orchestrator-owned. Automatic inputs are not session resume. Within one
+execution, an actor resumes only its own logical stage (and map lane, where
+applicable).
 
-`validate: true` selects `contract.json` from that stage's worker directory.
-The file contains a versioned JSON Schema, an example shown to the agent,
+A worker's result contract lives at `recipes/contracts/<worker>.json` and is
+selected automatically: every stage whose worker has that file is validated,
+and a worker without one requires no structured result. There is no per-stage
+switch; a workflow that still declares `validate` is rejected at parse time.
+The file contains a JSON Schema, an example shown to the agent,
 optional RFC 6901 pointers to `benchmark/v1` metric payloads, and generic
-semantic projections for handoff/progress transport. Piano snapshots the exact
+semantic projections for acceptance/progress transport. Piano copies the exact
 contract into the run before dispatch, validates the worker's
 invocation-local result, and gives a malformed or missing result one resumed
-repair turn. Omitting `validate` means no structured result is required.
-Validation does not create a scheduling dependency by itself, so a consumer
-still needs `handoff` when it needs upstream evidence. A declared
-`outputs.projections` block is nevertheless persisted as structured semantic
-output in the handoff/progress records; it does not replace the consumer's
-`handoff` declaration. String-valued validators are legacy-only.
+repair turn. A result that still fails that turn is accepted with a
+`validationWarning` rather than failing the stage: the warning travels into
+`inputs.json`, the prompt of every downstream consumer, and tournament
+selection excludes the branch. A malformed contract or invalid example fails
+workflow load before any worker runs; a missing contract leaves the stage
+unvalidated.
+Validation does not create a scheduling dependency by itself, but every stage
+with upstream dependencies receives the automatic inputs context once those
+producers are accepted. A declared `outputs.projections` block is persisted as
+structured semantic output in the acceptance/progress records; it does not
+change which stages receive inputs.
 
 Cross-field invariants that JSON Schema cannot express may use the generic
 root-level `x-piano-assertions` expression list. Field paths, formulas,
-tolerances, and error messages remain worker-owned in `contract.json`; the
+tolerances, and error messages remain worker-owned in the contract file; the
 contract runtime only evaluates the declared expression tree and contains no
 worker-specific rules.
 
@@ -235,7 +247,7 @@ The CUDA profile contract accepts `ready`, `timing-only`, or `blocked`. A
 timing-only result may contain only measured timing/derived bandwidth and must
 leave unavailable hardware counters absent; a blocked result must include the
 real blocker. For a validated CUDA round, a `KEEP` decision is materialized by
-the orchestrator through a digest-checked compensation transaction before the
+the orchestrator through a compensating transaction before the
 next loop iteration. This is not a filesystem/Git atomicity guarantee: if
 rollback cannot be proven, the run reports unknown source state and preserves
 canonical evidence for recovery. A discarded/failed candidate is restored from

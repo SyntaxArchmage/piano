@@ -17,8 +17,8 @@ export function workspaceRelativePathViolation(path: string): WorkspaceRelativeP
   return undefined;
 }
 
-/** Shared boolean boundary for legacy validation, worker projections, and
- * orchestrator winner commits. Callers retain ownership of error messages. */
+/** Shared boolean boundary for worker projections and orchestrator winner
+ * commits. Callers retain ownership of error messages. */
 export function isUnsafeWorkspaceRelativePath(path: string): boolean {
   return workspaceRelativePathViolation(path) !== undefined;
 }

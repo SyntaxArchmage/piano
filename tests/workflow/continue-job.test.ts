@@ -30,7 +30,6 @@ workflow:
     - stage:
         name: second
         worker: basic
-        handoff: first-report.json
         from: [first]
 `;
 
@@ -116,7 +115,7 @@ describe("a continue resumes a paused job from its cursor", () => {
       ]);
 
       // The rebuilt producer feeds the consumer's context like any other.
-      const contextPath = calls[0]?.contextFilePaths?.find((path) => path.endsWith("/first-report.json"));
+      const contextPath = calls[0]?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
       const context = JSON.parse(await readFile(contextPath!, "utf8")) as { inputs: Array<{ text: string }> };
       expect(context.inputs).toMatchObject([{ text: "first output" }]);
 

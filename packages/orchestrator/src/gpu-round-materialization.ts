@@ -7,14 +7,9 @@
 
 import { FileSystem } from "@effect/platform";
 import { Effect, Either } from "effect";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import {
-  projectContractProjections,
-  WorkerContractValidationError,
-  type ContractMetric,
-  type ContractProjection,
-} from "@piano/contract";
+import type { ContractMetric, ContractProjection } from "@piano/contract";
 import {
   isNotFoundFileSystemError,
   isNotLinkFileSystemError,
@@ -25,7 +20,6 @@ import {
 import { installStagingFile, writeFileAtomic } from "@piano/base";
 import { gpuRoundMaterializationProtocol, replaceProjectedValue } from "./gpu-round-protocol.js";
 import { errorMessage, workflowError, type WorkflowError } from "./errors.js";
-import { sha256Bytes } from "./handoff.js";
 import { validateStagePayload } from "./stage-validation.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
 import type { ResolvedStageValidation } from "./execution-types.js";
@@ -35,11 +29,16 @@ import {
   normalizeDurableMetricCompatibility,
   parseBenchmarkIdentity,
 } from "./stage-metrics.js";
+/** The content pin of an artifact: the `sha256:<hex>` spelling workers declare
+ * in `candidate.digest` and `promotion.resulting_best.digest`. */
+function sha256Bytes(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
 function writeJsonAtomicWorkflow(
   path: string,
   value: unknown,
-): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {
-  return writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
+): Effect.Effect<void, WorkflowError, FileSystem.FileSystem> {  return writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`, {
     // A random, exclusive sibling avoids following a pre-created predictable
     // temp symlink. The preflight checks below still cannot close an OS-level
     // same-UID concurrent replacement race; use an OS sandbox/openat boundary
@@ -184,7 +183,6 @@ interface MaterializedStagePayload {
   readonly value: unknown;
   readonly metrics: readonly ContractMetric[];
   readonly projections: readonly ContractProjection[];
-  readonly applied: boolean;
 }
 
 /** The read-only half of GPU-round materialization: every check that can
@@ -218,9 +216,9 @@ export function materializeGpuPromotion(
     const inspection = yield* inspectGpuRound(
       payload, projections, validation, stageIdentity, workspace, sourcePath, acceptedResultPath, resultRoot,
     );
-    if (inspection === undefined) return { value: payload, metrics, projections, applied: false };
+    if (inspection === undefined) return { value: payload, metrics, projections };
     yield* materializationTransaction(inspection.writes);
-    return { value: inspection.payload, metrics: inspection.metrics, projections: inspection.projections, applied: true };
+    return { value: inspection.payload, metrics: inspection.metrics, projections: inspection.projections };
   });
 }
 
@@ -369,10 +367,12 @@ export function inspectGpuRound(
       effectiveDecision = "DISCARD";
     }
     const bestPath = canonicalBestPath;
+    // Artifact integrity: the digest identifies the bytes this round actually
+    // read, and a worker declaration that disagrees is a failed check, never a
+    // value to copy. Contract lineage has no digest; this one pins content.
     let bestDigest: string;
     let candidateDigest: string | undefined;
     let artifactWrite: { readonly path: string; readonly source: Uint8Array } | undefined;
-    let materializedResultingBest: Record<string, unknown> = { path: canonicalBestRefPath };
 
     if (effectiveDecision === "KEEP") {
       if (promotion.promoted !== true) {
@@ -391,29 +391,28 @@ export function inspectGpuRound(
         return yield* Effect.fail(workflowError(
           "schedule",
           candidatePath,
-          `KEEP candidate digest mismatch: payload=${candidate.digest}, actual=${bestDigest}`,
+          `KEEP candidate digest mismatch: declared=${candidate.digest}, actual=${bestDigest}`,
         ));
       }
       if (typeof resultingBest.digest === "string" && resultingBest.digest !== bestDigest) {
         return yield* Effect.fail(workflowError(
           "schedule",
           bestPath,
-          `KEEP resulting-best digest mismatch: payload=${resultingBest.digest}, actual=${bestDigest}`,
+          `KEEP resulting-best digest mismatch: declared=${resultingBest.digest}, actual=${bestDigest}`,
         ));
       }
       if (candidatePath !== canonicalBestPath) {
         artifactWrite = { path: bestPath, source: candidateSource };
       }
-      materializedResultingBest = { path: canonicalBestRefPath, digest: bestDigest };
     } else {
       const currentBestSource = yield* fileSystem.readFile(canonicalBestPath).pipe(
         Effect.mapError((cause) => workflowError("schedule", canonicalBestPath, `current-best is not readable: ${errorMessage(cause)}`)),
       );
       bestDigest = sha256Bytes(currentBestSource);
       // A compile/verify failure may not leave a candidate file. When a
-      // candidate exists, capture its digest before restoring it so the round
-      // record remains truthful about what was discarded; current-best itself
-      // is always required and authoritative.
+      // candidate exists it is read (and restored to the durable best) so the
+      // round record remains truthful about what was discarded; current-best
+      // itself is always required and authoritative.
       const candidateExists = yield* fileSystem.exists(candidatePath).pipe(
         Effect.mapError((cause) => workflowError("schedule", candidatePath, `candidate existence check failed: ${errorMessage(cause)}`)),
       );
@@ -426,28 +425,32 @@ export function inspectGpuRound(
           return yield* Effect.fail(workflowError(
             "schedule",
             candidatePath,
-            `candidate digest mismatch: payload=${candidate.digest}, actual=${candidateDigest}`,
+            `candidate digest mismatch: declared=${candidate.digest}, actual=${candidateDigest}`,
           ));
         }
+        if (candidatePath !== canonicalBestPath) {
+          artifactWrite = { path: candidatePath, source: currentBestSource };
+        }
       }
-      if (candidatePath !== canonicalBestPath && candidateExists) {
-        artifactWrite = { path: candidatePath, source: currentBestSource };
-      }
-      materializedResultingBest = { path: canonicalBestRefPath, digest: bestDigest };
     }
+    const materializedResultingBest: Record<string, unknown> = {
+      path: canonicalBestRefPath,
+      digest: bestDigest,
+    };
 
     const promotedAt = new Date().toISOString();
+    const { digest: _existingDigest, sha256: _existingSha256, ...existingBestFields } = existingBestMetric;
     const materializedCurrentBest = effectiveDecision === "KEEP"
       ? {
-        ...existingBestMetric,
+        ...existingBestFields,
         path: canonicalBestRefPath,
         digest: bestDigest,
         sha256: bestDigest,
         verified: true,
         source: candidatePreflight.relativeRef,
         // The protocol has already enforced the finite, non-negative integer
-        // domain shared by the legacy and canonical validators. Preserve that
-        // accepted value instead of silently narrowing only durable state.
+        // domain declared by the worker contract. Preserve that accepted value
+        // instead of silently narrowing only durable state.
         iteration,
         promoted_at: promotedAt,
         ...(metricName === undefined || metricBest === undefined || benchmarkIdentity === undefined ? {} : {
@@ -462,7 +465,7 @@ export function inspectGpuRound(
         }),
       }
       : {
-        ...existingBestMetric,
+        ...existingBestFields,
         path: canonicalBestRefPath,
         digest: bestDigest,
         sha256: bestDigest,
@@ -534,21 +537,10 @@ export function inspectGpuRound(
     }
     // Canonical contracts may normalize (notably strip) values during
     // validation, so their normalized output is the only accepted payload.
-    // Deprecated named validators strip unknown object keys with Zod. Keep
-    // their orchestrator-owned demotion audit marker during migration; the
-    // original worker payload had already passed through that validator, so
-    // this compatibility branch cannot reintroduce worker-owned unknowns.
-    const acceptedMaterializedPayload = validation.kind === "legacy" && decision !== effectiveDecision
-      ? materializedPayload
-      : revalidated.payload.value;
-    const materializedProjections = projectContractProjections(
-      validation.id,
-      declarations,
-      acceptedMaterializedPayload,
-    );
-    if (materializedProjections instanceof WorkerContractValidationError) {
-      return yield* Effect.fail(workflowError("schedule", sourcePath, materializedProjections.message));
-    }
+    const acceptedMaterializedPayload = revalidated.payload.value;
+    // Validation already produced the normalized payload and its projections;
+    // re-projecting the same bytes would repeat the work and its error branch.
+    const materializedProjections = revalidated.payload.projections;
     const refreshedProtocol = yield* Effect.try({
       try: () => gpuRoundMaterializationProtocol(declarations, materializedProjections),
       catch: (cause) => workflowError("schedule", sourcePath, errorMessage(cause)),

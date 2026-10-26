@@ -8,13 +8,13 @@ description: Plan, generate, and verify the figures a round's storyline calls fo
 Deliverable: the figures the round's storyline asks for, rendered, referenced,
 and verified in the built PDF.
 
-Read the injected handoff context: the `paper-storyline` result, whose `context`
+Read the injected accepted-input context: the `paper-storyline` result, whose `context`
 block carries the manuscript paths, the figures directory, the reference spec
 path and the venue, and whose `figure_directives` array names what must change
 this round.
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in the `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read them from there.
 
 **`figure_directives` is the round's figure work list.** There is no other

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
@@ -16,7 +16,6 @@ import {
 } from "../src/index.js";
 
 const roots: string[] = [];
-const digest = "0".repeat(64);
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -42,13 +41,6 @@ function context(iteration: number, invocationId = `measure@loop/iter-${iteratio
     transcriptPath: "/tmp/session-1.jsonl",
   };
 }
-
-const contract = {
-  id: "benchmark-result",
-  version: 1 as const,
-  digest,
-  snapshotPath: `/run/contracts/${digest}.json`,
-};
 
 function metric(
   name: string,
@@ -105,7 +97,6 @@ describe("WorkflowTrajectory", () => {
     await run(trajectory.observe({
       type: "stage_accepted",
       context: context(0),
-      contract,
       metrics: [
         { pointer: "/throughput", value: metric("throughput", "items/s", "higher", [10, 12]) },
         { pointer: "/latency", value: metric("latency", "ms", "lower", [6, 5]) },
@@ -122,7 +113,6 @@ describe("WorkflowTrajectory", () => {
     await run(trajectory.observe({
       type: "stage_accepted",
       context: context(1),
-      contract,
       metrics: [
         { pointer: "/throughput", value: metric("throughput", "items/s", "higher", [13, 14]) },
         { pointer: "/latency", value: metric("latency", "ms", "lower", [4, 4.5]) },
@@ -163,6 +153,28 @@ describe("WorkflowTrajectory", () => {
     expect(tokens.score(tokenRecords)).toMatchObject({ count: 2, input: 90, output: 60, total: 150 });
     expect(toolRecords[0]).toMatchObject({ toolName: "bash", status: "completed", durationMs: 3 });
     expect(tools.score(toolRecords)).toMatchObject({ count: 1, failures: 0, names: ["bash"], totalDurationMs: 3 });
+  });
+
+  it("reads legacy benchmark rows and drops the retired contract reference", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-trajectory-legacy-"));
+    roots.push(runDir);
+    await mkdir(join(runDir, "eval-metrics"), { recursive: true });
+    await writeFile(join(runDir, "eval-metrics", "benchmark.jsonl"), `${JSON.stringify({
+      ...context(0),
+      kind: "benchmark",
+      metric: metric("throughput", "items/s", "higher", [12]),
+      pointer: "/benchmark",
+      contract: { id: "legacy", version: 1, digest: "0".repeat(64), snapshotPath: "/legacy/contracts/metric.json" },
+    })}\n`);
+
+    const records = await run(new BenchmarkRecorder(runDir).read(runDir));
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      kind: "benchmark",
+      pointer: "/benchmark",
+      metric: { name: "throughput", best: 12 },
+    });
+    expect(records[0]).not.toHaveProperty("contract");
   });
 
   it("hydrates cumulative token state on resume and does not reset when usage is absent", async () => {

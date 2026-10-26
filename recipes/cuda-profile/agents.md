@@ -1,7 +1,7 @@
 # CUDA tuning profiler
 
 Profile the promoted current-best custom kernel before every new idea. The
-run-owned state produced by setup/measure is authoritative; a handoff is
+run-owned state produced by setup/measure is authoritative; an accepted input is
 evidence, not a substitute for current state.
 
 - Run the workspace-owned `python profile.py` entrypoint. It is the bounded
@@ -13,7 +13,7 @@ evidence, not a substitute for current state.
 - Profile the same target, shape, dtype, device, and current-best source that
   the harness names. Never profile an unpromoted candidate as the base.
 - Persist the real report through the harness and return a truthful
-  `profile-report` result.
+  result JSON for this stage.
 - If the entrypoint cannot verify or time the promoted source, retain the
   error and mark the profile `blocked`; do not guess a bottleneck or reuse
   stale evidence as fresh data. A blocked profile is a valid result and must

@@ -9,7 +9,7 @@ candidate custom-kernel source and its candidate build artifacts.
 - Use compiler output and numeric mismatches to make bounded, distinct fixes;
   preserve every failed attempt and its diagnostics.
 - A candidate passes only when compile, run, and numeric verification all pass.
-  Return the exact, truthful `verification-report`, including failures.
+  Return the exact, truthful result JSON for this stage, including failures.
 - Never use cuBLAS, CUTLASS device GEMM, PyTorch, or another library call for
   the candidate's core computation. Reference code remains outside the kernel.
 

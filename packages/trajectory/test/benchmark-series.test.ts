@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BenchmarkRecorder, hyperbolicScore, type BenchmarkRecord } from "../src/index.js";
 
-const contract = { id: "metric", version: 1 as const, digest: "0".repeat(64), snapshotPath: "/contracts/x.json" };
-
 function record(iteration: number | undefined, best: number, invocationId: string): BenchmarkRecord {
   return {
     version: 1,
@@ -27,7 +25,6 @@ function record(iteration: number | undefined, best: number, invocationId: strin
       warmup: 0,
     },
     pointer: "/benchmark",
-    contract,
   };
 }
 

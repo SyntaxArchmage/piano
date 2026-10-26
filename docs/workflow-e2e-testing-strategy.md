@@ -30,7 +30,7 @@ type AgentRunner = (request, options) => Effect<...>
 |---|---|---|---|---|
 | L1 纯逻辑 | `tests/format`、`logging`、`cli/headless-json` | 一切 IO | 纯函数 | 单点变换对不对 |
 | L2 fake-SDK 单元 | `tests/harness`、`worker` | 真实 SDK | 工作流编排 + 日志/轨迹 | 编排逻辑对不对 |
-| L3 注入 runner 集成 | `tests/workflow`、`tui` | 真实 SDK（注入 fake runner） | 完整 multi-stage 执行循环、文件证据与 handoff | 链路边界对不对 |
+| L3 注入 runner 集成 | `tests/workflow`、`tui` | 真实 SDK（注入 fake runner） | 完整 multi-stage 执行循环、文件证据与自动 inputs | 链路边界对不对 |
 | L4 真实对等 e2e | `tests/workflow/basic-workflow-parity.e2e.test.ts` | 无（走真实 CLI + 真实 PTY） | 一切 | 与真实产物/字面一致 |
 | L4 真实进程守卫（确定性） | `tests/workflow/tournament-real-cli.e2e.test.ts`、`tests/tui/tournament-workflow.pty.test.ts` | 真实模型（`piCli.bin` 指向 `tests/fixtures/tournament-real-run/fake-agent.mjs`） | 真实 CLI/TUI 进程、引擎、子进程协议、合并/清理 | multi-stage tournament 区域退出语义在真实进程栈下成立 |
 | L5 evals（case 绑定） | `packages/evals` + `evals/**` | 按 case 例化 runner | workflow 文件 + case.yaml 读出 | 给定 workload 的 metrics/text 质检 |
@@ -55,10 +55,10 @@ type AgentRunner = (request, options) => Effect<...>
 
 这里不伪造 `PiSdkModule`，而是注入一个 `agentRunner`——可以是 `fakeAgentRunner(fakeSdk())`，也可以是一个完全手写的 `Effect.sync(...)`。`workflow-execution.test.ts` 的工作流执行用例全在此层。
 
-- **为什么注入 runner 而不是注入 SDK**：multi-stage 的 DAG 调度、fan-out 并发、上游 handoff 记录/上下文文件、validate 的失败/形状校验，这些是**编排器**的行为，跟 SDK 无关。注入 runner 让我们精确控制每个 stage 的耗时、返回值、报错，从而断言：
+- **为什么注入 runner 而不是注入 SDK**：multi-stage 的 DAG 调度、fan-out 并发、上游自动 inputs/上下文文件、validate 的失败/形状校验，这些是**编排器**的行为，跟 SDK 无关。注入 runner 让我们精确控制每个 stage 的耗时、返回值、报错，从而断言：
   - `stages.map(s => s.id)` 的 DAG 顺序（`["first","second"]`、`["left","right","joined"]`）
   - fan-out 两个独立 stage 确实并发（用 `gate`/`bothStarted` 强制对表）
-  - join stage 的 handoff 上下文按声明顺序包含 `left` 与 `right` 的输出，而 prompt 不拼接上游文本
+  - join stage 的 `inputs.json` 按声明顺序包含 `left` 与 `right` 的输出，而 prompt 不拼接上游文本
   - `loadWorkflow → compileWorkflow → executeWorker → executeAgent` 的完整 trace 生命周期
 - **为什么用临时目录 + 真文件**：`executeWorkflow` 依赖 `FileSystem`，写临时 workflow.（实际是 `writeFile` 到 `mkdtemp`）让 `loadWorkflow` 走真实的文件读取路径，而不是 mock `readFile`。这保留了「文件加载失败」这类问题的可见性。
 
@@ -79,7 +79,7 @@ type AgentRunner = (request, options) => Effect<...>
 
 ## 为什么 multi-stage 还没有完整真实 E2E 覆盖
 
-`executeWorkflow` 已执行完整 DAG，并递归展开 loop/map、保存 invocation 级证据、传递 handoff 记录和返回 `stages[]`。这些语义由 L3 的注入 runner 用例覆盖：它们能精确控制每个 stage 的耗时、结果与失败，而不依赖真实模型。
+`executeWorkflow` 已执行完整 DAG，并递归展开 loop/map、保存 invocation 级证据、自动传递上游 acceptance 记录和返回 `stages[]`。这些语义由 L3 的注入 runner 用例覆盖：它们能精确控制每个 stage 的耗时、结果与失败，而不依赖真实模型。
 
 L4 的 parity e2e 目前仍只对 basic 单 stage 对表。multi-stage 的真实进程栈守卫已经建立:`tournament-real-cli`/`tournament-workflow.pty` 用真实 CLI/TUI 子进程跑 loop 套 tournament 的 fixture(`piCli.bin` 替换为确定性 fake agent,免凭据、CI 常开),守住区域退出定胜负与逐轮 carry 的时序。winner carry 现在是确定式程序行为(引擎应用冻结 delta 并校验,不再有 agent consolidation turn),因此不再需要真实模型守卫。剩余「真实模型下的多阶段 parity」(两前端对同一 multi-stage 工作流的等价性)仍是后续工作。
 

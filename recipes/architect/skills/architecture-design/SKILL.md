@@ -11,4 +11,6 @@ description: Use for repository-grounded software architecture and implementatio
 - For every proposed boundary, name its owner, inputs, outputs, invariants, and failure behavior.
 - Prefer an incremental migration with a reversible first step over a broad rewrite.
 - Include focused verification for interfaces, compatibility, failure paths, and operational behavior.
-- Return the structured `architecture-design` contract at the requested result path when validation is enabled; keep the human-readable explanation aligned with that payload.
+- Return the result JSON for this stage at the requested result path; the
+  worker contract defines its shape. Keep the human-readable explanation
+  aligned with that payload.

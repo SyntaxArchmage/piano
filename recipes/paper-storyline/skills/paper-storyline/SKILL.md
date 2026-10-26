@@ -17,14 +17,14 @@ L4 writing plan                 (paper-write)
 L5 prose                        (paper-write)
 ```
 
-Read the injected handoff context: the `paper-brief` result, the
+Read the injected accepted-input context: the `paper-brief` result, the
 `paper-calibration` result (whose `reference_spec_path` names the durable spec),
 the previous round's `paper-review` issues when the loop fed them back, and
 `<state_dir>/storyline-state.md` if it exists. `<state_dir>` is
 `brief.manuscript.state_dir`, relative to `brief.manuscript.root`.
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in the `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read them from there.
 
 Also read the current manuscript — the storyline must describe the paper that

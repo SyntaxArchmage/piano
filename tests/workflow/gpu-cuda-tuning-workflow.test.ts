@@ -53,7 +53,13 @@ describe("gpu-cuda-tuning workflow template", () => {
     expect(compiled.value.stages.map((stage) => stage.stage.thinkingLevel)).toEqual([
       "high", "high", "high", "high", "high", "high",
     ]);
-    expect(compiled.value.stages.every((stage) => stage.stage.validate === true)).toBe(true);
+    // Validation is selected by contract presence now: every stage's worker
+    // owns a contract in the flat registry.
+    expect(source).not.toMatch(/^\s*validate:/m);
+    for (const stage of compiled.value.stages) {
+      await expect(readFile(join(process.cwd(), "recipes", "contracts", `${stage.stage.worker}.json`), "utf8"))
+        .resolves.toContain("$schema");
+    }
     expect(compiled.value.stages.find((stage) => stage.stage.name === "implement")?.stage.from).toEqual(["profile", "idea"]);
   });
 

@@ -449,11 +449,11 @@ function terminalFailureLabel(error: FailureDetails | undefined): string {
       return "workflow failed";
     case "WorkerError":
       return "worker failed";
-    case "ContractValidationError":
-      return "validation failed";
     case "LogWriteError":
     case "TraceWriteError":
       return "observability failed";
+    case "ContractValidationError":
+      return "validation failed";
     default:
       return "workflow failed";
   }

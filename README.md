@@ -7,7 +7,7 @@ diffable, and open to customization by anyone.
 
 Piano can run repeatable coding, research, tuning, and automation workflows
 through multiple agent harnesses. Every run leaves behind progress,
-transcripts, handoffs, and results you can inspect, resume, and evaluate.
+transcripts, context inputs, and results you can inspect, resume, and evaluate.
 
 This guide follows the user journey: get Piano running, choose how to run it,
 craft a workflow graph, then inspect and evaluate the results.
@@ -373,8 +373,8 @@ workflow is parsed (`stage.tools has unknown tool "read" for harness
 - **Extending the catalog**: the authoritative per-harness name list lives in
   `packages/harness/src/tool-names.ts`. When a harness ships a new built-in
   tool (or you install a dsh plugin), add its exact id there; parse
-  validation and the write/exec capability check behind `validate:` stages
-  both read from that single registry.
+  validation and the write/exec capability check for stages whose worker has a
+  contract both read from that single registry.
 
 ### Continue a previous run
 
@@ -421,7 +421,7 @@ Runs live under `~/.piano/runs/<run-id>/`. A run id looks like
 │   ├── trajectory.jsonl          # append-only record of each write
 │   └── invocations.jsonl         # invocation-started/accepted rows (producer evidence)
 ├── status.json                   # the run's single state document
-├── contracts/<sha256>.json       # immutable worker-contract snapshots (when validate: true)
+├── contracts/<worker>.json       # run-local worker-contract copy (when the worker has a contract)
 ├── eval-metrics/
 │   ├── benchmark.jsonl           # validated task metrics by iteration (when the workflow declares one)
 │   ├── duration.jsonl            # stage-attempt durations
@@ -456,7 +456,7 @@ prompts. A map slot's workspace
 `<key>` is `job-<n>/<instance>` so that two jobs' slots can never rebind
 each other; `record.json` carries the lane branch, its base commit, and the
 source branch it forked from while the slot lives. `contracts/`, validated
-result files, handoff files, and workspace directories appear only when the
+result files, context files, and workspace directories appear only when the
 workflow uses those features; completed runs clean up `workspaces/` and
 `workspace-records/` alike — the lane branch under
 `tuna/<task-mnemonic>-<runId>/lane-<n>` is the durable record — and a run's
@@ -489,14 +489,14 @@ Key files:
 - **`system-log/invocations.jsonl`** — one row per invocation event: an
   `invocation-started` allocation of the invocation's `inv-<ref>` evidence
   name, and an accepted attempt's producer evidence (stage, worker, session,
-  text, result pin). A continue rebuilds skipped stages from these rows; the
-  payload itself stays in its result file behind the `sha256` pin.
+  text, result path). A continue rebuilds skipped stages from these rows; the
+  payload itself stays in its result file.
 - **`eval-metrics/`** — the recorder streams (`benchmark.jsonl`,
   `duration.jsonl`, `token-usage.jsonl`, `tool-calls.jsonl`,
   `selection.jsonl`). Each is the evidence for its own metric; there is no
   index document, so a stream's health is a property of its file.
-- **`contracts/<sha256>.json`** — exact schemas used during this run. Metric
-  records carry the matching digest for reproducible evaluation.
+- **`contracts/<worker>.json`** — the exact declarative contract used by each
+  validating worker in this run, copied once under the worker's own name.
 - **`system-log/log.jsonl`** — ordering, prompt/skill injection, agent
   messages, tools, resource cleanup. Filter by `event` (for example
   `run.created`, `workflow.loaded`, `workflow.compiled`, `stage.started`,
@@ -552,8 +552,6 @@ imperative graph hidden in code.
     model: <optional-model>      # omit to fall through config/ENV
     thinkingLevel: high          # off..max
     tools: [read, bash, edit, write]  # exact native tool ids for this stage's harness
-    handoff: round.json          # artifact name consumed by downstream stages
-    validate: true               # use recipes/cuda-benchmark-store/contract.json
     signoff: true                # gate each accepted attempt behind a human review
     prologue: "Read WORKLOG.md before you start."    # spoken before the stage's work, inside its first prompt
     epilogue: "Append your WORKLOG.md entry."       # spoken after acceptance, as one ungraded follow-up turn
@@ -572,11 +570,9 @@ imperative graph hidden in code.
 | `worker` | yes | Selects a worker plugin directory under `recipes/`. |
 | `harness` | no | Agent adapter: `pi`, `pi-cli`, `claude`, `dsh`, or `codex`. Defaults to `PIANO_HARNESS` → root `harness` in `~/.piano/agent.config.json` → `pi`. |
 | `from` | yes | Upstream stage/region names in the same scope (empty for entry stages). |
-| `handoff` | no | Names the immutable context artifact this stage produces for consumers. |
-| `validate` | no | `true` loads the selected worker's optional `contract.json`; omit for no validation. |
 | `signoff` | no | `true` requires a human to approve each accepted attempt before its result is published. |
 | `discuss` | no | `true` exposes Piano's `discuss` tool so the stage can ask the human questions. Custom-tool support is `pi`-only: a workflow that sets the flag on `pi-cli`, `claude`, `dsh`, or `codex` is rejected at load, and so is a `pi` stage that sets the flag without naming `discuss` in `tools` (the list is the session's allowlist, so the tool would never be mounted). A run without a supervisor channel is rejected before any stage starts. The same allowlist rule applies to the `pi` extension tool `web_search`. |
-| `memory` | no | Defaults to `true`; reuses the stage actor's transcript across loop iterations, retries, and resumed prompts. `false` starts each worker turn in a new harness session while preserving handoff, contract, and other stage context. |
+| `memory` | no | Defaults to `true`; reuses the stage actor's transcript across loop iterations, retries, and resumed prompts. `false` starts each worker turn in a new harness session while preserving inputs, contract, and other stage context. |
 | `retry` | no | Per-stage retry policy for a failed attempt — see [Retry](#retry). |
 | `model` | no | Stage model override. |
 | `thinkingLevel` | no | Reasoning effort passed to the selected harness; Codex receives it as `model_reasoning_effort`. |
@@ -591,18 +587,19 @@ prompt text, and neither is evidence. `prologue` rides along with the graded
 attempt, so it shapes the work that gets graded. `epilogue` costs one extra turn
 and runs after every artifact is durable, so it is where a workflow asks for
 work it wants a human to read — a `WORKLOG.md` entry, tidying up — without
-letting free-form writing into `contract` results, `handoff` records, or the
+letting free-form writing into `contract` results, acceptance records, or the
 run's evidence files. Because the epilogue is not graded, the stage keeps the
 result it already produced and an epilogue that fails does not fail the stage.
 
 Same-session continuation is why these are not two extra stages. An `epilogue`
 turn sees the conversation it is describing through the actor's own session; a
-downstream stage would only see whatever a handoff file had serialized.
+downstream stage would only see whatever an upstream result had serialized into
+its automatic inputs context.
 
 Set `memory: false` when a stage should not resume its actor transcript. Every
 worker turn, including repairs, sign-off retries, and epilogues, then starts a
-new harness session; handoff files, contract snapshots, validation, and other
-stage context are unchanged.
+new harness session; automatic inputs, the run-local contract copy, validation,
+and other stage context are unchanged.
 
 Either primitives can come from a worker plugin instead of the workflow (see
 `prologue.md` / `epilogue.md` below). Which level to use follows the scope of the
@@ -624,18 +621,27 @@ all tokens spent; the share tracks how heavy the stage's own turns are, roughly
 in an epilogue is the author's business — but its price is not zero, which is
 worth knowing before putting one on every stage of a long run.
 
-`from` only expresses **scheduling** order. It does not transfer data. A stage
-that needs upstream evidence declares `handoff`, and Piano writes an
-invocation-private context file containing immutable producer records.
+`from` expresses **scheduling** order and also routes upstream results. When a
+stage has upstream inputs, Piano writes one standard `inputs.json` beneath that
+invocation's private context directory and injects it into the stage prompt.
+The file contains immutable acceptance records — the orchestrator's internal
+proof that a producer's result was accepted. Neither the file name nor the
+directory is a workflow choice.
 
-With `validate: true`, the worker writes result JSON to a path Piano supplies.
-Piano validates it against `recipes/<worker>/contract.json`; a malformed,
+A worker with `recipes/contracts/<worker>.json` is validated automatically; a
+worker without one requires no structured result. There is no stage-level
+validation switch, and a workflow that still declares `validate` is rejected at
+parse time. For a contracted worker, the stage writes result JSON to a path
+Piano supplies.
+Piano validates it against that contract; a malformed,
 missing, or schema-invalid result receives one resumed repair turn in the same
-actor session. The declarative contract is JSON Schema Draft 2020-12 and may
-declare metric outputs with RFC 6901 pointers. An omitted `validate` means no
-result contract. Named string validators remain readable only as a deprecated
-compatibility path for existing workflows and emit a user-visible
-`PIANO_LEGACY_WORKER_CONTRACT` deprecation warning when loaded.
+actor session. A result that still fails that turn is accepted with a
+`validationWarning` instead of failing the stage: the warning is recorded on the
+acceptance, carried into `inputs.json`, named in the prompt of every downstream
+consumer, and makes the branch ineligible in tournament selection. The
+declarative contract is JSON Schema Draft 2020-12 and may
+declare metric outputs with RFC 6901 pointers. A malformed contract or invalid
+example fails workflow load before any worker runs.
 
 With `signoff: true`, every accepted attempt pauses before its result is
 published and asks the human running Piano to approve it. The review is
@@ -675,6 +681,27 @@ candidate that underperforms is a `DISCARD`, never a reason to stop the loop.
 - Exactly one bound is required: `iterations` (a count) or `duration` (seconds
   of continuous work). Declaring both, or neither, fails the load with a
   message naming the loop.
+
+#### Iteration commits
+
+Every loop iteration is a durable point. After the iteration's accepted results
+(and a tournament's winner carry) the orchestrator scans the loop workspace and
+commits its dirty files — tracked modifications and untracked files alike,
+including memory/notes documents an agent wrote outside its result payload.
+Files that were already dirty when the execution started are excluded, so
+pre-existing user changes are never swept in; staging is always explicit paths
+(`git add -- <path>`), never `git add -A`, and there is no push. With no
+changed files the iteration logs `auto.commit.skipped` (`no-changes`) and
+continues. A workspace that is not a git worktree logs
+`auto.commit.skipped` (`not-a-git-worktree`) and continues without inventing a
+commit.
+
+The message uses whatever projections the iteration produced
+(`build.target`, `round.hypothesis`, `change.summary`, verification/profile
+facts) and falls back to the loop name and iteration when a stage has no
+contract. A commit that still fails after three attempts fails the run with a
+`WorkflowError`; a rejection by a git hook is never silent. Only loops commit:
+stages outside a loop leave their workspace changes uncommitted.
 
 #### `duration`
 
@@ -742,17 +769,22 @@ doubles.
 
 ### Tournament
 
-A `tournament` region fans out `count` lanes over a field of a `from` node
-(`over` is a dotted path into that producer's result). Each lane is an
-independent actor with its own workspace snapshot; the region's `exit` stage
-decides the winner by the declared benchmark metric, and the winning lane is
-merged back at region exit.
+A `tournament` region runs `count` lanes from the fan-out array declared by the
+`from` source stage's worker contract: the `workflow.map-items` entry in
+`outputs.projections`. `over` names that source node — only the part before the
+first dot is read. A dotted suffix such as `over: idea.strategies` is the
+legacy spelling: it is accepted and ignored, because the contract projection is
+the only fan-out source. Each lane is an independent actor with its own
+workspace snapshot; the region's `exit` stage decides the winner by the
+declared benchmark metric, and the winning lane is merged back at region exit.
+A source worker without a contract, or one whose contract lacks the projection,
+fails at schedule time.
 
 ```yaml
 - tournament:
     name: race
     from: [idea]
-    over: idea.strategies     # dotted path into a producer's result field
+    over: idea.strategies     # only `idea` is read; the suffix is legacy-ignored
     count: 3
     entry: implement
     exit: measure
@@ -795,18 +827,20 @@ per-round `race` tournament over implement strategies (see
 ## Extend Piano with custom workers
 
 A `worker` name in a workflow resolves to a directory under `recipes/
-<worker>/`. Workers are **configuration, not workflows**: they contribute a
-system prompt, agent context, and Agent Skills to the stage that selects them.
+<worker>/` and/or a contract at `recipes/contracts/<worker>.json`. Workers are
+**configuration, not workflows**: they contribute a system prompt, agent
+context, and Agent Skills to the stage that selects them.
 
 ```
 recipes/
+  contracts/
+    <worker-name>.json        # optional result schema; presence selects validation
   <worker-name>/
     system-prompt.md          # optional; absent = Pi default prompt
     agents.md                 # optional worker context injected as a context file
     agents.<harness>.md       # optional per-harness appendix (pi, pi-cli, claude, dsh, codex)
     prologue.md               # optional default front matter for every stage of this worker
     epilogue.md               # optional default back matter for every stage of this worker
-    contract.json             # optional result schema; required when stages use validate: true
     skills/
       <skill-name>/           # skill name (lowercase/digits/hyphens) must match dir name
         SKILL.md              # required inside each skill directory
@@ -866,12 +900,12 @@ Then reference it from a stage:
     worker: review
     harness: pi
     tools: [read, bash]
-    validate: true
     from: []
 ```
 
-Add `recipes/review/contract.json` when the stage uses `validate: true`; omit
-the field when this worker does not produce a structured result.
+Add `recipes/contracts/review.json` when this worker should produce a structured
+result; its presence alone turns validation on. Omit the contract file when this
+worker does not produce a structured result.
 
 ---
 

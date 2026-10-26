@@ -157,10 +157,10 @@ harness,logging}；orchestrator→{logging}；workers→{logging}。
 ──────────────────┬──────────────────────┐        ┌───────────────┬────────────────┐             ┌────────────────┬─────────────────
 rkflowStage  «record»                    │        │ WorkflowLoop  «record»         │             │ WorkflowTournament  «record»
 ─────────────────────────────────────────┤        ├────────────────────────────────┤             ├──────────────────────────────────
-me · worker · harness: HarnessName       │        │ name · from: string[]          │             │ name · from: string[] · over: 字段
+me · worker · harness: HarnessName       │        │ name · from: string[]          │             │ name · from: string[] · over: 源节点
 om: string[]                             │        │ entry · exit · feedback?: 子节点名 │             │ count: number  (并行分支数)
-ndoff?: string  (相对路径)                   │        │ iterations: number             │             │ entry · exit
-lidate?: true | ContractName             │        │ nodes: WorkflowNode[]  ◆ (递归)  │             │ nodes: WorkflowNode[]  ◆ (递归)
+                                         │        │ iterations: number             │             │ entry · exit
+                                         │        │ nodes: WorkflowNode[]  ◆ (递归)  │             │ nodes: WorkflowNode[]  ◆ (递归)
 del? · thinkingLevel? · tools?: string[] │        └────────────────────────────────┘             │ exit 按 metric 选赢家 selectWinner()
 gnoff?: boolean                          │                                                       └──────────────────────────────────
 meout?: number  (整段墙钟上限)                 │
@@ -174,7 +174,7 @@ meout?: number  (整段墙钟上限)                 │
                        ┌────────────────────┬────────────────────┐
                        │ CompiledWorkflow  «record»              │
                        ├─────────────────────────────────────────┤
-                       │ name · sourcePath · autoCommit: boolean │
+                       │ name · sourcePath                       │
                        │ nodes: WorkflowRuntimeNode[]  ◆ (树)     │
                        │ stages: CompiledStage[]  ◆ (叶子 DAG)    │
                        │ regions: WorkflowRegionPlan[]  ◆        │
@@ -282,20 +282,22 @@ timeFrame  «union»            │string · promptIndex: number              �
                         │ model? · thinkingLevel? · continuation? │
                         └─────────────────────────────────────────┘
                                             │
-          validate(contract) ✓ → 发布 HandoffProducer (record.json + 下游 context)
+          worker result → contract validate ✓ → 发布 AcceptedInvocation
                                             │
                                             │
                                             ▼
-                    ┌───────────────────────┬────────────────────────┐
-                    │ HandoffProducer  «record» (不可变证据)              │
-                    ├────────────────────────────────────────────────┤
-                    │ id · stageId · stage · worker                  │
+                    ┌────────────────────────────────────────────────────┐
+                    │ AcceptedInvocation  «record» (不可变证据)          │
+                    ├────────────────────────────────────────────────────┤
+                    │ id · ref · stageId · stage · worker                │
+                    │ workspace: WorkflowWorkspaceBinding                │
+                    │ resultPath? · resultPayload?                       │
+                    │ metrics? · projections? · validationWarning?       │
+                    │ attempt? · actorKey?                               │
+                    │ → system-log/invocations.jsonl                     │
+                    │ → context/<ref>/inputs.json                        │
+                    └────────────────────────────────────────────────────┘
       注：WorkerResult.continuation 存入 resume-state，workflow-resume 据此跨 prompt 续跑同一 actor 会话。
-                    │ workspace: WorkflowWorkspaceBinding            │
-                    │ resultPath? · resultPayload?                   │
-                    │ projections?: ContractProjection[] · contract? │
-                    │ recordPath: string  (record.json)              │
-                    └────────────────────────────────────────────────┘
                                             │
           全部证据写入 Session → ~/.piano/runs/<run-id>/…
                                             │
@@ -385,7 +387,7 @@ timeFrame  «union»            │string · promptIndex: number              �
         │                       │                         │                         │                         │                     │
         │                       │                         │                         │                         │                     │
         │                       │                         │  alt [结果未通过 contract]：repair 回合（尝试上限=1）→ 重试同一 actor                     │
-        │                       │                         │  写证据：handoff record.json（不可变）· progress.jsonl · trace                   │
+        │                       │                         │  写证据：invocations.jsonl（acceptance）· status.json · trace                   │
         │                       │  ◀──────状态事件 (TUI 更新)   │                         │                         │                     │
         │                       │                         │                         │                         │                     │
         │                       │                         │                         │                         │                     │

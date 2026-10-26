@@ -10,14 +10,11 @@ import type { AgentContinuation, ThinkingLevel } from "@piano/harness";
 import type {
   CompiledWorkerContract,
   ContractMetric,
-  ContractName,
   ContractProjection,
   ContractProjectionDeclaration,
-  ContractValidationError,
   WorkerContractValidationError,
 } from "@piano/contract";
-import type { HandoffProducer } from "./handoff.js";
-import type { WorkerContractReference } from "./contract-snapshot.js";
+import type { AcceptedInvocation, StageValidationWarning } from "./acceptance.js";
 import type { WorkflowHarness, WorkflowStage } from "./workflow.js";
 import type { WorkerResources } from "./workflow-file.js";
 import type { WorkflowRuntimeInvocation } from "./workflow-runtime.js";
@@ -40,7 +37,7 @@ export interface WorkflowStageExecutionResult {
   readonly thinkingLevel?: ThinkingLevel;
   readonly attempts: number;
   /** The concrete workspace used by this invocation. Map-slot paths are
-   * preserved so downstream handoff consumers can locate candidate artifacts. */
+   * preserved so downstream input consumers can locate candidate artifacts. */
   readonly workspace: WorkflowWorkspaceBinding;
   readonly resultPath?: string;
   readonly resultPayload?: unknown;
@@ -48,21 +45,33 @@ export interface WorkflowStageExecutionResult {
   readonly metrics?: readonly ContractMetric[];
   /** Contract-declared values available to downstream workflow consumers. */
   readonly projections?: readonly ContractProjection[];
-  readonly contract?: WorkerContractReference;
+  /** Set when the worker's result failed its contract even after the one
+   * repair turn. The stage is still accepted: the worker's text and session
+   * stand, but consumers are told the result could not be validated. */
+  readonly validationWarning?: StageValidationWarning;
 }
 
 export interface InternalStageResult extends WorkflowStageExecutionResult {
-  readonly handoff: HandoffProducer;
+  readonly acceptance: AcceptedInvocation;
   /** The note the reviewer left when they continued past this stage, if any.
    *
    * Deliberately **not** part of `WorkflowStageExecutionResult`, and
-   * deliberately not written into the handoff record: the handoff is the
+   * deliberately not written into the acceptance record: the acceptance is the
    * worker's immutable evidence, and `stagePrompt` tells every consumer that
-   * "handoff files are immutable upstream evidence". A human's instruction is
+   * upstream evidence files are immutable. A human's instruction is
    * an input to the next prompt, not a finding to be cited as evidence, so it
-   * rides the internal result the same way `handoff` does and reaches exactly
-   * one place: the prompt of the stages that consume this one. */
+   * rides the internal result the same way `acceptance` does and reaches
+   * exactly one place: the prompt of the stages that consume this one. */
   readonly reviewNote?: string;
+}
+
+/** One upstream result that reached this stage with a validation warning,
+ * attributed so the prompt can say which stage and worker produced it. */
+export interface UpstreamValidationWarning {
+  readonly stageId: string;
+  readonly worker: string;
+  readonly contractPath?: string;
+  readonly message: string;
 }
 
 /** A reviewer note that reached this stage from one of its direct upstream
@@ -103,21 +112,14 @@ export interface ActorExecutionContext {
   readonly timeout?: number;
 }
 
-export type ResolvedStageValidation =
-  | {
-    readonly kind: "legacy";
-    readonly id: ContractName;
-    readonly guidance: string;
-    readonly projectionDeclarations: readonly ContractProjectionDeclaration[];
-  }
-  | {
-    readonly kind: "worker";
-    readonly id: string;
-    readonly guidance: string;
-    readonly projectionDeclarations: readonly ContractProjectionDeclaration[];
-    readonly contract: CompiledWorkerContract;
-    readonly reference: WorkerContractReference;
-  };
+export interface ResolvedStageValidation {
+  readonly id: string;
+  readonly guidance: string;
+  readonly projectionDeclarations: readonly ContractProjectionDeclaration[];
+  readonly contract: CompiledWorkerContract;
+  /** The run-local copy injected as worker context. */
+  readonly snapshotPath: string;
+}
 
 export interface ValidatedStagePayload {
   readonly value: unknown;
@@ -129,5 +131,5 @@ export type StagePayloadValidationResult =
   | { readonly success: true; readonly payload: ValidatedStagePayload }
   | {
     readonly success: false;
-    readonly error: ContractValidationError | WorkerContractValidationError;
+    readonly error: WorkerContractValidationError;
   };

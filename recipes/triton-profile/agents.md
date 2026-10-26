@@ -3,7 +3,7 @@
 Profile the promoted `state/current-best.py` Triton kernel before each idea.
 
 - Run the workspace-owned bounded `python profile.py` entrypoint and use its
-  fresh report, not stale handoff prose or an unbounded profiler search.
+  fresh report, not stale upstream prose or an unbounded profiler search.
 - Cite measured timing/bandwidth/occupancy evidence when classifying a
   compute, memory, occupancy, or launch bottleneck. Leave unavailable counters
   absent and use `timing-only` when that is what the harness reports.

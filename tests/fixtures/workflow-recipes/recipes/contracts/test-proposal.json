@@ -1,0 +1,94 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "strategies"
+    ],
+    "properties": {
+      "strategies": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "id",
+            "bottleneck",
+            "technique",
+            "rationale",
+            "predicted_speedup",
+            "risk_level"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "bottleneck": {
+              "type": "string"
+            },
+            "technique": {
+              "type": "string"
+            },
+            "rationale": {
+              "type": "string"
+            },
+            "predicted_speedup": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "risk_level": {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "conflicts_with": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "falsification_criterion": {
+              "type": "string"
+            },
+            "mechanism_over_config": {
+              "type": "boolean"
+            },
+            "variable_type": {
+              "enum": [
+                "structural",
+                "config"
+              ]
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "strategies": [
+      {
+        "id": "candidate",
+        "bottleneck": "memory",
+        "technique": "tile",
+        "rationale": "test",
+        "predicted_speedup": 1.1,
+        "risk_level": "low"
+      }
+    ]
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.map-items",
+        "pointer": "/strategies",
+        "format": "json",
+        "required": true
+      }
+    ]
+  }
+}

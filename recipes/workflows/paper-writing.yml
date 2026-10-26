@@ -140,8 +140,6 @@ workflow:
         # before deciding all twelve open questions by itself.
         tools: [read, bash, edit, write, find, grep, ls, discuss]
         discuss: true
-        handoff: brief.json
-        validate: true
         timeout: 3600
         retry:
           attempts: unbounded
@@ -156,8 +154,6 @@ workflow:
         model: gpt-5.6-luna
         thinkingLevel: max
         tools: [read, bash, edit, write, find, grep, ls]
-        handoff: calibration.json
-        validate: true
         timeout: 3600
         retry:
           attempts: unbounded
@@ -188,8 +184,6 @@ workflow:
               model: gpt-5.6-luna
               thinkingLevel: max
               tools: [read, bash, edit, write, find, grep, ls]
-              handoff: storyline.json
-              validate: true
               timeout: 2400
               retry:
                 attempts: unbounded
@@ -204,8 +198,6 @@ workflow:
               model: qwen3.8-flash
               thinkingLevel: max
               tools: [read, bash, edit, write, find, grep, ls]
-              handoff: figures.json
-              validate: true
               # Figure generation runs real data scripts; it gets the longest
               # single-turn allowance in the loop.
               timeout: 3600
@@ -222,8 +214,6 @@ workflow:
               model: deepseek-flash
               thinkingLevel: max
               tools: [read, bash, edit, write, find, grep, ls]
-              handoff: draft.json
-              validate: true
               timeout: 3600
               retry:
                 attempts: unbounded
@@ -238,8 +228,6 @@ workflow:
               model: glm-5.3-flash
               thinkingLevel: max
               tools: [read, bash, edit, write, find, grep, ls]
-              handoff: audit.json
-              validate: true
               timeout: 2400
               retry:
                 attempts: unbounded
@@ -263,8 +251,6 @@ workflow:
               # prior work instead. The skill tells it to search only to verify
               # a claim it is about to make.
               tools: [read, bash, edit, write, find, grep, ls, web_search]
-              handoff: review.json
-              validate: true
               timeout: 2400
               retry:
                 attempts: unbounded
@@ -279,8 +265,6 @@ workflow:
               model: deepseek-flash
               thinkingLevel: max
               tools: [read, bash, edit, write, find, grep, ls]
-              handoff: revision.json
-              validate: true
               timeout: 3600
               retry:
                 attempts: unbounded
@@ -297,8 +281,6 @@ workflow:
         model: glm-5.3-flash
         thinkingLevel: max
         tools: [read, bash, edit, write, find, grep, ls]
-        handoff: final.json
-        validate: true
         timeout: 2400
         retry:
           attempts: unbounded

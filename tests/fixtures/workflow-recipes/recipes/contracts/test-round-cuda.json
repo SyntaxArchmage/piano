@@ -1,0 +1,195 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "iteration",
+      "decision",
+      "candidate",
+      "current_best",
+      "promotion",
+      "records"
+    ],
+    "properties": {
+      "iteration": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "decision": {
+        "enum": [
+          "KEEP",
+          "DISCARD",
+          "COMPILE_FAIL",
+          "VERIFY_FAIL",
+          "BLOCKED"
+        ]
+      },
+      "candidate": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "current_best": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "verification": {
+        "type": "object"
+      },
+      "benchmark": {
+        "type": "object"
+      },
+      "promotion": {
+        "type": "object",
+        "required": [
+          "promoted",
+          "resulting_best",
+          "reason"
+        ],
+        "properties": {
+          "promoted": {
+            "type": "boolean"
+          },
+          "resulting_best": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "records": {
+        "type": "object",
+        "required": [
+          "round_path",
+          "state_path"
+        ],
+        "properties": {
+          "round_path": {
+            "type": "string"
+          },
+          "state_path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "blocker": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "iteration": 0,
+    "decision": "DISCARD",
+    "candidate": {
+      "path": "kernel.py"
+    },
+    "current_best": {
+      "path": "state/current-best.py"
+    },
+    "promotion": {
+      "promoted": false,
+      "resulting_best": {
+        "path": "state/current-best.py"
+      },
+      "reason": "no improvement"
+    },
+    "records": {
+      "round_path": "rounds/iter-000.json",
+      "state_path": "state/tuning-state.json"
+    },
+    "verification": {
+      "compile_passed": true,
+      "verify_passed": true
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "round.materialization-v1",
+        "pointer": "",
+        "format": "json",
+        "required": true
+      },
+      {
+        "id": "round.iteration",
+        "pointer": "/iteration",
+        "format": "number",
+        "required": true
+      },
+      {
+        "id": "round.decision",
+        "pointer": "/decision",
+        "format": "string",
+        "required": true
+      },
+      {
+        "id": "round.candidate",
+        "pointer": "/candidate",
+        "format": "json",
+        "required": true
+      },
+      {
+        "id": "round.current-best",
+        "pointer": "/current_best",
+        "format": "json",
+        "required": true
+      },
+      {
+        "id": "round.verification",
+        "pointer": "/verification",
+        "format": "json",
+        "required": true
+      },
+      {
+        "id": "round.promotion",
+        "pointer": "/promotion",
+        "format": "json",
+        "required": true
+      },
+      {
+        "id": "round.records",
+        "pointer": "/records",
+        "format": "json",
+        "required": true
+      },
+      {
+        "id": "verification.passed",
+        "pointer": "/verification/verify_passed",
+        "format": "boolean",
+        "required": true
+      },
+      {
+        "id": "benchmark.evidence",
+        "pointer": "/benchmark",
+        "format": "json",
+        "required": false
+      }
+    ]
+  }
+}

@@ -66,7 +66,7 @@ describe(" eval report", () => {
         benchmarks: [{
           name: "tflops", unit: "TFLOP/s", direction: "higher", value: 14, samples: [14],
           iteration: 1, invocationId: "tune@root/iter-1", stageId: "tune.race.measure",
-          worker: "store", contractDigest: "0".repeat(64),
+          worker: "store",
         }],
         duration: { count: 0, totalMs: 0, maxMs: 0 },
         tokens: { count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
