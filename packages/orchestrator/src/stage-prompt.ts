@@ -10,6 +10,7 @@ import type {
   ResolvedStageValidation,
   SignoffRetry,
   StageReviewNote,
+  UpstreamSkippedStage,
   UpstreamValidationWarning,
 } from "./execution-types.js";
 import { runtimeInvocationId, type WorkflowRuntimeInvocation } from "./workflow-runtime.js";
@@ -37,6 +38,7 @@ export function stagePrompt(
   signoffRetry: SignoffRetry | undefined,
   reviewNotes: readonly StageReviewNote[],
   upstreamValidationWarnings: readonly UpstreamValidationWarning[],
+  upstreamSkippedStages: readonly UpstreamSkippedStage[],
   model: string | undefined,
   thinkingLevel: ThinkingLevel | undefined,
   prologue: string | undefined,
@@ -74,6 +76,20 @@ export function stagePrompt(
       ...upstreamValidationWarnings.map((warning) => {
         const contract = warning.contractPath === undefined ? "" : `, contract \`${warning.contractPath}\``;
         return `- after \`${warning.stageId}\` (worker \`${warning.worker}\`${contract}): ${warning.message}`;
+      }),
+    );
+  }
+  if (upstreamSkippedStages.length > 0) {
+    lines.push(
+      "",
+      "## Skipped upstream stages",
+      "A System One decision skipped the stage(s) below. Their result is the last accepted earlier result, not fresh evidence.",
+      "Verify it is still relevant before relying on it.",
+      ...upstreamSkippedStages.map((skipped) => {
+        const source = skipped.sourceIteration === undefined
+          ? `\`${skipped.sourceInvocationId}\``
+          : `\`${skipped.sourceInvocationId}\` from iteration ${skipped.sourceIteration}`;
+        return `- after \`${skipped.stageId}\`: skipped by \`${skipped.model}\` (confidence ${skipped.confidence.toFixed(2)}); reusing ${source}. ${skipped.reason}`;
       }),
     );
   }

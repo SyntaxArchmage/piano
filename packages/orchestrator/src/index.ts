@@ -20,6 +20,7 @@ export {
   stageModelForSlot,
   type CompiledWorkflow,
   type WorkflowDocument,
+  type WorkflowStageDecision,
 } from "./workflow.js";
 export {
   ACTOR_KEY_VERSION,
@@ -54,6 +55,7 @@ export {
   executeWorkflow,
   loadAndExecuteWorkflow,
   type WorkflowExecutionError,
+  type WorkflowExecutionResult,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
   type WorkflowDiscussDecision,
@@ -64,6 +66,28 @@ export {
   RETRY_DEFAULT_BACKOFF_MAX_SECONDS,
   RETRY_DEFAULT_BACKOFF_SECONDS,
 } from "./stage-runner-support.js";
+export {
+  FakeSystemOneProvider,
+  HttpSystemOneProvider,
+  LayaProvider,
+  SystemOneError,
+  defaultSystemOneProvider,
+  ensureLayaEndpoint,
+  type SystemOneChoiceAnswer,
+  type SystemOneChoiceQuestion,
+  type SystemOneProvider,
+  type SystemOneRequest,
+  type SystemOneResponse,
+  type SystemOneState,
+} from "@piano/system-one";
+export {
+  decideProfilingSkip,
+  profilingSkipRequest,
+  type ProfilingMetricContext,
+  type ProfilingRoundContext,
+  type ProfilingSkipChoice,
+  type ProfilingSkipState,
+} from "./system-one-skip.js";
 export {
   readWorkflowExecutionContinuation,
   type WorkflowExecutionContinuation,

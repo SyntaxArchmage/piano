@@ -25,6 +25,7 @@ import {
   writeAcceptanceRecord,
   writeInputsContext,
   writeMapItemContext,
+  type AcceptedInvocation,
   type StageValidationWarning,
   type WorkflowMapItem,
 } from "./acceptance.js";
@@ -34,6 +35,7 @@ import { WORKER_LOG, WORKER_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import {
   actorLane,
   actorSessionDirectory,
+  iterationOfInvocationId,
   loopFrames,
   mapFrames,
   runtimeInstanceId,
@@ -78,9 +80,16 @@ import type {
   ResolvedStageValidation,
   SignoffRetry,
   StageReviewNote,
+  StageSkipDecision,
+  UpstreamSkippedStage,
   UpstreamValidationWarning,
   ValidatedStagePayload,
 } from "./execution-types.js";
+import {
+  decideProfilingSkip,
+  type ProfilingRoundContext,
+} from "./system-one-skip.js";
+import { defaultSystemOneProvider } from "@piano/system-one";
 import type {
   WorkflowExecutionError,
   WorkflowExecutionRequest,
@@ -110,7 +119,6 @@ export interface StageRunnerContext {
   readonly announcedContinuations: Map<string, AgentContinuation>;
   readonly actorContexts: Map<string, ActorExecutionContext>;
   readonly counters: StageRunnerCounters;
-  readonly knownLoopIterations: Map<string, number>;
   readonly progressSemaphore: Effect.Semaphore;
   readonly signoffSemaphore: Effect.Semaphore;
   readonly semaphoreForActor: (actorKey: string) => Effect.Semaphore;
@@ -168,6 +176,75 @@ export function rebuildAcceptedStage(
   });
 }
 
+/** The last round's decision/metric is the only tuning context the skip model
+ * gets. It is read from the feedback result the loop already passes into the
+ * next iteration; no workspace scan or transcript is involved. */
+function previousRoundContext(inputs: readonly InternalStageResult[]): ProfilingRoundContext | undefined {
+  for (const input of inputs) {
+    const decision = projectionString(input, "round.decision");
+    if (decision === undefined) continue;
+    const metric = input.metrics?.[0]?.value;
+    return {
+      iteration: iterationOfInvocationId(input.id) ?? 0,
+      decision,
+      ...(metric === undefined ? {} : {
+        metric: {
+          name: metric.name,
+          unit: metric.unit,
+          direction: metric.direction,
+          best: metric.best,
+          median: metric.median,
+        },
+      }),
+    };
+  }
+  return undefined;
+}
+
+/** The frame index of the innermost loop, or -1. */
+function lastLoopFrameIndex(frames: readonly WorkflowRuntimeFrame[]): number {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    if (frames[index]?.kind === "loop") return index;
+  }
+  return -1;
+}
+
+/** The same frame chain at one earlier loop iteration, so a prior accepted
+ * profile can be rebuilt without searching the invocation stream. */
+function framesAtLoopIteration(
+  frames: readonly WorkflowRuntimeFrame[],
+  loopIndex: number,
+  iteration: number,
+): readonly WorkflowRuntimeFrame[] {
+  return frames.map((frame, index) =>
+    index === loopIndex ? { ...frame, iteration } : frame);
+}
+
+/** Bounded profiler instructions for the decision prompt: the worker's system
+ * prompt, its context files, and its prologue. Missing files are skipped; a
+ * failed read must not fail a run. */
+function readProfilerInstructions(
+  resources: WorkerResources,
+): Effect.Effect<string, never, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const paths = [
+      ...(resources.systemPromptPath === undefined ? [] : [resources.systemPromptPath]),
+      ...resources.contextFilePaths,
+    ];
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const path of paths) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const text = yield* fileSystem.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
+      if (text.trim() !== "") parts.push(text.trim());
+    }
+    if (resources.prologue !== undefined) parts.push(resources.prologue.trim());
+    return parts.join("\n\n").slice(0, 6_000);
+  });
+}
+
 export function executeStage(
   context: StageRunnerContext,
   node: CompiledStage,
@@ -186,7 +263,6 @@ export function executeStage(
     announcedContinuations,
     actorContexts,
     counters,
-    knownLoopIterations,
     progressSemaphore,
     signoffSemaphore,
     semaphoreForActor,
@@ -353,6 +429,129 @@ export function executeStage(
       ));
     }
     const resources = yield* stageResources();
+    // A skippable loop stage asks the System One model on every visit. The
+    // engine does not impose "no improvement" or any other trigger: it gives
+    // the model the bounded context it has and treats the answer as the
+    // decision. Every transport failure, timeout, low-confidence answer, or
+    // impossible skip (no earlier result to reuse) runs the stage instead.
+    if (node.stage.skippable === true) {
+      const decisionConfig = node.stage.decision;
+      const model = decisionConfig?.model ?? "laya";
+      const timeout = decisionConfig?.timeout ?? 5;
+      const provider = request.systemOne ?? defaultSystemOneProvider(model);
+      const previousRound = previousRoundContext(inputs);
+      const loopIndex = lastLoopFrameIndex(frames);
+      const loopFrame = loopIndex < 0 ? undefined : frames[loopIndex];
+      let previousAcceptance: AcceptedInvocation | undefined;
+      if (loopFrame !== undefined && loopFrame.kind === "loop") {
+        // Walk back over skipped iterations until the most recent accepted
+        // profile is found; a second skip must still be able to reuse it.
+        for (let iteration = loopFrame.iteration - 1; iteration >= 0; iteration -= 1) {
+          const candidate = yield* readAcceptanceRecord(request.runDir, {
+            runId,
+            jobOrdinal,
+            stageId: node.id,
+            stageName: node.stage.name,
+            frames: framesAtLoopIteration(frames, loopIndex, iteration),
+          }).pipe(Effect.either);
+          if (Either.isRight(candidate) && candidate.right !== undefined) {
+            previousAcceptance = candidate.right;
+            break;
+          }
+        }
+      }
+      if (provider.model !== model) {
+        yield* stageLog.warn("stage.skip.unavailable", {
+          data: {
+            id: runtimeInvocationId(invocation),
+            model,
+            provider: provider.model,
+            reason: "provider/model mismatch",
+          },
+        }).pipe(Effect.catchAll(() => Effect.void));
+      } else {
+        const profilerInstructions = yield* readProfilerInstructions(resources);
+        const decision = yield* Effect.either(decideProfilingSkip(
+          provider,
+          {
+            stage: node.stage.name,
+            iteration: iterationOfInvocationId(invocationId) ?? 0,
+            ...(previousRound === undefined ? {} : { previousRound }),
+            previousProfileAvailable: previousAcceptance !== undefined,
+            profilerInstructions,
+          },
+          timeout,
+        ));
+        if (Either.isRight(decision)) {
+          yield* stageLog.info("stage.skip.decided", {
+            data: {
+              id: runtimeInvocationId(invocation),
+              model,
+              choice: decision.right.choice,
+              confidence: decision.right.confidence,
+              previousProfileAvailable: previousAcceptance !== undefined,
+            },
+          }).pipe(Effect.catchAll(() => Effect.void));
+          if (decision.right.skip) {
+            if (previousAcceptance === undefined) {
+              yield* stageLog.warn("stage.skip.unavailable", {
+                data: {
+                  id: runtimeInvocationId(invocation),
+                  model,
+                  reason: "no previous accepted result to reuse",
+                },
+              }).pipe(Effect.catchAll(() => Effect.void));
+            } else {
+              const sourceIteration = iterationOfInvocationId(previousAcceptance.id);
+              const skipped: StageSkipDecision = {
+                reason: "System One chose to skip; reusing the previous accepted profile",
+                model,
+                confidence: decision.right.confidence,
+                sourceInvocationId: previousAcceptance.id,
+                ...(sourceIteration === undefined ? {} : { sourceIteration }),
+              };
+              yield* stageLog.info("stage.skipped", {
+                data: {
+                  id: runtimeInvocationId(invocation),
+                  model,
+                  confidence: skipped.confidence,
+                  sourceInvocationId: skipped.sourceInvocationId,
+                  ...(sourceIteration === undefined ? {} : { sourceIteration }),
+                },
+              }).pipe(Effect.catchAll(() => Effect.void));
+              const instanceId = runtimeInstanceId(frames);
+              return {
+                id: runtimeInvocationId(invocation),
+                stageId: node.id,
+                ...(instanceId === undefined ? {} : { instanceId }),
+                stage: node.stage.name,
+                worker: node.stage.worker,
+                text: `Skipped by System One (\`${model}\`, confidence ${decision.right.confidence.toFixed(2)}); reusing \`${previousAcceptance.id}\`.`,
+                sessionId: previousAcceptance.sessionId,
+                transcriptPath: previousAcceptance.transcriptPath,
+                attempts: previousAcceptance.attempt ?? 1,
+                workspace: previousAcceptance.workspace,
+                ...(previousAcceptance.resultPath === undefined ? {} : { resultPath: previousAcceptance.resultPath }),
+                ...(previousAcceptance.resultPayload === undefined ? {} : { resultPayload: previousAcceptance.resultPayload }),
+                ...(previousAcceptance.metrics === undefined ? {} : { metrics: previousAcceptance.metrics }),
+                ...(previousAcceptance.projections === undefined ? {} : { projections: previousAcceptance.projections }),
+                ...(previousAcceptance.validationWarning === undefined ? {} : { validationWarning: previousAcceptance.validationWarning }),
+                acceptance: previousAcceptance,
+                skipped,
+              } satisfies InternalStageResult;
+            }
+          }
+        } else {
+          yield* stageLog.warn("stage.skip.failed", {
+            data: {
+              id: runtimeInvocationId(invocation),
+              model,
+              reason: decision.left.message,
+            },
+          }).pipe(Effect.catchAll(() => Effect.void));
+        }
+      }
+    }
     // Contract presence is the only validation gate: a worker with no
     // `recipes/contracts/<worker>.json` runs unvalidated, and a stage naming
     // such a worker is never warned about a contract it does not have.
@@ -525,6 +724,12 @@ export function executeStage(
             : { contractPath: input.validationWarning.contractPath }),
           message: input.validationWarning.message,
         }]);
+    /** Upstream stages whose worker turn was skipped by System One. Their
+     * result is an earlier accepted result; the prompt must say so. */
+    const upstreamSkippedStages: readonly UpstreamSkippedStage[] = inputs.flatMap((input) =>
+      input.skipped === undefined
+        ? []
+        : [{ stageId: input.stageId, ...input.skipped }]);
     /** Static ids of the stages that consume this one — the only stages a
      * `continue` note can reach, told to the reviewer up front so the
      * answer to "where does my note go?" is never a surprise. */
@@ -690,6 +895,7 @@ export function executeStage(
           signoffRetry,
           reviewNotes,
           upstreamValidationWarnings,
+          upstreamSkippedStages,
           request.model ?? stageModel,
           request.thinkingLevel ?? node.stage.thinkingLevel,
           prologue,
@@ -1140,7 +1346,6 @@ export function executeStage(
         invocation,
         progressPlan,
         counters.completedByStage,
-        knownLoopIterations,
       );
       const progressPath = yield* appendWorkflowProgress(request.runDir, {
         runId,
