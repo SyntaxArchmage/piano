@@ -1,0 +1,13 @@
+{
+  "name": "@piano/system-one",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@piano/base": "0.1.0",
+    "effect": "3.22.1"
+  }
+}
