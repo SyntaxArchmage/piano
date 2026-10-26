@@ -199,8 +199,7 @@ export interface WorkflowProgressRegionFinalizedRecord {
     | "no-winner"
     | "terminal-blocked"
     | "bound-iterations"
-    | "bound-duration"
-    | "feedback-stop";
+    | "bound-duration";
   /** Orthogonal to `outcome`: why the winning slot was not carried —
    * the admission gate rejected it, or the winner itself was stopped. */
   readonly notCarriedReason?: "admission" | "stopped";
