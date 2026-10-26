@@ -40,13 +40,22 @@ fi
 
 # Download the English checkpoint during installation so the first skippable
 # stage does not pay the Hugging Face download cost. `preload` also verifies
-# that the model files can be loaded on this machine.
-"$VENV/bin/python" - <<'PY'
+# that the model files can be loaded on this machine. Some networks cannot
+# reach huggingface.co directly; retry through the mirror only after the
+# direct download fails.
+download_checkpoint() {
+  "$VENV/bin/python" - <<'PY'
 from laya import Router
 
 Router(device="cpu", preload=["english"])
 print("Laya English checkpoint downloaded and loadable")
 PY
+}
+
+if ! download_checkpoint; then
+  echo "direct Hugging Face download failed; retrying via hf-mirror.com" >&2
+  HF_ENDPOINT="${PIANO_HF_MIRROR:-https://hf-mirror.com}" HF_HUB_DISABLE_XET=1 download_checkpoint
+fi
 
 echo "Laya installed in $VENV"
 echo "Start the local inference service with:"

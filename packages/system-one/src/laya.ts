@@ -19,7 +19,7 @@ import {
   type SystemOneResponse,
 } from "./system-one.js";
 
-const DEFAULT_ENDPOINT = "http://127.0.0.1:8000";
+const DEFAULT_ENDPOINT = "http://127.0.0.1:8765";
 const START_TIMEOUT_MS = 120_000;
 const HEALTH_TIMEOUT_MS = 500;
 
@@ -66,6 +66,7 @@ function launcherEnv(endpoint: URL): NodeJS.ProcessEnv {
     LAYA_PRELOAD: "1",
     LAYA_HOST: endpoint.hostname,
     LAYA_PORT: port,
+    HF_HUB_OFFLINE: process.env.HF_HUB_OFFLINE ?? "1",
   };
 }
 
