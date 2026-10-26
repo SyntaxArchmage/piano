@@ -227,12 +227,6 @@ function loopBlockIsTerminal(child: ScopeExecution, entryStageId: string | undef
   );
 }
 
-/** Only a worker-contract projection may end a successful loop. Payload fields
- * with similar names remain ordinary domain data and cannot control scheduling. */
-function loopStopRequested(results: readonly InternalStageResult[]): boolean {
-  return results.some((result) => resultProjectionValue(result, "workflow.loop-control") === "stop");
-}
-
 export function createScopeWalker(context: ScopeWalkerContext) {
   const {
     stageRunnerContext,
@@ -249,7 +243,6 @@ export function createScopeWalker(context: ScopeWalkerContext) {
     runId,
     mnemonic,
     jobOrdinal,
-    knownLoopIterations,
     workflowTrajectory,
   } = stageRunnerContext;
 
@@ -746,7 +739,7 @@ const executeScope = (
         let iteration = 0;
         /** Which bound ended the loop, captured at the break so the exit can
          * record it — a monitor reading `region-finalized` sees why. */
-        let bound: "bound-iterations" | "bound-duration" | "feedback-stop" = "bound-iterations";
+        let bound: "bound-iterations" | "bound-duration" = "bound-iterations";
         while (true) {
           // The bound is consulted *between* iterations, and never before
           // the first: a duration that has already elapsed when the region
@@ -813,12 +806,10 @@ const executeScope = (
               stopped: true,
             } satisfies NodeExecution;
           }
-          let stopRequested = false;
           if (region.feedback !== undefined) {
             const feedback = child.completed.get(region.feedback);
             if (feedback !== undefined) {
               priorFeedback = feedback.results;
-              stopRequested = loopStopRequested(feedback.results);
             } else if (child.stopped === true) {
               // Absorbed hypothesis-scoped block before the feedback stage:
               // thread the blocked report as pseudo-feedback so the next
@@ -832,22 +823,9 @@ const executeScope = (
               ));
             }
           }
-          // The iteration's commit already happened above; loop bookkeeping
-          // (feedback stop / bound) decides whether another one follows.
+          // The iteration's commit already happened above; the loop bound
+          // decides whether another one follows.
           iteration += 1;
-          if (stopRequested) {
-            knownLoopIterations.set(region.id, iteration);
-            yield* WORKFLOW_LOG.info("workflow.loop.stop.requested", {
-              outcome: "success",
-              data: {
-                region: region.id,
-                completedIterations: iteration,
-                feedback: region.feedback,
-              },
-            }).pipe(Effect.catchAll(() => Effect.void));
-            bound = "feedback-stop";
-            break;
-          }
         }
         if (final === undefined) {
           return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `loop "${region.name}" produced no iteration`));
