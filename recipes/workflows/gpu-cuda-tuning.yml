@@ -31,6 +31,9 @@ workflow:
               thinkingLevel: high
               tools: [read, bash, edit, write]
               from: []
+              skippable: true
+              decision:
+                model: laya
 
           - stage:
               name: idea
