@@ -56,10 +56,10 @@ export function profilingSkipRequest(state: ProfilingSkipState): SystemOneReques
         type: "choice",
         instructions:
           "Decide whether this tuning iteration should run the profiling stage again. " +
-          "Use the previous round and the profiler instructions; skip only when the previous profile is still usable and a new profile is unlikely to change the next optimization idea.",
+          "The previous round and the profiler instructions are provided as context.",
         criteria: {
-          run: "run the profiler now because fresh evidence is likely to change the next step",
-          skip: "skip the profiler this iteration and reuse the previous accepted profile",
+          run: "run the profiler now",
+          skip: "skip the profiler this iteration",
         },
       },
     },
