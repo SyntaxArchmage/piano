@@ -42,6 +42,17 @@ step "npm install"
 (cd "$REPO_ROOT" && npm install --silent)
 pass "dependencies installed"
 
+# ── 2b. Default System One model ───────────────────────────────────────────
+
+step "installing Laya decision model (optional; first run downloads PyTorch)"
+if [[ "${PIANO_SKIP_LAYA:-0}" == "1" ]]; then
+  warn "skipped via PIANO_SKIP_LAYA=1 — skippable stages will run unconditionally"
+elif bash "$SCRIPT_DIR/setup-laya.sh"; then
+  pass "Laya installed; start it with scripts/serve-laya.sh"
+else
+  warn "Laya install failed; skippable stages will run unconditionally"
+fi
+
 # ── 3. Link CLI globally ─────────────────────────────────────────────────────
 
 step "linking piano binary (npm link)"
@@ -94,5 +105,6 @@ echo ""
 echo "  Usage:"
 echo "    piano -p \"optimize gemm kernel\""
 echo "    piano doctor          # capability report (three-state per harness)"
+echo "    scripts/serve-laya.sh # run the local System One service manually"
 echo ""
 echo "  Dev mode: source edits under packages/**/src take effect immediately (tsx)."
