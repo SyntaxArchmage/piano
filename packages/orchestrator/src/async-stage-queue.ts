@@ -21,7 +21,7 @@ export interface AsyncStageTask {
   >;
 }
 
-/** FIFO-by-submission, serial execution. `collect` never waits: a consumer
+/** FIFO-by-submission, serial execution. `consume` never waits: a consumer
  * takes whatever has finished and starts without the rest. */
 export class AsyncStageQueue {
   private readonly slot: Effect.Semaphore = Effect.unsafeMakeSemaphore(1);
@@ -58,14 +58,31 @@ export class AsyncStageQueue {
     });
   }
 
-  /** All completed results for the requested static stage ids, oldest first. */
-  collect(stageIds: readonly string[]): Effect.Effect<readonly InternalStageResult[]> {
-    return Effect.sync(() => stageIds.flatMap((stageId) => this.results.get(stageId) ?? []));
+  /** Take every completed result for the requested static stage ids once.
+   * Consumption is atomic and destructive: a result handed to one downstream
+   * turn can never be replayed into another. */
+  consume(stageIds: readonly string[]): Effect.Effect<readonly InternalStageResult[]> {
+    return Effect.sync(() => {
+      const consumed: InternalStageResult[] = [];
+      for (const stageId of stageIds) {
+        const ready = this.results.get(stageId);
+        if (ready === undefined) continue;
+        consumed.push(...ready);
+        this.results.delete(stageId);
+      }
+      return consumed;
+    });
   }
 
   /** Static stage ids with at least one task still queued or running. */
   pendingFor(stageIds: readonly string[]): Effect.Effect<readonly string[]> {
     return Effect.sync(() => stageIds.filter((stageId) => (this.pending.get(stageId) ?? 0) > 0));
+  }
+
+  /** Wait for all submitted tasks to settle. Used by tests and by a caller
+   * that wants a clean boundary before consuming another batch. */
+  idle(): Effect.Effect<void> {
+    return Effect.forEach(this.fibers, (fiber) => Fiber.await(fiber), { discard: true });
   }
 
   /** Interrupt every queued/running task. Completed results stay readable but

@@ -6,7 +6,11 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
-import { loadAndExecuteWorkflow } from "../../packages/orchestrator/src/index.js";
+import {
+  loadAndExecuteWorkflow,
+} from "../../packages/orchestrator/src/index.js";
+import { AsyncStageQueue } from "../../packages/orchestrator/src/async-stage-queue.js";
+import type { InternalStageResult } from "../../packages/orchestrator/src/execution-types.js";
 import type { AgentRequest } from "../../packages/harness/src/index.js";
 import { validationResultPathFromPrompt } from "../common/validation-path.mjs";
 
@@ -41,6 +45,31 @@ function stageId(request: AgentRequest): string {
 }
 
 describe("async stage queue", () => {
+  it("consumes a ready result exactly once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-async-queue-"));
+    try {
+      const session = await Effect.runPromise(
+        createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      const queue = new AsyncStageQueue();
+      const fake = { stageId: "profile", acceptance: { id: "inv-1" } } as unknown as InternalStageResult;
+      await Effect.runPromise(Effect.gen(function* () {
+        yield* queue.submit({ stageId: "profile", run: Effect.succeed(fake) });
+        yield* queue.idle();
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      const first = await Effect.runPromise(queue.consume(["profile"]));
+      const second = await Effect.runPromise(queue.consume(["profile"]));
+      expect(first).toHaveLength(1);
+      expect(second).toHaveLength(0);
+      await Effect.runPromise(queue.shutdown());
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("starts downstream without a pending profile and collects it in the next iteration", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-async-stage-"));
     try {
