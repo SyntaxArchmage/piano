@@ -571,10 +571,11 @@ beside the run. It is off by default and cannot fail the run. The server reads
 found in `results/*.json`) as a best-so-far step curve, keeps each tournament
 lane as a faint step trace, and summarizes harness, token usage, and stage
 time. It outlives the run, so a remote browser can keep reading the evidence
-after the process exits. Hovering a measurement shows its lane branch and
-commit (or the workflow repository's current branch and commit when the run
-has no lane evidence), with links to the repository page when an origin remote
-is known. The shipped GPU tuning templates opt in;
+after the process exits. Hovering a measurement shows its lane branch and fork
+commit (or the loop iteration's commit for a non-lane point), falling back to
+the workflow repository's current branch and commit when the run has no lane
+evidence; links point at the repository page when an origin remote is known.
+The shipped GPU tuning templates opt in;
 `piano dashboard [--run <id>]` prints the URL (port 7317 by default) and
 `piano dashboard --stop` stops it.
 
