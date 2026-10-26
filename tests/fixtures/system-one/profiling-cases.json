@@ -1,0 +1,255 @@
+{
+  "version": 1,
+  "description": "Labeled profiling-stage decisions for the System One bake-off. The labels encode the intended policy, not a model's output.",
+  "question": {
+    "action": {
+      "type": "choice",
+      "instructions": "Choose what the profiling stage should do in this loop iteration.",
+      "criteria": {
+        "run": "run the profiling stage synchronously now",
+        "skip": "skip the profiling stage for this iteration",
+        "async": "queue the profiling work and join a later iteration"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "first-run-free",
+      "state": {
+        "iteration": 0,
+        "latestProfile": null,
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "run"
+    },
+    {
+      "id": "first-async-no-slot",
+      "state": {
+        "iteration": 0,
+        "latestProfile": null,
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "async"
+    },
+    {
+      "id": "first-inflight",
+      "state": {
+        "iteration": 0,
+        "latestProfile": null,
+        "inFlight": true,
+        "queue": { "capacity": 1, "running": 1, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "fresh-ready",
+      "state": {
+        "iteration": 3,
+        "latestProfile": { "iteration": 3, "status": "ready", "ageIterations": 0 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 10,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "fresh-timing-only",
+      "state": {
+        "iteration": 4,
+        "latestProfile": { "iteration": 4, "status": "timing-only", "ageIterations": 0 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 10,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "fresh-no-slot",
+      "state": {
+        "iteration": 4,
+        "latestProfile": { "iteration": 4, "status": "ready", "ageIterations": 0 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 1, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 10,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "in-flight-with-stale-profile",
+      "state": {
+        "iteration": 5,
+        "latestProfile": { "iteration": 3, "status": "ready", "ageIterations": 2 },
+        "inFlight": true,
+        "queue": { "capacity": 1, "running": 1, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "stale-free-cheap",
+      "state": {
+        "iteration": 5,
+        "latestProfile": { "iteration": 3, "status": "ready", "ageIterations": 2 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 5,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "run"
+    },
+    {
+      "id": "stale-free-slow",
+      "state": {
+        "iteration": 5,
+        "latestProfile": { "iteration": 3, "status": "ready", "ageIterations": 2 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 20,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "async"
+    },
+    {
+      "id": "stale-no-slot",
+      "state": {
+        "iteration": 5,
+        "latestProfile": { "iteration": 3, "status": "ready", "ageIterations": 2 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "async"
+    },
+    {
+      "id": "stale-budget-edge",
+      "state": {
+        "iteration": 6,
+        "latestProfile": { "iteration": 4, "status": "ready", "ageIterations": 2 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 10,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "run"
+    },
+    {
+      "id": "stale-over-budget",
+      "state": {
+        "iteration": 6,
+        "latestProfile": { "iteration": 4, "status": "ready", "ageIterations": 2 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 11,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "async"
+    },
+    {
+      "id": "blocked-same-candidate",
+      "state": {
+        "iteration": 7,
+        "latestProfile": { "iteration": 6, "status": "blocked", "ageIterations": 1 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "blocked-new-candidate",
+      "state": {
+        "iteration": 7,
+        "latestProfile": { "iteration": 6, "status": "blocked", "ageIterations": 1 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 1,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": true
+      },
+      "expected": "run"
+    },
+    {
+      "id": "blocked-no-slot-new-candidate",
+      "state": {
+        "iteration": 7,
+        "latestProfile": { "iteration": 6, "status": "blocked", "ageIterations": 1 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": true
+      },
+      "expected": "async"
+    },
+    {
+      "id": "queue-already-queued",
+      "state": {
+        "iteration": 8,
+        "latestProfile": { "iteration": 5, "status": "ready", "ageIterations": 3 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 0, "queued": 1 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": false
+      },
+      "expected": "skip"
+    },
+    {
+      "id": "queue-running-other-task",
+      "state": {
+        "iteration": 8,
+        "latestProfile": { "iteration": 5, "status": "ready", "ageIterations": 3 },
+        "inFlight": false,
+        "queue": { "capacity": 1, "running": 1, "queued": 0 },
+        "freeSlots": 0,
+        "estimatedMinutes": 15,
+        "budgetMinutes": 10,
+        "candidateChanged": true
+      },
+      "expected": "async"
+    }
+  ]
+}
