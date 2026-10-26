@@ -1,0 +1,68 @@
+version: 3
+
+# `model` is intentionally omitted from every stage so Pi resolves the user's
+# configured model (request > stage > PIANO_PI_MODEL > ~/.piano/agent.config).
+# `thinkingLevel` is explicit because tuning needs deliberate reasoning effort;
+# Pi maps this level to the provider-specific reasoning control.
+workflow:
+  name: gpu-cuda-tuning-skippable
+  monitor: true
+  nodes:
+    - stage:
+        name: setup
+        worker: cuda-setup
+        harness: pi
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        from: []
+
+    - loop:
+        name: tune
+        from: [setup]
+        feedback: measure
+        entry: profile
+        exit: measure
+        iterations: 10
+        nodes:
+          - stage:
+              name: profile
+              worker: cuda-profile
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              from: []
+              skippable: true
+              decision:
+                model: laya
+
+          - stage:
+              name: idea
+              worker: cuda-idea
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              from: [profile]
+
+          - stage:
+              name: implement
+              worker: cuda-implement-verify
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              from: [profile, idea]
+
+          - stage:
+              name: measure
+              worker: cuda-benchmark-store
+              harness: pi
+              thinkingLevel: high
+              tools: [read, bash, edit, write]
+              from: [idea, implement]
+
+    - stage:
+        name: summary
+        worker: cuda-summary
+        harness: pi
+        thinkingLevel: high
+        tools: [read, bash, edit, write]
+        from: [tune]
