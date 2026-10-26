@@ -197,7 +197,9 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 22px 40px; }
 }
 .tooltip .t-title { font-weight: 650; margin-bottom: 5px; display: flex; align-items: center; gap: 7px; }
 .tooltip .t-row { display: flex; justify-content: space-between; gap: 14px; color: var(--muted); }
-.tooltip .t-row b { color: var(--text); font-weight: 600; }
+.tooltip .t-row b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; text-align: right; }
+.tooltip .t-row b a { color: var(--accent); text-decoration: none; }
+.tooltip .t-row b a:hover { text-decoration: underline; }
 
 .hint { margin-top: 6px; }
 
