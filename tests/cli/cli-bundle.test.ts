@@ -35,6 +35,7 @@ async function fixtureRepo(marker: string, suffix = ""): Promise<string> {
   await mkdir(join(root, "packages", "harness", "src"), { recursive: true });
   await cp(join(repoRoot, "packages", "cli", "bin", "piano.mjs"), join(root, "packages", "cli", "bin", "piano.mjs"));
   await cp(join(repoRoot, "packages", "cli", "scripts", "cli-bundle.mjs"), join(root, "packages", "cli", "scripts", "cli-bundle.mjs"));
+  await cp(join(repoRoot, "packages", "dashboard", "server"), join(root, "packages", "dashboard", "server"), { recursive: true });
   await writeFile(join(root, "package-lock.json"), "{}\n", "utf8");
   await writeFile(join(root, "packages", "harness", "src", "pi-web-search.ts"), "export const stub = true;\n", "utf8");
   await writeFile(join(root, "packages", "harness", "src", "dsh-resume-runner.mjs"), "// stub\n", "utf8");
@@ -92,7 +93,16 @@ describe("prebuilt CLI start path", () => {
     expect(started.code).toBe(0);
     expect(started.stdout.trim()).toBe("stub-run:hello");
     expect(started.stderr).toBe("");
-    for (const name of ["piano.js", "pi-web-search.js", "dsh-resume-runner.mjs", ".fingerprint"]) {
+    for (const name of [
+      "piano.js",
+      "pi-web-search.js",
+      "dsh-resume-runner.mjs",
+      "piano-dashboard.mjs",
+      "public/index.html",
+      "public/app.js",
+      "public/style.css",
+      ".fingerprint",
+    ]) {
       await expect(stat(join(distOf(root), name))).resolves.toBeTruthy();
     }
   });

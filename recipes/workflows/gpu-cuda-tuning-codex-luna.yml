@@ -5,6 +5,7 @@ version: 3
 # capability contract and is validated against the Codex catalog.
 workflow:
   name: gpu-cuda-tuning-codex-luna
+  monitor: true
   nodes:
     - stage:
         name: setup

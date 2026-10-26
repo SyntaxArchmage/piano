@@ -8,6 +8,7 @@ import { logsCommand } from "./logs.js";
 import { evalsCommand } from "./evals.js";
 import { resumeCommand } from "./resume.js";
 import { clearAllCommand } from "./clear.js";
+import { dashboardCommand } from "./dashboard.js";
 import { doctorCommand } from "./doctor.js";
 import { ensureSystemCaTrust } from "./ca-certs.js";
 import { CliArgumentError } from "./errors.js";
@@ -103,6 +104,7 @@ export function main(
   if (args[0] === "evals") return evalsCommand(args.slice(1));
   if (args[0] === "resume") return resumeCommand(args.slice(1));
   if (args[0] === "clear-all") return clearAllCommand(args.slice(1));
+  if (args[0] === "dashboard") return dashboardCommand(args.slice(1));
   if (args[0] === "doctor") return doctorCommand(args.slice(1));
   return parseMainArgs(args).pipe(Effect.flatMap((options) => Effect.gen(function* () {
     // A staging session writes nothing until the first prompt is submitted, so

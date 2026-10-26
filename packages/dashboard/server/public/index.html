@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Piano · run dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">▮▮</span> PIANO <span class="sub">run dashboard</span></div>
+    <div class="controls">
+      <label class="field"><span>Run</span><select id="run-picker" aria-label="Run"></select></label>
+      <span id="live" class="live"><i></i> live</span>
+      <span id="updated" class="muted small"></span>
+      <button id="pause" class="btn" type="button">Pause</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="empty" class="empty hidden">
+      <h1>No run yet</h1>
+      <p class="muted">Start a workflow with <code>monitor: true</code> at the top level, or pick a run above.</p>
+    </section>
+
+    <section id="overview">
+      <div id="cards" class="cards"></div>
+
+      <div class="panel chart-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Performance</h2>
+            <div id="metric-sub" class="muted small"></div>
+          </div>
+          <div class="chart-controls">
+            <label class="field"><span>Metric</span><select id="metric-picker" aria-label="Metric"></select></label>
+            <label class="field"><span>X axis</span><select id="xmode" aria-label="X axis">
+              <option value="time">Time</option>
+              <option value="iteration">Iteration</option>
+            </select></label>
+            <button id="reset-zoom" class="btn ghost" type="button">Reset zoom</button>
+          </div>
+        </div>
+        <div id="legend" class="legend"></div>
+        <div id="chart-wrap" class="chart-wrap">
+          <svg id="chart" role="img" aria-label="Performance chart"></svg>
+          <div id="tooltip" class="tooltip hidden" role="tooltip"></div>
+          <div id="chart-empty" class="chart-empty hidden"></div>
+        </div>
+        <div class="hint muted small">wheel = zoom · drag = pan · double-click = reset · click a legend chip to hide a lane</div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h2>Recent measurements</h2></div>
+          <div class="table-wrap"><table id="measure-table"></table></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Token usage</h2></div>
+          <div id="token-panel"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>Stage time cost</h2></div>
+        <div class="table-wrap"><table id="stage-table"></table></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted small">
+    Piano dashboard · reads <code>~/.piano/runs</code> · no external assets · best-effort, read-only
+  </footer>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

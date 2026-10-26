@@ -10,6 +10,7 @@
     "@effect/platform": "0.97.1",
     "@piano/base": "0.1.0",
     "@piano/contract": "0.1.0",
+    "@piano/dashboard": "0.1.0",
     "@piano/logging": "0.1.0",
     "@piano/trajectory": "0.1.0",
     "@piano/workers": "0.1.0",

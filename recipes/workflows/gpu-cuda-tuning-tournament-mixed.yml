@@ -22,6 +22,7 @@ version: 3
 # effort even when the model varies.
 workflow:
   name: gpu-cuda-tuning-tournament-mixed
+  monitor: true
   nodes:
     - stage:
         name: setup

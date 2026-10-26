@@ -6,6 +6,7 @@ version: 3
 # Pi maps this level to the provider-specific reasoning control.
 workflow:
   name: gpu-cuda-tuning
+  monitor: true
   nodes:
     - stage:
         name: setup

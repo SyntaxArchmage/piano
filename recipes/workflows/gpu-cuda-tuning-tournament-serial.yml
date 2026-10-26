@@ -20,6 +20,7 @@ version: 3
 # `piano evals --parallel` matrix option.
 workflow:
   name: gpu-cuda-tuning-tournament-serial
+  monitor: true
   nodes:
     - stage:
         name: setup

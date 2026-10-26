@@ -5,6 +5,7 @@ version: 3
 # harness/model/tools lines differ between cells of the matrix.
 workflow:
   name: gpu-cuda-tuning-pi-luna
+  monitor: true
   nodes:
     - stage:
         name: setup

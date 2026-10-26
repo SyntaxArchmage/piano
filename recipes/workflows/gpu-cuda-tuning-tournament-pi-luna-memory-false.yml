@@ -4,6 +4,7 @@ version: 3
 # It preserves the tournament topology and starts every stage turn fresh.
 workflow:
   name: gpu-cuda-tuning-tournament-pi-luna-memory-false
+  monitor: true
   nodes:
     - stage:
         name: setup

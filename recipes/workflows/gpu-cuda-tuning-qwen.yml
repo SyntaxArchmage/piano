@@ -8,6 +8,7 @@ version: 3
 # rejects it, retry with qwen3.8-max or qwen3.8-27b.
 workflow:
   name: gpu-cuda-tuning-qwen
+  monitor: true
   nodes:
     - stage:
         name: setup
