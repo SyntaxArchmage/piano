@@ -1,0 +1,131 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "decision"
+    ],
+    "properties": {
+      "iteration": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "variable": {
+        "type": "string"
+      },
+      "variable_type": {
+        "enum": [
+          "structural",
+          "config"
+        ]
+      },
+      "hypothesis": {
+        "type": "string"
+      },
+      "decision": {
+        "enum": [
+          "KEEP",
+          "DISCARD",
+          "CONVERGED",
+          "COMPILE_FAIL",
+          "VERIFY_FAIL",
+          "BLOCKED"
+        ]
+      },
+      "candidate": {
+        "type": "object"
+      },
+      "current_best": {
+        "type": "object"
+      },
+      "verification": {
+        "type": "object"
+      },
+      "profile": {
+        "type": "object"
+      },
+      "regression_pp": {
+        "type": "number"
+      },
+      "promotion": {
+        "type": "object"
+      },
+      "next_variable": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "blocker": {
+        "type": "string"
+      },
+      "records": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "iteration": 0,
+    "hypothesis": "hide the wait",
+    "decision": "KEEP",
+    "candidate": {
+      "path": "kernel.py"
+    },
+    "current_best": {
+      "path": "state/current-best.py"
+    },
+    "promotion": {
+      "promoted": true,
+      "resulting_best": {
+        "path": "kernel.py"
+      },
+      "reason": "faster"
+    },
+    "records": {
+      "round_path": "rounds/iter-000.json",
+      "state_path": "state/tuning-state.json"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "round.decision",
+        "pointer": "/decision",
+        "format": "string",
+        "required": true
+      },
+      {
+        "id": "round.hypothesis",
+        "pointer": "/hypothesis",
+        "format": "string",
+        "required": true
+      },
+      {
+        "id": "profile.kernel-latency-us",
+        "pointer": "/profile/kernel_latency_us",
+        "format": "number",
+        "required": false
+      },
+      {
+        "id": "profile.llc-rw-bandwidth-gbps",
+        "pointer": "/profile/llc_rw_sum_gbps",
+        "format": "number",
+        "required": false
+      },
+      {
+        "id": "round.regression-pp",
+        "pointer": "/regression_pp",
+        "format": "number",
+        "required": false
+      },
+      {
+        "id": "verification.passed",
+        "pointer": "/verification/verify_passed",
+        "format": "boolean",
+        "required": false
+      }
+    ]
+  }
+}

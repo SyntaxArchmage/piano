@@ -30,7 +30,7 @@ import {
   type SelectionOutcome,
   type SelectionReferee,
 } from "./selection.js";
-import type { HandoffMapItem } from "./handoff.js";
+import type { WorkflowMapItem } from "./acceptance.js";
 import {
   mapOverParts,
   runtimeFramesFromInstanceId,
@@ -38,7 +38,11 @@ import {
   runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
-import type { WorkflowProgressRegionFinalizedRecord, WorkflowRegionFinalizedPayload } from "./progress.js";
+import type {
+  WorkflowLoopCommitRecord,
+  WorkflowProgressRegionFinalizedRecord,
+  WorkflowRegionFinalizedPayload,
+} from "./progress.js";
 import type {
   WorkflowRegionPlan,
   WorkflowRuntimeNode,
@@ -65,16 +69,20 @@ interface ScopeWalkerContext {
    * composer owns identity (execution id, job ordinal); the walker owns the
    * moment a region exits. */
   readonly persistRegionFinalized: (payload: WorkflowRegionFinalizedPayload) => Effect.Effect<void, WorkflowError, FileSystem.FileSystem>;
-  readonly autoCommit: boolean;
   readonly preExistingDirty: ReadonlySet<string>;
   readonly workspaceState: WalkerWorkspaceState;
-  readonly commitRoundWinner: (
+  /** Commit one loop iteration's workspace changes and return the commit
+   * evidence. Runs unconditionally after every iteration; only a non-git
+   * workspace or an unchanged workspace returns `undefined`. A failed commit
+   * is a `WorkflowError` and fails the run. */
+  readonly commitLoopIteration: (
+    region: { readonly id: string; readonly name: string },
     stages: readonly InternalStageResult[],
     iteration: number,
     prompt: string,
     dirty: ReadonlySet<string>,
     cwd: string,
-  ) => Effect.Effect<void, never, FileSystem.FileSystem | Logging>;
+  ) => Effect.Effect<WorkflowLoopCommitRecord | undefined, WorkflowError, FileSystem.FileSystem | Logging>;
 }
 
 interface ResultGroup {
@@ -98,15 +106,6 @@ interface ScopeExecution extends NodeExecution {
 interface RuntimeTournamentCandidate extends WorkflowWorkspaceCandidate {
   readonly boundaryResults: readonly InternalStageResult[];
   readonly stopped?: boolean;
-}
-
-function valueAtPath(value: unknown, path: readonly string[]): unknown {
-  let current = value;
-  for (const segment of path) {
-    if (typeof current !== "object" || current === null || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
 }
 
 /** A node's name in its scope: the stage name, or the region name. */
@@ -154,10 +153,8 @@ function automaticTournamentOutcome(
   let referee: SelectionReferee | undefined;
   const branches: SelectionBranch[] = [];
   for (const candidate of candidates) {
-    const exit = candidate.boundaryResults.find((stage) =>
-      stage.stageId === exitStageId && stage.metrics !== undefined && stage.metrics.length === 1,
-    );
-    const metric = exit?.metrics?.[0]?.value;
+    const exit = candidate.boundaryResults.find((stage) => stage.stageId === exitStageId);
+    const metric = exit?.metrics?.length === 1 ? exit.metrics[0]?.value : undefined;
     if (metric === undefined || exit === undefined) {
       branches.push({ key: candidate.key, index: branches.length, accepted: false });
       continue;
@@ -182,8 +179,10 @@ function automaticTournamentOutcome(
       index: branches.length,
       // A terminal BLOCKED result can legally carry evidence, but it is not a
       // successful branch. Keep its metric for referee identity while making
-      // eligibility explicit so selectWinner cannot promote it.
-      accepted: candidate.stopped !== true,
+      // eligibility explicit so selectWinner cannot promote it. An exit that
+      // failed validation is likewise ineligible, even if a metric is present:
+      // its result is untrusted, so it may not win.
+      accepted: candidate.stopped !== true && exit.validationWarning === undefined,
       ...(changedFiles !== undefined && changedLoc !== undefined
         ? { tieBreak: { changedFiles, changedLoc } } : {}),
       metric: { name: metric.name, unit: metric.unit, direction: metric.direction, best: metric.best },
@@ -197,14 +196,14 @@ function automaticTournamentOutcome(
 /** Preserve the lexical scope context for every child while retaining the
  * child's explicit dependency order. A producer can be both inherited from a
  * parent scope and named as a direct dependency; keep the first occurrence so
- * its immutable handoff provenance is emitted exactly once. */
+ * its immutable acceptance provenance is emitted exactly once. */
 function mergeScopeInputs(
   inherited: readonly InternalStageResult[],
   direct: readonly InternalStageResult[],
 ): readonly InternalStageResult[] {
   const seen = new Set<string>();
   return [...inherited, ...direct].filter((result) => {
-    const producerId = result.handoff.id;
+    const producerId = result.acceptance.id;
     if (seen.has(producerId)) return false;
     seen.add(producerId);
     return true;
@@ -238,10 +237,9 @@ export function createScopeWalker(context: ScopeWalkerContext) {
   const {
     stageRunnerContext,
     persistRegionFinalized,
-    autoCommit,
     preExistingDirty,
     workspaceState,
-    commitRoundWinner,
+    commitLoopIteration,
   } = context;
   /** One lane counter per execution: sibling and nested lanes share it. */
   const laneAllocator = createLaneNumberAllocator();
@@ -258,48 +256,31 @@ export function createScopeWalker(context: ScopeWalkerContext) {
 const mapItems = (
   region: WorkflowRegionPlan,
   source: readonly InternalStageResult[],
-): Effect.Effect<readonly HandoffMapItem[], WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
-  const parts = mapOverParts(region);
-  if (parts === undefined || region.count === undefined || region.over === undefined) {
+): Effect.Effect<readonly WorkflowMapItem[], WorkflowError, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
+  const sourceName = mapOverParts(region);
+  if (sourceName === undefined || region.count === undefined || region.over === undefined) {
     return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `map "${region.name}" is missing over/count controls`));
   }
-  const [, path] = parts;
   const values: unknown[] = [];
   for (const result of source) {
-    const projected = resultProjectionValue(result, "workflow.map-items");
-    let selected: unknown;
-    if (projected !== undefined) {
-      selected = projected;
-    } else {
-      // Compatibility boundary for contracts authored before semantic
-      // projections existed. New contracts declare workflow.map-items;
-      // only an accepted named-validator result may use the adapter below
-      // to interpret the legacy DSL payload path. Canonical worker
-      // contracts must declare workflow.map-items and fail closed here.
-      if (result.contract !== undefined) {
-        return yield* Effect.fail(workflowError(
-          "schedule",
-          loaded.workflowPath,
-          `map "${region.name}" source "${region.over}" uses a canonical worker contract without required projection "workflow.map-items"`,
-        ));
-      }
-      if (result.resultPayload === undefined || result.resultPath === undefined) {
-        return yield* Effect.fail(workflowError(
-          "schedule",
-          loaded.workflowPath,
-          `map "${region.name}" source "${region.over}" must declare projection "workflow.map-items" or provide a legacy accepted validate result`,
-        ));
-      }
-      selected = valueAtPath(result.resultPayload, path);
-      yield* WORKFLOW_LOG.warn("workflow.map.legacy-payload-adapter", {
-        outcome: "deprecated",
-        data: {
-          map: region.name,
-          source: result.stageId,
-          over: region.over,
-          message: "declare outputs.projections id workflow.map-items in the source worker contract",
-        },
-      });
+    // A source accepted with a validation warning carries no projections: the
+    // contract may well declare workflow.map-items, but this result could not
+    // be validated against it. Say so instead of blaming a missing
+    // declaration downstream.
+    if (result.validationWarning !== undefined) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        `map "${region.name}" source "${region.over}" received a result from stage "${result.stageId}" (worker "${result.worker}") that failed validation, so its "workflow.map-items" projection is unavailable: ${result.validationWarning.message}`,
+      ));
+    }
+    const selected = resultProjectionValue(result, "workflow.map-items");
+    if (selected === undefined) {
+      return yield* Effect.fail(workflowError(
+        "schedule",
+        loaded.workflowPath,
+        `map "${region.name}" source "${region.over}" must declare projection "workflow.map-items" in its worker contract`,
+      ));
     }
     if (!Array.isArray(selected)) {
       return yield* Effect.fail(workflowError(
@@ -503,10 +484,17 @@ const finalizeTournament = (
       };
     }
     const winnerBlocked = winnerCandidate?.boundaryResults.some(isBlockedStageResult) === true;
-    if (winnerCandidate?.stopped === true || winnerBlocked) {
+    // A branch whose exit failed validation is not eligible even when a host
+    // plugin names it explicitly: its result is exactly what the warning says
+    // cannot be trusted.
+    const winnerWarned = winnerCandidate?.boundaryResults.some((result) =>
+      result.stageId === region.exitStageId && result.validationWarning !== undefined) === true;
+    if (winnerCandidate?.stopped === true || winnerBlocked || winnerWarned) {
       const carrying: WorkflowCarrying = {
         kind: "admitted-not-carried",
-        reason: `winner "${winnerKey}" is stopped/BLOCKED and cannot be selected for carry`,
+        reason: winnerWarned
+          ? `winner "${winnerKey}" has an unresolved validation warning and cannot be selected for carry`
+          : `winner "${winnerKey}" is stopped/BLOCKED and cannot be selected for carry`,
       };
       yield* workflowTrajectory.observe({
         type: "selection",
@@ -524,7 +512,10 @@ const finalizeTournament = (
       });
       return {
         outcome: "admitted-not-carried",
-        notCarriedReason: "stopped",
+        // A warned winner was rejected by eligibility, not stopped mid-work;
+        // the admission reason keeps a later skip from treating the region as
+        // terminal-blocked.
+        notCarriedReason: winnerWarned ? "admission" : "stopped",
         ...(incumbentForRecord() === undefined ? {} : { incumbent: incumbentForRecord() }),
       };
     }
@@ -598,7 +589,7 @@ const executeScope = (
   frames: readonly WorkflowRuntimeFrame[],
   inheritedInputs: readonly InternalStageResult[],
   entryStageId: string | undefined,
-  mapItem: HandoffMapItem | undefined,
+  mapItem: WorkflowMapItem | undefined,
   workspace: WorkflowWorkspaceBinding,
 ): Effect.Effect<ScopeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.suspend(() => {
   const completed = new Map<string, ResultGroup>();
@@ -743,6 +734,7 @@ const executeScope = (
         }
         let final: ScopeExecution | undefined;
         const stages: InternalStageResult[] = [];
+        const commits: WorkflowLoopCommitRecord[] = [];
         let priorFeedback: readonly InternalStageResult[] = [];
         // One deadline sampled at entry, so the bound measures wall clock
         // spent *inside the region*: re-deriving it from the last
@@ -790,6 +782,20 @@ const executeScope = (
           );
           final = child;
           stages.push(...child.stages);
+          // Every completed iteration is a durable point: commit its accepted
+          // results (including a tournament's winner carry) before the next
+          // iteration can mutate the workspace. No KEEP check and no switch;
+          // the commit is part of the loop's contract, not optional
+          // bookkeeping.
+          const commit = yield* commitLoopIteration(
+            region,
+            child.stages,
+            iteration,
+            request.prompt,
+            preExistingDirty,
+            workspace.cwd,
+          );
+          if (commit !== undefined) commits.push(commit);
           if (child.stopped === true && loopBlockIsTerminal(child, node.entryStageId)) {
             // Global-scoped block (prerequisite gone) or entry-stage block:
             // no future round can do useful work, so terminate the loop.
@@ -799,6 +805,7 @@ const executeScope = (
               regionKind: "loop",
               outcome: "terminal-blocked",
               iterations: iteration + 1,
+              ...(commits.length === 0 ? {} : { commits }),
             });
             return {
               boundary: child.boundary,
@@ -825,13 +832,8 @@ const executeScope = (
               ));
             }
           }
-          // ISSUE-017: commit this KEEP round's winner files immediately,
-          // before the next iteration mutates the workspace further. Commit
-          // failures are non-fatal — auto-commit is bookkeeping and must
-          // not kill the tuning run.
-          if (autoCommit) {
-            yield* commitRoundWinner(child.stages, iteration, request.prompt, preExistingDirty, workspace.cwd);
-          }
+          // The iteration's commit already happened above; loop bookkeeping
+          // (feedback stop / bound) decides whether another one follows.
           iteration += 1;
           if (stopRequested) {
             knownLoopIterations.set(region.id, iteration);
@@ -856,16 +858,16 @@ const executeScope = (
           regionKind: "loop",
           outcome: bound,
           iterations,
+          ...(commits.length === 0 ? {} : { commits }),
         });
         return { boundary: final.boundary, stages } satisfies NodeExecution;
       });
     }
     return Effect.gen(function* () {
-      const parts = mapOverParts(region);
-      if (parts === undefined) {
+      const sourceName = mapOverParts(region);
+      if (sourceName === undefined) {
         return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, `map "${region.name}" is missing over`));
       }
-      const [sourceName] = parts;
       const source = completed.get(sourceName);
       if (source === undefined) {
         return yield* Effect.fail(workflowError(
@@ -876,7 +878,7 @@ const executeScope = (
       }
       const items = yield* mapItems(region, source.results);
       const slotBindings = [] as Array<{
-        readonly item: HandoffMapItem;
+        readonly item: WorkflowMapItem;
         readonly frames: readonly WorkflowRuntimeFrame[];
         readonly workspace: WorkflowWorkspaceBinding;
       }>;

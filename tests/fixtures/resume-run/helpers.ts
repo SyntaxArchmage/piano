@@ -295,7 +295,7 @@ export async function assertResumeEvidence(input: {
   // propose actor took exactly two accepted turns (iteration 0 + the
   // post-continue attempt; the interrupted attempt does not count), and its
   // session id is the thread the fake actually kept history for.
-  const proposeActor = status.actors?.[`v2/${input.runId}/codex/basic/root`];
+  const proposeActor = status.actors?.[`v2/${input.runId}/codex/triton-idea/root`];
   expect(proposeActor, context("propose actor missing from status.json")).toBeDefined();
   expect(proposeActor?.turns, context("propose actor turn count")).toBe(2);
   expect(proposeActor?.sessionId, context("propose actor session drifted")).toBe(proposeRows[0]!.threadId);

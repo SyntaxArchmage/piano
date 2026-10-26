@@ -14,7 +14,7 @@ import { compileWorkerContract, validateWorkerContract } from "../../packages/co
 const PROSE_CONTRACTS = ["paper-write", "paper-revise"] as const;
 
 async function loadContract(worker: string) {
-  const path = join(process.cwd(), "recipes", worker, "contract.json");
+  const path = join(process.cwd(), "recipes", "contracts", `${worker}.json`);
   return compileWorkerContract(await readFile(path, "utf8"), path);
 }
 

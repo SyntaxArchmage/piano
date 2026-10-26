@@ -122,7 +122,8 @@ We rename `map` → `tournament` where the DSL literal is a node kind.
 |---|---|---|
 | `map:` | `tournament:` | fan-out + metric winnow (selective carry) at region exit |
 | slot / mapSlot | branch / tournamentBranch | one independent actor workspace per item |
-| `over` field of `from` | unchanged | the name of the parent producer to fan on |
+| `over` field of `from` | unchanged | names the `from` source node; only the text before the first dot is read |
+| — | worker-contract `workflow.map-items` projection | the source result array that supplies the fan items; the dotted `over` suffix is legacy-ignored |
 | the region's single `exit` metrics | the referee | the exit stage must declare exactly 1 metric that is the basis |
 | map-style result (slot outputs) | winner result | region boundary returns only the winning branch's terminal result to downstream |
 | candidate / workspace | branch / workspace | one concrete producer state to compare |
@@ -140,9 +141,10 @@ current shape the engine both ranks (§6.0) and applies+verifies the winner delt
 
 ```yaml
 - tournament: t1            # former `map:`
-  from: propose             # producer stage, resolves to an accepted validate result
-  over: propose.strategies  # DSL: <fromNode>.<arrayField> — a dotted path rooted on a
-                            #   `from` node. Fan-out field, NOT a JSON pointer (no "/").
+  from: propose             # producer stage, resolves to an accepted result
+  over: propose.strategies  # names the `from` source node; only `propose` is read
+                            #   (the dotted suffix is legacy-ignored). The fan-out
+                            #   array is the source contract's `workflow.map-items`.
   count: 3                  # fan-out width (how many items to keep)
   entry: implement          # a direct child stage/region that produces a workspace commit
   exit: measure             # direct child whose contract is the referee (below)
@@ -152,6 +154,11 @@ current shape the engine both ranks (§6.0) and applies+verifies the winner delt
     - stage: measure
       ...
 ```
+
+The fan-out array is not the DSL path. The source stage's worker contract must
+declare the `workflow.map-items` projection under `outputs.projections`;
+scheduling fails when the source worker has no contract, the projection is
+absent, or it does not resolve to an array.
 
 The `exit` metric is the referee; see §5.2 — with `exit.metrics[]` length 1 the
 ranking is unambiguous and no extra DSL select/rank field is added. Extensible
@@ -226,9 +233,10 @@ exit, walk each branch's terminal internal result:
 
 - The branch with a metric whose `name+unit` and `direction` are all equal is
   the ranked candidate.
-- If a branch's exit was not validated / produced no matching metric, it is
-  **not a candidate**; it is a loser by construction and must be excluded before
-  winner carry.
+- If a branch's exit carries no matching metric — including an exit whose
+  result was accepted with a `validationWarning` after the one repair turn — it
+  is **not a candidate**; it is a loser by construction and must be excluded
+  before winner carry. A warned branch is ineligible even if a metric is present.
 - If several branches tie on `best`, prefer the lowest `index` (fan order) for
   determinism; a future comparator would change the rank policy inside
   `selection.ts`, never the DSL.
@@ -244,7 +252,7 @@ iteration and map-slot order. Downstream boundary:
   map's own `boundary.results`.
 
 Rationale: a downstream `summary` stage wants the winner's text callable, and a
-`validate`/handoff stage wants the metric tie. Keeping the losing lanes only in
+dependent stage wants the metric tie. Keeping the losing lanes only in
 `allStages` matches "admitted vs rejected" without making every downstream a
 reviewer.
 
@@ -462,7 +470,7 @@ workflow:
         - tournament: measure-vs-implement
           entry: implementation
           exit:  measure
-          over: strategy.results  # producer `strategy`, fan over its `results` array
+          over: strategy.results  # names producer `strategy`; suffix legacy-ignored
           # single metric on `measure` decides; incumbent = prior loop winner
 ```
 
@@ -543,7 +551,7 @@ the current seams and the remaining compatibility boundaries.
 | `workflow-execution.ts` | tournament region exit: rank survivors by the deciding metric (Exclusion + Direction/Tie), collapse the region boundary to the winner result, and emit the selection observation | implemented by `automaticTournamentOutcome` and `finalizeTournament`; the carry itself is delegated to `workspace.ts` |
 | `workspace.ts` | lane branch allocation, the winner delta, delta apply and verification | implemented by `workspaceBaselineChanges`/`applyWorkspaceChangeSet`/`diffWorkspaceChangeSet`; `applyWinnerWorkspace` fast-forwards a git lane and applies the delta of a store lane |
 | `workflow-runtime.ts` | runtime lane identity and compatibility evidence fields | `slot`/`mapSlot` protocol names remain stable for the current evidence schema |
-| `handoff.ts` | carry worker-contract-declared handoff projections and winning producer references; loser lanes remain in `records`/`allStages` but are not handed to the join | generic projection transport; no worker-specific payload semantics |
+| `acceptance.ts` | record accepted invocation evidence and carry worker-contract-declared projections and winning producer references; loser lanes remain in `records`/`allStages` but are not handed to the join | generic projection transport; no worker-specific payload semantics |
 | `progress.ts` | record generic stage/progress observations and per-branch progress; region count unchanged | projection-driven recording; no worker-specific payload semantics |
 | `trajectory/ (types/schemas/recorders.ts, workflow-trajectory.ts)` | `selection` observation + recorder; register in default list; a new optional stream | additive, decision-4 |
 | `evals/ workflow-evaluator.ts` | consume the selection stream for decision attribution | additive, consistent with §10 |
@@ -555,14 +563,14 @@ math and admission/rejection with reasons, never file IO. The runtime calls it
 with branch terminal `InternalStageResult`s, the deciding metric key, and the
 incumbent history.
 
-For the canonical `validate: true` path, the worker-owned
-`recipes/<worker>/contract.json` is the source of truth for stage-result,
-handoff, and progress meanings. Its `outputs.projections` declare the stable
+For the canonical contract path, the worker-owned
+`recipes/contracts/<worker>.json` is the source of truth for stage-result,
+acceptance, and progress meanings. Its presence selects validation; no workflow
+switch exists. Its `outputs.projections` declare the stable
 IDs, pointers, formats, and requiredness; the TypeScript modules only parse,
 validate, normalize, transport, and record those projections generically. They
-must not add a worker-name switch or recreate a worker's domain contract in a
-TS builtin registry. Named validators remain a deprecated compatibility adapter
-for old workflows.
+must not add a worker-name switch or recreate a worker's domain contract in
+Piano source. Validation comes only from the worker contract.
 
 ---
 
@@ -571,21 +579,22 @@ for old workflows.
 Tests must prove DSL correctness AND a real git selection:
 
 **DSL / load**
-1. A fixture `tournament:` with a validating exit stage (`validate: true`, worker
+1. A fixture `tournament:` with a contract-bearing exit stage (worker
    contract declaring exactly 1 metric) parses/lowers with the same shape as a
    legacy `map:` region.
 2. A `map:` key is rejected with a clear "renamed to tournament" parse
    error; a fixture using `tournament` compiles.
-3. Exit stage `validate: true` whose worker contract declares **0** benchmark
+3. Exit stage whose worker contract declares **0** benchmark
    metrics → the tournament is a legal report/fan-out: it runs, carries
    text/JSON downstream, and records no carry at exit (no referee, no carry;
    see A2/D4).
 4. Exit stage contract declaring **2+** benchmark metrics → workflow load/compile
    error listing the metric ids (decision 2). This is the "refined DSL"
    regression test.
-5. `entry`/`exit` scope and `over`-root rules unchanged from `map` (`over` rooted
-   on a `from` node; exit not consumed by a sibling; all children on the
-   entry→exit path).
+5. `entry`/`exit` scope and `over` rules unchanged from `map`: `over` names a
+   `from` node (a dotted suffix is ignored) and the fan items come from that
+   source contract's `workflow.map-items` projection; exit is not consumed by a
+   sibling; all children lie on the entry→exit path.
 
 **selection module (pure, unit)**
 6. rank by `best` honors direction; tie → lowest index.
@@ -628,12 +637,13 @@ unit + real-git e2e), gated by the project's typecheck + lint gates.
 GPU-specific round materialization is an explicit contract capability, not a
 worker-name or `selection.ts` branch. A validating GPU worker opts in by
 declaring `round.materialization-v1` and the complete required projections in
-its `contract.json`; the generic executor validates those projections and
+its contract file; the generic executor validates those projections and
 applies the one compensating materialization transaction for the candidate,
 current-best, durable state, round record, and accepted result. Future GPU
 protocol changes require a new versioned capability; they do not add GPU
-payload knowledge to the generic contract or selection modules. The legacy
-named validator remains a compatibility adapter. Existing `gpu-cuda` suites
+payload knowledge to the generic contract or selection modules. Named
+validators are removed; every validating worker declares its schema in
+`recipes/contracts/<worker>.json`. Existing `gpu-cuda` suites
 remain loop/state tests unless they explicitly declare a tournament region.
 Any legacy `workflow-loop-map` fixtures that relied on a metric-less map are
 updated to declare a single exit metric (or removed) rather than silently
@@ -746,8 +756,9 @@ fanning out.
   code-merge) returns, it is a distinct non-merge primitive, not a silent
   tournament; nothing depends on it today.
 - R4. A per-stage `validate` executor inside the workflow for the deciding
-  metric — the metric belongs to the contract. A 2+ metric deciding contract is
-  a validate error (A2); a validate-less (0-metric) tournament is a legal
+  metric — the metric belongs to the contract, and contract presence alone
+  selects validation. A 2+ metric deciding contract is
+  a load error (A2); a contract-less (0-metric) tournament is a legal
   report/fan-out, not a re-validated fallback.
 
 ---

@@ -7,91 +7,9 @@ import {
   workerContractGuidance,
   WorkerContractLoadError,
 } from "../src/worker-contract.js";
-import {
-  VALIDATION_EXAMPLES,
-  isContractName,
-  validateContract,
-  type ContractName,
-} from "../src/index.js";
-
-function mutationPaths(value: unknown, prefix: readonly string[] = []): readonly (readonly string[])[] {
-  if (typeof value !== "object" || value === null) return [];
-  const entries = Array.isArray(value)
-    ? value.map((entry, index) => [String(index), entry] as const)
-    : Object.entries(value);
-  return entries.flatMap(([key, entry]) => {
-    const path = [...prefix, key];
-    return [path, ...mutationPaths(entry, path)];
-  });
-}
-
-function objectPaths(value: unknown, prefix: readonly string[] = []): readonly (readonly string[])[] {
-  if (typeof value !== "object" || value === null) return [];
-  if (Array.isArray(value)) {
-    return value.flatMap((entry, index) => objectPaths(entry, [...prefix, String(index)]));
-  }
-  return [
-    prefix,
-    ...Object.entries(value).flatMap(([key, entry]) => objectPaths(entry, [...prefix, key])),
-  ];
-}
-
-function containerAt(value: unknown, path: readonly string[]): Record<string, unknown> | unknown[] {
-  let current = value;
-  for (const segment of path) {
-    if (Array.isArray(current)) current = current[Number(segment)];
-    else if (typeof current === "object" && current !== null) current = (current as Record<string, unknown>)[segment];
-    else throw new Error(`invalid mutation path /${path.join("/")}`);
-  }
-  if (typeof current !== "object" || current === null) throw new Error(`invalid mutation container /${path.join("/")}`);
-  return current as Record<string, unknown> | unknown[];
-}
-
-function setAt(value: unknown, path: readonly string[], replacement: unknown): void {
-  const parent = containerAt(value, path.slice(0, -1));
-  const key = path.at(-1)!;
-  if (Array.isArray(parent)) parent[Number(key)] = replacement;
-  else parent[key] = replacement;
-}
-
-/** Frozen from the pre-worker-contract implementation validator. Keep this
- * independent of VALIDATION_EXAMPLES: changing the current legacy schema must
- * not silently change this migration oracle. */
-const HISTORICAL_IMPLEMENTATION_FIXTURE = {
-  status: "compiled",
-  variable: "pass2-pass1-row-interleave-2deep",
-  diff_summary: "interleave pass2 over pass1; kernel + bench updated",
-  changed_files: ["src/kernel.cc"],
-  compile: {
-    passed: true,
-    target: "gemm",
-    so_commit: "90487eb6fa",
-    so_mtime: "2026-08-31T00:00:00Z",
-  },
-} as const;
-
-const HISTORICAL_CHANGED_FILE_CASES: ReadonlyArray<readonly [path: string, accepted: boolean]> = [
-  ["C:foo", true],
-  ["a/./b", true],
-  ["a//b", true],
-  ["a\\..\\b", true],
-  ["..\\outside", true],
-  ["\\\\server\\share\\file", true],
-  ["file\0name", true],
-  ["", false],
-  ["   ", false],
-  ["/absolute", false],
-  ["C:/absolute", false],
-  ["C:\\absolute", false],
-  ["../outside", false],
-  ["a/../outside", false],
-  ["a/..", false],
-];
 
 function manifest(required = true): string {
   return JSON.stringify({
-    version: 1,
-    id: "latency-result",
     schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
@@ -136,8 +54,6 @@ function projectionManifest(
   example: unknown,
 ): string {
   return JSON.stringify({
-    version: 1,
-    id: "projection-result",
     schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
@@ -151,11 +67,8 @@ function projectionManifest(
 function stripManifest(
   schema: Record<string, unknown>,
   example: unknown,
-  id = "strip-dialect",
 ): string {
   return JSON.stringify({
-    version: 1,
-    id,
     schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       "x-piano-unknown-properties": "strip",
@@ -168,7 +81,7 @@ function stripManifest(
 
 describe("worker-local contracts", () => {
   it("validates JSON Schema and projects a direction-aware benchmark", () => {
-    const contract = compileWorkerContract(manifest(), "/recipes/latency/contract.json");
+    const contract = compileWorkerContract(manifest(), "/recipes/contracts/latency.json");
     const result = validateWorkerContract(contract, {
       measurement: {
         name: "latency",
@@ -203,8 +116,6 @@ describe("worker-local contracts", () => {
 
   it("opts into recursive unknown-field stripping on a clone", () => {
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "normalized-result",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         "x-piano-unknown-properties": "strip",
@@ -252,7 +163,7 @@ describe("worker-local contracts", () => {
         metrics: [{ pointer: "/measurement", format: "benchmark/v1" }],
         projections: [{ id: "nested", pointer: "/nested", format: "json" }],
       },
-    }), "/recipes/normalized-result/contract.json");
+    }), "/recipes/contracts/normalized-result.json");
     const payload = {
       measurement: {
         name: "latency",
@@ -308,8 +219,6 @@ describe("worker-local contracts", () => {
 
   it("strips unknown properties recursively when nested objects use default additionalProperties", () => {
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "default-recursive-strip",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         "x-piano-unknown-properties": "strip",
@@ -333,7 +242,7 @@ describe("worker-local contracts", () => {
       },
       example: { nested: { kept: "example" }, rows: [{ kept: 1 }] },
       outputs: { metrics: [] },
-    }), "/recipes/default-recursive-strip/contract.json");
+    }), "/recipes/contracts/default-recursive-strip.json");
 
     const result = validateWorkerContract(contract, {
       nested: { kept: "worker", ignored: true },
@@ -364,7 +273,7 @@ describe("worker-local contracts", () => {
           properties: { kept: { type: "boolean" } },
         },
       },
-    }, sourceExample, "normalized-guidance"), "/recipes/normalized-guidance/contract.json");
+    }, sourceExample), "/recipes/contracts/normalized-guidance.json");
 
     expect(contract.manifest.example).toEqual(sourceExample);
     expect(JSON.parse(contract.source).example).toEqual(sourceExample);
@@ -386,7 +295,7 @@ describe("worker-local contracts", () => {
       name: "root",
       child: { name: "nested", ignored: true },
       ignored: true,
-    }, "root-ref"), "/recipes/root-ref/contract.json");
+    }), "/recipes/contracts/root-ref.json");
 
     expect(contract.normalizedExample).toEqual({
       name: "root",
@@ -428,7 +337,7 @@ describe("worker-local contracts", () => {
       { name: "first", ignored: true },
       { count: 2, ignored: true },
       { tail: true, ignored: true },
-    ], "prefix-items"), "/recipes/prefix-items/contract.json");
+    ]), "/recipes/contracts/prefix-items.json");
 
     expect(contract.normalizedExample).toEqual([
       { name: "first" },
@@ -499,7 +408,7 @@ describe("worker-local contracts", () => {
 
     for (const [label, schema, example, message] of cases) {
       expect(
-        () => compileWorkerContract(stripManifest(schema, example, `strip-${label.replaceAll(" ", "-")}`), `/recipes/strip-${label}/contract.json`),
+        () => compileWorkerContract(stripManifest(schema, example), `/recipes/contracts/strip-${label}.json`),
         label,
       ).toThrow(message);
     }
@@ -507,8 +416,6 @@ describe("worker-local contracts", () => {
 
   it("does not apply the strip dialect gate to ordinary JSON Schema contracts", () => {
     expect(() => compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "ordinary-contains",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "array",
@@ -516,11 +423,9 @@ describe("worker-local contracts", () => {
       },
       example: ["value"],
       outputs: { metrics: [] },
-    }), "/recipes/ordinary-contains/contract.json")).not.toThrow();
+    }), "/recipes/contracts/ordinary-contains.json")).not.toThrow();
 
     expect(() => compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "ordinary-dependent-schemas",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "object",
@@ -529,7 +434,7 @@ describe("worker-local contracts", () => {
       },
       example: { flag: true, value: "present" },
       outputs: { metrics: [] },
-    }), "/recipes/ordinary-dependent-schemas/contract.json")).not.toThrow();
+    }), "/recipes/contracts/ordinary-dependent-schemas.json")).not.toThrow();
 
   });
 
@@ -543,7 +448,7 @@ describe("worker-local contracts", () => {
         when: { op: "present", args: [{ path: "/ghost" }] },
         test: { op: "eq", args: [{ path: "/ghost" }, "bad"] },
       }],
-    }, { kept: "example" }, "strip-assertion-unknown-field"), "/recipes/strip-assertion-unknown-field/contract.json"))
+    }, { kept: "example" }), "/recipes/contracts/strip-assertion-unknown-field.json"))
       .toThrow(/assertions\[0\] references undeclared property \/ghost/);
   });
 
@@ -552,20 +457,18 @@ describe("worker-local contracts", () => {
     nestedKeyword.schema.properties = {
       measurement: { type: "object", "x-piano-unknown-properties": "strip" },
     };
-    expect(() => compileWorkerContract(JSON.stringify(nestedKeyword), "/recipes/nested-strip/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(nestedKeyword), "/recipes/contracts/nested-strip.json"))
       .toThrow(/only supported at the schema root/);
 
     const unevaluated = JSON.parse(manifest()) as { schema: Record<string, unknown> };
     unevaluated.schema["x-piano-unknown-properties"] = "strip";
     unevaluated.schema.unevaluatedProperties = false;
-    expect(() => compileWorkerContract(JSON.stringify(unevaluated), "/recipes/unevaluated/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(unevaluated), "/recipes/contracts/unevaluated.json"))
       .toThrow(/unevaluatedProperties is not supported/);
   });
 
   it("normalizes inline unions against each branch and returns the first success", () => {
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "inline-union",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         "x-piano-unknown-properties": "strip",
@@ -586,7 +489,7 @@ describe("worker-local contracts", () => {
       },
       example: { a: "example" },
       outputs: { metrics: [] },
-    }), "/recipes/inline-union/contract.json");
+    }), "/recipes/contracts/inline-union.json");
     const payload = { a: "first", b: "second", ignored: true };
     const original = structuredClone(payload);
     const result = validateWorkerContract(contract, payload);
@@ -598,8 +501,6 @@ describe("worker-local contracts", () => {
 
   it("keeps additionalProperties false dominant across allOf", () => {
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "all-of-additional-properties",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         "x-piano-unknown-properties": "strip",
@@ -614,7 +515,7 @@ describe("worker-local contracts", () => {
       },
       example: { kept: "example" },
       outputs: { metrics: [] },
-    }), "/recipes/all-of-additional-properties/contract.json");
+    }), "/recipes/contracts/all-of-additional-properties.json");
     const payload = { kept: "value", ignored: true };
     const original = structuredClone(payload);
     const result = validateWorkerContract(contract, payload);
@@ -631,8 +532,6 @@ describe("worker-local contracts", () => {
       additionalProperties: false,
     };
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "prototype-key",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         "x-piano-unknown-properties": "strip",
@@ -642,7 +541,7 @@ describe("worker-local contracts", () => {
       },
       example: JSON.parse('{"__proto__":{"kept":"example"}}'),
       outputs: { metrics: [] },
-    }), "/recipes/prototype-key/contract.json");
+    }), "/recipes/contracts/prototype-key.json");
     const payload = JSON.parse('{"__proto__":{"kept":"value","ignored":true},"ignored":true}') as Record<string, unknown>;
     const original = structuredClone(payload);
     const result = validateWorkerContract(contract, payload);
@@ -659,22 +558,21 @@ describe("worker-local contracts", () => {
     expect(payload).toEqual(original);
   });
 
-  it("matches legacy Zod normalization for a worker contract reusing a legacy id", async () => {
-    const path = join(process.cwd(), "recipes", "cuda-summary", "contract.json");
+  it("strips undeclared root fields when the contract declares stripping", async () => {
+    const path = join(process.cwd(), "recipes", "contracts", "cuda-summary.json");
     const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-    const payload = structuredClone(VALIDATION_EXAMPLES["summary-report"]) as Record<string, unknown>;
-    (payload as Record<string, unknown>).unknown_root = { ignored: true };
+    const payload = structuredClone(contract.manifest.example) as Record<string, unknown>;
+    payload.unknown_root = { ignored: true };
     const original = structuredClone(payload);
-    const legacy = validateContract("summary-report", payload);
     const worker = validateWorkerContract(contract, payload);
 
-    expect(legacy.success).toBe(true);
     expect(worker.success).toBe(true);
     expect(payload).toEqual(original);
+    if (worker.success) expect(worker.value).not.toHaveProperty("unknown_root");
   });
 
   it("keeps unknown fields rejected when stripping is not declared", () => {
-    const contract = compileWorkerContract(manifest(), "/recipes/no-normalization/contract.json");
+    const contract = compileWorkerContract(manifest(), "/recipes/contracts/no-normalization.json");
     const payload = {
       measurement: {
         name: "latency",
@@ -711,7 +609,7 @@ describe("worker-local contracts", () => {
       tags: ["one", "two"],
       files: ["src/index.ts"],
       metadata: { source: "worker" },
-    }), "/recipes/projection/contract.json");
+    }), "/recipes/contracts/projection.json");
 
     const result = validateWorkerContract(contract, {
       message: "done",
@@ -737,7 +635,7 @@ describe("worker-local contracts", () => {
   it("omits an optional projection when its pointer is absent", () => {
     const contract = compileWorkerContract(projectionManifest([
       { id: "optional-value", pointer: "/optional", format: "string", required: false },
-    ], {}), "/recipes/projection-optional/contract.json");
+    ], {}), "/recipes/contracts/projection-optional.json");
 
     expect(contract.manifest.outputs.projections).toEqual([{
       id: "optional-value",
@@ -752,12 +650,12 @@ describe("worker-local contracts", () => {
   it("rejects a missing required projection", () => {
     expect(() => compileWorkerContract(projectionManifest([
       { id: "required-value", pointer: "/required", format: "string" },
-    ], {}), "/recipes/projection-required-example/contract.json"))
+    ], {}), "/recipes/contracts/projection-required-example.json"))
       .toThrow(/required projection "required-value"/);
 
     const contract = compileWorkerContract(projectionManifest([
       { id: "required-value", pointer: "/required", format: "string" },
-    ], { required: "present" }), "/recipes/projection-required/contract.json");
+    ], { required: "present" }), "/recipes/contracts/projection-required.json");
 
     const result = validateWorkerContract(contract, {});
     expect(result.success).toBe(false);
@@ -767,7 +665,7 @@ describe("worker-local contracts", () => {
   it("rejects a projection whose value does not match its declared format", () => {
     const contract = compileWorkerContract(projectionManifest([
       { id: "count", pointer: "/count", format: "number" },
-    ], { count: 1 }), "/recipes/projection-type/contract.json");
+    ], { count: 1 }), "/recipes/contracts/projection-type.json");
 
     const result = validateWorkerContract(contract, { count: "one" });
     expect(result.success).toBe(false);
@@ -778,14 +676,14 @@ describe("worker-local contracts", () => {
     expect(() => compileWorkerContract(projectionManifest([
       { id: "same", pointer: "/first", format: "string" },
       { id: "same", pointer: "/second", format: "string" },
-    ], { first: "one", second: "two" }), "/recipes/projection-duplicate/contract.json"))
+    ], { first: "one", second: "two" }), "/recipes/contracts/projection-duplicate.json"))
       .toThrow(/duplicate projection id/);
   });
 
   it("rejects unsafe workspace-relative path lists", () => {
     const contract = compileWorkerContract(projectionManifest([
       { id: "files", pointer: "/files", format: "workspace-relative-path-list" },
-    ], { files: ["src/index.ts"] }), "/recipes/projection-path/contract.json");
+    ], { files: ["src/index.ts"] }), "/recipes/contracts/projection-path.json");
 
     expect(validateWorkerContract(contract, { files: [] }).success).toBe(true);
     const unsafeFiles = [
@@ -809,40 +707,8 @@ describe("worker-local contracts", () => {
     }
   });
 
-  it("keeps implementation changed_files acceptance in lockstep with the frozen path set", () => {
-    for (const [changedFile, accepted] of HISTORICAL_CHANGED_FILE_CASES) {
-      const payload = {
-        ...(structuredClone(VALIDATION_EXAMPLES["implementation-report"]) as Record<string, unknown>),
-        changed_files: [changedFile],
-      };
-      expect(
-        validateContract("implementation-report", payload).success,
-        `${changedFile} legacy result`,
-      ).toBe(accepted);
-    }
-  });
-
-  it("preserves the frozen historical path acceptance set, normalization, and projections", () => {
-    for (const [changedFile, accepted] of HISTORICAL_CHANGED_FILE_CASES) {
-      const payload = structuredClone(HISTORICAL_IMPLEMENTATION_FIXTURE) as Record<string, unknown>;
-      payload.changed_files = [changedFile];
-      payload.ignored = "legacy zod normalization must strip this";
-      (payload.compile as Record<string, unknown>).ignored = true;
-      const original = structuredClone(payload);
-
-      const legacy = validateContract("implementation-report", payload);
-      expect(legacy.success, `${changedFile} historical legacy result`).toBe(accepted);
-      expect(payload).toEqual(original);
-      if (!accepted || !legacy.success) continue;
-
-      const expectedValue = structuredClone(HISTORICAL_IMPLEMENTATION_FIXTURE) as Record<string, unknown>;
-      expectedValue.changed_files = [changedFile];
-      expect(legacy.value).toEqual(expectedValue);
-    }
-  });
-
   it("rejects semantically inconsistent benchmark values", () => {
-    const contract = compileWorkerContract(manifest(), "/recipes/latency/contract.json");
+    const contract = compileWorkerContract(manifest(), "/recipes/contracts/latency.json");
     const result = validateWorkerContract(contract, {
       measurement: {
         name: "latency",
@@ -869,7 +735,7 @@ describe("worker-local contracts", () => {
     // derived values (here 3- and 4-decimal-style rounding of median and
     // best) must pass, and the projected metric must carry the EXACT
     // recomputation so downstream comparison never sees rounded numbers.
-    const contract = compileWorkerContract(manifest(), "/recipes/latency/contract.json");
+    const contract = compileWorkerContract(manifest(), "/recipes/contracts/latency.json");
     const result = validateWorkerContract(contract, {
       measurement: {
         name: "latency",
@@ -904,7 +770,7 @@ describe("worker-local contracts", () => {
   it("rejects a median fabricated beyond display-rounding plausibility", () => {
     // The guard's real domain: a derived value that is not the sample
     // recomputation at any display precision stays rejected.
-    const contract = compileWorkerContract(manifest(), "/recipes/latency/contract.json");
+    const contract = compileWorkerContract(manifest(), "/recipes/contracts/latency.json");
     const result = validateWorkerContract(contract, {
       measurement: {
         name: "latency",
@@ -925,16 +791,16 @@ describe("worker-local contracts", () => {
   it("checks examples while compiling and permits an absent optional metric", () => {
     const invalidExample = JSON.parse(manifest()) as Record<string, unknown>;
     invalidExample.example = {};
-    expect(() => compileWorkerContract(JSON.stringify(invalidExample), "/recipes/bad/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(invalidExample), "/recipes/contracts/bad.json"))
       .toThrow(WorkerContractLoadError);
 
     delete invalidExample.example;
-    expect(() => compileWorkerContract(JSON.stringify(invalidExample), "/recipes/missing-example/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(invalidExample), "/recipes/contracts/missing-example.json"))
       .toThrow(WorkerContractLoadError);
 
     const missingDialect = JSON.parse(manifest()) as { schema: Record<string, unknown> };
     delete missingDialect.schema.$schema;
-    expect(() => compileWorkerContract(JSON.stringify(missingDialect), "/recipes/missing-dialect/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(missingDialect), "/recipes/contracts/missing-dialect.json"))
       .toThrow(WorkerContractLoadError);
 
     const optional = JSON.parse(manifest(false)) as Record<string, unknown>;
@@ -945,14 +811,12 @@ describe("worker-local contracts", () => {
       additionalProperties: false,
     };
     optional.example = {};
-    const contract = compileWorkerContract(JSON.stringify(optional), "/recipes/optional/contract.json");
+    const contract = compileWorkerContract(JSON.stringify(optional), "/recipes/contracts/optional.json");
     expect(validateWorkerContract(contract, {})).toMatchObject({ success: true, metrics: [] });
   });
 
   it("evaluates domain-neutral cross-field assertions declared by the worker", () => {
     const source = JSON.stringify({
-      version: 1,
-      id: "derived-total",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "object",
@@ -978,7 +842,7 @@ describe("worker-local contracts", () => {
       example: { left: 2, right: 3, total: 5 },
       outputs: { metrics: [] },
     });
-    const contract = compileWorkerContract(source, "/recipes/derived-total/contract.json");
+    const contract = compileWorkerContract(source, "/recipes/contracts/derived-total.json");
 
     expect(validateWorkerContract(contract, { left: 2, right: 3, total: 5 }).success).toBe(true);
     const invalid = validateWorkerContract(contract, { left: 2, right: 3, total: 6 });
@@ -988,8 +852,6 @@ describe("worker-local contracts", () => {
 
   it("does not let an inherited path hijack evaluation of an operation AST", () => {
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "polluted-operation-ast",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "object",
@@ -1014,7 +876,7 @@ describe("worker-local contracts", () => {
       },
       example: { left: 2, right: 3, total: 5 },
       outputs: { metrics: [] },
-    }), "/recipes/polluted-operation-ast/contract.json");
+    }), "/recipes/contracts/polluted-operation-ast.json");
     const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, "path");
     try {
       Object.defineProperty(Object.prototype, "path", { configurable: true, value: "/total" });
@@ -1033,7 +895,7 @@ describe("worker-local contracts", () => {
       test: { op: "divide", args: [{ path: "/measurement" }] },
     }];
 
-    expect(() => compileWorkerContract(JSON.stringify(source), "/recipes/bad-assertion/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(source), "/recipes/contracts/bad-assertion.json"))
       .toThrow(/divide expects 2 argument/);
 
     source.schema["x-piano-assertions"] = [{
@@ -1041,7 +903,7 @@ describe("worker-local contracts", () => {
       message: "prototype property is not an operator",
       test: { op: "toString", args: [] },
     }];
-    expect(() => compileWorkerContract(JSON.stringify(source), "/recipes/prototype-assertion/contract.json"))
+    expect(() => compileWorkerContract(JSON.stringify(source), "/recipes/contracts/prototype-assertion.json"))
       .toThrow(/op "toString" is not supported/);
   });
 
@@ -1054,7 +916,7 @@ describe("worker-local contracts", () => {
     const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, "test");
     try {
       Object.defineProperty(Object.prototype, "test", { configurable: true, value: true });
-      expect(() => compileWorkerContract(JSON.stringify(source), "/recipes/polluted-assertion/contract.json"))
+      expect(() => compileWorkerContract(JSON.stringify(source), "/recipes/contracts/polluted-assertion.json"))
         .toThrow(/test is required/);
     } finally {
       if (descriptor === undefined) delete (Object.prototype as Record<string, unknown>).test;
@@ -1064,8 +926,6 @@ describe("worker-local contracts", () => {
 
   it("does not enable root stripping from an inherited manifest keyword", () => {
     const source = JSON.stringify({
-      version: 1,
-      id: "inherited-strip-keyword",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "object",
@@ -1076,7 +936,7 @@ describe("worker-local contracts", () => {
       example: { kept: "example", inheritedStripMustNotRemove: true },
       outputs: { metrics: [] },
     });
-    const contract = compileWorkerContract(source, "/recipes/inherited-strip-keyword/contract.json");
+    const contract = compileWorkerContract(source, "/recipes/contracts/inherited-strip-keyword.json");
     const keyword = "x-piano-unknown-properties";
     const descriptor = Object.getOwnPropertyDescriptor(Object.prototype, keyword);
     try {
@@ -1094,8 +954,6 @@ describe("worker-local contracts", () => {
 
   it("fails closed when an applicable assertion condition cannot be evaluated", () => {
     const contract = compileWorkerContract(JSON.stringify({
-      version: 1,
-      id: "conditional-check",
       schema: {
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "object",
@@ -1110,7 +968,7 @@ describe("worker-local contracts", () => {
       },
       example: { guard: 1 },
       outputs: { metrics: [] },
-    }), "/recipes/conditional-check/contract.json");
+    }), "/recipes/contracts/conditional-check.json");
 
     expect(validateWorkerContract(contract, { guard: 0 }).success).toBe(true);
     const missing = validateWorkerContract(contract, {});
@@ -1120,114 +978,57 @@ describe("worker-local contracts", () => {
 
   it("compiles every shipped worker contract", async () => {
     const recipes = join(process.cwd(), "recipes");
-    const workers = await readdir(recipes, { withFileTypes: true });
-    const contracts = workers
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => join(recipes, entry.name, "contract.json"));
+    const contractsRoot = join(recipes, "contracts");
+    const files = (await readdir(contractsRoot)).filter((name) => name.endsWith(".json"));
     const loaded: string[] = [];
-    for (const path of contracts) {
+    for (const name of files) {
+      const path = join(contractsRoot, name);
       try {
-        loaded.push(compileWorkerContract(await readFile(path, "utf8"), path).manifest.id);
+        loaded.push(compileWorkerContract(await readFile(path, "utf8"), path).worker);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
-    expect(loaded).toContain("coding-candidate");
-    expect(loaded).toContain("coding-review");
-    expect(loaded).toContain("architecture-design");
-    expect(loaded).toContain("cuda-round-result-v2");
-    expect(loaded).toContain("triton-round-result");
-    expect(loaded).toContain("tournament-optimization-proposal");
-    for (const id of [
-      "optimization-proposal",
-      "verification-report",
-      "summary-report",
+    expect(loaded).toContain("coding-developer");
+    expect(loaded).toContain("coding-reviewer");
+    expect(loaded).toContain("coding-architect");
+    expect(loaded).toContain("cuda-benchmark-store");
+    expect(loaded).toContain("triton-benchmark-store");
+    expect(loaded).toContain("cuda-idea-tournament");
+    for (const worker of [
+      "cuda-idea",
+      "triton-idea",
+      "cuda-implement-verify",
+      "triton-implement-verify",
+      "cuda-summary",
+      "triton-summary",
     ]) {
-      expect(loaded).toContain(id);
+      expect(loaded).toContain(worker);
     }
   });
 
-  it("keeps every shipped worker reusing a legacy id equivalent to its named validator", async () => {
-    const replacements: readonly unknown[] = [null, "", "wrong", -1, 0, 1.5, false, true, [], {}];
-    const recipes = join(process.cwd(), "recipes");
-    const workers = await readdir(recipes, { withFileTypes: true });
-    const replacementsByLegacyId: Array<readonly [worker: string, legacy: ContractName]> = [];
-    for (const entry of workers) {
-      if (!entry.isDirectory()) continue;
-      const path = join(recipes, entry.name, "contract.json");
-      try {
-        const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-        if (isContractName(contract.manifest.id)) {
-          replacementsByLegacyId.push([entry.name, contract.manifest.id]);
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    }
-    expect(replacementsByLegacyId.length).toBeGreaterThan(0);
-
-    for (const [worker, legacy] of replacementsByLegacyId) {
-      const path = join(process.cwd(), "recipes", worker, "contract.json");
-      const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-      const payload = structuredClone(VALIDATION_EXAMPLES[legacy]);
-      const cases: Array<readonly [label: string, value: unknown]> = [["example", payload]];
-      for (const mutationPath of mutationPaths(payload)) {
-        const parent = containerAt(payload, mutationPath.slice(0, -1));
-        if (!Array.isArray(parent)) {
-          const missing = structuredClone(payload);
-          delete (containerAt(missing, mutationPath.slice(0, -1)) as Record<string, unknown>)[mutationPath.at(-1)!];
-          cases.push([`delete /${mutationPath.join("/")}`, missing]);
-        }
-        for (const replacement of replacements) {
-          const mutated = structuredClone(payload);
-          setAt(mutated, mutationPath, structuredClone(replacement));
-          cases.push([`set /${mutationPath.join("/")}=${JSON.stringify(replacement)}`, mutated]);
-        }
-      }
-      for (const objectPath of objectPaths(payload)) {
-        const mutated = structuredClone(payload);
-        const object = containerAt(mutated, objectPath) as Record<string, unknown>;
-        object.__piano_unknown_field__ = { nested: true };
-        cases.push([`add unknown /${[...objectPath, "__piano_unknown_field__"].join("/")}`, mutated]);
-      }
-      if (legacy === "summary-report") {
-        cases.push(["omit optional outcome and progress_record", { run_id: "run-id", summary: "done" }]);
-      }
-
-      for (const [label, value] of cases) {
-        const legacyResult = validateContract(legacy, value);
-        const workerResult = validateWorkerContract(contract, value);
-        expect(workerResult.success, `${worker} must match ${legacy}: ${label}`).toBe(legacyResult.success);
-        if (legacyResult.success && workerResult.success) {
-          expect(workerResult.value, `${worker} accepted value must match ${legacy}: ${label}`).toEqual(legacyResult.value);
-        }
-      }
-    }
-  });
-
-  it("keeps same-id shipped workers equivalent without using the legacy registry as an oracle", async () => {
-    const recipes = join(process.cwd(), "recipes");
+  it("keeps declaratively equivalent shipped workers equivalent", async () => {
+    const contractsRoot = join(process.cwd(), "recipes", "contracts");
     const groups = new Map<string, Array<{
       worker: string;
       contract: ReturnType<typeof compileWorkerContract>;
     }>>();
-    const workers = await readdir(recipes, { withFileTypes: true });
-    for (const entry of workers) {
-      if (!entry.isDirectory()) continue;
-      const path = join(recipes, entry.name, "contract.json");
-      try {
-        const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-        const group = groups.get(contract.manifest.id) ?? [];
-        group.push({ worker: entry.name, contract });
-        groups.set(contract.manifest.id, group);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
+    for (const name of (await readdir(contractsRoot)).filter((entry) => entry.endsWith(".json"))) {
+      const path = join(contractsRoot, name);
+      const contract = compileWorkerContract(await readFile(path, "utf8"), path);
+      // The declarative manifest is the identity now that the named semantic
+      // id is gone: identical schema and outputs must behave identically.
+      const key = JSON.stringify({
+        schema: contract.manifest.schema,
+        outputs: contract.manifest.outputs,
+      });
+      const group = groups.get(key) ?? [];
+      group.push({ worker: contract.worker, contract });
+      groups.set(key, group);
     }
 
-    for (const [id, group] of groups) {
+    for (const [key, group] of groups) {
       if (group.length < 2) continue;
       for (const source of group) {
         const payload = structuredClone(source.contract.manifest.example);
@@ -1237,10 +1038,10 @@ describe("worker-local contracts", () => {
         }));
         const reference = results[0]!.result;
         for (const { target, result } of results) {
-          expect(result.success, `${id}: ${target} vs ${source.worker}`).toBe(reference.success);
+          expect(result.success, `${key}: ${target} vs ${source.worker}`).toBe(reference.success);
           if (reference.success && result.success) {
-            expect(result.value, `${id}: ${target} normalized value`).toEqual(reference.value);
-            expect(result.projections, `${id}: ${target} projections`).toEqual(reference.projections);
+            expect(result.value, `${key}: ${target} normalized value`).toEqual(reference.value);
+            expect(result.projections, `${key}: ${target} projections`).toEqual(reference.projections);
           }
         }
       }
@@ -1255,7 +1056,7 @@ describe("worker-local contracts", () => {
     ] as const;
 
     for (const [worker, required] of cases) {
-      const path = join(process.cwd(), "recipes", worker, "contract.json");
+      const path = join(process.cwd(), "recipes", "contracts", `${worker}.json`);
       const contract = compileWorkerContract(await readFile(path, "utf8"), path);
       const declaration = contract.manifest.outputs.projections.find((projection) => projection.id === "workflow.map-items");
       expect(declaration, `${worker} must reserve workflow.map-items`).toMatchObject({
@@ -1273,18 +1074,106 @@ describe("worker-local contracts", () => {
     }
   });
 
-  it("rejects payloads from the other legacy mode at every split worker boundary", async () => {
-    const cases: ReadonlyArray<readonly [worker: string, legacy: ContractName, other: ContractName]> = [
-      ["cuda-summary", "summary-report", "verification-report"],
-      ["cuda-implement-verify", "verification-report", "summary-report"],
+  it("rejects a sibling worker's example at every split worker boundary", async () => {
+    const cases: ReadonlyArray<readonly [worker: string, other: string]> = [
+      ["cuda-summary", "cuda-implement-verify"],
+      ["cuda-implement-verify", "cuda-summary"],
     ];
 
-    for (const [worker, legacy, other] of cases) {
-      const path = join(process.cwd(), "recipes", worker, "contract.json");
+    for (const [worker, other] of cases) {
+      const path = join(process.cwd(), "recipes", "contracts", `${worker}.json`);
+      const otherPath = join(process.cwd(), "recipes", "contracts", `${other}.json`);
       const contract = compileWorkerContract(await readFile(path, "utf8"), path);
-      const payload = structuredClone(VALIDATION_EXAMPLES[other]);
-      expect(validateContract(legacy, payload).success, `${legacy} rejects ${other}`).toBe(false);
+      const otherContract = compileWorkerContract(await readFile(otherPath, "utf8"), otherPath);
+      const payload = structuredClone(otherContract.manifest.example);
       expect(validateWorkerContract(contract, payload).success, `${worker} rejects ${other}`).toBe(false);
     }
+  });
+});
+
+describe("shipped contract oracle", () => {
+  const load = async (worker: string) => {
+    const path = join(process.cwd(), "recipes", "contracts", `${worker}.json`);
+    return compileWorkerContract(await readFile(path, "utf8"), path);
+  };
+
+  it("pins the projection declarations of single-worker contracts", async () => {
+    const profile = await load("cuda-profile");
+    expect(profile.worker).toBe("cuda-profile");
+    expect(profile.manifest.outputs.projections).toEqual([
+      { id: "workflow.status", pointer: "/status", format: "string", required: false },
+    ]);
+
+    const setup = await load("cuda-setup");
+    expect(setup.worker).toBe("cuda-setup");
+    expect(setup.manifest.outputs.projections).toEqual([
+      { id: "workflow.status", pointer: "/status", format: "string", required: true },
+    ]);
+
+    const proposal = await load("triton-idea");
+    expect(proposal.worker).toBe("triton-idea");
+    expect(proposal.manifest.outputs.projections).toContainEqual({
+      id: "workflow.map-items", pointer: "/strategies", format: "json", required: true,
+    });
+
+    const summary = await load("cuda-summary");
+    expect(summary.worker).toBe("cuda-summary");
+    expect(summary.manifest.outputs.projections).toEqual([
+      { id: "progress-record.path", pointer: "/progress_record/file_path", format: "string", required: false },
+    ]);
+  });
+
+  it("keeps the shipped conditional branches accepting and rejecting", async () => {
+    const profile = await load("cuda-profile");
+    const ready = {
+      status: "ready",
+      target_operator: "kernel",
+      device: { name: "GPU", architecture: "arch" },
+      metrics: { compute_utilization: 0.5, memory_bandwidth_utilization: 0.5, achieved_occupancy: 0.5, launch_overhead: 1 },
+      bottlenecks: [{ type: "memory", description: "bandwidth", evidence: "measured" }],
+      analysis: "ready profile",
+    };
+    expect(validateWorkerContract(profile, structuredClone(ready)).success).toBe(true);
+    const missingMetrics = structuredClone(ready) as Record<string, unknown>;
+    missingMetrics.metrics = { memory_bandwidth_utilization: 0.2 };
+    expect(validateWorkerContract(profile, missingMetrics).success).toBe(false);
+    expect(validateWorkerContract(profile, {
+      status: "blocked",
+      target_operator: "kernel",
+      device: { name: "GPU", architecture: "arch" },
+      analysis: "device unavailable",
+    }).success).toBe(false);
+
+    const setup = await load("cuda-setup");
+    expect(validateWorkerContract(setup, {
+      status: "ready",
+      target: { operator: "gemm", shape: "1x1", dtype: "f16" },
+      device: { name: "GPU", architecture: "sm" },
+      toolchain: { compiler: "cc", runtime: "rt", profiler: "prof" },
+      baseline: { custom_kernel: { path: "kernel.cu" } },
+      current_best: { path: "kernel.cu" },
+      state_path: "state.json",
+    }).success).toBe(true);
+    expect(validateWorkerContract(setup, {
+      status: "blocked",
+      target: { operator: "gemm", shape: "1x1", dtype: "f16" },
+      device: { name: "GPU", architecture: "sm" },
+      toolchain: { compiler: "cc", runtime: "rt", profiler: "prof" },
+      blocker: "no device",
+    }).success).toBe(true);
+
+    const proposal = await load("triton-idea");
+    expect(validateWorkerContract(proposal, {
+      strategies: [{
+        id: "candidate",
+        bottleneck: "memory",
+        technique: "pipeline",
+        rationale: "overlap transfer",
+        predicted_speedup: 1.1,
+        risk_level: "medium",
+        variable_type: "structural",
+      }],
+      rechecked_premises: [{ premise: "memory is the ceiling", invalidated: false, evidence: "baseline profile" }],
+    }).success).toBe(true);
   });
 });

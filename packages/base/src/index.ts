@@ -43,4 +43,4 @@ export { installStagingFile, writeFileAtomic } from "./atomic-write.js";
 // The one Effect interface to the outside world: filesystem, processes, HTTP.
 export * as io from "./io.js";
 
-export { acquireRunLock, RunLockedError, type RunLock } from "./run-lock.js";
+export { acquireRunLock } from "./run-lock.js";

@@ -6,8 +6,7 @@
  */
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { createHash } from "node:crypto";
-import { contractSnapshotPath, evalMetricsDir, io } from "@piano/base";
+import { evalMetricsDir, io } from "@piano/base";
 import {
   BenchmarkRecorder,
   DurationRecorder,
@@ -116,18 +115,6 @@ export function readRunTrace(
         if (mismatches > 0) issues.push(`${stream}: ${mismatches} record(s) belong to another execution`);
       }
     }
-    for (const digest of new Set(benchmarks.map((record) => record.contract.digest))) {
-      const snapshotPath = contractSnapshotPath(runDir, digest);
-      const snapshot = yield* fileSystem.readFileString(snapshotPath).pipe(Effect.either);
-      if (snapshot._tag === "Left") {
-        issues.push(`benchmark: contract snapshot ${digest} is missing or unreadable`);
-        continue;
-      }
-      const actualDigest = createHash("sha256").update(snapshot.right).digest("hex");
-      if (actualDigest !== digest) {
-        issues.push(`benchmark: contract snapshot ${digest} failed digest verification`);
-      }
-    }
 
     // Per-invocation stage observations: recorder rows grouped by invocation,
     // completed from the accepted row's metadata and the stage transcript.
@@ -225,7 +212,6 @@ export function readRunTrace(
       invocationId: record.invocationId,
       stageId: record.stageId,
       worker: record.worker,
-      contractDigest: record.contract.digest,
     }));
 
     return {

@@ -1,0 +1,55 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "run_id",
+      "summary"
+    ],
+    "properties": {
+      "run_id": {
+        "type": "string"
+      },
+      "summary": {
+        "type": "string"
+      },
+      "outcome": {
+        "enum": [
+          "improved",
+          "neutral",
+          "regressed",
+          "unmeasured",
+          "write_only"
+        ]
+      },
+      "ranking": {
+        "type": "array"
+      },
+      "winner": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "progress_record": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "run_id": "run",
+    "summary": "done"
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "progress-record.path",
+        "pointer": "/progress_record/file_path",
+        "format": "string",
+        "required": false
+      }
+    ]
+  }
+}

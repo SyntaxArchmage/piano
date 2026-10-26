@@ -17,12 +17,12 @@ import { compileWorkerContract, validateWorkerContract } from "../../packages/co
 const RECIPES = join(process.cwd(), "recipes");
 
 async function contract(id: string) {
-  const path = join(RECIPES, id, "contract.json");
+  const path = join(RECIPES, "contracts", `${id}.json`);
   return compileWorkerContract(await readFile(path, "utf8"), path);
 }
 
 async function contractJson(id: string) {
-  return JSON.parse(await readFile(join(RECIPES, id, "contract.json"), "utf8")) as {
+  return JSON.parse(await readFile(join(RECIPES, "contracts", `${id}.json`), "utf8")) as {
     schema: {
       required: readonly string[];
       properties: Record<string, { required?: readonly string[]; items?: { properties?: Record<string, unknown> } }>;

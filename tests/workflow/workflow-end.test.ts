@@ -2,7 +2,7 @@
 // and its progress ledger reports completed — exactly when its last worker
 // has finished, for the three shapes the user hits: one worker, fan-out
 // (multi worker), and a loop. Where the big suite pins per-shape mechanics
-// (ordering, handoffs, iteration actors), these tests pin only the end: the
+// (ordering, inputs, iteration actors), these tests pin only the end: the
 // effect settles, every planned worker ran exactly once, and the state
 // document lands at completedStages === plannedStages. A workflow that "never
 // ends after all workers finish" fails here.
@@ -46,7 +46,6 @@ workflow:
     - stage:
         name: joined
         worker: basic
-        handoff: joined.json
         from: [left, right]
 `;
 
@@ -74,8 +73,6 @@ workflow:
           - stage:
               name: report
               worker: stop-feedback
-              handoff: report.json
-              validate: true
               from: [propose]
     - stage:
         name: summary
@@ -84,8 +81,6 @@ workflow:
 `;
 
 const STOP_FEEDBACK_CONTRACT = {
-  version: 1,
-  id: "test-loop-stop-feedback",
   schema: {
     $schema: "https://json-schema.org/draft/2020-12/schema",
     type: "object",
@@ -125,25 +120,16 @@ workflow:
           - stage:
               name: propose
               worker: basic
-              handoff: seed.json
-              validate: text-response
               from: []
           - stage:
               name: report
               worker: smoke-test-agent
-              handoff: proposal.json
               from: [propose]
 `;
 
 function stageId(request: AgentRequest): string {
   const matched = /workflow stage `([^`]+)`/.exec(request.prompt);
   if (matched?.[1] === undefined) throw new Error(`missing workflow stage context: ${request.prompt}`);
-  return matched[1];
-}
-
-function invocationId(request: AgentRequest): string {
-  const matched = /workflow stage `[^`]+` \(([^)]+)\)/.exec(request.prompt);
-  if (matched?.[1] === undefined) throw new Error(`missing workflow invocation context: ${request.prompt}`);
   return matched[1];
 }
 
@@ -242,11 +228,6 @@ describe("workflow ends when its scripted workers finish", () => {
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           stages.push(stage);
-          if (stage === "tune.propose") {
-            const path = validationPath(request);
-            await mkdir(dirname(path), { recursive: true });
-            await writeFile(path, JSON.stringify({ text: invocationId(request) }));
-          }
           return {
             sessionId: `s-${stages.length}`, transcriptPath: `/tmp/s-${stages.length}.jsonl`, text: `${stage} out`,
             continuation: { harness: "pi", sessionId: `s-${stages.length}`, transcriptPath: `/tmp/s-${stages.length}.jsonl` },
@@ -271,9 +252,11 @@ describe("workflow ends when its scripted workers finish", () => {
     const root = await mkdtemp(join(tmpdir(), "piano-end-loop-stop-"));
     try {
       const workerDir = join(root, "recipes", "stop-feedback");
+      const contractsDir = join(root, "recipes", "contracts");
       await mkdir(workerDir, { recursive: true });
+      await mkdir(contractsDir, { recursive: true });
       await writeFile(join(workerDir, "agents.md"), "Return the requested loop decision.\n");
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify(STOP_FEEDBACK_CONTRACT));
+      await writeFile(join(contractsDir, "stop-feedback.json"), JSON.stringify(STOP_FEEDBACK_CONTRACT));
       await writeFile(join(root, "loop-stop.yml"), EARLY_STOP_LOOP_WORKFLOW);
       const session = await testSession(root);
       const stages: string[] = [];
@@ -289,11 +272,13 @@ describe("workflow ends when its scripted workers finish", () => {
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           stages.push(stage);
-          if (stage === "tune.report") {
-            const path = validationPath(request);
-            await mkdir(dirname(path), { recursive: true });
-            await writeFile(path, JSON.stringify({ next_action: "stop" }));
-          }
+          // Every stage carries the stop-feedback contract, so each turn must
+          // publish a valid decision; only the feedback stage stops the loop.
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, JSON.stringify({
+            next_action: stage === "tune.report" ? "stop" : "continue",
+          }));
           return {
             sessionId: `s-${stages.length}`,
             transcriptPath: `/tmp/s-${stages.length}.jsonl`,

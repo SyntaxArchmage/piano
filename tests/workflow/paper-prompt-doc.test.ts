@@ -34,7 +34,7 @@ function embeddedJson(source: string): unknown {
 
 describe("the paper-writing preparation document", () => {
   it("carries a prompt.json that satisfies the real paper-brief contract", async () => {
-    const contractPath = join(process.cwd(), "recipes", "paper-prepare", "contract.json");
+    const contractPath = join(process.cwd(), "recipes", "contracts", "paper-prepare.json");
     const compiled = compileWorkerContract(await readFile(contractPath, "utf8"), contractPath);
 
     const result = validateWorkerContract(compiled, embeddedJson(await loadTemplate()));
@@ -45,7 +45,7 @@ describe("the paper-writing preparation document", () => {
   });
 
   it("lists the brief's required fields as things the author must fill in", async () => {
-    const contractPath = join(process.cwd(), "recipes", "paper-prepare", "contract.json");
+    const contractPath = join(process.cwd(), "recipes", "contracts", "paper-prepare.json");
     const manifest = JSON.parse(await readFile(contractPath, "utf8")) as {
       schema: { required: readonly string[] };
     };

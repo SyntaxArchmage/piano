@@ -1,13 +1,6 @@
 import type { Effect } from "effect";
 import type { BenchmarkMetricV1 } from "@piano/contract";
 
-export interface TrajectoryContractReference {
-  readonly id: string;
-  readonly version: 1;
-  readonly digest: string;
-  readonly snapshotPath: string;
-}
-
 export interface TrajectoryRecordContext {
   readonly version: 1;
   readonly timestamp: string;
@@ -79,7 +72,6 @@ export type WorkflowObservation =
       readonly pointer: string;
       readonly value: BenchmarkMetricV1;
     }[];
-    readonly contract?: TrajectoryContractReference;
   }
   | {
     readonly type: "selection";
@@ -129,10 +121,6 @@ export interface TrajectoryRecorder<TRecord, TScore> extends WorkflowObservation
   score(records: readonly TRecord[]): TScore;
 }
 
-export interface TrajectoryEvaluator<TInput, TResult> {
-  evaluate(input: TInput): Effect.Effect<TResult, TrajectoryEvaluationError, import("@effect/platform").FileSystem.FileSystem>;
-}
-
 export class TrajectoryRecordError extends Error {
   readonly _tag = "TrajectoryRecordError" as const;
 
@@ -153,21 +141,10 @@ export class TrajectoryReadError extends Error {
   }
 }
 
-export class TrajectoryEvaluationError extends Error {
-  readonly _tag = "TrajectoryEvaluationError" as const;
-
-  constructor(readonly path: string, message: string) {
-    super(message);
-    this.name = "TrajectoryEvaluationError";
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-}
-
 export interface BenchmarkRecord extends TrajectoryRecordContext {
   readonly kind: "benchmark";
   readonly metric: BenchmarkMetricV1;
   readonly pointer: string;
-  readonly contract: TrajectoryContractReference;
 }
 
 export interface DurationRecord extends TrajectoryRecordContext {

@@ -41,8 +41,8 @@
  │  workflow-execution.ts   THE CORE RUNTIME                                 │
  │    · runtime plan: loop iterations / map slots (parallel lanes)           │
  │    · per invocation: context files → executeWorker →                      │
- │      validate (contract) → repair turn on failure                         │
- │    · handoff.ts        immutable producer records → consumer contexts     │
+ │      contract (auto) → one repair turn → warning, not failure             │
+ │    · acceptance.ts     immutable accepted results → consumer inputs       │
  │    · workspace.ts      shared root | lane branch worktrees (source/store) │
  │    · progress.ts       status.json state document: the one run state      │
  │    · CUDA promotion    KEEP/DISCARD materialization (non-monotonic)       │
@@ -82,7 +82,7 @@
  │   status.json (single state document)                                      │
  │   system-log/{log,trace,trajectory,invocations}.jsonl                      │
  │   results/inv-<ref>-attempt-<k>.json · context/inv-<ref>/<file>            │
- │   contracts/<sha256>.json · eval-metrics/*.jsonl                           │
+ │   contracts/<worker>.json · eval-metrics/*.jsonl                           │
  │   sessions/trajectory-<harness>-<worker>-<lane>/session/*.jsonl            │
  │   <run>/git/workspaces.git  (baselines)                                    │
  │   <run>/workspaces/worktree-<key>/  (lanes on tuna/<ns>/lane-<n>)          │
@@ -98,14 +98,17 @@
  │  Zero @piano/* dependencies: every package above may import it.            │
  └────────────────────────────────────────────────────────────────────────────┘
 
- ┌────────────────  CONTRACT (packages/contract)  ─┐   ┌────────────────────┐
- │  zod schemas: text-response · profile-report ·  │   │  RECIPES (recipes/)│
- │  optimization-proposal · cuda-round-result ·    │   │  workflows/*.yml   │
- │  summary-report …  + repair guidance            │   │  <worker>/         │
- └─────────────────────────────────────────────────┘   │   system-prompt.md │
-                                                        │   agents.md        │
- ┌──────────────────────────────────────────────────┐   │   skills/<n>/…    │
- │  CROSS-CUTTING: Effect runtime + @effect/platform│   └────────────────────┘
- │  FS; everything is a typed Effect, observability │
- │  via LOG/TRACE (best-effort, never fails a run)  │
- └──────────────────────────────────────────────────┘
+ ┌─────────────────  CONTRACT (packages/contract)  ─────────────────┐   ┌─  RECIPES (recipes/)  ─┐
+ │  worker-contract.ts parses recipes/contracts/<worker>.json       │   │  workflows/*.yml       │
+ │  (manifest + JSON Schema + example), compiles the payload        │   │  contracts/            │
+ │  schema with Ajv, validates results, normalizes declared         │   │    <worker>.json       │
+ │  metrics/projections, and emits repair guidance                  │   │  <worker>/             │
+ └──────────────────────────────────────────────────────────────────┘   │    system-prompt.md    │
+                                                                        │    agents.md           │
+                                                                        │    skills/<n>/…        │
+                                                                        └────────────────────────┘
+
+ ┌───────  CROSS-CUTTING: Effect runtime + @effect/platform  ───────┐
+ │  FS; everything is a typed Effect, observability                 │
+ │  via LOG/TRACE (best-effort, never fails a run)                  │
+ └──────────────────────────────────────────────────────────────────┘

@@ -7,5 +7,5 @@ compile/run/numeric verification repair loop.
   Triton kernel. Preserve `run(A, B)`, fixed shape/dtype, and grader rules.
 - Run the workspace compile and `python verify.py` commands, retaining real
   output, exit codes, and numeric errors. Make only evidence-driven repairs.
-- Return a truthful `verification-report`; `verdict: pass` requires compile,
+- Return a truthful result JSON for this stage; `verdict: pass` requires compile,
   run, and numeric checks to pass. Do not benchmark or promote the candidate.

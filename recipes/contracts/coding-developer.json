@@ -1,0 +1,52 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["status", "tests", "changed_files", "changed_loc", "tests_altered", "cheating_detected"],
+    "properties": {
+      "status": { "enum": ["implemented", "blocked"] },
+      "tests": {
+        "type": "object",
+        "required": ["total", "passed", "failed", "command", "name", "unit", "direction", "samples", "best", "median", "runs", "warmup"],
+        "properties": {
+          "name": { "const": "test_pass_rate" },
+          "unit": { "const": "ratio" },
+          "direction": { "const": "higher" },
+          "samples": { "type": "array", "minItems": 1, "items": { "type": "number", "minimum": 0, "maximum": 1 } },
+          "best": { "type": "number", "minimum": 0, "maximum": 1 },
+          "median": { "type": "number", "minimum": 0, "maximum": 1 },
+          "runs": { "type": "integer", "minimum": 1 },
+          "warmup": { "const": 0 },
+          "total": { "type": "integer", "minimum": 0 },
+          "passed": { "type": "integer", "minimum": 0 },
+          "failed": { "type": "integer", "minimum": 0 },
+          "command": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      },
+      "changed_files": { "type": "integer", "minimum": 0 },
+      "changed_loc": { "type": "integer", "minimum": 0 },
+      "tests_altered": { "type": "boolean" },
+      "cheating_detected": { "type": "boolean" },
+      "summary": { "type": "string" },
+      "blocker": { "type": "string" }
+    },
+    "additionalProperties": false,
+    "allOf": [
+      { "if": { "properties": { "status": { "const": "implemented" } } }, "then": { "properties": { "tests": { "type": "object", "properties": { "failed": { "const": 0 } } }, "cheating_detected": { "const": false } } } }
+    ]
+  },
+  "outputs": {
+    "metrics": [{ "pointer": "/tests", "format": "benchmark/v1", "required": true }]
+  },
+  "example": {
+    "status": "implemented",
+    "tests": { "total": 12, "passed": 12, "failed": 0, "command": "npm test", "evidence": "vitest summary", "name": "test_pass_rate", "unit": "ratio", "direction": "higher", "samples": [1], "best": 1, "median": 1, "runs": 1, "warmup": 0 },
+    "changed_files": 2,
+    "changed_loc": 48,
+    "tests_altered": false,
+    "cheating_detected": false,
+    "summary": "Implemented the architect plan."
+  }
+}

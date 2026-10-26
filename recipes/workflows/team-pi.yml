@@ -18,8 +18,6 @@ workflow:
         thinkingLevel: max
         discuss: true
         tools: [read, bash, edit, write, find, grep, ls, web_search, discuss]
-        handoff: architecture.json
-        validate: true
         from: []
     - tournament:
         name: candidates
@@ -36,8 +34,6 @@ workflow:
               model: deepseek-flash
               thinkingLevel: max
               tools: [read, bash, edit, write, find, grep, ls]
-              handoff: candidate-input.json
-              validate: true
               from: []
     - stage:
         name: review
@@ -46,6 +42,4 @@ workflow:
         model: deepseek-flash
         thinkingLevel: max
         tools: [read, bash, edit, write, find, grep, ls]
-        handoff: review-input.json
-        validate: true
         from: [candidates]

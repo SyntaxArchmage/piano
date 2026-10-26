@@ -1,0 +1,335 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "title_working",
+      "core_claim",
+      "venue",
+      "manuscript",
+      "evidence",
+      "contributions",
+      "reference_papers",
+      "placeholders",
+      "scaffold",
+      "prompt_doc",
+      "questions_asked",
+      "open_assumptions"
+    ],
+    "properties": {
+      "scaffold": {
+        "type": "object",
+        "description": "How the write target was prepared. Required because `the manuscript is the tree this run may edit` is the one fact nothing downstream can re-derive — and the one a run gets wrong by pointing itself at a finished paper.",
+        "required": ["template_source", "template", "created", "build_verified", "reference_disjoint"],
+        "properties": {
+          "template_source": { "type": "string", "minLength": 1, "description": "Where the class/style/bib files came from: a template package, a directory, or 'existing' when a scaffold was reused." },
+          "template": { "type": "string", "minLength": 1, "description": "The class and version actually extracted, e.g. 'acmart v2.12 (2024/12/28), sigconf'." },
+          "created": { "type": "array", "items": { "type": "string" }, "description": "The paths that make up the write target: what this stage created or extracted, or — when it adopted a tree the author had already built — the paths it verified are present. Empty only when the manuscript is an existing draft whose tree you did not enumerate." },
+          "reused_existing": { "type": "boolean", "description": "True when the tree already existed and was adopted rather than scaffolded by this stage." },
+          "build_verified": { "type": "boolean", "description": "Whether the compile command was run and produced a PDF. A claim you did not run is worse than a reported failure." },
+          "reference_disjoint": { "type": "boolean", "description": "True only when no reference paper sits inside manuscript.root and manuscript.root sits inside no reference paper. When this is false the run spends hours improving a finished paper and every downstream check still passes." },
+          "layout_followed": { "type": "string", "description": "Which reference repository's construction method was copied — one file per section? figures split into src/data/out? a plan/ dir? — and from where." }
+        },
+        "additionalProperties": false
+      },
+      "prompt_doc": {
+        "type": "object",
+        "description": "The preparation document this run started from. Required so that 'no document existed' is a statement the result makes rather than a field it can omit, and so a reader can tell which values you were told from which you inferred.",
+        "required": ["path", "found"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "description": "Where you looked, whether or not it existed." },
+          "found": { "type": "boolean" },
+          "used": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The brief fields whose values came from the document, e.g. core_claim, venue.page_limit, manuscript.state_dir."
+          },
+          "conflicts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Where the document disagreed with the repository. Say which you kept and why; a document may deliberately describe a target state that does not exist on disk yet."
+          },
+          "unresolved": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Questions the document itself lists as open. They are already known to be undecided, so they are not worth asking again."
+          }
+        },
+        "additionalProperties": false
+      },
+      "title_working": { "type": "string", "minLength": 8 },
+      "core_claim": {
+        "type": "string",
+        "minLength": 20,
+        "description": "The paper's thesis in one sentence. Every later stage must be able to check a paragraph against it."
+      },
+      "venue": {
+        "type": "object",
+        "required": ["name", "kind", "page_limit", "template", "anonymized"],
+        "properties": {
+          "name": { "type": "string", "minLength": 2 },
+          "kind": { "enum": ["conference", "journal", "workshop", "preprint"] },
+          "year": { "type": "integer" },
+          "page_limit": { "type": "integer", "exclusiveMinimum": 0 },
+          "template": {
+            "type": "string",
+            "description": "The class/package the manuscript builds with, e.g. acmart-primary, ieeetran."
+          },
+          "anonymized": { "type": "boolean" },
+          "deadline": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "manuscript": {
+        "type": "object",
+        "required": ["root", "entry", "compile", "figures_dir", "state_dir"],
+        "properties": {
+          "root": { "type": "string", "minLength": 1, "description": "Directory containing the manuscript, resolvable from the working directory." },
+          "entry": { "type": "string", "minLength": 1, "description": "The .tex file that is compiled, relative to root." },
+          "compile": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The exact command that builds the PDF from root. Every writer stage runs it; it must already work."
+          },
+          "figures_dir": { "type": "string", "minLength": 1 },
+          "state_dir": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Directory, under root, where durable cross-round state lives (the reference spec, the storyline state). Required, because two agents guessing different defaults for it is how a loop loses its memory between rounds."
+          }
+        },
+        "additionalProperties": false
+      },
+      "evidence": {
+        "type": "object",
+        "required": ["code_roots", "datasets", "available_results", "experiment_commands"],
+        "properties": {
+          "code_roots": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "datasets": { "type": "array", "items": { "type": "string" } },
+          "available_results": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Result files that already exist and may be cited."
+          },
+          "experiment_commands": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Commands that regenerate the numbers. paper-audit uses these to validate a claimed value."
+          }
+        },
+        "additionalProperties": false
+      },
+      "contributions": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["id", "statement", "methodology", "evaluation"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "statement": { "type": "string", "minLength": 12 },
+            "methodology": { "type": "string", "description": "Section that presents it, e.g. §3.2" },
+            "evaluation": { "type": "string", "description": "Artifact that validates it, e.g. Fig. 5 / Tab. 2 / §5.1" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "reference_papers": {
+        "type": "array",
+        "minItems": 1,
+        "description": "Read-only standards for form. paper-calibrate measures these to derive the section budget, storyline arc, figure grammar and prose patterns this submission matches. Their content — numbers, claims, figures, prose — belongs to them and never enters this paper, and none of them may sit inside manuscript.root.",
+        "items": {
+          "type": "object",
+          "required": ["path", "why", "read_only"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "why": { "type": "string", "minLength": 8, "description": "What this paper is the standard *for*: figure grammar, storyline arc, evaluation-table layout, prose. About form only." },
+            "role": { "enum": ["figure-grammar", "storyline", "evaluation", "prose", "overall"] },
+            "read_only": { "type": "boolean", "description": "Confirms it is a standard, not a workspace. Always true; present so a run that has confused the two cannot pass silently." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "placeholders": {
+        "type": "array",
+        "description": "Values the author has deliberately left unmeasured. Each one is a macro site in the manuscript — \\ph{<id>} — and never a numeral, so that 'not yet measured' stays machine-distinguishable from 'invented'. paper-write emits the macro and reports it in placeholders_used; paper-audit counts the sites and refuses an unregistered one; paper-finalize will not report ready while any entry is open. The point is that the paper's gaps are a list a reader can see, rather than a number nobody can check.",
+        "items": {
+          "type": "object",
+          "required": ["id", "what", "where", "source", "status"],
+          "properties": {
+            "id": { "type": "string", "pattern": "^ph-[a-z0-9]+(-[a-z0-9]+)*$", "description": "The macro argument: \\ph{ph-<...>}. Lowercase and hyphenated so site and registry line up textually." },
+            "what": { "type": "string", "minLength": 8, "description": "The quantity that will go here, e.g. 'speedup when starting from a production FlashAttention-2 kernel'." },
+            "where": { "type": "string", "description": "Where it appears in the paper: §5.4, Tab. 2 row 3, Fig. 6." },
+            "source": { "type": "string", "minLength": 1, "description": "How it will be filled: the command to run, the workload to add, or the file it will arrive in. 'The author will fill it in' is not a source, because then nothing can ever check it." },
+            "status": { "enum": ["open", "filled"], "description": "open = the manuscript shows the macro at this site and no number." },
+            "filled_value": { "type": "string", "description": "Only when status is 'filled': the value now in the manuscript and the file it came from." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "constraints": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Breaks found in the C→M→E mapping, budget pressure, or venue rules, stated plainly."
+      },
+      "questions_asked": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "The questions actually sent to the author. Empty means every value came from the repository."
+      },
+      "open_assumptions": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Everything decided without being told. This is the loop's substitute for asking you again."
+      }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "title_working": "PIANO: a production-ready high performance kernel tuning agent with a programmable agentic workflow",
+    "core_claim": "A workflow rather than a prompt is what makes an agent's kernel tuning reproducible: composing stages, loops and tournaments over interchangeable agent harnesses turns an open-ended optimisation attempt into a schedule whose every decision is recorded, contract-validated and re-runnable.",
+    "venue": {
+      "name": "arXiv (cs.DC)",
+      "kind": "preprint",
+      "year": 2026,
+      "page_limit": 14,
+      "template": "acmart-primary",
+      "anonymized": false
+    },
+    "manuscript": {
+      "root": "paper",
+      "entry": "main.tex",
+      "compile": "make -C paper",
+      "figures_dir": "figures",
+      "state_dir": "plan"
+    },
+    "scaffold": {
+      "template_source": "/home/albert/workspace/manuscripts-workspace/template-packages/acmart-primary.zip",
+      "template": "acmart v2.12 (2024/12/28), sigconf",
+      "created": [
+        "paper/main.tex",
+        "paper/sections/",
+        "paper/acmart.cls",
+        "paper/ACM-Reference-Format.bst",
+        "paper/refs.bib",
+        "paper/figures/src/",
+        "paper/figures/data/",
+        "paper/figures/out/",
+        "paper/plan/",
+        "paper/Makefile"
+      ],
+      "reused_existing": false,
+      "build_verified": true,
+      "reference_disjoint": true,
+      "layout_followed": "Copied the construction method of the author's own paper repositories: an acmart main.tex with the class, bibliography style and refs.bib beside it, section bodies under sections/, a figures/ tree split into src/data/out so a plotted figure has a script and a data file behind it, planning notes under plan/, and a Makefile whose default target builds the PDF in one command. Structure only — no prose, number or figure was copied."
+    },
+    "evidence": {
+      "code_roots": ["/home/albert/workspace/piano"],
+      "datasets": ["paper/figures/data"],
+      "available_results": [
+        "paper/figures/data/tuning-results.json",
+        "paper/figures/data/serial-vs-tournament.json"
+      ],
+      "experiment_commands": [
+        "node paper/figures/src/extract-eval-results.mjs"
+      ]
+    },
+    "contributions": [
+      {
+        "id": "C1",
+        "statement": "A declarative workflow language in which agent stages compose through three node kinds — stage, loop and tournament — plus a feedback edge, and whose failure semantics (who owns the retry, what a round may leave behind) are part of the language rather than of the prompt.",
+        "methodology": "§3.1",
+        "evaluation": "§5.2, §5.3: the same stage graph run as a serial pipeline and as a tournament, 7 paired configurations"
+      },
+      {
+        "id": "C2",
+        "statement": "A harness abstraction that puts four different coding agents behind one event and resource surface, so a workflow names the harness per stage and the workflow itself stays model-agnostic.",
+        "methodology": "§3.2",
+        "evaluation": "§5.4: the identical workflow executed under pi, claude and dsh"
+      },
+      {
+        "id": "C3",
+        "statement": "An evidence chain that makes an agent's optimisation auditable after the fact: immutable handoff records, one result file per attempt, the full agent transcript, and a contract check with a bounded repair turn in place of silent acceptance.",
+        "methodology": "§3.3",
+        "evaluation": "§5.6: the ledger of a single run read back and reconstructed"
+      },
+      {
+        "id": "C4",
+        "statement": "An end-to-end result: agents given only a naive kernel and a benchmark entrypoint reach hardware-level throughput on a CUDA matmul, and the tournament node is what makes the outcome stable across models.",
+        "methodology": "§3.1, §4",
+        "evaluation": "§5.1 Tab. 1, Fig. 2; §5.2 Fig. 3"
+      }
+    ],
+    "reference_papers": [
+      {
+        "path": "/home/albert/workspace/croqtile-tuner-paper",
+        "why": "The closest systems paper of the author's own: the introduction's argument arc, the section budget of an acmart systems submission, and the figure grammar that pairs every plot with the script and data behind it.",
+        "role": "storyline",
+        "read_only": true
+      },
+      {
+        "path": "/home/albert/workspace/manuscripts-workspace/papers/adaptive-operator-fusion-camera-ready",
+        "why": "The author's acmart sigconf typesetting standard: preamble and rights block, table style, and how a speedup claim is worded and scoped.",
+        "role": "evaluation",
+        "read_only": true
+      },
+      {
+        "path": "/home/albert/workspace/gemm_sp_paper",
+        "why": "The evaluation-table layout and the win/loss framing used when a comparison does not go one way.",
+        "role": "figure-grammar",
+        "read_only": true
+      }
+    ],
+    "placeholders": [
+      {
+        "id": "ph-prod-speedup",
+        "what": "speedup when the run starts from a production kernel instead of a naive one",
+        "where": "§5.3, Tab. 2 second block",
+        "source": "a from-production eval workload, to be added under evals/workloads/ and reported the same way as the from-scratch arm",
+        "status": "open"
+      },
+      {
+        "id": "ph-second-operator",
+        "what": "whether the same workflow reaches a comparable improvement on a second operator family",
+        "where": "§5.1, the \"scope\" paragraph, and §6",
+        "source": "a second tuning workload; until it exists the paper states one operator family and says so",
+        "status": "open"
+      },
+      {
+        "id": "ph-cost-per-round",
+        "what": "tokens and wall-clock per accepted round, against the improvement that round bought",
+        "where": "Tab. 1 last column",
+        "source": "the per-run usage and timing already recorded in each eval report",
+        "status": "open"
+      }
+    ],
+    "constraints": [
+      "One operator family (dense matmul) on one GPU: every claim in §5 is scoped to that, and the scope is stated in the abstract rather than left for the reader to discover.",
+      "The serial-versus-tournament comparison is a win on six of seven paired configurations and a loss on one; both are reported.",
+      "Do not turn a measurement the run did not make into prose. A sentence that would need ph-prod-speedup stays a \\ph{} site with a note on what is missing."
+    ],
+    "prompt_doc": {
+      "path": "PROMPT.md",
+      "found": true,
+      "used": [
+        "title_working",
+        "core_claim",
+        "venue",
+        "manuscript",
+        "scaffold",
+        "evidence",
+        "contributions",
+        "reference_papers",
+        "placeholders"
+      ],
+      "conflicts": [],
+      "unresolved": [
+        "Whether a from-production arm will be run before submission, which is why ph-prod-speedup exists rather than a number."
+      ]
+    },
+    "questions_asked": [],
+    "open_assumptions": [
+      "The section list was left to paper-calibrate, so the contribution-to-section mapping above is the document's target and may move by one subsection."
+    ]
+  }
+}

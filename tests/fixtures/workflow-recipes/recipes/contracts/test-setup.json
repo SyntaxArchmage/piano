@@ -1,0 +1,54 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "status"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "ready",
+          "blocked"
+        ]
+      },
+      "target": {
+        "type": "object"
+      },
+      "device": {
+        "type": "object"
+      },
+      "toolchain": {
+        "type": "object"
+      },
+      "baseline": {
+        "type": "object"
+      },
+      "current_best": {
+        "type": "object"
+      },
+      "state_path": {
+        "type": "string"
+      },
+      "blocker": {
+        "type": "string"
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "status": "blocked",
+    "blocker": "CUDA is not available"
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": true
+      }
+    ]
+  }
+}

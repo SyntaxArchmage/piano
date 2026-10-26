@@ -12,8 +12,6 @@ workflow:
         model: deepseek-flash
         thinkingLevel: high
         tools: [read, bash, edit, write]
-        handoff: preparation.json
-        validate: true
         from: []
 
     - loop:
@@ -31,8 +29,6 @@ workflow:
               model: deepseek-flash
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: iteration.json
-              validate: true
               from: []
 
           - stage:
@@ -42,8 +38,6 @@ workflow:
               model: deepseek-flash
               thinkingLevel: high
               tools: [read, bash, edit, write, web_search]
-              handoff: profile.json
-              validate: true
               from: [profile]
 
           - tournament:
@@ -61,8 +55,6 @@ workflow:
                     model: deepseek-flash
                     thinkingLevel: high
                     tools: [read, bash, edit, write]
-                    handoff: implementation-inputs.json
-                    validate: true
                     from: []        # slot entry: this lane's strategy arrives as injected map-item context
 
                 - stage:
@@ -72,8 +64,6 @@ workflow:
                     model: deepseek-flash
                     thinkingLevel: high
                     tools: [read, bash, edit, write]
-                    handoff: round.json
-                    validate: true
                     from: [implement]
 
     - stage:
@@ -83,6 +73,4 @@ workflow:
         model: deepseek-flash
         thinkingLevel: high
         tools: [read, bash, edit, write]
-        handoff: tuning.json
-        validate: true
         from: [tune]

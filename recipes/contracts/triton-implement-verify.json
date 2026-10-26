@@ -1,0 +1,69 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "x-piano-unknown-properties": "strip",
+    "type": "object",
+    "required": ["artifact", "compile", "run", "numeric_check", "verdict"],
+    "properties": {
+      "artifact": { "type": "string" },
+      "compile": { "$ref": "#/$defs/step" },
+      "run": { "$ref": "#/$defs/step" },
+      "numeric_check": {
+        "type": "object",
+        "required": ["passed"],
+        "properties": {
+          "passed": { "type": "boolean" },
+          "tolerance": { "type": "number", "exclusiveMinimum": 0 },
+          "max_error": { "type": "number", "minimum": 0 }
+        },
+        "additionalProperties": false
+      },
+      "verdict": { "enum": ["pass", "fail"] },
+      "failure_details": { "type": "string" }
+    },
+    "$defs": {
+      "step": {
+        "type": "object",
+        "required": ["passed", "exit_code"],
+        "properties": {
+          "passed": { "type": "boolean" },
+          "exit_code": { "type": "integer" },
+          "stderr": { "type": "string" },
+          "output": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "type": "object", "properties": { "exit_code": { "const": 0 } }, "required": ["exit_code"] },
+            "then": { "type": "object", "properties": { "passed": { "const": true } } },
+            "else": { "type": "object", "properties": { "passed": { "const": false } } }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "type": "object",
+          "properties": {
+            "compile": { "type": "object", "properties": { "passed": { "const": true } }, "required": ["passed"] },
+            "run": { "type": "object", "properties": { "passed": { "const": true } }, "required": ["passed"] },
+            "numeric_check": { "type": "object", "properties": { "passed": { "const": true } }, "required": ["passed"] }
+          },
+          "required": ["compile", "run", "numeric_check"]
+        },
+        "then": { "type": "object", "properties": { "verdict": { "const": "pass" } } },
+        "else": { "type": "object", "properties": { "verdict": { "const": "fail" } } }
+      }
+    ],
+    "additionalProperties": false
+  },
+  "example": {
+    "artifact": "kernel.py",
+    "compile": { "passed": true, "exit_code": 0 },
+    "run": { "passed": true, "exit_code": 0 },
+    "numeric_check": { "passed": true },
+    "verdict": "pass"
+  },
+  "outputs": { "metrics": [] }
+}

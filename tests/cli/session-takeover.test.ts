@@ -250,13 +250,21 @@ describe("in-place run takeover", () => {
     } as never));
 
     let result: TuiResumeResult | undefined;
-    await withTui(async (options) => { result = await resume(options, OTHER); });
+    let promptFailure: unknown;
+    await withTui(async (options) => {
+      result = await resume(options, OTHER);
+      const exit = await Effect.runPromiseExit(
+        (options.runPrompt?.("after", () => {}) ?? Effect.void) as Effect.Effect<unknown>,
+      );
+      promptFailure = exit._tag === "Failure" && exit.cause._tag === "Fail" ? exit.cause.error : undefined;
+    });
 
     // The takeover still happens, but silently running a different workflow is not
-    // acceptable, so no graph is handed back.
+    // acceptable: no graph is handed back and the next prompt fails with the load error.
     expect(result?.runId).toBe(OTHER);
     expect(result?.workflowGraph).toBeUndefined();
     expect(result?.turns).toHaveLength(2);
+    expect(promptFailure).toMatchObject({ _tag: "WorkflowError", phase: "load" });
   });
 
   it("fails the takeover, and keeps the open run, for an unreadable run", async () => {

@@ -182,7 +182,7 @@ function runSessionBody(
       return yield* Effect.fail(initialWorkflow.left);
     }
     let loadedWorkflow = initialWorkflow._tag === "Right" ? initialWorkflow.right : undefined;
-    const initialWorkflowFailure = initialWorkflow._tag === "Left" ? initialWorkflow.left : undefined;
+    let initialWorkflowFailure = initialWorkflow._tag === "Left" ? initialWorkflow.left : undefined;
     /** The live turn's abort handle and steering channel, one slot per screen.
      * `/btw` leaves the run working while the side agent owns the foreground, so
      * a single slot would make Escape and mid-turn steering hit whichever turn
@@ -518,9 +518,9 @@ function runSessionBody(
             yield* TUI_LOG.warn("run.crash-reconciled", { data: { runId } });
           }
           // A run records the workflow it executed. Reload it so the resumed
-          // prompt runs the same stages; keep the current one when the run
-          // predates the field or the file has since moved or broken, and say so
-          // rather than silently running a different workflow.
+          // prompt runs the same stages. A run that records a workflow which no
+          // longer loads must fail the resume: silently keeping the current
+          // workflow would run a different stage graph inside the old run dir.
           let definition: WorkflowGraphDefinition | undefined;
           let workflowNote: string | undefined;
           if (context.workflowPath === undefined) {
@@ -556,7 +556,12 @@ function runSessionBody(
                 }
               }
             } else {
-              workflowNote = `workflow ${context.workflowPath} could not be reloaded; keeping the current one`;
+              // The takeover can still open the run for inspection, but a
+              // prompt must not silently execute the currently loaded workflow
+              // against the old run's directory. Drop it and carry the load
+              // error until an explicit workflow selection replaces it.
+              loadedWorkflow = undefined;
+              initialWorkflowFailure = reloaded.left;
               yield* TUI_LOG.warn("tui.resume_workflow_unavailable", {
                 data: { runId, workflowPath: context.workflowPath, error: failureDetails(reloaded.left) },
               });
@@ -604,7 +609,10 @@ function runSessionBody(
             Effect.flatMap((nextWorkflow) => graphOf(nextWorkflow).pipe(
               Effect.map((definition) => ({ loaded: nextWorkflow, definition })),
             )),
-            Effect.tap(({ loaded }) => Effect.sync(() => { loadedWorkflow = loaded; })),
+            Effect.tap(({ loaded }) => Effect.sync(() => {
+              loadedWorkflow = loaded;
+              initialWorkflowFailure = undefined;
+            })),
             // The picker selection is the user's default choice: record it in
             // ~/.piano/config.json so the next default run starts with it.
             // Builtins are recorded by exact template name, not package path.

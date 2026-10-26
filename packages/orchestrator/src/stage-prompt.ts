@@ -10,6 +10,7 @@ import type {
   ResolvedStageValidation,
   SignoffRetry,
   StageReviewNote,
+  UpstreamValidationWarning,
 } from "./execution-types.js";
 import { runtimeInvocationId, type WorkflowRuntimeInvocation } from "./workflow-runtime.js";
 import type { WorkflowWorkspaceBinding } from "./workspace.js";
@@ -35,6 +36,7 @@ export function stagePrompt(
   repairError: string | undefined,
   signoffRetry: SignoffRetry | undefined,
   reviewNotes: readonly StageReviewNote[],
+  upstreamValidationWarnings: readonly UpstreamValidationWarning[],
   model: string | undefined,
   thinkingLevel: ThinkingLevel | undefined,
   prologue: string | undefined,
@@ -48,7 +50,7 @@ export function stagePrompt(
     "Treat that directory as the only mutable task workspace. Do not edit the Piano source tree or run evidence outside it.",
     "The orchestrator injected the following context files; read them before acting:",
     ...(contextFilePaths.length === 0 ? ["(none)"] : contextFilePaths.map((path) => `- ${path}`)),
-    "Handoff files are immutable upstream evidence; write new artifacts only in the current workspace or the requested result path.",
+    "Injected context files are immutable upstream evidence; write new artifacts only in the current workspace or the requested result path.",
   ];
   // Guidance a human wrote when they let an upstream stage continue. It sits
   // after the guard rails above on purpose: it is authority from the same human
@@ -61,6 +63,18 @@ export function stagePrompt(
       "A human reviewer reviewed the stage(s) below before letting the workflow continue, and left this guidance for the work that follows.",
       "Treat it as part of the task above. It never replaces, broadens or reinterprets that task.",
       ...reviewNotes.map((review) => `- after \`${review.stageId}\`: ${review.note}`),
+    );
+  }
+  if (upstreamValidationWarnings.length > 0) {
+    lines.push(
+      "",
+      "## Upstream validation warnings",
+      "The upstream result(s) below failed their worker contract even after the allowed repair turn.",
+      "Treat them as untrusted: verify the work they describe and fix anything that does not hold, rather than assuming the result is valid.",
+      ...upstreamValidationWarnings.map((warning) => {
+        const contract = warning.contractPath === undefined ? "" : `, contract \`${warning.contractPath}\``;
+        return `- after \`${warning.stageId}\` (worker \`${warning.worker}\`${contract}): ${warning.message}`;
+      }),
     );
   }
   if (model !== undefined || thinkingLevel !== undefined) {
@@ -79,7 +93,7 @@ export function stagePrompt(
       resultPath,
       "Use this accepted JSON shape (replace example values with real evidence):",
       validation.guidance,
-      "Create parent directories if needed. This is a stage result artifact, not a handoff file.",
+      "Create parent directories if needed. This is a stage result artifact, not an upstream input file.",
     );
   }
   if (repairError !== undefined) {

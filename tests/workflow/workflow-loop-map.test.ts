@@ -19,7 +19,6 @@ workflow:
     - stage:
         name: profile
         worker: test-profile
-        validate: profile-report
         from: []
     - loop:
         name: tune
@@ -32,17 +31,14 @@ workflow:
           - stage:
               name: propose
               worker: test-idea
-              validate: optimization-proposal
               from: []
           - stage:
               name: aggregate
               worker: test-store
-              validate: tournament-results
               from: [propose]
     - stage:
         name: summary
         worker: test-summary
-        validate: summary-report
         from: [tune]
 `;
 
@@ -54,7 +50,6 @@ workflow:
     - stage:
         name: propose
         worker: test-idea
-        validate: optimization-proposal
         from: []
     - tournament:
         name: fanout
@@ -67,22 +62,18 @@ workflow:
           - stage:
               name: implement
               worker: test-implement
-              validate: implementation-record
               from: []
           - stage:
               name: verify
               worker: test-verify
-              validate: verification-report
               from: [implement]
           - stage:
               name: bench
               worker: test-bench
-              validate: benchmark-evidence
               from: [verify]
     - stage:
         name: aggregate
         worker: test-store
-        validate: tournament-results
         from: [fanout]
 `;
 

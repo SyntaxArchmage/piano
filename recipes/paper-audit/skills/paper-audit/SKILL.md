@@ -8,17 +8,17 @@ description: Check every number, claim, citation, and reference in the manuscrip
 Deliverable: an issue list precise enough that `paper-revise` can act on each
 entry without re-deriving it.
 
-Read the manuscript and the injected handoff context: the `paper-storyline`
+Read the manuscript and the injected accepted-input context: the `paper-storyline`
 result (whose `context` block carries the manuscript paths, the venue, the
 reference spec path, and — crucially — the `evidence` roots and the
 `experiment_commands` that regenerate the numbers), this round's `paper-draft`
 result (`numbers_used` lists every numeral the writer introduced), and the
 `paper-figures` result (`data_sources` for each figure).
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in the `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read them from there; never go looking for a
-file named after a contract.
+file named after a worker.
 
 ## 1. Numbers
 

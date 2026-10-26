@@ -1,17 +1,12 @@
 export {
-  defaultRoot,
   defaultConfigPath,
   defaultWorkflowTemplatePath,
-  defaultRecipeRepositoryRoot,
-  recipesDir,
   loadWorkflow,
   loadDefaultWorkflow,
   setWorkflowSelection,
   builtinWorkflowSelection,
-  builtinWorkflowSelectionPrefix,
   resolveWorkerResources,
   type LoadedWorkflow,
-  type WorkerResources,
 } from "./workflow-file.js";
 export {
   EXPLICIT_LOAD_SOURCE,
@@ -23,16 +18,8 @@ export {
   PI_WORKFLOW_HARNESS,
   parseWorkflow,
   stageModelForSlot,
-  type CompiledStage,
   type CompiledWorkflow,
   type WorkflowDocument,
-  type WorkflowHarness,
-  type WorkflowLoop,
-  type WorkflowNode,
-  type WorkflowRegionPlan,
-  type WorkflowRetry,
-  type WorkflowStage,
-  type WorkflowTournament,
 } from "./workflow.js";
 export {
   ACTOR_KEY_VERSION,
@@ -42,19 +29,16 @@ export {
   type WorkflowRuntimeInvocation,
 } from "./workflow-runtime.js";
 export {
-  admitWinner,
-  betterByDirection,
-  selectWinner,
-  type SelectionAdmission,
-  type SelectionBranch,
-  type SelectionBranchMetric,
-  type SelectionIncumbent,
-  type SelectionOutcome,
-  type SelectionReferee,
-  type SelectionRejection,
-} from "./selection.js";
-export { WorkflowError, type WorkflowPhase } from "./errors.js";
-export { iterationOfInvocationId, runtimeRegionInstanceId } from "./workflow-runtime.js";
+  inputsContextPath,
+  readAcceptanceRecord,
+  writeAcceptanceRecord,
+  writeInputsContext,
+  type AcceptedInvocation,
+  type StageValidationWarning,
+  type WorkflowMapItem,
+} from "./acceptance.js";
+export { WorkflowError } from "./errors.js";
+export { iterationOfInvocationId } from "./workflow-runtime.js";
 export {
   allocateMapWorkspace,
   applyWinnerWorkspace,
@@ -63,45 +47,25 @@ export {
   freezeWorkspaceBaseline,
   mnemonicNamespace,
   prepareMapLaneFork,
-  sharedWorkspaceBinding,
   workspaceBaselineChanges,
   workspaceRefName,
-  type MapLaneFork,
-  type WorkspaceBaseline,
-  type WorkflowCarrying,
-  type WorkflowCarryKind,
-  type WorkflowWorkspaceBinding,
-  type WorkflowWorkspaceCleanupOptions,
-  type WorkflowWorkspaceRecord,
-  type WorkflowWorkspacePhase,
-  type WorkflowWorkspaceStrategy,
 } from "./workspace.js";
 export {
   executeWorkflow,
   loadAndExecuteWorkflow,
-  type LoadAndExecuteWorkflowRequest,
-  type WorkflowExecutionRequest,
-  type WorkflowExecutionResult,
   type WorkflowExecutionError,
   type WorkflowSignoffDecision,
   type WorkflowSignoffRequest,
   type WorkflowDiscussDecision,
   type WorkflowDiscussRequest,
-  type WorkflowWorkspaceCandidate,
-  type WorkflowWorkspaceLifecycleOptions,
-  type WorkflowWorkspaceSelectionContext,
-  type WorkflowWorkspaceWinner,
 } from "./workflow-execution.js";
 export {
   retryBackoffSeconds,
   RETRY_DEFAULT_BACKOFF_MAX_SECONDS,
   RETRY_DEFAULT_BACKOFF_SECONDS,
-  VALIDATE_REPAIR_ATTEMPTS,
 } from "./stage-runner-support.js";
-export { type WorkflowStageExecutionResult } from "./execution-types.js";
 export {
   readWorkflowExecutionContinuation,
-  type WorkflowActorContinuation,
   type WorkflowExecutionContinuation,
 } from "./workflow-resume.js";
 export {
@@ -112,13 +76,10 @@ export {
   markWorkflowStageStarted,
   reconcileCrashedRun,
   type WorkflowProgressRecord,
+  type WorkflowLoopCommitRecord,
   type WorkflowProgressRegionFinalizedRecord,
   type WorkflowTransition,
-  type WorkflowRegionFinalizedPayload,
-  type WorkflowProgressCurrent,
   type WorkflowProgressPlan,
-  type WorkflowProgressProjection,
-  type WorkflowProgressStageCount,
 } from "./progress.js";
 export {
   parseRunStatus,
@@ -126,32 +87,13 @@ export {
   refreshRunStatus,
   runStatusPath,
   type RunAcceptedInvocation,
-  type RunJob,
   type RunStatus,
-  type RunTurn,
 } from "./run-status.js";
 export {
   acceptedInvocations,
-  invocationContextDir,
-  invocationResultPath,
   invocationStreamPath,
   parseInvocationRecords,
   readInvocationRecords,
   recordInvocationStart,
   type InvocationAcceptedRecord,
-  type InvocationRecord,
-  type InvocationStartedRecord,
 } from "./invocations.js";
-export {
-  snapshotWorkerContract,
-  type WorkerContractReference,
-} from "./contract-snapshot.js";
-export {
-  buildCommitMessage,
-  commitRoundFiles,
-  extractTicket,
-  safeChangedFiles,
-  snapshotDirtyFiles,
-  type WinnerCommitMessage,
-  type WinnerCommitMessageInput,
-} from "./winner-commit.js";

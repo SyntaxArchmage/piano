@@ -1,6 +1,5 @@
 import { load } from "js-yaml";
 import { Effect } from "effect";
-import { isAbsolute } from "node:path";
 import { asRecord } from "@piano/logging";
 import {
   configuredWorkflowHarness,
@@ -9,12 +8,10 @@ import {
   isHarnessName,
   isKnownToolName,
   THINKING_LEVELS,
-  toolGrantsCapability,
   unknownToolNames,
   type HarnessName,
   type ThinkingLevel,
 } from "@piano/harness";
-import { isContractName, knownContractNames } from "@piano/contract";
 import { WorkflowError, errorMessage, workflowError } from "./errors.js";
 
 export type WorkflowHarness = HarnessName;
@@ -24,10 +21,6 @@ export const PI_WORKFLOW_HARNESS = "pi";
 export interface WorkflowStage {
   readonly name: string;
   readonly worker: string;
-  readonly handoff?: string;
-  /** `true` loads the worker-owned contract.json. String values are a
-   * deprecated compatibility path for the source-defined validator registry. */
-  readonly validate?: true | string;
   readonly from: readonly string[];
   readonly harness: WorkflowHarness;
   /** Model for this stage. A single id pins every lane. Inside a `tournament`
@@ -94,8 +87,9 @@ export interface WorkflowLoop {
 }
 
 /** A stage-level retry policy. Omitting it keeps the engine default: a failed
- * worker turn fails the stage, and a failed validation gets one resumed repair
- * turn (`VALIDATE_REPAIR_ATTEMPTS`).
+ * worker turn fails the stage, and a failed contract validation gets one
+ * resumed repair turn (`VALIDATE_REPAIR_ATTEMPTS`) before the result is
+ * accepted with a warning.
  *
  * Declaring it makes the stage *durable*: an attempt that fails for a reason
  * that is not a human interrupt is retried after an exponentially growing wait
@@ -149,11 +143,6 @@ export interface WorkflowDocument {
      * Overridable per run with `--mnemonic`; also the fallback when the
      * preflight task summary is unavailable. */
     readonly mnemonic?: string;
-    /** Orchestrator-owned winner auto-commit (ISSUE-017): when true, the loop
-     * executor commits each KEEP round's `changed_files` to the caller
-     * workspace using the winner-commit template (no push). Default false —
-     * opt-in per workflow, so generic workflows are unaffected. */
-    readonly autoCommit?: boolean;
     readonly nodes: readonly WorkflowNode[];
   };
 }
@@ -221,17 +210,13 @@ export interface CompiledWorkflow {
   /** Root scope of the compiled region tree. Same leaf/region objects as
    * `stages`/`regions`, nested once at compile time. */
   readonly nodes: readonly WorkflowRuntimeNode[];
-  /** Orchestrator-owned winner auto-commit (ISSUE-017); see WorkflowDocument. */
-  readonly autoCommit: boolean;
 }
 
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
-const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes", "autoCommit"]);
+const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes"]);
 const STAGE_KEYS = new Set([
   "name",
   "worker",
-  "handoff",
-  "validate",
   "from",
   "harness",
   "model",
@@ -392,16 +377,6 @@ function stringList(
     : fail("parse", path, `${field} must not contain duplicate values`);
 }
 
-function optionalString(
-  value: Record<string, unknown>,
-  field: string,
-  path: string,
-): Effect.Effect<string | undefined, WorkflowError> {
-  return value[field] === undefined
-    ? Effect.succeed(undefined)
-    : requiredString(value[field], `stage.${field}`, path);
-}
-
 /** `stage.model` in either of its two forms: one id for every lane, or one id
  * per lane inside a tournament. Duplicates are allowed — racing one model under
  * several strategies is as meaningful as racing several models. Whether the
@@ -421,19 +396,6 @@ function optionalStageModel(
     entries.push(entry.trim());
   }
   return Effect.succeed(entries);
-}
-
-function optionalValidation(
-  value: Record<string, unknown>,
-  path: string,
-): Effect.Effect<true | string | undefined, WorkflowError> {
-  const validate = value.validate;
-  if (validate === undefined) return Effect.succeed(undefined);
-  if (validate === true) return Effect.succeed(true);
-  if (validate === false) {
-    return fail("parse", path, "stage.validate must be true or omitted; false is equivalent to omitting it");
-  }
-  return requiredString(validate, "stage.validate", path);
 }
 
 function optionalBoolean(
@@ -462,25 +424,6 @@ function optionalThinkingLevel(
   return Effect.succeed(value.thinkingLevel as ThinkingLevel);
 }
 
-/** `handoff` is a logical file name beneath one invocation's private
- * orchestrator-owned context directory, never an arbitrary workspace path. */
-function optionalHandoffPath(
-  value: Record<string, unknown>,
-  path: string,
-): Effect.Effect<string | undefined, WorkflowError> {
-  return optionalString(value, "handoff", path).pipe(
-    Effect.flatMap((handoff) => {
-      if (handoff === undefined) return Effect.succeed(undefined);
-      const segments = handoff.split("/");
-      if (isAbsolute(handoff) || /^[A-Za-z]:[\\/]/.test(handoff) ||
-        segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-        return fail("parse", path, "stage.handoff must be a safe relative file path");
-      }
-      return Effect.succeed(handoff);
-    }),
-  );
-}
-
 function parseStage(
   value: unknown,
   path: string,
@@ -492,14 +435,26 @@ function parseStage(
       return yield* fail(
         "parse",
         path,
-        "stage.contract was renamed to stage.validate; use stage.handoff separately for upstream context",
+        `stage.contract was removed; a stage validates automatically when its worker has ${"recipes/contracts/<worker>.json"}`,
+      );
+    }
+    if (stage.validate !== undefined) {
+      return yield* fail(
+        "parse",
+        path,
+        "stage.validate was removed; a stage validates automatically when its worker has recipes/contracts/<worker>.json",
+      );
+    }
+    if (stage.handoff !== undefined) {
+      return yield* fail(
+        "parse",
+        path,
+        "stage.handoff was removed; upstream stage results are passed automatically in inputs.json",
       );
     }
     yield* rejectUnknown(stage, STAGE_KEYS, "stage", path);
     const name = yield* identifier(stage.name, "stage.name", path);
     const worker = yield* requiredString(stage.worker, "stage.worker", path);
-    const handoff = yield* optionalHandoffPath(stage, path);
-    const validate = yield* optionalValidation(stage, path);
     const from = yield* stringList(stage.from, "stage.from", path);
     const requestedHarness = stage.harness === undefined
       ? configuredWorkflowHarness()
@@ -550,8 +505,6 @@ function parseStage(
     return {
       name,
       worker,
-      ...(handoff === undefined ? {} : { handoff }),
-      ...(validate === undefined ? {} : { validate }),
       from,
       harness: requestedHarness,
       ...(model === undefined ? {} : { model }),
@@ -687,11 +640,8 @@ export function parseWorkflow(
         const mnemonic = workflow.mnemonic === undefined
           ? undefined
           : yield* identifier(workflow.mnemonic, "workflow.mnemonic", sourcePath);
-        const autoCommit = workflow.autoCommit === undefined
-          ? false
-          : yield* optionalBoolean(workflow, "autoCommit", sourcePath);
         const nodes = yield* parseNodes(workflow.nodes, sourcePath);
-        return { version: 3 as const, workflow: { name, ...(mnemonic === undefined ? {} : { mnemonic }), autoCommit, nodes } };
+        return { version: 3 as const, workflow: { name, ...(mnemonic === undefined ? {} : { mnemonic }), nodes } };
       });
     }),
   );
@@ -1075,22 +1025,6 @@ export function compileWorkflow(
         throw scopeError(sourcePath, "workflow graph cannot be topologically ordered");
       }
       for (const leaf of ordered) {
-        const name = leaf.stage.validate;
-        if (typeof name === "string" && !isContractName(name)) {
-          throw scopeError(
-            sourcePath,
-            `stage "${leaf.stage.name}" validate "${name}" is not a predefined validator (known: ${knownContractNames().join(", ")})`,
-          );
-        }
-        if (name !== undefined && leaf.stage.tools !== undefined &&
-          !leaf.stage.tools.some((tool) =>
-            toolGrantsCapability(leaf.stage.harness, tool, "write") ||
-            toolGrantsCapability(leaf.stage.harness, tool, "exec"))) {
-          throw scopeError(
-            sourcePath,
-            `stage "${leaf.stage.name}" declares validate and must allow write or bash to create its result`,
-          );
-        }
         if (leaf.stage.discuss === true) {
           if (!isKnownToolName(leaf.stage.harness, "discuss")) {
             throw scopeError(
@@ -1115,7 +1049,6 @@ export function compileWorkflow(
         stages: ordered,
         regions: lowered.regions,
         nodes: lowered.nodes,
-        autoCommit: document.workflow.autoCommit === true,
       };
     },
     catch: (cause) => cause instanceof WorkflowError

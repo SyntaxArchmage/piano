@@ -3,7 +3,7 @@
 // result of an attempt is `results/inv-<serial>-attempt-<k>.json`. Shared by
 // the in-process guards and the subprocess fixtures, which is why this is
 // plain ESM — fake-codex.mjs / fake-agent.mjs run under bare `node` and cannot
-// import TypeScript. A pin in tests/workflow/handoff.test.ts ties this matcher
+// import TypeScript. A pin in tests/workflow/acceptance.test.ts ties this matcher
 // to the production speller so the two cannot drift.
 const INVOCATION_RESULT_PATH = /\/results\/inv-\d+-attempt-\d+\.json$/;
 

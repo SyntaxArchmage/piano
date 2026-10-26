@@ -11,8 +11,7 @@ import { TRACE, type Logging } from "@piano/logging";
 import type { TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
 import type { WorkflowProgressPlan, WorkflowProgressProjection, WorkflowProgressStageCount } from "./progress.js";
 import {
-  ContractValidationError,
-  type WorkerContractValidationError,
+  WorkerContractValidationError,
 } from "@piano/contract";
 import { regionAncestors, regionIndex, type CompiledWorkflow, type WorkflowRetry } from "./workflow.js";
 import type { WorkflowRuntimeInvocation } from "./workflow-runtime.js";
@@ -22,9 +21,9 @@ import { validateStagePayload } from "./stage-validation.js";
 import type { InternalStageResult, ResolvedStageValidation, ValidatedStagePayload } from "./execution-types.js";
 import { dirname } from "node:path";
 
-/** One initial attempt and one resumed repair turn. A stage that declares
- * `retry` keeps its own budget on top of this, without changing handoff or
- * session semantics. */
+/** One resumed repair turn. A stage that declares `retry` keeps its own
+ * budget on top of this for worker failures; a contract-validation failure
+ * that survives this turn is accepted with a warning instead of retried. */
 export const VALIDATE_REPAIR_ATTEMPTS = 1;
 
 /** Retry waits for a stage that opted in with `retry: {}`. Deliberately much
@@ -130,25 +129,25 @@ export function attributeTrajectoryObservation(
   return { ...observation, context: { ...observation.context, sessionId: worker.sessionId, transcriptPath: worker.transcriptPath } };
 }
 
-/** Read and validate one attempt's result payload. The validator is a named
+/** Read and validate one attempt's result payload. The worker contract is the
  * schema-level success criterion; domain outcomes inside a valid report remain
  * explicit data for downstream stages rather than hidden orchestration rules. */
 export function validateStageResult(
   validation: ResolvedStageValidation,
   resultPath: string,
   invocationId: string,
-): Effect.Effect<ValidatedStagePayload, ContractValidationError | WorkerContractValidationError, FileSystem.FileSystem | Logging> {
+): Effect.Effect<ValidatedStagePayload, WorkerContractValidationError, FileSystem.FileSystem | Logging> {
   return TRACE(VALIDATE_SOURCE, Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const raw = yield* fileSystem.readFileString(resultPath).pipe(
-      Effect.mapError(() => new ContractValidationError({
+      Effect.mapError(() => new WorkerContractValidationError({
         contract: validation.id,
         message: `validation result missing: expected "${resultPath}"`,
       })),
     );
     const parsed = yield* Effect.try({
       try: () => JSON.parse(raw) as unknown,
-      catch: (error) => new ContractValidationError({
+      catch: (error) => new WorkerContractValidationError({
         contract: validation.id,
         message: `validation result is not valid JSON: ${errorMessage(error)}`,
       }),

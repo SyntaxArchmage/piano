@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Cause, Effect, Exit, Option } from "effect";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   compileWorkflow,
   PI_WORKFLOW_HARNESS,
@@ -20,6 +20,11 @@ import {
   WorkflowError,
   type WorkflowDocument,
 } from "../../packages/orchestrator/src/index.js";
+import {
+  snapshotWorkerContract,
+  workerContractSnapshotPath,
+} from "../../packages/orchestrator/src/contract-snapshot.js";
+import { compileWorkerContract } from "../../packages/contract/src/index.js";
 import { LogWriter, TraceWriter, Logging, loggingService } from "../../packages/logging/src/index.js";
 
 const SOURCE = "/tmp/workflow.yaml";
@@ -83,11 +88,6 @@ workflow:
         from: []
         tools: []
 `;
-
-const VALIDATE_WORKFLOW = CODING_WORKFLOW.replace(
-  "        from: []\n",
-  "        validate: text-response\n        from: []\n",
-);
 
 function run<A, E>(effect: Effect.Effect<A, E, never>): Promise<Exit.Exit<A, E>> {
   return Effect.runPromiseExit(effect);
@@ -188,7 +188,7 @@ describe(" single-stage workflow", () => {
   it("accepts additional stages and orders them by dependency at compile", async () => {
     const secondStage = SMOKE_WORKFLOW.replace(
       "        tools: []\n",
-      "        tools: []\n    - stage:\n        name: second\n        worker: other\n        validate: text-response\n        from: [respond]\n",
+      "        tools: []\n    - stage:\n        name: second\n        worker: other\n        from: [respond]\n",
     );
     const parsed = await run(parseWorkflow(secondStage, SOURCE));
     expect(Exit.isSuccess(parsed)).toBe(true);
@@ -200,22 +200,21 @@ describe(" single-stage workflow", () => {
     }
   });
 
-  it("rejects an unknown validator name at compile time", async () => {
-    const source = VALIDATE_WORKFLOW.replace(
-      "        validate: text-response\n",
-      "        validate: no-such-validator\n",
-    );
-    const parsed = await run(parseWorkflow(source, SOURCE));
-    expect(Exit.isSuccess(parsed)).toBe(true);
-    if (!Exit.isSuccess(parsed)) return;
-    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
-    expect(Exit.isFailure(compiled)).toBe(true);
-    if (Exit.isFailure(compiled)) {
-      const failure = Cause.failureOption(compiled.cause);
+  it("rejects the removed validate switch with an actionable message", async () => {
+    for (const value of ["true", "false", "text-response"]) {
+      const source = CODING_WORKFLOW.replace(
+        "        from: []\n",
+        `        validate: ${value}\n        from: []\n`,
+      );
+      const parsed = await run(parseWorkflow(source, SOURCE));
+      expect(Exit.isFailure(parsed)).toBe(true);
+      if (!Exit.isFailure(parsed)) continue;
+      const failure = Cause.failureOption(parsed.cause);
       expect(Option.isSome(failure)).toBe(true);
       if (Option.isSome(failure)) {
         expect(failure.value).toBeInstanceOf(WorkflowError);
-        expect(failure.value.message).toContain("no-such-validator");
+        expect(failure.value.message).toContain("stage.validate was removed");
+        expect(failure.value.message).toContain("recipes/contracts/<worker>.json");
       }
     }
   });
@@ -390,44 +389,88 @@ describe(" single-stage workflow", () => {
     });
   });
 
-  it("requires a harness-exact write or exec tool on a validating claude stage", async () => {
-    const validateStage = (tools: string) => VALIDATE_WORKFLOW
-      .replace("        harness: dsh\n", "        harness: claude\n")
-      .replace("        tools: [read, bash, edit, write, web_search]\n", `        tools: ${tools}\n`);
+  it("requires a harness-exact write or exec tool when a stage's worker has a contract", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-workflow-contract-tools-"));
+    try {
+      const workflowPath = join(root, "contract.yml");
+      const contractsDir = join(root, "recipes", "contracts");
+      await mkdir(contractsDir, { recursive: true });
+      await writeFile(join(contractsDir, "contracted.json"), JSON.stringify({
+        schema: {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          required: ["value"],
+          properties: { value: { type: "string" } },
+          additionalProperties: false,
+        },
+        example: { value: "ok" },
+        outputs: { metrics: [] },
+      }));
+      const contractStage = (tools: string) => `version: 3
+workflow:
+  name: contract-tools
+  nodes:
+    - stage:
+        name: implement
+        worker: contracted
+        harness: claude
+        tools: ${tools}
+        from: []
+`;
 
-    const withoutExec = await run(parseWorkflow(validateStage("[Read, Edit]"), SOURCE));
-    expect(Exit.isSuccess(withoutExec)).toBe(true);
-    if (Exit.isSuccess(withoutExec)) {
-      const compiled = await run(compileWorkflow(withoutExec.value, SOURCE));
-      expect(Exit.isFailure(compiled)).toBe(true);
-      if (Exit.isFailure(compiled)) {
-        const failure = Cause.failureOption(compiled.cause);
+      await writeFile(workflowPath, contractStage("[Read, Edit]"));
+      const withoutExec = await runLogging(loadWorkflow(workflowPath, root, root));
+      expect(Exit.isFailure(withoutExec)).toBe(true);
+      if (Exit.isFailure(withoutExec)) {
+        const failure = Cause.failureOption(withoutExec.cause);
         expect(Option.isSome(failure) ? failure.value.message : "").toContain("must allow write or bash");
       }
-    }
 
-    // Scoped Bash still grants exec capability.
-    const scopedExec = await run(parseWorkflow(validateStage("[Read, Bash(git *)]"), SOURCE));
-    expect(Exit.isSuccess(scopedExec)).toBe(true);
-    if (Exit.isSuccess(scopedExec)) {
-      expect(Exit.isSuccess(await run(compileWorkflow(scopedExec.value, SOURCE)))).toBe(true);
+      // Scoped Bash still grants exec capability.
+      await writeFile(workflowPath, contractStage("[Read, Bash(git *)]"));
+      const scopedExec = await runLogging(loadWorkflow(workflowPath, root, root));
+      expect(Exit.isSuccess(scopedExec)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("rejects a validation stage that cannot write its result", async () => {
-    const source = VALIDATE_WORKFLOW.replace(
-      "        tools: [read, bash, edit, write, web_search]\n",
-      "        tools: []\n",
-    );
-    const parsed = await run(parseWorkflow(source, SOURCE));
-    expect(Exit.isSuccess(parsed)).toBe(true);
-    if (!Exit.isSuccess(parsed)) return;
-    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
-    expect(Exit.isFailure(compiled)).toBe(true);
-    if (!Exit.isFailure(compiled)) return;
-    const failure = Cause.failureOption(compiled.cause);
-    expect(Option.isSome(failure)).toBe(true);
-    if (Option.isSome(failure)) expect(failure.value.message).toContain("must allow write or bash");
+  it("rejects a contract-bearing stage that cannot write its result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-workflow-contract-no-write-"));
+    try {
+      const workflowPath = join(root, "contract.yml");
+      const contractsDir = join(root, "recipes", "contracts");
+      await mkdir(contractsDir, { recursive: true });
+      await writeFile(join(contractsDir, "contracted.json"), JSON.stringify({
+        schema: {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          type: "object",
+          required: ["value"],
+          properties: { value: { type: "string" } },
+          additionalProperties: false,
+        },
+        example: { value: "ok" },
+        outputs: { metrics: [] },
+      }));
+      await writeFile(workflowPath, `version: 3
+workflow:
+  name: contract-no-write
+  nodes:
+    - stage:
+        name: implement
+        worker: contracted
+        tools: []
+        from: []
+`);
+      const result = await runLogging(loadWorkflow(workflowPath, root, root));
+      expect(Exit.isFailure(result)).toBe(true);
+      if (!Exit.isFailure(result)) return;
+      const failure = Cause.failureOption(result.cause);
+      expect(Option.isSome(failure)).toBe(true);
+      if (Option.isSome(failure)) expect(failure.value.message).toContain("must allow write or bash");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects a stage that declares a removed resource field", async () => {
@@ -438,29 +481,34 @@ describe(" single-stage workflow", () => {
     expect(Exit.isFailure(await run(parseWorkflow(source, SOURCE)))).toBe(true);
   });
 
-  it("rejects the renamed contract field with an actionable migration error", async () => {
+  it("rejects the removed contract field with an actionable migration error", async () => {
     const source = CODING_WORKFLOW.replace("        from: []\n", "        contract: text-response\n        from: []\n");
     const parsed = await run(parseWorkflow(source, SOURCE));
     expect(Exit.isFailure(parsed)).toBe(true);
     if (!Exit.isFailure(parsed)) return;
     const failure = Cause.failureOption(parsed.cause);
     expect(Option.isSome(failure)).toBe(true);
-    if (Option.isSome(failure)) expect(failure.value.message).toContain("renamed to stage.validate");
+    if (Option.isSome(failure)) expect(failure.value.message).toContain("stage.contract was removed");
   });
 
-  it("rejects validate:false instead of creating a second no-validation spelling", async () => {
+  it("rejects validate:false as a removed switch, not a second no-validation spelling", async () => {
     const source = CODING_WORKFLOW.replace("        from: []\n", "        validate: false\n        from: []\n");
     const parsed = await run(parseWorkflow(source, SOURCE));
     expect(Exit.isFailure(parsed)).toBe(true);
     if (!Exit.isFailure(parsed)) return;
     const failure = Cause.failureOption(parsed.cause);
     expect(Option.isSome(failure)).toBe(true);
-    if (Option.isSome(failure)) expect(failure.value.message).toContain("true or omitted");
+    if (Option.isSome(failure)) expect(failure.value.message).toContain("stage.validate was removed");
   });
 
-  it("rejects an unsafe handoff path before dispatch", async () => {
+  it("rejects the removed handoff field with an actionable migration error", async () => {
     const source = CODING_WORKFLOW.replace("        from: []\n", "        handoff: ../outside.json\n        from: []\n");
-    expect(Exit.isFailure(await run(parseWorkflow(source, SOURCE)))).toBe(true);
+    const parsed = await run(parseWorkflow(source, SOURCE));
+    expect(Exit.isFailure(parsed)).toBe(true);
+    if (!Exit.isFailure(parsed)) return;
+    const failure = Cause.failureOption(parsed.cause);
+    expect(Option.isSome(failure)).toBe(true);
+    if (Option.isSome(failure)) expect(failure.value.message).toContain("stage.handoff was removed");
   });
 
   it("creates config.json naming the shipped default when no record exists", async () => {
@@ -841,6 +889,60 @@ describe(" single-stage workflow", () => {
     }
   });
 
+  it("rejects a registry metadata directory such as contracts as a worker name", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-workflow-reserved-worker-"));
+    try {
+      const workflowPath = join(root, "reserved.yml");
+      await writeFile(workflowPath, CODING_WORKFLOW.replace("worker: basic", "worker: contracts"));
+      const result = await runLogging(loadWorkflow(workflowPath, root, root));
+      expect(Exit.isFailure(result)).toBe(true);
+      if (Exit.isFailure(result)) {
+        const failure = Cause.failureOption(result.cause);
+        expect(Option.isSome(failure)).toBe(true);
+        if (Option.isSome(failure)) {
+          expect(failure.value).toBeInstanceOf(WorkflowError);
+          expect(failure.value.message).toContain('worker "contracts"');
+          expect(failure.value.message).toContain("reserved recipes directory");
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rewrites the run-local contract snapshot when the loaded contract changed", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-contract-snapshot-rewrite-"));
+    try {
+      const source = JSON.stringify({
+        schema: { $schema: "https://json-schema.org/draft/2020-12/schema", type: "object" },
+        example: {},
+      });
+      const contract = compileWorkerContract(
+        source,
+        join(root, "recipes", "contracts", "snapshot-worker.json"),
+      );
+      const runDir = join(root, "run");
+      const snapshotPath = workerContractSnapshotPath(runDir, contract.worker);
+      await mkdir(dirname(snapshotPath), { recursive: true });
+      await writeFile(snapshotPath, '{"schema":{"type":"string"}}\n');
+
+      const written = await runLogging(snapshotWorkerContract(runDir, contract));
+      expect(Exit.isSuccess(written)).toBe(true);
+      if (!Exit.isSuccess(written)) return;
+      expect(written.value).toBe(snapshotPath);
+      // The injected snapshot must be the contract validation actually used,
+      // so a stale run-local copy is replaced.
+      await expect(readFile(snapshotPath, "utf8")).resolves.toBe(source);
+
+      // A copy that already holds the loaded bytes is reused unchanged.
+      const unchanged = await runLogging(snapshotWorkerContract(runDir, contract));
+      expect(Exit.isSuccess(unchanged)).toBe(true);
+      await expect(readFile(snapshotPath, "utf8")).resolves.toBe(source);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails the load when a skill directory has no valid SKILL.md", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-workflow-bad-skill-"));
     try {
@@ -862,18 +964,17 @@ describe(" single-stage workflow", () => {
     }
   });
 
-  it("resolves validate:true from the worker-owned contract", async () => {
+  it("auto-detects a worker-owned contract without a stage switch", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-workflow-worker-contract-"));
     try {
       const workflowPath = join(root, "contract.yml");
-      const workerDir = join(root, "recipes", "custom-worker");
-      await mkdir(workerDir, { recursive: true });
-      await writeFile(workflowPath, CODING_WORKFLOW
-        .replace("worker: basic", "worker: custom-worker")
-        .replace("        from: []", "        validate: true\n        from: []"));
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "custom-result",
+      const contractsDir = join(root, "recipes", "contracts");
+      await mkdir(contractsDir, { recursive: true });
+      await writeFile(
+        workflowPath,
+        CODING_WORKFLOW.replace("worker: basic", "worker: custom-worker"),
+      );
+      await writeFile(join(contractsDir, "custom-worker.json"), JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -888,7 +989,7 @@ describe(" single-stage workflow", () => {
       const result = await runLogging(loadWorkflow(workflowPath, root, root));
       expect(Exit.isSuccess(result)).toBe(true);
       if (Exit.isSuccess(result)) {
-        expect([...result.value.workerResources!.values()][0]?.contract?.manifest.id).toBe("custom-result");
+        expect([...result.value.workerResources!.values()][0]?.contract?.worker).toBe("custom-worker");
         expect(result.value.recipeRepositoryRoot).toBe(root);
       }
     } finally {
@@ -896,41 +997,50 @@ describe(" single-stage workflow", () => {
     }
   });
 
-  it("emits a user-visible deprecation warning for string-valued validation", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-workflow-legacy-warning-"));
-    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+  it("loads a worker with no contract unvalidated", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-workflow-no-contract-"));
     try {
-      const workflowPath = join(root, "legacy.yml");
-      await writeFile(workflowPath, VALIDATE_WORKFLOW);
-
-      const result = await runLogging(loadWorkflow(workflowPath, root, process.cwd()));
-
-      expect(Exit.isSuccess(result)).toBe(true);
-      expect(emitWarning).toHaveBeenCalledOnce();
-      expect(emitWarning).toHaveBeenCalledWith(
-        expect.stringContaining('stage "coding" (text-response)'),
-        {
-          code: "PIANO_LEGACY_WORKER_CONTRACT",
-          type: "DeprecationWarning",
-        },
+      const workflowPath = join(root, "contract.yml");
+      const workerDir = join(root, "recipes", "custom-worker");
+      await mkdir(workerDir, { recursive: true });
+      await writeFile(
+        workflowPath,
+        CODING_WORKFLOW.replace("worker: basic", "worker: custom-worker"),
       );
+
+      const result = await runLogging(loadWorkflow(workflowPath, root, root));
+      expect(Exit.isSuccess(result)).toBe(true);
+      if (Exit.isSuccess(result)) {
+        expect([...result.value.workerResources!.values()][0]?.contract).toBeUndefined();
+      }
     } finally {
-      emitWarning.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("fails workflow loading when validate:true has no usable worker contract", async () => {
-    for (const contractSource of [undefined, "{not-json"] as const) {
+  it("fails workflow loading on a malformed contract or invalid example", async () => {
+    const invalidExample = JSON.stringify({
+      schema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        required: ["value"],
+        properties: { value: { type: "string" } },
+        additionalProperties: false,
+      },
+      example: { value: 7 },
+      outputs: { metrics: [] },
+    });
+    for (const contractSource of ["{not-json", invalidExample] as const) {
       const root = await mkdtemp(join(tmpdir(), "piano-workflow-invalid-contract-"));
       try {
         const workflowPath = join(root, "contract.yml");
-        const workerDir = join(root, "recipes", "custom-worker");
-        await mkdir(workerDir, { recursive: true });
-        await writeFile(workflowPath, CODING_WORKFLOW
-          .replace("worker: basic", "worker: custom-worker")
-          .replace("        from: []", "        validate: true\n        from: []"));
-        if (contractSource !== undefined) await writeFile(join(workerDir, "contract.json"), contractSource);
+        const contractsDir = join(root, "recipes", "contracts");
+        await mkdir(contractsDir, { recursive: true });
+        await writeFile(
+          workflowPath,
+          CODING_WORKFLOW.replace("worker: basic", "worker: custom-worker"),
+        );
+        await writeFile(join(contractsDir, "custom-worker.json"), contractSource);
 
         const result = await runLogging(loadWorkflow(workflowPath, root, root));
         expect(Exit.isFailure(result)).toBe(true);
@@ -945,39 +1055,20 @@ describe(" single-stage workflow", () => {
     }
   });
 
-  it("ignores an unused worker contract when validation is omitted", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-workflow-unused-contract-"));
-    try {
-      const workflowPath = join(root, "contract.yml");
-      const workerDir = join(root, "recipes", "custom-worker");
-      await mkdir(workerDir, { recursive: true });
-      await writeFile(workflowPath, CODING_WORKFLOW.replace("worker: basic", "worker: custom-worker"));
-      await writeFile(join(workerDir, "contract.json"), "{not-json");
-
-      const result = await runLogging(loadWorkflow(workflowPath, root, root));
-      expect(Exit.isSuccess(result)).toBe(true);
-      if (Exit.isSuccess(result)) {
-        expect([...result.value.workerResources!.values()][0]?.contract).toBeUndefined();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   it.each([
-    ["CUDA", "gpu-cuda-tuning.yml", "cuda-round-result-v2"],
-    ["Triton", "gpu-triton-tuning.yml", "triton-round-result"],
-  ] as const)("discovers every worker-owned contract in the built-in %s workflow", async (_family, file, roundContractId) => {
+    ["CUDA", "gpu-cuda-tuning.yml", "cuda-benchmark-store"],
+    ["Triton", "gpu-triton-tuning.yml", "triton-benchmark-store"],
+  ] as const)("discovers every worker-owned contract in the built-in %s workflow", async (_family, file, roundWorker) => {
     const repositoryRoot = process.cwd();
     const workflowPath = join(repositoryRoot, "recipes", "workflows", file);
     const result = await runLogging(loadWorkflow(workflowPath, repositoryRoot, repositoryRoot));
 
     expect(Exit.isSuccess(result)).toBe(true);
     if (!Exit.isSuccess(result)) return;
-    const contracts = [...result.value.workerResources!.values()].map((resources) => resources.contract?.manifest.id);
+    const contracts = [...result.value.workerResources!.values()].map((resources) => resources.contract?.worker);
     expect(contracts).toHaveLength(6);
-    expect(contracts.every((id) => id !== undefined)).toBe(true);
-    expect(contracts).toContain(roundContractId);
+    expect(contracts.every((worker) => worker !== undefined)).toBe(true);
+    expect(contracts).toContain(roundWorker);
   });
 
   it("binds the canonical coding workflow as the default worker template", async () => {
@@ -1002,43 +1093,11 @@ describe(" single-stage workflow", () => {
   });
 });
 
-describe("workflow autoCommit (ISSUE-017)", () => {
-  const WITH_AUTO_COMMIT = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  autoCommit: true\n");
-
-  it("parses autoCommit: true and threads it through compile", async () => {
-    const parsed = await run(parseWorkflow(WITH_AUTO_COMMIT, SOURCE));
-    expect(Exit.isSuccess(parsed)).toBe(true);
-    if (!Exit.isSuccess(parsed)) return;
-    expect(parsed.value.workflow.autoCommit).toBe(true);
-    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
-    expect(Exit.isSuccess(compiled)).toBe(true);
-    if (Exit.isSuccess(compiled)) expect(compiled.value.autoCommit).toBe(true);
-  });
-
-  it("parses autoCommit: false", async () => {
-    const source = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  autoCommit: false\n");
-    const parsed = await run(parseWorkflow(source, SOURCE));
-    expect(Exit.isSuccess(parsed)).toBe(true);
-    if (Exit.isSuccess(parsed)) expect(parsed.value.workflow.autoCommit).toBe(false);
-  });
-
-  it("defaults autoCommit to false when omitted (opt-in)", async () => {
-    const parsed = await run(parseWorkflow(CODING_WORKFLOW, SOURCE));
-    expect(Exit.isSuccess(parsed)).toBe(true);
-    if (!Exit.isSuccess(parsed)) return;
-    expect(parsed.value.workflow.autoCommit).toBe(false);
-    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
-    expect(Exit.isSuccess(compiled)).toBe(true);
-    if (Exit.isSuccess(compiled)) expect(compiled.value.autoCommit).toBe(false);
-  });
-
-  it("rejects a non-boolean autoCommit value", async () => {
-    const source = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  autoCommit: yes\n");
-    expect(Exit.isFailure(await run(parseWorkflow(source, SOURCE)))).toBe(true);
-  });
-
-  it("still rejects unknown workflow-level fields next to autoCommit", async () => {
-    const source = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  autoCommit: true\n  push: true\n");
+describe("workflow commit configuration", () => {
+  it("rejects the removed autoCommit workflow field", async () => {
+    // Loops commit unconditionally; a switch no longer exists, so declaring
+    // one is an unknown workflow-level field and must fail the load.
+    const source = CODING_WORKFLOW.replace("  name: coding-dsh\n", "  name: coding-dsh\n  autoCommit: true\n");
     expect(Exit.isFailure(await run(parseWorkflow(source, SOURCE)))).toBe(true);
   });
 });

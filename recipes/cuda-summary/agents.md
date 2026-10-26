@@ -8,5 +8,5 @@ is read-only apart from its requested result artifact.
 - Distinguish the library reference ceiling from the best verified custom
   kernel, and distinguish measured results from failures or blocked rounds.
 - Report only actual counts, decisions, measurements, and unresolved blockers.
-- Write the requested `summary-report`; do not rerun tuning, change source, or
+- Write the result JSON for this stage; do not rerun tuning, change source, or
   rewrite history to make the outcome look better.

@@ -16,7 +16,7 @@ Use the final run-owned state and append-only artifacts as the source of truth.
    it for scoring.
 4. Link statements to the stored profile, verification, benchmark, and
    round-decision evidence. Clearly label missing or unmeasured evidence.
-5. Write the requested `summary-report` with the actual outcome; never infer
+5. Write the result JSON for this stage with the actual outcome; never infer
    improvement from a proposal, a build, or an unverified candidate.
 
 Do not edit kernels, grader, harness, state, history, or benchmark artifacts.

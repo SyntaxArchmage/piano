@@ -133,7 +133,9 @@ describe("a tuning run paused half-way continues from its cursor with real subpr
       workflowPath: WORKFLOW_PATH,
       terminal: terminalA,
     }).pipe(Effect.provide(NodeFileSystem.layer)));
-    await sleep(50);
+    // The TUI accepts input only once it mounted; wait for that instead of a
+    // fixed delay, since loading the worker contract now precedes the mount.
+    await wait("the TUI accepted input", () => terminalA.onInput !== undefined);
     terminalA.onInput?.(RESUME_PROMPT);
     terminalA.onInput?.("\r");
     // The wedge: iteration 0 is complete evidence, and iteration 1's propose has

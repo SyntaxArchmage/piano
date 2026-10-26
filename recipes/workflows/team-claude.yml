@@ -17,8 +17,6 @@ workflow:
         model: mimo-v2.6-pro
         thinkingLevel: max
         tools: [Read, Bash, Edit, Write, Glob, Grep, WebSearch]
-        handoff: architecture.json
-        validate: true
         from: []
     - tournament:
         name: candidates
@@ -35,8 +33,6 @@ workflow:
               model: deepseek-flash
               thinkingLevel: max
               tools: [Read, Bash, Edit, Write, Glob, Grep]
-              handoff: candidate-input.json
-              validate: true
               from: []
     - stage:
         name: review
@@ -45,6 +41,4 @@ workflow:
         model: deepseek-flash
         thinkingLevel: max
         tools: [Read, Bash, Edit, Write, Glob, Grep]
-        handoff: review-input.json
-        validate: true
         from: [candidates]

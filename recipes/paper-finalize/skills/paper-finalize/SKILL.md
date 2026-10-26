@@ -5,12 +5,12 @@ description: Verify the compiled artifact against the venue's requirements and r
 
 # Finalize
 
-Inputs: the manuscript, and the injected handoff context — the `paper-brief`
+Inputs: the manuscript, and the injected accepted-input context — the `paper-brief`
 result (venue, constraints, contributions), the `paper-calibration` result, and
 the final round's `paper-revision` result.
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in the `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read them from there.
 
 **Why only those three.** This stage sits outside the loop and depends on the
