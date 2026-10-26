@@ -8,6 +8,9 @@
 > selection）。`progress.jsonl`、`resume.jsonl`、`trajectories/index.json`
 > 已退休；`status.json` 是唯一状态文档，由 orchestrator 直接维护
 > （jobs、accepted、attempts、regions、actors），trajectory 只负责叙述字段。
+> `handoff` 命名与 DSL 字段也已退休：accepted 证据（acceptance）写入
+> `system-log/invocations.jsonl`，消费者的标准上下文是
+> `context/<ref>/inputs.json`；下文图中的 ㉖㉗ 是历史路径。
 > 下文关于记录内容与写入者的分析仍然有效，路径与编号不再对应。
 
 文件分布在 **4 个磁盘区域**。"种"是固定的（约 25 种），"个数"随 run 形状变化，每种的计数公式标在表里。
@@ -32,7 +35,7 @@
     ├── progress.jsonl       ⑫  【不可变证据流】run/stage 起止与 accepted，逐行append
     ├── status.json          ⑬  【唯一状态文档】给watch/TUI，由上述各流折叠得出，原子重写
     ├── resume.jsonl         ⑭  actors的sessionId/transcriptPath/turns/continuation；逐行append，最新一行即全表
-    ├── contracts/<sha256>.json  ⑮ 每个用到的contract.json按digest存一份原文
+    ├── contracts/<worker>.json  ⑮ 每个用到的worker contract按worker名存一份原文
     ├── workspaces/slots/<key>/**   ⑯ 每actor一条git worktree/目录快照
     ├── workspace-records/<key>/record.json  ⑰ 绑定记录(key,cwd,gitRoot,fork点)
     ├── trajectories/        ← @piano/trajectory recorder流（recorders.ts）
@@ -63,17 +66,17 @@
 | 观测三件套 ⑨⑩⑪ | logging包（session.ts:81-83） | CLI创建session时开、全程写 | TUI面板、`piano logs` |
 | 进度 ⑫ | progress.ts | 每 accepted stage / region finalize / actor turn 折进 `status.json` 并原子重写；`progress.jsonl` 已退休，不再有 jsonl | watch/监控；**status.json 是唯一状态文档，不是任何 jsonl 的投影** |
 | 恢复 ⑭ | resume-state.ts:22-35 | 每轮prompt后重写 | `piano resume`：靠sessionId+transcriptPath续内层harness会话 |
-| 契约溯源 ⑮ | contract-snapshot.ts | worker启动前写一次 | evals回读时重算sha256验证 |
+| 契约溯源 ⑮ | contract-snapshot.ts | worker启动前写一次 | run内按worker名保存原文，供回读对证 |
 | 会话转录 ㉔ | harness subprocess adapter | 子进程每行stdout原样落盘 | 唯一的"全量原始对话"存档；解析后的事件不另存文件 |
 | stage产物 ㉕ | **agent自己**（Write/Bash） | 提示词指定路径 | orchestrator退出后读回校验；GPU流校验通过后orchestrator会**用materialized payload重写它**（workflow-execution.ts:2093,870,894） |
-| handoff链 ㉖㉗㉘ | handoff.ts:88-162 | stage验收后/消费者启动前 | 跨stage传证据的不可变JSON |
+| acceptance 链 ㉖㉗㉘ | acceptance.ts（invocations.ts 流） | stage验收后/消费者启动前 | 跨stage传 acceptance 证据的不可变 JSON |
 | 轨迹流 ⑱-㉓ | @piano/trajectory recorders | 观测事件驱动，append | evals评分优先读这里，缺index.json才回退读⑫⑨⑪（legacy-run-adapter；⑪现为 trajectory.jsonl） |
 | workspace ⑯⑰㉙㉚ | workspace.ts | slot创建/record原子写；tournament边界冻结 | 恢复/回滚/合并winner |
 | 共享home ②-⑤ | `@piano/base` 的 `writeFileAtomic`（`mode: 0o600`） | **每次run都会再生成覆盖** | 非run私有，不属runDir |
 
-## "多少个"——以 canonical gpu-cuda-tuning.yml（10轮、单lane、validate:true）粗算
+## "多少个"——以 canonical gpu-cuda-tuning.yml（10轮、单lane、六个 worker 均有 contract）粗算
 
-固定 6 个（⑨⑩⑪⑬⑭㉓）＋ ⑫≈accepted stage数（setup+每轮(profile+idea+implement+measure)+summary ≈ 42+行）＋ ⑮=用到的distinct contract数（~6）＋ ㉔=actor数（stage×lane，续跑复用同一文件）＋ ㉕=attempt总数（含被拒重跑）＋ ㉖=accepted producer数，㉗㉘≈stage依赖数（每轮若干）＋ ⑯⑰=slot数。约 **150–250 个文件**，其中每轮真正"新"的是 result.json、handoff 记录、progress 行和各 jsonl 的追加行。
+固定 6 个（⑨⑩⑪⑬⑭㉓）＋ ⑫≈accepted stage数（setup+每轮(profile+idea+implement+measure)+summary ≈ 42+行）＋ ⑮=用到的distinct contract数（~6）＋ ㉔=actor数（stage×lane，续跑复用同一文件）＋ ㉕=attempt总数（含被拒重跑）＋ ㉖=accepted producer数，㉗㉘≈stage依赖数（每轮若干）＋ ⑯⑰=slot数。约 **150–250 个文件**，其中每轮真正"新"的是 result.json、acceptance 行、progress 行和各 jsonl 的追加行。
 
 ## 几个容易误解的点
 

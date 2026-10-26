@@ -93,7 +93,6 @@ describe("reborn CLI entrypoint", () => {
       stages: [],
       regions: [],
       nodes: [],
-      autoCommit: false,
     }));
     vi.mocked(executeWorkflow).mockReset();
     trajectoryWrite.mockClear();

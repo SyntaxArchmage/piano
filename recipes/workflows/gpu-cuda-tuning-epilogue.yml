@@ -11,8 +11,6 @@ workflow:
         harness: pi
         thinkingLevel: high
         tools: [read, bash, edit, write]
-        handoff: preparation.json
-        validate: true
         from: []
         epilogue: |
           Append this prompt's progress to WORKLOG.md in the workspace root.
@@ -39,8 +37,6 @@ workflow:
               harness: pi
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: iteration.json
-              validate: true
               from: []
               epilogue: |
                 Append this prompt's progress to WORKLOG.md in the workspace root.
@@ -60,8 +56,6 @@ workflow:
               harness: pi
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: profile.json
-              validate: true
               from: [profile]
               epilogue: |
                 Append this prompt's progress to WORKLOG.md in the workspace root.
@@ -81,8 +75,6 @@ workflow:
               harness: pi
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: implementation-inputs.json
-              validate: true
               from: [profile, idea]
               epilogue: |
                 Append this prompt's progress to WORKLOG.md in the workspace root.
@@ -102,8 +94,6 @@ workflow:
               harness: pi
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: round.json
-              validate: true
               from: [idea, implement]
               epilogue: |
                 Append this prompt's progress to WORKLOG.md in the workspace root.
@@ -123,8 +113,6 @@ workflow:
         harness: pi
         thinkingLevel: high
         tools: [read, bash, edit, write]
-        handoff: tuning.json
-        validate: true
         from: [tune]
         epilogue: |
           Append this prompt's progress to WORKLOG.md in the workspace root.

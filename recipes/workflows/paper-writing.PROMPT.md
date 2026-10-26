@@ -283,7 +283,7 @@ run rather than an instruction to it.
     },
     {
       "id": "C3",
-      "statement": "An evidence chain that makes an agent's optimisation auditable after the fact: immutable handoff records, one result file per attempt, the full agent transcript, and a contract check with a bounded repair turn in place of silent acceptance.",
+      "statement": "An evidence chain that makes an agent's optimisation auditable after the fact: immutable stage results, one result file per attempt, the full agent transcript, and a contract check with a bounded repair turn in place of silent acceptance.",
       "methodology": "§3.3",
       "evaluation": "§5.6: the ledger of a single run read back and reconstructed"
     },

@@ -1,0 +1,93 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "status"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "compiled",
+          "compile_failed",
+          "blocked"
+        ]
+      },
+      "variable": {
+        "type": "string"
+      },
+      "diff_summary": {
+        "type": "string"
+      },
+      "compile": {
+        "type": "object",
+        "properties": {
+          "passed": {
+            "type": "boolean"
+          },
+          "target": {
+            "type": "string"
+          },
+          "so_commit": {
+            "type": "string"
+          },
+          "so_mtime": {
+            "type": "string"
+          },
+          "diagnostics_path": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      },
+      "blocker": {
+        "type": "string"
+      },
+      "block_scope": {
+        "enum": [
+          "global",
+          "iteration"
+        ]
+      }
+    },
+    "additionalProperties": true
+  },
+  "example": {
+    "status": "compiled",
+    "variable": "variable",
+    "diff_summary": "changed the kernel",
+    "compile": {
+      "passed": true,
+      "target": "kernel"
+    }
+  },
+  "outputs": {
+    "metrics": [],
+    "projections": [
+      {
+        "id": "workflow.status",
+        "pointer": "/status",
+        "format": "string",
+        "required": true
+      },
+      {
+        "id": "workflow.block-scope",
+        "pointer": "/block_scope",
+        "format": "string",
+        "required": false
+      },
+      {
+        "id": "build.target",
+        "pointer": "/compile/target",
+        "format": "string",
+        "required": false
+      },
+      {
+        "id": "change.summary",
+        "pointer": "/diff_summary",
+        "format": "string",
+        "required": false
+      }
+    ]
+  }
+}

@@ -70,7 +70,6 @@ function runLogging<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Lo
  * wall-clock bound. */
 function timedShape(compiled: CompiledWorkflow) {
   return {
-    autoCommit: compiled.autoCommit,
     stages: compiled.stages.map((stage) => [stage.id, stage.stage]),
     regions: compiled.regions.map((region) => ({
       id: region.id,
@@ -91,7 +90,6 @@ describe("paper-writing workflow template", () => {
   it("bounds the polish loop by duration, not by an iteration count", async () => {
     const compiled = await compileRecipeWorkflow("paper-writing");
     expect(compiled.name).toBe("paper-writing");
-    expect(compiled.autoCommit).toBe(false);
 
     const polish = compiled.regions.find((region) => region.name === "polish");
     expect(polish).toMatchObject({
@@ -168,7 +166,7 @@ describe("paper-writing workflow template", () => {
     // retried forever instead of stopping the loop.
     const repositoryRoot = process.cwd();
     for (const worker of ["paper-write", "paper-revise"]) {
-      const path = join(repositoryRoot, "recipes", worker, "contract.json");
+      const path = join(repositoryRoot, "recipes", "contracts", `${worker}.json`);
       const manifest = JSON.parse(await readFile(path, "utf8")) as {
         schema: Record<string, unknown> & {
           required: readonly string[];
@@ -203,7 +201,9 @@ describe("paper-writing workflow template", () => {
       // `discuss` is a pi-only custom tool; other harnesses are rejected at
       // load rather than silently degrading the alignment into a one-shot guess.
       expect(stage.stage.harness).toBe("pi");
-      expect(stage.stage.validate).toBe(true);
+      // Contract presence is what turns validation on for this worker.
+      await expect(readFile(join(process.cwd(), "recipes", "contracts", `${stage.stage.worker}.json`), "utf8"))
+        .resolves.toContain("$schema");
       // `max` is asked for, with the caveat recorded in the workflow header: on
       // `pi` + `deepseek-flash` an A/B probe showed `max` and `off` both report
       // `off` and produce the same reasoning tokens, so this setting is a
@@ -258,7 +258,7 @@ describe("paper-writing workflow template", () => {
       // Each worker owns exactly the skill named after it, whose frontmatter
       // must match its directory (enforced by the loader).
       expect(resource?.skillPaths.map((skill) => skill.split("/").at(-1))).toEqual([worker]);
-      expect(resource?.contract?.manifest.id).toBeDefined();
+      expect(resource?.contract?.worker).toBe(worker);
     }
   });
 

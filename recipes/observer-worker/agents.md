@@ -8,13 +8,13 @@ First print a short narration with these headings:
 stage: <current stage>
 purpose: <stage purpose>
 primitive: <primitive>
-input: <handoff path or none>
+input: <inputs.json path or none>
 
 [DEMO OBSERVATION]
 action: <one action>
 effect: <concrete effect>
 
-Then immediately use one write tool call to create the required result JSON at the exact path in the validation instructions. Do not read files for the root stage; its injected input says `inputs: []`. For dependent stages, use the injected handoff context rather than searching the workspace. Do not create extra logs or files.
+Then immediately use one write tool call to create the required result JSON at the exact path in the validation instructions. The root stage has no injected input file. For dependent stages, read the injected `inputs.json` rather than searching the workspace. Do not create extra logs or files.
 
 Finish with:
 

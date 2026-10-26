@@ -21,7 +21,7 @@ and append-only records.
   (no rounding or re-formatting); the contract validator normalizes them
   against the sample list and rejects a derived value that is not a
   rounding of that recomputation.
-- Write the requested `cuda-round-result-v2` JSON. The orchestrator validates it,
+- Write the result JSON for this stage. The orchestrator validates it,
   atomically promotes a KEEP, restores a DISCARD/failed candidate, and writes
   `rounds/iter-NNN.json` plus `state/tuning-state.json` after validation.
 - For a successful compile and verification, persist the actual verifier report

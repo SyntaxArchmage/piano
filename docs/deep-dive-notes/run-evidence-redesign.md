@@ -1,7 +1,7 @@
 # run evidence（logs）重设计 — 工作稿
 
 > **历史文档（2026-10-16 标记）。** 本文记录一次已完成的迁移的设计与执行过程；§A–§C 描述的现状与目标 layout 是**迁移前**的快照，其中三处已被后续落地超越，读当时以 §F5.5 与代码为准：
-> ① `progress.json` / `trajectory.json` / `resume.json` 三个 document 已**删除**（不写也不读；`status.json` 是唯一的 view，见邻 session 的 G1）；② `resume.jsonl` 已**停写并退休 reader**（actor 表由 ledger 的 `actor-turn` 行折叠，见 §F5.5）；③ `executionId` 已改名 `runId`（G2）。现行 layout 规范以 `README.md` 为准。
+> ① `progress.json` / `trajectory.json` / `resume.json` 三个 document 已**删除**（不写也不读；`status.json` 是唯一的 view，见邻 session 的 G1）；② `resume.jsonl` 已**停写并退休 reader**（actor 表由 ledger 的 `actor-turn` 行折叠，见 §F5.5）；③ `executionId` 已改名 `runId`（G2）；④ `handoff` 命名与 DSL 字段已退休：acceptance 行写入 `system-log/invocations.jsonl`，消费者上下文为标准 `context/<ref>/inputs.json`。文内的 `handoff.ts`、`HandoffProducer` 等名称是迁移当时的代码名。现行 layout 规范以 `README.md` 为准。
 > **读者是 agent，不是人。** 目的：让下一次接手的人不必重新推导现状与结论。
 > **基线**：`worktree-lifecycle-refactor-dsf` tip `460a9dc`（未提交：`workflow-execution.ts` 改动 + `stage-runner-support.ts` 新增）。
 > **状态**：设计已定、**未实现**。所有 file:line 是 2026-10-15 实测，实现前按 §E 逐项复验。
@@ -88,7 +88,7 @@ root 级（无 loop）tournament 同样报 `race/slot-0 was already cleaned` →
 ├── log.jsonl             [H] 运维事件流（★ P3 起去 trace-namespace function.*）
 ├── trace.jsonl           [D] 唯一 debug span 视图（不变）
 ├── summary.json          [H] ★ P2：写侧紧凑行投影，两个 picker O(1) 读
-├── contracts/<sha256>.json [M]（不变）
+├── contracts/<worker>.json [M]
 ├── trajectories/         [F]（不变）
 ├── prompts/<job>/        [M] <job> = jobOrdinal
 │   ├── invocations/<stageId>/<instanceId...>/

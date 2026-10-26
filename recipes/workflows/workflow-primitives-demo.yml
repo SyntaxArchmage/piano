@@ -2,7 +2,7 @@ version: 3
 
 # A short, self-narrating workflow for observing Piano primitives. The workers
 # explain their own purpose in the transcript and return worker-owned,
-# contract-validated handoffs. It does not write project source or invent a
+# contract-validated results. It does not write project source or invent a
 # second Piano log directory.
 workflow:
   name: workflow-primitives-demo
@@ -13,8 +13,6 @@ workflow:
         harness: pi
         thinkingLevel: low
         tools: [write]
-        handoff: preparation.json
-        validate: true
         from: []
 
     - stage:
@@ -23,8 +21,6 @@ workflow:
         harness: pi
         thinkingLevel: low
         tools: [write]
-        handoff: inspection.json
-        validate: true
         prologue: "Next stage is inspect. Perform one short narration, then write the result once and stop."
         from: [prepare]
 
@@ -42,8 +38,6 @@ workflow:
               harness: pi
               thinkingLevel: low
               tools: [write]
-              handoff: loop-report.json
-              validate: true
               from: []
 
     - stage:
@@ -52,8 +46,6 @@ workflow:
         harness: pi
         thinkingLevel: low
         tools: [write]
-        handoff: items.json
-        validate: true
         prologue: "This is make-items. Announce alpha and beta, write once, and stop."
         from: [observe]
 
@@ -72,8 +64,6 @@ workflow:
               harness: pi
               thinkingLevel: low
               tools: [write]
-              handoff: lane-result.json
-              validate: true
               prologue: "This is one fanout lane. Announce the received item, write once, and stop."
               from: []
 
@@ -83,7 +73,5 @@ workflow:
         harness: pi
         thinkingLevel: low
         tools: [write]
-        handoff: summary.json
-        validate: true
-        prologue: "This is finish. Summarize accepted handoffs briefly, write once, and stop."
+        prologue: "This is finish. Summarize accepted upstream results briefly, write once, and stop."
         from: [fanout, make-items, observe, inspect, prepare]

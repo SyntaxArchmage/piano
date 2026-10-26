@@ -19,18 +19,17 @@ import {
 } from "@piano/harness";
 import { executeWorker, WorkerError } from "@piano/workers";
 import {
-  handoffContextPath,
+  inputsContextPath,
   mapItemContextPath,
-  readHandoffRecord,
-  sha256Bytes,
-  writeHandoffContext,
-  writeHandoffRecord,
+  readAcceptanceRecord,
+  writeAcceptanceRecord,
+  writeInputsContext,
   writeMapItemContext,
-  type HandoffMapItem,
-} from "./handoff.js";
+  type StageValidationWarning,
+  type WorkflowMapItem,
+} from "./acceptance.js";
 import { snapshotWorkerContract, workerContractSnapshotPath } from "./contract-snapshot.js";
-import { legacyContractProjectionDeclarations } from "./legacy-contract-projections.js";
-import { errorMessage, WorkflowError, workflowError } from "./errors.js";
+import { WorkflowError, workflowError } from "./errors.js";
 import { WORKER_LOG, WORKER_SOURCE, WORKFLOW_LOG } from "./execution-logs.js";
 import {
   actorLane,
@@ -68,10 +67,8 @@ import {
   workflowProgressProjection,
 } from "./stage-runner-support.js";
 import {
-  validationGuidance,
   workerContractGuidance,
   type ContractMetric,
-  type ContractName,
   type ContractProjection,
 } from "@piano/contract";
 import type {
@@ -81,6 +78,7 @@ import type {
   ResolvedStageValidation,
   SignoffRetry,
   StageReviewNote,
+  UpstreamValidationWarning,
   ValidatedStagePayload,
 } from "./execution-types.js";
 import type {
@@ -125,7 +123,7 @@ export interface StageRunnerContext {
 }
 
 /** Rebuild an accepted invocation's result from the evidence it left, so a
- * continue can skip its worker turn. `undefined` means the producer record is
+ * continue can skip its worker turn. `undefined` means the acceptance record is
  * gone or unreadable — the caller falls through to re-running the invocation.
  * Exported for the scope walker's region skip: a finalized region rebuilds
  * every invocation it accepted through the same rule. */
@@ -135,9 +133,9 @@ export function rebuildAcceptedStage(
   cursor: NonNullable<WorkflowExecutionRequest["continueJob"]>,
 ): Effect.Effect<InternalStageResult | undefined, WorkflowError, FileSystem.FileSystem | Logging> {
   return Effect.gen(function* () {
-    const producer = yield* readHandoffRecord(runDir, invocation);
+    const acceptance = yield* readAcceptanceRecord(runDir, invocation);
     const invocationId = runtimeInvocationId(invocation);
-    if (producer === undefined) {
+    if (acceptance === undefined) {
       yield* WORKFLOW_LOG.warn("stage.continue.evidence-missing", {
         data: { invocationId, runId: invocation.runId },
       }).pipe(Effect.catchAll(() => Effect.void));
@@ -146,26 +144,26 @@ export function rebuildAcceptedStage(
     return {
       id: invocationId,
       stageId: invocation.stageId,
-      ...(producer.instanceId === undefined ? {} : { instanceId: producer.instanceId }),
-      stage: producer.stage,
-      worker: producer.worker,
-      text: producer.text,
-      sessionId: producer.sessionId,
-      transcriptPath: producer.transcriptPath,
-      ...(producer.requestedModel === undefined ? {} : { requestedModel: producer.requestedModel }),
-      ...(producer.requestedThinkingLevel === undefined
+      ...(acceptance.instanceId === undefined ? {} : { instanceId: acceptance.instanceId }),
+      stage: acceptance.stage,
+      worker: acceptance.worker,
+      text: acceptance.text,
+      sessionId: acceptance.sessionId,
+      transcriptPath: acceptance.transcriptPath,
+      ...(acceptance.requestedModel === undefined ? {} : { requestedModel: acceptance.requestedModel }),
+      ...(acceptance.requestedThinkingLevel === undefined
         ? {}
-        : { requestedThinkingLevel: producer.requestedThinkingLevel as ThinkingLevel }),
-      ...(producer.model === undefined ? {} : { model: producer.model }),
-      ...(producer.thinkingLevel === undefined ? {} : { thinkingLevel: producer.thinkingLevel as ThinkingLevel }),
-      attempts: producer.attempt ?? cursor.attempts.get(invocationId) ?? 1,
-      workspace: producer.workspace,
-      ...(producer.resultPath === undefined ? {} : { resultPath: producer.resultPath }),
-      ...(producer.resultPayload === undefined ? {} : { resultPayload: producer.resultPayload }),
-      ...(producer.metrics === undefined ? {} : { metrics: producer.metrics }),
-      ...(producer.projections === undefined ? {} : { projections: producer.projections }),
-      ...(producer.contract === undefined ? {} : { contract: producer.contract }),
-      handoff: producer,
+        : { requestedThinkingLevel: acceptance.requestedThinkingLevel as ThinkingLevel }),
+      ...(acceptance.model === undefined ? {} : { model: acceptance.model }),
+      ...(acceptance.thinkingLevel === undefined ? {} : { thinkingLevel: acceptance.thinkingLevel as ThinkingLevel }),
+      attempts: acceptance.attempt ?? cursor.attempts.get(invocationId) ?? 1,
+      workspace: acceptance.workspace,
+      ...(acceptance.resultPath === undefined ? {} : { resultPath: acceptance.resultPath }),
+      ...(acceptance.resultPayload === undefined ? {} : { resultPayload: acceptance.resultPayload }),
+      ...(acceptance.metrics === undefined ? {} : { metrics: acceptance.metrics }),
+      ...(acceptance.projections === undefined ? {} : { projections: acceptance.projections }),
+      ...(acceptance.validationWarning === undefined ? {} : { validationWarning: acceptance.validationWarning }),
+      acceptance,
     };
   });
 }
@@ -175,7 +173,7 @@ export function executeStage(
   node: CompiledStage,
   frames: readonly WorkflowRuntimeFrame[],
   inputs: readonly InternalStageResult[],
-  mapItem: HandoffMapItem | undefined,
+  mapItem: WorkflowMapItem | undefined,
   workspace: WorkflowWorkspaceBinding,
 ): Effect.Effect<InternalStageResult, WorkflowExecutionError, FileSystem.FileSystem | Logging> {
   const {
@@ -252,7 +250,6 @@ export function executeStage(
         loaded.recipeRepositoryRoot,
         loaded.workflowPath,
         node.stage.harness,
-        { loadContract: node.stage.validate === true },
       )
       : Effect.succeed(cached);
   };
@@ -290,13 +287,11 @@ export function executeStage(
     const resources = yield* stageResources();
     const candidates = [
       ...resources.contextFilePaths,
-      ...(node.stage.validate === true && resources.contract !== undefined
-        ? [workerContractSnapshotPath(request.runDir, resources.contract)]
-        : []),
-      ...(node.stage.handoff === undefined
+      ...(resources.contract === undefined
         ? []
-        : [yield* handoffContextPath(request.runDir, rebuilt.handoff.ref, node.stage.handoff, loaded.workflowPath)]),
-      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, rebuilt.handoff.ref)]),
+        : [workerContractSnapshotPath(request.runDir, node.stage.worker)]),
+      inputsContextPath(request.runDir, rebuilt.acceptance.ref),
+      ...(mapItem === undefined ? [] : [mapItemContextPath(request.runDir, rebuilt.acceptance.ref)]),
     ];
     const fileSystem = yield* FileSystem.FileSystem;
     const contextFilePaths: string[] = [];
@@ -304,7 +299,7 @@ export function executeStage(
       const present = yield* fileSystem.exists(candidate).pipe(Effect.orElseSucceed(() => false));
       if (present) contextFilePaths.push(candidate);
     }
-    const identity = rebuilt.handoff.actorKey ?? actorKey;
+    const identity = rebuilt.acceptance.actorKey ?? actorKey;
     actorContexts.set(identity, actorContextFor(identity, resources, contextFilePaths));
   });
   /** One actor state change, written once: the run's in-memory table, the
@@ -358,38 +353,18 @@ export function executeStage(
       ));
     }
     const resources = yield* stageResources();
-    const validation: ResolvedStageValidation | undefined = node.stage.validate === undefined
+    // Contract presence is the only validation gate: a worker with no
+    // `recipes/contracts/<worker>.json` runs unvalidated, and a stage naming
+    // such a worker is never warned about a contract it does not have.
+    const validation: ResolvedStageValidation | undefined = resources.contract === undefined
       ? undefined
-      : node.stage.validate === true
-        ? resources.contract === undefined
-          ? yield* Effect.fail(workflowError(
-            "load",
-            loaded.workflowPath,
-            `stage "${node.stage.name}" uses validate: true but worker "${node.stage.worker}" has no contract.json`,
-          ))
-          : {
-            kind: "worker",
-            id: resources.contract.manifest.id,
-            guidance: workerContractGuidance(resources.contract),
-            projectionDeclarations: resources.contract.manifest.outputs.projections,
-            contract: resources.contract,
-            reference: yield* snapshotWorkerContract(request.runDir, resources.contract),
-          }
-        : {
-          kind: "legacy",
-          id: node.stage.validate as ContractName,
-          guidance: validationGuidance(node.stage.validate as ContractName),
-          projectionDeclarations: legacyContractProjectionDeclarations(node.stage.validate),
-        };
-    if (validation?.kind === "legacy") {
-      yield* stageLog.warn("stage.validation.legacy", {
-        data: {
-          id: runtimeInvocationId(invocation),
-          validate: validation.id,
-          message: "named validators are deprecated; use validate: true with recipes/<worker>/contract.json",
-        },
-      });
-    }
+      : {
+        id: resources.contract.worker,
+        guidance: workerContractGuidance(resources.contract),
+        projectionDeclarations: resources.contract.manifest.outputs.projections,
+        contract: resources.contract,
+        snapshotPath: yield* snapshotWorkerContract(request.runDir, resources.contract),
+      };
     // The flat name this invocation's evidence paths use; the allocator
     // serializes its own read–compute–append.
     const ref = yield* recordInvocationStart(request.runDir, {
@@ -398,24 +373,25 @@ export function executeStage(
       invocationId: runtimeInvocationId(invocation),
       stageId: node.id,
     });
-    const handoffPath = node.stage.handoff === undefined
+    // Upstream results are routed automatically: a stage with direct or
+    // inherited inputs gets one standard inputs.json, and a stage with none
+    // gets no file at all.
+    const inputsPath = inputs.length === 0
       ? undefined
-      : yield* writeHandoffContext(
+      : yield* writeInputsContext(
         request.runDir,
         invocation,
         ref,
-        node.stage.handoff,
-        inputs.map((input) => input.handoff),
+        inputs.map((input) => input.acceptance),
         workspace,
-        loaded.workflowPath,
       );
     const mapItemPath = mapItem === undefined
       ? undefined
       : yield* writeMapItemContext(request.runDir, invocation, ref, mapItem, workspace);
     const contextFilePaths = [
       ...resources.contextFilePaths,
-      ...(validation?.kind === "worker" ? [validation.reference.snapshotPath] : []),
-      ...(handoffPath === undefined ? [] : [handoffPath]),
+      ...(validation === undefined ? [] : [validation.snapshotPath]),
+      ...(inputsPath === undefined ? [] : [inputsPath]),
       ...(mapItemPath === undefined ? [] : [mapItemPath]),
     ];
     actorContexts.set(actorKey, actorContextFor(actorKey, resources, contextFilePaths));
@@ -433,7 +409,7 @@ export function executeStage(
         ...((request.model ?? stageModel) === undefined ? {} : { requestedModel: request.model ?? stageModel }),
         ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined ? {} : { requestedThinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
         ...(node.stage.tools === undefined ? {} : { tools: node.stage.tools }),
-        ...(handoffPath === undefined ? {} : { handoffPath }),
+        ...(inputsPath === undefined ? {} : { inputsPath }),
         ...(mapItemPath === undefined ? {} : { mapItemPath }),
       },
     });
@@ -445,7 +421,7 @@ export function executeStage(
         inputCount: inputs.length,
         ...((request.model ?? stageModel) === undefined ? {} : { requestedModel: request.model ?? stageModel }),
         ...((request.thinkingLevel ?? node.stage.thinkingLevel) === undefined ? {} : { requestedThinkingLevel: request.thinkingLevel ?? node.stage.thinkingLevel }),
-        ...(handoffPath === undefined ? {} : { handoffPath }),
+        ...(inputsPath === undefined ? {} : { inputsPath }),
       },
     });
 
@@ -480,9 +456,47 @@ export function executeStage(
     let acceptedMetrics: readonly ContractMetric[] = [];
     let acceptedProjections: readonly ContractProjection[] = [];
     let acceptedResultPath: string | undefined;
-    /** Whether the orchestrator re-materialised the accepted payload (the
-     * GPU-round protocol) after the worker's bytes were validated. */
-    let materializedPayload = false;
+    /** Set when the final attempt still failed its contract: the worker's
+     * text/session are accepted, but without a payload or projections, and
+     * downstream stages are told the result is untrusted. */
+    let acceptedValidationWarning: StageValidationWarning | undefined;
+    /** Accept the worker's turn despite a failed contract check. The repair
+     * budget is spent (or no continuation makes a repair impossible), so the
+     * stage continues with a warning instead of retrying or failing: the
+     * worker's text and session stand, but the invalid result file is kept
+     * only as evidence and no payload, metrics or projections are published. */
+    const acceptWithValidationWarning = (
+      resolved: ResolvedStageValidation,
+      accepted: {
+        readonly text: string;
+        readonly sessionId: string;
+        readonly transcriptPath: string;
+        readonly model?: string;
+        readonly thinkingLevel?: ThinkingLevel;
+        readonly continuation?: AgentContinuation;
+      },
+      warningMessage: string,
+      error: unknown,
+      attemptNumber: number,
+      failedResultPath: string | undefined,
+    ): Effect.Effect<void, never, FileSystem.FileSystem | Logging> => Effect.gen(function* () {
+      yield* stageLog.warn("stage.validation.warning", {
+        data: {
+          id: runtimeInvocationId(invocation),
+          validate: resolved.id,
+          attempt: attemptNumber,
+          resultPath: failedResultPath,
+          error: failureDetails(error),
+        },
+      });
+      acceptedWorker = accepted;
+      acceptedResultPath = failedResultPath;
+      acceptedValidationWarning = {
+        worker: node.stage.worker,
+        ...(resolved.contract.path === "" ? {} : { contractPath: resolved.contract.path }),
+        message: warningMessage,
+      };
+    });
     /** The reviewer's note arriving from the upstream stages this one is
      * declared to consume.
      *
@@ -496,6 +510,21 @@ export function executeStage(
       input.reviewNote === undefined || !declaredDependencies.has(input.stageId)
         ? []
         : [{ stageId: input.stageId, note: input.reviewNote }]);
+    /** Upstream results this stage consumes that failed validation. Unlike a
+     * reviewer note, a warning is not filtered by declared dependencies: an
+     * inherited result inside a loop or tournament is still input this stage
+     * must not trust. */
+    const upstreamValidationWarnings: readonly UpstreamValidationWarning[] = inputs.flatMap((input) =>
+      input.validationWarning === undefined
+        ? []
+        : [{
+          stageId: input.stageId,
+          worker: input.validationWarning.worker,
+          ...(input.validationWarning.contractPath === undefined
+            ? {}
+            : { contractPath: input.validationWarning.contractPath }),
+          message: input.validationWarning.message,
+        }]);
     /** Static ids of the stages that consume this one — the only stages a
      * `continue` note can reach, told to the reviewer up front so the
      * answer to "where does my note go?" is never a surprise. */
@@ -660,6 +689,7 @@ export function executeStage(
           repairError,
           signoffRetry,
           reviewNotes,
+          upstreamValidationWarnings,
           request.model ?? stageModel,
           request.thinkingLevel ?? node.stage.thinkingLevel,
           prologue,
@@ -884,12 +914,19 @@ export function executeStage(
       // output runs before acceptance, so a failure becomes a repair turn
       // carrying the error — the contract check above is one such check,
       // and the GPU-round promotion facts (declared candidate readable,
-      // digests truthful, KEEP requiring promoted=true) are others. The
-      // same inspection runs again inside materializeGpuPromotion as the
-      // pre-write consistency gate.
+      // worker-declared candidate/resulting-best digests matching the bytes
+      // read, KEEP requiring promoted=true) are others. The same inspection
+      // runs again inside materializeGpuPromotion as the pre-write
+      // consistency gate.
       let acceptCheck: Either.Either<ValidatedStagePayload, WorkflowExecutionError>;
+      /** Distinguishes a contract-validation rejection from a post-validation
+       * inspection failure (the GPU-round promotion facts). Only the former
+       * degrades to a warning once the repair budget is spent; a promotion
+       * failure is still a stage failure. */
+      let contractValidationFailure: boolean;
       if (Either.isLeft(validationResult)) {
         acceptCheck = validationResult;
+        contractValidationFailure = true;
       } else {
         const validated = validationResult.right;
         const promotionInspection = yield* inspectGpuRound(
@@ -905,6 +942,7 @@ export function executeStage(
         acceptCheck = Either.isLeft(promotionInspection)
           ? Either.left(promotionInspection.left)
           : Either.right(validated);
+        contractValidationFailure = false;
       }
       if (Either.isRight(acceptCheck)) {
         yield* stageLog.info("stage.validation.completed", {
@@ -961,6 +999,20 @@ export function executeStage(
         },
       });
       if (repairAttempts >= VALIDATE_REPAIR_ATTEMPTS) {
+        if (contractValidationFailure) {
+          // One repair turn is the whole budget. A contract failure that
+          // survives it is a warning, not a retry and not a failed stage: the
+          // workflow continues and downstream consumers are told to verify.
+          yield* acceptWithValidationWarning(
+            validation,
+            worker,
+            acceptCheck.left.message,
+            acceptCheck.left,
+            attempt,
+            resultPath,
+          );
+          break;
+        }
         // A repair budget that is spent is not necessarily a dead end: a
         // stage with a retry policy starts the whole attempt over, with the
         // validation error retained as its opening feedback, rather than
@@ -981,11 +1033,24 @@ export function executeStage(
         continue;
       }
       if (memoryEnabled && worker.continuation === undefined) {
-        return yield* Effect.fail(workflowError(
-          "schedule",
-          loaded.workflowPath,
-          `actor "${actorKey}" cannot repair failed validation because its harness returned no continuation`,
-        ));
+        if (!contractValidationFailure) {
+          return yield* Effect.fail(workflowError(
+            "schedule",
+            loaded.workflowPath,
+            `actor "${actorKey}" cannot repair failed validation because its harness returned no continuation`,
+          ));
+        }
+        // No continuation means the repair turn cannot reopen the same actor.
+        // The budget is effectively spent, so the same warning path applies.
+        yield* acceptWithValidationWarning(
+          validation,
+          worker,
+          acceptCheck.left.message,
+          acceptCheck.left,
+          attempt,
+          resultPath,
+        );
+        break;
       }
       yield* stageLog.info("stage.validation.retrying", {
         data: {
@@ -1016,30 +1081,13 @@ export function executeStage(
       acceptedPayload = materialized.value;
       acceptedMetrics = materialized.metrics;
       acceptedProjections = materialized.projections;
-      materializedPayload = materialized.applied;
     }
-    // The record pins the published result file by content, so a reader can
-    // verify the evidence still holds what was accepted — and the trust marker
-    // says whether the orchestrator re-materialised the payload after the
-    // worker wrote those bytes.
-    const resultReference = acceptedResultPath === undefined
-      ? undefined
-      : yield* FileSystem.FileSystem.pipe(
-        Effect.flatMap((fileSystem) => fileSystem.readFile(acceptedResultPath)),
-        Effect.map((bytes) => ({
-          path: acceptedResultPath,
-          sha256: sha256Bytes(bytes),
-          trust: materializedPayload ? "orchestrator-materialized" as const : "worker" as const,
-        })),
-        Effect.mapError((cause) => workflowError(
-          "schedule",
-          acceptedResultPath,
-          `cannot hash the accepted result file: ${errorMessage(cause)}`,
-        )),
-      );
+    // The record keeps the published result path. The run-local contract copy
+    // under `contracts/<worker>.json` is what a reader validates it against;
+    // no content hash or trust marker is recorded.
     const requestedModel = request.model ?? stageModel;
     const requestedThinkingLevel = request.thinkingLevel ?? node.stage.thinkingLevel;
-    const handoff = yield* writeHandoffRecord(request.runDir, invocation, {
+    const acceptance = yield* writeAcceptanceRecord(request.runDir, invocation, {
       ref,
       stage: node.stage.name,
       worker: node.stage.worker,
@@ -1054,11 +1102,10 @@ export function executeStage(
       ...(acceptedWorker.thinkingLevel === undefined ? {} : { thinkingLevel: acceptedWorker.thinkingLevel }),
       workspace,
       ...(acceptedResultPath === undefined ? {} : { resultPath: acceptedResultPath }),
-      ...(resultReference === undefined ? {} : { result: resultReference }),
       ...(acceptedPayload === undefined ? {} : { resultPayload: acceptedPayload }),
       ...(acceptedMetrics.length === 0 ? {} : { metrics: acceptedMetrics }),
       ...(acceptedProjections.length === 0 ? {} : { projections: acceptedProjections }),
-      ...(validation?.kind === "worker" ? { contract: validation.reference } : {}),
+      ...(acceptedValidationWarning === undefined ? {} : { validationWarning: acceptedValidationWarning }),
     });
     const result: InternalStageResult = {
       id: runtimeInvocationId(invocation),
@@ -1079,9 +1126,9 @@ export function executeStage(
       ...(acceptedPayload === undefined ? {} : { resultPayload: acceptedPayload }),
       ...(acceptedMetrics.length === 0 ? {} : { metrics: acceptedMetrics }),
       ...(acceptedProjections.length === 0 ? {} : { projections: acceptedProjections }),
-      ...(validation?.kind === "worker" ? { contract: validation.reference } : {}),
-      handoff,
+      acceptance,
       ...(reviewNote === undefined ? {} : { reviewNote }),
+      ...(acceptedValidationWarning === undefined ? {} : { validationWarning: acceptedValidationWarning }),
     };
     const persistedProgress = yield* progressSemaphore.withPermits(1)(Effect.gen(function* () {
       // Keep the counter update and append under the same lock. Map slots
@@ -1136,7 +1183,6 @@ export function executeStage(
       type: "stage_accepted",
       context: trajectoryContext(result.attempts, result),
       metrics: result.metrics ?? [],
-      ...(result.contract === undefined ? {} : { contract: result.contract }),
     });
     yield* stageLog.info("stage.completed", {
       outcome: "success",

@@ -1,0 +1,145 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["ready", "build", "checks", "unresolved", "placeholders", "artifacts"],
+    "properties": {
+      "ready": {
+        "type": "boolean",
+        "description": "True only when no check failed, the artifact builds clean, and the venue's hard requirements are met. A paper with an honest limitation is ready; a paper with an unchecked hard requirement is not."
+      },
+      "blocking_reason": { "type": "string", "description": "Why ready is false. Required in practice when it is." },
+      "build": {
+        "type": "object",
+        "required": ["command", "succeeds"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "succeeds": { "type": "boolean" },
+          "clean": { "type": "boolean", "description": "True when the build was made from scratch, not incrementally." },
+          "reproducible": { "type": "boolean" },
+          "log_path": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "checks": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["name", "status"],
+          "properties": {
+            "name": {
+              "enum": ["page_limit", "template", "anonymized", "refs_resolved", "figures", "header_material", "appendix", "tarball"]
+            },
+            "status": { "enum": ["passed", "failed", "not_checked"] },
+            "observed": { "type": "string", "description": "The evidence the status rests on. A pass without evidence is not a pass." },
+            "requirement": { "type": "string", "description": "What the venue asked for, when the check compares against a requirement." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "unresolved": {
+        "type": "array",
+        "description": "Everything still open, carried forward from the final revision without softening.",
+        "items": {
+          "type": "object",
+          "required": ["item", "kind"],
+          "properties": {
+            "item": { "type": "string", "minLength": 10 },
+            "kind": { "enum": ["deferred_fix", "narrowed_claim", "uncovered_evaluation", "human_decision"] },
+            "needs": { "type": "string", "description": "What it would take to close this." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "placeholders": {
+        "type": "object",
+        "description": "What the paper is still missing, counted rather than softened. This is the field that keeps 'not yet measured' from being indistinguishable from 'measured and small': the paper may legitimately ship with sites its author has not filled, but it may not claim to be ready while it does.",
+        "required": ["open", "filled", "blocking_ready"],
+        "properties": {
+          "open": {
+            "type": "array",
+            "description": "Placeholders still open at finalization, each with the source that would close it.",
+            "items": {
+              "type": "object",
+              "required": ["id", "where", "source"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1 },
+                "where": { "type": "string", "minLength": 1 },
+                "source": { "type": "string", "minLength": 1, "description": "What would fill it. Carried into the submission checklist so the gap is actionable." }
+              },
+              "additionalProperties": false
+            }
+          },
+          "filled": { "type": "integer", "minimum": 0, "description": "How many registered placeholders now carry a value and a source." },
+          "blocking_ready": { "type": "boolean", "description": "True when open is non-empty. Recorded so the run states the consequence itself instead of leaving it to the reader." }
+        },
+        "additionalProperties": false
+      },
+      "artifacts": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["path", "role"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "role": { "type": "string", "minLength": 3, "description": "e.g. 'submission pdf', 'source tarball', 'artifact appendix'." },
+            "bytes": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "summary": { "type": "string", "description": "What the paper establishes, in the words the evidence supports." }
+    },
+    "additionalProperties": false,
+    "x-piano-assertions": [
+      {
+        "path": "/ready",
+        "message": "ready must be false while placeholders.blocking_ready is true: the manuscript still shows \\ph{} sites the author has not measured, so this is not a submittable version of the paper. Shipping it as ready would present an unmeasured slot as a result.",
+        "when": { "op": "eq", "args": [{ "path": "/placeholders/blocking_ready" }, true] },
+        "test": { "op": "not", "args": [{ "path": "/ready" }] }
+      }
+    ]
+  },
+  "example": {
+    "ready": false,
+    "blocking_reason": "Table 3 still compares against a baseline tuned for a different shape set; the venue counts this as an evaluation defect, and the fix needs a re-run.",
+    "build": {
+      "command": "make clean && make",
+      "succeeds": true,
+      "clean": true,
+      "reproducible": true,
+      "log_path": "output/build.log"
+    },
+    "checks": [
+      { "name": "page_limit", "status": "passed", "observed": "Built PDF is 10 pages including references.", "requirement": "venue.page_limit = 11" },
+      { "name": "template", "status": "passed", "observed": "\\documentclass[sigconf]{acmart} with the venue's option set, geometry unchanged." },
+      { "name": "anonymized", "status": "passed", "observed": "Searched sources and the PDF for author names, the group's domain, and the repository URL: no matches." },
+      { "name": "figures", "status": "passed", "observed": "6 figures resolved; 1 was re-exported at 300dpi after it rendered soft at print size." },
+      { "name": "appendix", "status": "not_checked", "observed": "The venue's artifact-appendix requirement was not confirmed; the call's artifact policy was not in the brief." }
+    ],
+    "unresolved": [
+      { "item": "Table 3's baseline is not shape-matched, so the 1.3x gap is not attributable to the design.", "kind": "deferred_fix", "needs": "A baseline run over the round's shape set." },
+      { "item": "The abstract's scope was narrowed to sparse GEMM rather than evaluated on dense.", "kind": "narrowed_claim", "needs": "Dense shapes in the evaluation, or the narrowing stands." },
+      { "item": "No comparison against the fused vendor kernel reviewers will expect.", "kind": "uncovered_evaluation", "needs": "One fused-kernel baseline over the evaluated shapes." },
+      { "item": "Whether to submit before the artifact-appendix question is resolved.", "kind": "human_decision", "needs": "Confirm the call's artifact policy." }
+    ],
+    "placeholders": {
+      "open": [
+        {
+          "id": "ph-prod-speedup",
+          "where": "§5.3 Tab. 2 row 4 and §1 ¶6",
+          "source": "an eval workload that starts the run from a production kernel rather than the naive baseline; the from-scratch arm it would be compared against is already measured"
+        }
+      ],
+      "filled": 2,
+      "blocking_ready": true
+    },
+    "artifacts": [
+      { "path": "output/main.pdf", "role": "submission pdf", "bytes": 2841193 },
+      { "path": "submission/paper-src.tar.gz", "role": "source tarball", "bytes": 928411 }
+    ],
+    "summary": "The paper shows that a single operator grammar reaches within 8% of hand-tuned kernels on the six sparse shapes evaluated, at 1.58x over the released baseline, with the dense claim deferred."
+  }
+}

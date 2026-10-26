@@ -1,0 +1,84 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["figures", "not_rendered", "compile_verified"],
+    "properties": {
+      "figures": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "role", "message", "script", "outputs", "caption", "rendered", "verified_in_latex"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1, "description": "The label used in the manuscript, e.g. fig:spread." },
+            "role": { "type": "string", "minLength": 4, "description": "Matches a figure_grammar role from calibration.json." },
+            "message": { "type": "string", "minLength": 15, "description": "The single sentence a reader should repeat after looking at it." },
+            "script": { "type": "string", "minLength": 1, "description": "Repository-relative path of the script that produced it." },
+            "data_sources": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "The files actually plotted. A value with no source here is fabricated."
+            },
+            "outputs": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "caption": { "type": "string", "minLength": 20 },
+            "rendered": { "type": "boolean" },
+            "verified_in_latex": {
+              "type": "boolean",
+              "description": "The manuscript compiled with this figure in place, from the brief's compile command."
+            },
+            "verification": { "type": "string", "description": "Which verification step failed, when one did." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "not_rendered": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id", "reason"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "role": { "type": "string" },
+            "reason": { "type": "string", "minLength": 15, "description": "What is missing — a datum, a measurement, a decision — not 'skipped'." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "compile_verified": {
+        "type": "boolean",
+        "description": "True only if the brief's compile command succeeded after this round's figure changes."
+      },
+      "compile_command": { "type": "string" },
+      "pipeline": {
+        "type": "string",
+        "description": "How the figure pipeline is invoked, so the next round and the artifact evaluator can re-run it."
+      }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "figures": [
+      {
+        "id": "fig:spread",
+        "role": "headline-speedup",
+        "message": "The tuner beats the released library on 29 of 30 operators, and by a wide margin on the sparse ones.",
+        "script": "figures/src/spmm-speedup.js",
+        "data_sources": ["tuning/best_suite/*/perf.json"],
+        "outputs": ["figures/out/spmm-speedup.pdf"],
+        "caption": "Speedup over the released library for each operator. Bars above the dashed line are faster than the vendor kernel; the annotated value is the best configuration found by the tuner.",
+        "rendered": true,
+        "verified_in_latex": true
+      }
+    ],
+    "not_rendered": [
+      {
+        "id": "fig:scaling",
+        "role": "scaling",
+        "reason": "The round's storyline asks for a speedup-versus-K curve, but the sweep only covers K=1024 and K=4096; two points are not a curve."
+      }
+    ],
+    "compile_verified": true,
+    "compile_command": "make",
+    "pipeline": "node figures/generate-all.js — writes every figure under figures/out as PDF."
+  }
+}

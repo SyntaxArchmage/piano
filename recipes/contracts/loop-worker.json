@@ -1,0 +1,24 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["demo_stage", "purpose", "primitive", "action", "observation", "next"],
+    "properties": {
+      "demo_stage": { "const": "report" },
+      "purpose": { "type": "string", "minLength": 1 },
+      "primitive": { "const": "loop report + feedback" },
+      "action": { "type": "string", "minLength": 1 },
+      "observation": { "type": "string", "minLength": 1 },
+      "next": { "type": "string", "minLength": 1 }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "demo_stage": "report",
+    "purpose": "show loop report and feedback handoff",
+    "primitive": "loop report + feedback",
+    "action": "observed injected loop context",
+    "observation": "the accepted result becomes feedback",
+    "next": "next loop iteration"
+  }
+}

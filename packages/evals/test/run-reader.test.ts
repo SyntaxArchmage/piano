@@ -1,7 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,25 +37,15 @@ async function baseRunDir(prefix: string): Promise<string> {
   return runDir;
 }
 
-async function pinContract(runDir: string): Promise<string> {
-  const snapshot = '{"version":1,"id":"metric"}\n';
-  const digest = createHash("sha256").update(snapshot).digest("hex");
-  await mkdir(join(runDir, "contracts"), { recursive: true });
-  await writeFile(join(runDir, "contracts", `${digest}.json`), snapshot);
-  return digest;
-}
-
 describe("run-reader", () => {
   it("assembles the canonical trace from the recorder streams", async () => {
     const runDir = await baseRunDir("piano-run-reader-");
-    const digest = await pinContract(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     await run(trajectory.observe({ type: "stage_attempt_started", context, monotonicMs: 10 }));
     await run(trajectory.observe({ type: "token_usage", context, usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, total: 10 } }));
     await run(trajectory.observe({
       type: "stage_accepted",
       context,
-      contract: { id: "metric", version: 1, digest, snapshotPath: join(runDir, "contracts", `${digest}.json`) },
       metrics: [{
         pointer: "/benchmark",
         value: {
@@ -105,13 +94,11 @@ describe("run-reader", () => {
 
   it("surfaces per-iteration series and hyperbolic score for a multi-iteration trajectory", async () => {
     const runDir = await baseRunDir("piano-run-reader-series-");
-    const digest = await pinContract(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
     for (const [iteration, best] of [[0, 12], [1, 14]] as const) {
       await run(trajectory.observe({
         type: "stage_accepted",
         context: { ...context, iteration, invocationId: `measure@loop/iter-${iteration}` },
-        contract: { id: "metric", version: 1, digest, snapshotPath: join(runDir, "contracts", `${digest}.json`) },
         metrics: [{
           pointer: "/benchmark",
           value: {
@@ -306,43 +293,12 @@ describe("run-reader", () => {
     expect(result.issues.join("\n")).toContain("line 1 is not JSON");
   });
 
-  it("fails closed when records lose their contract snapshot lineage", async () => {
-    const runDir = await baseRunDir("piano-run-reader-lineage-");
-    const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
-    await run(trajectory.observe({
-      type: "stage_accepted",
-      context,
-      contract: { id: "metric", version: 1, digest: "2".repeat(64), snapshotPath: "/stale/location.json" },
-      metrics: [{
-        pointer: "/benchmark",
-        value: {
-          protocol: "benchmark/v1",
-          name: "throughput",
-          unit: "items/s",
-          direction: "higher",
-          samples: [12],
-          best: 12,
-          median: 12,
-          runs: 1,
-          warmup: 0,
-        },
-      }],
-    }));
-    await run(trajectory.close("completed"));
-
-    const result = await run(readRunTrace(runDir));
-    expect(result.complete).toBe(false);
-    expect(result.issues).toContain(`benchmark: contract snapshot ${"2".repeat(64)} is missing or unreadable`);
-  });
-
   it("attributes records of another execution as issues, not metrics", async () => {
     const runDir = await baseRunDir("piano-run-reader-attribution-");
-    const digest = await pinContract(runDir);
     const trajectory = await run(WorkflowTrajectory.open(runDir, "other-run"));
     await run(trajectory.observe({
       type: "stage_accepted",
       context: { ...context, runId: "other-run" },
-      contract: { id: "metric", version: 1, digest, snapshotPath: join(runDir, "contracts", `${digest}.json`) },
       metrics: [{
         pointer: "/benchmark",
         value: {

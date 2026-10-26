@@ -5,13 +5,13 @@ description: Apply the round's audit and review issues across the whole manuscri
 
 # Revise
 
-Inputs: the manuscript, and the injected handoff context — the `paper-storyline`
+Inputs: the manuscript, and the injected accepted-input context — the `paper-storyline`
 result (whose `context` block carries the manuscript paths, the venue, the
 contribution list and the reference spec path), plus this round's `paper-audit`
 and `paper-review` results.
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in the `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read them from there.
 
 **You are the loop's only reporter.** `finalize` runs outside the loop and

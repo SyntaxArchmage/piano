@@ -6,7 +6,7 @@ description: Select distinct evidence-backed CUDA kernel optimization candidates
 # CUDA tournament idea
 
 Read the fresh profile and the harness-owned history before forming proposals.
-Emit a `tournament-optimization-proposal` whose `strategies` array contains at
+Emit the result JSON for this stage, whose `strategies` array contains at
 least three genuinely distinct strategies; each becomes one racing lane of the
 round's tournament, and the measured benchmark inside the race decides.
 

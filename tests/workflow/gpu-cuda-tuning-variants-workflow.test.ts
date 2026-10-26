@@ -20,12 +20,20 @@ async function compileRecipeWorkflow(name: string) {
   return compiled.value;
 }
 
+/** Validation is selected by contract presence: every stage's worker must own
+ * a contract in the flat registry. */
+async function expectEveryStageHasContract(compiled: CompiledWorkflow): Promise<void> {
+  for (const stage of compiled.stages) {
+    await expect(readFile(join(process.cwd(), "recipes", "contracts", `${stage.stage.worker}.json`), "utf8"))
+      .resolves.toContain("$schema");
+  }
+}
+
 /** Executable shape of a template, excluding the two fields the serial and
  * parallel arms are allowed to differ by: the workflow name and the race
  * parallelism switch. */
 function experimentShape(compiled: CompiledWorkflow) {
   return {
-    autoCommit: compiled.autoCommit,
     stages: compiled.stages.map((stage) => [stage.id, stage.stage]),
     regions: compiled.regions.map((region) => ({
       id: region.id,
@@ -94,7 +102,7 @@ describe("gpu-cuda-tuning-tournament workflow template", () => {
     ]);
     // The race's exit leaf is the metric referee: the measure stage inside it.
     expect(race?.exitStageId).toContain("measure");
-    expect(compiled.stages.every((stage) => stage.stage.validate === true)).toBe(true);
+    await expectEveryStageHasContract(compiled);
     expect(compiled.stages.every((stage) => stage.stage.harness === "pi")).toBe(true);
     expect(compiled.stages.map((stage) => stage.stage.thinkingLevel)).toEqual([
       "high", "high", "high", "high", "high", "high",
@@ -173,7 +181,6 @@ describe("gpu-cuda-tuning-tournament-mixed per-lane models", () => {
    * two executable shapes equal. */
   function shapeWithoutModels(compiled: CompiledWorkflow) {
     return {
-      autoCommit: compiled.autoCommit,
       stages: compiled.stages.map((stage) => [stage.id, { ...stage.stage, model: undefined }]),
       regions: compiled.regions.map((region) => ({
         id: region.id,
@@ -290,7 +297,7 @@ describe("gpu-cuda-tuning eval matrix", () => {
       expect(compiled.name).toBe(cell.recipe);
       expect(compiled.stages.every((stage) => stage.stage.harness === cell.harness)).toBe(true);
       expect(compiled.stages.every((stage) => stage.stage.model === cell.model)).toBe(true);
-      expect(compiled.stages.every((stage) => stage.stage.validate === true)).toBe(true);
+      await expectEveryStageHasContract(compiled);
       if (cell.tournament) {
         expect(compiled.regions.map((region) => region.kind).sort()).toEqual(["loop", "map"]);
         expect(compiled.stages.map((stage) => stage.stage.name)).toEqual([

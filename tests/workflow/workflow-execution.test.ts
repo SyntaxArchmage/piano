@@ -2,13 +2,13 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, sy
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { NodeFileSystem } from "@effect/platform-node";
 import { FileSystem } from "@effect/platform";
 import { Cause, Effect, Exit, Fiber, Option } from "effect";
 import { describe, expect, it } from "vitest";
-import { projectContractProjections } from "@piano/contract";
 import {
   createSession,
   Logging,
@@ -43,14 +43,39 @@ import {
   type PiModule,
 } from "../../packages/harness/src/index.js";
 import {
-  projectLegacyContractProjections,
-} from "../../packages/orchestrator/src/legacy-contract-projections.js";
-import {
   isInvocationResultPath,
   validationResultPathFromPrompt,
 } from "../common/validation-path.mjs";
 
 const runFile = promisify(execFile);
+
+/** The installed worker registry, for tests that build their own recipe
+ * repository and still use shipped workers. */
+/** Test-owned worker contracts standing in for the removed named validators.
+ * Suites that validate through these workers point their workflow at this
+ * repository instead of the installed registry. */
+const WORKFLOW_RECIPE_ROOT = fileURLToPath(new URL("../fixtures/workflow-recipes", import.meta.url));
+
+/** Where a worker's contract lives in the flat registry beside its directory. */
+function workerContractPath(workerDir: string): string {
+  return join(dirname(workerDir), "contracts", `${basename(workerDir)}.json`);
+}
+
+async function writeWorkerContract(workerDir: string, source: string): Promise<void> {
+  const contractPath = workerContractPath(workerDir);
+  await mkdir(dirname(contractPath), { recursive: true });
+  await writeFile(contractPath, source);
+}
+
+/** Give a test-owned worker a test-owned proposal contract. */
+async function installTestProposalContract(root: string, worker: string): Promise<void> {
+  const workerDir = join(root, "recipes", worker);
+  await mkdir(workerDir, { recursive: true });
+  await writeWorkerContract(
+    workerDir,
+    await readFile(join(WORKFLOW_RECIPE_ROOT, "recipes", "contracts", "test-proposal.json"), "utf8"),
+  );
+}
 
 const BASIC_WORKFLOW = `version: 3
 workflow:
@@ -75,10 +100,8 @@ workflow:
         from: []
 `;
 
-const VALIDATE_WORKFLOW = BASIC_WORKFLOW.replace(
-  "        from: []\n",
-  "        validate: text-response\n        from: []\n",
-);
+const VALIDATE_WORKFLOW = BASIC_WORKFLOW
+  .replace("        worker: basic\n", "        worker: test-text\n");
 
 const TWO_STAGE_WORKFLOW = `version: 3
 workflow:
@@ -91,7 +114,6 @@ workflow:
     - stage:
         name: second
         worker: smoke-test-agent
-        handoff: upstream.json
         from: [first]
 `;
 
@@ -124,7 +146,6 @@ workflow:
     - stage:
         name: joined
         worker: basic
-        handoff: joined.json
         from: [left, right]
 `;
 
@@ -134,13 +155,11 @@ workflow:
   nodes:
     - stage:
         name: produce
-        worker: basic
-        validate: text-response
+        worker: test-text
         from: []
     - stage:
         name: consume
         worker: smoke-test-agent
-        handoff: accepted.json
         from: [produce]
 `;
 
@@ -150,7 +169,7 @@ workflow:
   nodes:
     - stage:
         name: seed
-        worker: basic
+        worker: test-text
         from: []
     - loop:
         name: tune
@@ -161,14 +180,11 @@ workflow:
         nodes:
           - stage:
               name: propose
-              worker: basic
-              handoff: seed.json
-              validate: text-response
+              worker: test-text
               from: []
           - stage:
               name: report
               worker: smoke-test-agent
-              handoff: proposal.json
               from: [propose]
 `;
 
@@ -178,7 +194,7 @@ workflow:
   nodes:
     - stage:
         name: seed
-        worker: basic
+        worker: test-text
         from: []
     - loop:
         name: tune
@@ -190,15 +206,11 @@ workflow:
         nodes:
           - stage:
               name: profile
-              worker: basic
-              handoff: iteration-inputs.json
-              validate: text-response
+              worker: test-text
               from: []
           - stage:
               name: measure
-              worker: basic
-              handoff: profile.json
-              validate: text-response
+              worker: test-text
               from: [profile]
 `;
 
@@ -208,8 +220,7 @@ workflow:
   nodes:
     - stage:
         name: propose
-        worker: basic
-        validate: optimization-proposal
+        worker: triton-idea
         from: []
     - tournament:
         name: tournament
@@ -222,26 +233,30 @@ workflow:
           - stage:
               name: implement
               worker: basic
-              handoff: strategy.json
               from: []
           - stage:
               name: verify
               worker: basic
-              handoff: candidate.json
               from: [implement]
     - stage:
         name: summary
-        worker: basic
-        handoff: candidates.json
+        worker: triton-idea
         from: [tournament]
 `;
 
 /** `MAP_WORKFLOW` with the race's lanes pinned to one model each: lane `i` runs
- * `models[i]`, which is what the region's `count: 2` requires of the list. */
-const PER_LANE_MODEL_MAP_WORKFLOW = MAP_WORKFLOW.replace(
-  "              name: implement\n              worker: basic\n",
-  "              name: implement\n              worker: basic\n              model: [m-one, m-two]\n",
-);
+ * `models[i]`, which is what the region's `count: 2` requires of the list. The
+ * summary runs on a contract-less worker so this test counts exactly one turn
+ * per outside stage. */
+const PER_LANE_MODEL_MAP_WORKFLOW = MAP_WORKFLOW
+  .replace(
+    "              name: implement\n              worker: basic\n",
+    "              name: implement\n              worker: basic\n              model: [m-one, m-two]\n",
+  )
+  .replace(
+    "        name: summary\n        worker: triton-idea\n",
+    "        name: summary\n        worker: basic\n",
+  );
 
 const PROJECTED_MAP_WORKFLOW = `version: 3
 workflow:
@@ -250,7 +265,6 @@ workflow:
     - stage:
         name: propose
         worker: projected-map-source
-        validate: true
         from: []
     - tournament:
         name: tournament
@@ -268,8 +282,6 @@ workflow:
 
 function projectedMapContract(includeProjection: boolean): Record<string, unknown> {
   return {
-    version: 1,
-    id: "projected-map-source",
     schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
@@ -299,8 +311,7 @@ workflow:
   nodes:
     - stage:
         name: propose
-        worker: basic
-        validate: optimization-proposal
+        worker: triton-idea
         from: []
     - tournament:
         name: outer
@@ -312,8 +323,7 @@ workflow:
         nodes:
           - stage:
               name: seed
-              worker: basic
-              validate: optimization-proposal
+              worker: triton-idea
               from: []
           - tournament:
               name: inner
@@ -335,8 +345,7 @@ workflow:
   nodes:
     - stage:
         name: measure
-        worker: basic
-        validate: cuda-round-result
+        worker: test-round-cuda
         from: []
 `;
 
@@ -347,7 +356,6 @@ workflow:
     - stage:
         name: close-round
         worker: custom-round
-        validate: true
         from: []
 `;
 
@@ -398,8 +406,6 @@ function nestedGpuPayload(best = 12): Record<string, unknown> {
 
 function nestedGpuContract(omitProjection?: string): Record<string, unknown> {
   return {
-    version: 1,
-    id: "custom-nested-gpu-round",
     schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       type: "object",
@@ -422,8 +428,6 @@ function strippingGpuContract(): Record<string, unknown> {
     properties: { path: { type: "string", minLength: 1 } },
   };
   return {
-    version: 1,
-    id: "stripping-gpu-round",
     schema: {
       $schema: "https://json-schema.org/draft/2020-12/schema",
       "x-piano-unknown-properties": "strip",
@@ -468,8 +472,7 @@ workflow:
   nodes:
     - stage:
         name: setup
-        worker: basic
-        validate: cuda-preparation-report
+        worker: test-setup
         from: []
     - loop:
         name: tune
@@ -480,18 +483,15 @@ workflow:
         nodes:
           - stage:
               name: profile
-              worker: basic
-              validate: profile-report
+              worker: test-profile
               from: []
           - stage:
               name: measure
-              worker: basic
-              validate: cuda-round-result
+              worker: test-round-cuda
               from: [profile]
     - stage:
         name: summary
-        worker: basic
-        validate: summary-report
+        worker: test-summary
         from: [tune]
 `;
 
@@ -509,26 +509,19 @@ workflow:
         nodes:
           - stage:
               name: profile
-              worker: basic
-              handoff: iteration.json
-              validate: profile-report
+              worker: test-profile
               from: []
           - stage:
               name: implement
-              worker: basic
-              handoff: implementation-inputs.json
-              validate: implementation-report
+              worker: test-implement
               from: [profile]
           - stage:
               name: measure
-              worker: basic
-              handoff: round.json
-              validate: cuda-round-result
+              worker: test-round-cuda
               from: [implement]
     - stage:
         name: summary
-        worker: basic
-        validate: summary-report
+        worker: test-summary
         from: [tune]
 `;
 
@@ -538,8 +531,7 @@ workflow:
   nodes:
     - stage:
         name: setup
-        worker: basic
-        validate: cuda-preparation-report
+        worker: test-setup
         from: []
     - loop:
         name: tune
@@ -551,18 +543,15 @@ workflow:
         nodes:
           - stage:
               name: profile
-              worker: basic
-              validate: profile-report
+              worker: test-profile
               from: []
           - stage:
               name: measure
-              worker: basic
-              validate: cuda-round-result
+              worker: test-round-cuda
               from: [profile]
     - stage:
         name: summary
-        worker: basic
-        validate: summary-report
+        worker: test-summary
         from: [tune]
 `;
 
@@ -692,6 +681,7 @@ describe(" workflow execution", () => {
       const candidateDigest = `sha256:${createHash("sha256").update("candidate\n").digest("hex")}`;
       const session = await testSession(root);
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -702,8 +692,8 @@ describe(" workflow execution", () => {
           const path = validationPath(request);
           await mkdir(dirname(path), { recursive: true });
           await writeFile(path, JSON.stringify({
-            // Preserve parity with the legacy and canonical contracts, which
-            // both accept finite non-negative integers without a safe bound.
+            // The worker contract accepts finite non-negative integers without
+            // a safe bound.
             iteration: Number.MAX_SAFE_INTEGER + 1,
             decision: "KEEP",
             candidate: { path: "kernel.py", digest: candidateDigest },
@@ -742,10 +732,6 @@ describe(" workflow execution", () => {
       expect(accepted.current_best?.path).toBe("state/current-best.py");
       expect(accepted.current_best?.digest).toBe(candidateDigest);
       expect(accepted.promotion?.resulting_best).toMatchObject({ path: "state/current-best.py", digest: candidateDigest });
-      // The orchestrator rewrote the accepted payload after validating the
-      // worker's bytes, and the record says who wrote what it carries.
-      const promoted = (await acceptedRows(session.runDir)).find((row) => row.invocationId === result.stages[0]!.id);
-      expect(promoted?.result?.trust).toBe("orchestrator-materialized");
       expect(result.stages[0]?.projections).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "round.materialization-v1", pointer: "" }),
         expect.objectContaining({ id: "round.decision", value: "KEEP" }),
@@ -754,6 +740,75 @@ describe(" workflow execution", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(["candidate", "resulting_best"] as const)(
+    "fails a KEEP whose declared %s digest does not match the bytes",
+    async (declaredOn) => {
+      const root = await mkdtemp(join(tmpdir(), `piano-promotion-digest-${declaredOn}-`));
+      try {
+        await writeFile(join(root, "round.yml"), CUDA_ROUND_WORKFLOW);
+        await mkdir(join(root, "state"), { recursive: true });
+        await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
+          current_best: { path: "state/current-best.py" },
+        }));
+        await writeFile(join(root, "state", "current-best.py"), "seed\n");
+        await writeFile(join(root, "kernel.py"), "candidate\n");
+        const actual = `sha256:${createHash("sha256").update("candidate\n").digest("hex")}`;
+        const declared = declaredOn === "candidate" ? "sha256:not-the-candidate" : actual;
+        const resulting = declaredOn === "resulting_best" ? "sha256:not-the-candidate" : actual;
+        const session = await testSession(root);
+        const calls: AgentRequest[] = [];
+        await expect(runWorkflow(session, loadAndExecuteWorkflow({
+          recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
+          root,
+          workflowPath: join(root, "round.yml"),
+          runDir: session.runDir,
+          runId: `promotion-digest-${declaredOn}`,
+          cwd: root,
+          prompt: "close a round",
+          agentRunner: (request) => Effect.promise(async () => {
+            calls.push(request);
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, JSON.stringify({
+              iteration: 1,
+              decision: "KEEP",
+              candidate: { path: "kernel.py", digest: declared },
+              current_best: { path: "state/current-best.py" },
+              verification: { compile_passed: true, verify_passed: true },
+              benchmark: { metric: "tflops", direction: "higher", samples: [2], best: 2, median: 2, runs: 1, warmup: 0 },
+              promotion: {
+                promoted: true,
+                resulting_best: { path: "kernel.py", digest: resulting },
+                reason: "candidate improved",
+              },
+              records: { round_path: "rounds/iter-001.json", state_path: "state/tuning-state.json" },
+            }));
+            const sessionId = `digest-${calls.length}`;
+            return {
+              sessionId,
+              transcriptPath: `/tmp/${sessionId}.jsonl`,
+              text: "round closed",
+              continuation: continuation(sessionId),
+            };
+          }),
+        }))).rejects.toThrow(declaredOn === "candidate"
+          ? /KEEP candidate digest mismatch: declared=sha256:not-the-candidate, actual=sha256:/
+          : /KEEP resulting-best digest mismatch: declared=sha256:not-the-candidate, actual=sha256:/);
+        // A digest failure is a promotion check, not a contract failure: it
+        // gets the one repair turn and then fails the stage.
+        expect(calls).toHaveLength(2);
+        // Nothing was materialized from the rejected round.
+        expect(await readFile(join(root, "state", "current-best.py"), "utf8")).toBe("seed\n");
+        const state = JSON.parse(await readFile(join(root, "state", "tuning-state.json"), "utf8")) as {
+          history?: unknown[];
+        };
+        expect(state.history ?? []).toHaveLength(0);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("fails the run when the repaired attempt still cannot satisfy the promotion checks", async () => {
     // Repair budget is unchanged by the unified rule: a promotion error now
@@ -769,6 +824,7 @@ describe(" workflow execution", () => {
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -823,6 +879,7 @@ describe(" workflow execution", () => {
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -876,6 +933,7 @@ describe(" workflow execution", () => {
       await writeFile(join(root, "kernel.py"), "discarded\n");
       const session = await testSession(root);
       await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -906,20 +964,14 @@ describe(" workflow execution", () => {
       expect(await readFile(join(root, "kernel.py"), "utf8")).toBe("promoted\n");
       const round = JSON.parse(await readFile(join(root, "rounds", "iter-000.json"), "utf8")) as {
         decision: string;
-        current_best: { digest?: string };
-        promotion: { promoted: boolean; resulting_best: { digest?: string } };
+        promotion: { promoted: boolean };
       };
-      const promotedDigest = `sha256:${createHash("sha256").update("promoted\n").digest("hex")}`;
       expect(round.decision).toBe("DISCARD");
-      expect(round.current_best.digest).toBe(promotedDigest);
-      expect(round.promotion).toMatchObject({ promoted: false, resulting_best: { digest: promotedDigest } });
+      expect(round.promotion).toMatchObject({ promoted: false });
       const state = JSON.parse(await readFile(join(root, "state", "tuning-state.json"), "utf8")) as {
-        current_best: { digest?: string };
-        history: Array<{ decision?: string; action?: string; candidate_digest?: string }>;
+        history: Array<{ decision?: string; action?: string }>;
       };
-      expect(state.current_best.digest).toBe(promotedDigest);
-      const discardedDigest = `sha256:${createHash("sha256").update("discarded\n").digest("hex")}`;
-      expect(state.history).toContainEqual(expect.objectContaining({ decision: "DISCARD", action: "record", candidate_digest: discardedDigest }));
+      expect(state.history).toContainEqual(expect.objectContaining({ decision: "DISCARD", action: "record" }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -941,6 +993,7 @@ describe(" workflow execution", () => {
       const candidateDigest = `sha256:${createHash("sha256").update(candidate).digest("hex")}`;
       const session = await testSession(root);
       await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -994,6 +1047,7 @@ describe(" workflow execution", () => {
       await writeFile(join(root, "kernel.py"), "regression\n");
       const session = await testSession(root);
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1022,18 +1076,21 @@ describe(" workflow execution", () => {
         }),
       }));
       // The workflow must succeed, not fail: a regression is non-fatal.
-      const seedDigest = `sha256:${createHash("sha256").update("seed\n").digest("hex")}`;
       // Current-best is unchanged (no promotion), and the regression candidate is
       // restored to match the durable best.
       expect(await readFile(join(root, "state", "current-best.py"), "utf8")).toBe("seed\n");
       expect(await readFile(join(root, "kernel.py"), "utf8")).toBe("seed\n");
       const state = JSON.parse(await readFile(join(root, "state", "tuning-state.json"), "utf8")) as {
-        current_best: { metric_tflops?: number; metric?: { best?: number }; digest?: string };
+        current_best: { metric_tflops?: number; metric?: { best?: number }; digest?: string; sha256?: string };
         history: Array<{ decision?: string; demoted_from_keep?: boolean; action?: string }>;
       };
       // The durable best is preserved, not overwritten with the regression.
       expect(state.current_best.metric_tflops).toBe(2);
+      // The artifact digest is computed from the bytes still in force when the
+      // worker declares none; nothing is copied from the rejected candidate.
+      const seedDigest = `sha256:${createHash("sha256").update("seed\n").digest("hex")}`;
       expect(state.current_best.digest).toBe(seedDigest);
+      expect(state.current_best.sha256).toBe(seedDigest);
       // The round record is preserved with the effective DISCARD decision and an
       // audit marker that the worker's KEEP was demoted.
       expect(state.history).toHaveLength(1);
@@ -1080,12 +1137,11 @@ workflow:
           - stage:
               name: close-round
               worker: custom-round
-              validate: true
               from: []
 `);
       const workerDir = join(root, "recipes", "custom-round");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify(nestedGpuContract()));
+      await writeWorkerContract(workerDir, JSON.stringify(nestedGpuContract()));
       await mkdir(join(root, "state"), { recursive: true });
       await writeFile(join(root, "kernel.py"), "candidate\n");
       await writeFile(join(root, "state", "current-best.py"), "baseline\n");
@@ -1142,12 +1198,12 @@ workflow:
       expect(payload.report).toMatchObject({
         verdict: "KEEP",
         artifacts: {
-          challenger: { path: "kernel.py", digest: expect.stringMatching(/^sha256:/) },
-          incumbent: { path: "state/current-best.py", digest: expect.stringMatching(/^sha256:/) },
+          challenger: { path: "kernel.py" },
+          incumbent: { path: "state/current-best.py" },
         },
         application: {
           promoted: true,
-          resulting_best: { path: "state/current-best.py", digest: expect.stringMatching(/^sha256:/) },
+          resulting_best: { path: "state/current-best.py" },
         },
       });
       expect(payload.report!.artifacts?.challenger).not.toHaveProperty("forged");
@@ -1171,7 +1227,7 @@ workflow:
       await writeFile(workflowPath, NESTED_GPU_WORKFLOW);
       const workerDir = join(root, "recipes", "custom-round");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify(strippingGpuContract()));
+      await writeWorkerContract(workerDir, JSON.stringify(strippingGpuContract()));
       await mkdir(join(root, "state"), { recursive: true });
       await writeFile(join(root, "kernel.py"), "candidate\n");
       await writeFile(join(root, "state", "current-best.py"), "baseline\n");
@@ -1263,7 +1319,7 @@ workflow:
           },
         },
       };
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify(contract));
+      await writeWorkerContract(workerDir, JSON.stringify(contract));
       await mkdir(join(root, "state"), { recursive: true });
       await writeFile(join(root, "kernel.py"), "candidate\n");
       await writeFile(join(root, "state", "current-best.py"), "baseline\n");
@@ -1310,13 +1366,12 @@ workflow:
     - stage:
         name: close-round
         worker: custom-round
-        validate: true
         from: []
 `);
       const workerDir = join(root, "recipes", "custom-round");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(
-        join(workerDir, "contract.json"),
+      await writeWorkerContract(
+        workerDir,
         JSON.stringify(nestedGpuContract("round.records")),
       );
       await mkdir(join(root, "state"), { recursive: true });
@@ -1372,6 +1427,7 @@ workflow:
         }
         const session = await testSession(root);
         await expect(runWorkflow(session, loadAndExecuteWorkflow({
+          recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
           root,
           workflowPath: join(root, "round.yml"),
           runDir: session.runDir,
@@ -1425,6 +1481,7 @@ workflow:
       const initialState = await readFile(join(root, "state", "tuning-state.json"), "utf8");
       const session = await testSession(root);
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1466,6 +1523,7 @@ workflow:
       const session = await testSession(root);
 
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1510,6 +1568,7 @@ workflow:
       await writeFile(join(root, "state", "current-best.py"), "baseline\n");
       const session = await testSession(root);
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1548,6 +1607,7 @@ workflow:
       await writeFile(join(root, "kernel.py"), "candidate\n");
       const session = await testSession(root);
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1614,6 +1674,7 @@ workflow:
       await writeFile(join(root, "kernel.py"), "candidate\n");
       const session = await testSession(root);
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1665,6 +1726,7 @@ workflow:
       const session = await testSession(root);
 
       await expect(runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1709,7 +1771,7 @@ workflow:
       await writeFile(join(root, "round.yml"), NESTED_GPU_WORKFLOW);
       const workerDir = join(root, "recipes", "custom-round");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify(nestedGpuContract()));
+      await writeWorkerContract(workerDir, JSON.stringify(nestedGpuContract()));
       await mkdir(join(root, "state"), { recursive: true });
       await writeFile(join(root, "state", "current-best.py"), "baseline\n");
       await writeFile(join(root, "state", "tuning-state.json"), JSON.stringify({
@@ -1782,6 +1844,7 @@ workflow:
         },
       };
       await expect(runWorkflowWithFileSystem(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1848,6 +1911,7 @@ workflow:
       };
 
       await expect(runWorkflowWithFileSystem(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1911,6 +1975,7 @@ workflow:
       };
 
       await runWorkflowWithFileSystem(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -1980,6 +2045,7 @@ workflow:
       let acceptedResultPath: string | undefined;
 
       await expect(runWorkflowWithFileSystem(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "round.yml"),
         runDir: session.runDir,
@@ -2032,7 +2098,7 @@ workflow:
         await writeFile(workflowPath, NESTED_GPU_WORKFLOW);
         const workerDir = join(root, "recipes", "custom-round");
         await mkdir(workerDir, { recursive: true });
-        await writeFile(join(workerDir, "contract.json"), JSON.stringify(nestedGpuContract()));
+        await writeWorkerContract(workerDir, JSON.stringify(nestedGpuContract()));
         await mkdir(join(root, "state"), { recursive: true });
         await writeFile(join(root, "kernel.py"), "candidate\n");
         await writeFile(join(root, "state", "current-best.py"), "baseline\n");
@@ -2071,6 +2137,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "blocked.yml"),
         runDir: session.runDir,
@@ -2130,7 +2197,6 @@ workflow:
     - stage:
         name: gate
         worker: control
-        validate: true
         from: []
     - loop:
         name: work-loop
@@ -2150,9 +2216,7 @@ workflow:
 `);
       const workerDir = join(root, "recipes", "control");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "undeclared-control-fields",
+      await writeWorkerContract(workerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -2178,13 +2242,15 @@ workflow:
           agentRunner: (request) => Effect.promise(async () => {
             const stage = stageId(request);
             calls.push(stage);
-            if (stage === "gate") {
-              await writeFile(validationPath(request), JSON.stringify({
-                status: "blocked",
-                decision: "BLOCKED",
-                block_scope: "global",
-              }));
-            }
+            // Every stage names the contract-bearing `control` worker, so each
+            // turn must write a valid result. The contract declares no
+            // projections, so these control-looking fields stay ordinary data.
+            await mkdir(dirname(validationPath(request)), { recursive: true });
+            await writeFile(validationPath(request), JSON.stringify({
+              status: "blocked",
+              decision: "BLOCKED",
+              block_scope: "global",
+            }));
             return {
               sessionId: `${stage}-${calls.length}`,
               transcriptPath: `/tmp/${stage}-${calls.length}.jsonl`,
@@ -2249,6 +2315,7 @@ workflow:
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "absorb.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
         runId: "absorb-loop",
         cwd: root,
@@ -2282,7 +2349,6 @@ workflow:
                 status: "compiled",
                 variable: `var-${iteration}`,
                 diff_summary: "applied change",
-                changed_files: ["kernel.py"],
                 compile: { passed: true, target: "kernel", so_commit: "abc123" },
               };
             await writeFile(path, JSON.stringify(payload));
@@ -2323,7 +2389,7 @@ workflow:
       // absorbed blocked report (threaded as feedback), so the next idea can
       // see the variable was tried and blocked instead of re-proposing it.
       const round1Profile = calls.find((call) => stageId(call) === "tune.profile" && iterationOf(call) === 1);
-      const contextPath = round1Profile?.contextFilePaths?.find((path) => path.endsWith("iteration.json"));
+      const contextPath = round1Profile?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
       const context = JSON.parse(await readFile(contextPath!, "utf8")) as {
         inputs: Array<{ resultPayload?: { status?: string; block_scope?: string } }>;
       };
@@ -2350,6 +2416,7 @@ workflow:
       await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "global.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
         runId: "global-loop",
         cwd: root,
@@ -2416,7 +2483,6 @@ workflow:
           - stage:
               name: seed
               worker: basic
-              validate: optimization-proposal
               from: []
           - tournament:
               name: race
@@ -2429,7 +2495,6 @@ workflow:
                 - stage:
                     name: verify
                     worker: mixed-block-race
-                    validate: true
                     from: []
     - stage:
         name: summary
@@ -2438,10 +2503,8 @@ workflow:
 `);
       const workerDir = join(root, "recipes", "mixed-block-race");
       await mkdir(workerDir, { recursive: true });
-      await mkdir(join(root, "recipes", "basic"), { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "mixed-block-race-result",
+      await installTestProposalContract(root, "basic");
+      await writeWorkerContract(workerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -2486,6 +2549,15 @@ workflow:
               status: "blocked",
               block_scope: await strategySlot(request) === 0 ? "iteration" : "global",
             }));
+          } else if (stage === "summary") {
+            // `basic` carries the proposal contract in this fixture, so the
+            // terminal summary must publish a valid (unused) result too.
+            await mkdir(dirname(validationPath(request)), { recursive: true });
+            await writeFile(validationPath(request), JSON.stringify({
+              strategies: [
+                { id: "summary", bottleneck: "memory", technique: "tile", rationale: "done", predicted_speedup: 1, risk_level: "low" },
+              ],
+            }));
           } else if (stage !== "summary") {
             throw new Error(`unexpected stage: ${stage}`);
           }
@@ -2520,6 +2592,7 @@ workflow:
       // iterations and never abort on a regression (drop).
       const bests = [1.0, 10.0, 0.5, 20.0, 25.0, 0.1];
       await runWorkflow(session, loadAndExecuteWorkflow({
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         root,
         workflowPath: join(root, "tune-loop.yml"),
         runDir: session.runDir,
@@ -2622,7 +2695,7 @@ workflow:
     }
   });
 
-  it("executes dependencies and injects deterministic handoff context instead of prompt-concatenating outputs", async () => {
+  it("executes dependencies and injects deterministic automatic inputs instead of prompt-concatenating outputs", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-dag-run-"));
     try {
       await writeFile(join(root, "two.yml"), TWO_STAGE_WORKFLOW);
@@ -2655,11 +2728,23 @@ workflow:
       expect(calls[1]?.prompt).not.toContain("first output");
       expect(calls[0]?.systemPromptPath).toBeUndefined();
       expect(calls[1]?.systemPromptPath).toContain("recipes/smoke-test-agent/system-prompt.md");
-      const handoffPath = calls[1]?.contextFilePaths?.find((path) => path.endsWith("/upstream.json"));
-      expect(handoffPath).toBeDefined();
-      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ id: string; stage: string; text: string }> };
-      expect(handoff.inputs).toMatchObject([{ stage: "first", text: "first output" }]);
-      expect(handoff.inputs[0]?.id).toBe("first@root");
+      const inputsPath = calls[1]?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
+      expect(inputsPath).toBeDefined();
+      // The standard, orchestrator-owned location: no workflow-chosen name.
+      expect(inputsPath).toMatch(/\/context\/inv-\d+\/inputs\.json$/);
+      // A stage with no upstream inputs gets no input file at all.
+      expect(calls[0]?.contextFilePaths?.some((path) => path.endsWith("/inputs.json"))).toBe(false);
+      const inputs = JSON.parse(await readFile(inputsPath!, "utf8")) as { inputs: Array<{ id: string; stage: string; text: string }> };
+      expect(inputs.inputs).toMatchObject([{ stage: "first", text: "first output" }]);
+      expect(inputs.inputs[0]?.id).toBe("first@root");
+      // The scheduling log names the automatic input file only for stages with inputs.
+      const dispatchLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
+      const secondScheduled = dispatchLog.split("\n").find((line) =>
+        line.includes('"event":"workflow.scheduled"') && line.includes('"stage":"second"'));
+      const firstScheduled = dispatchLog.split("\n").find((line) =>
+        line.includes('"event":"workflow.scheduled"') && line.includes('"stage":"first"'));
+      expect(secondScheduled).toContain('"inputsPath":');
+      expect(firstScheduled).not.toContain('"inputsPath":');
       expect(events.map((event) => event.workflow)).toEqual([
         {
           stageId: "first",
@@ -2713,7 +2798,8 @@ workflow:
       // stage's chat instead of starting a fresh one.
       expect(calls[0]?.continuation).toBeUndefined();
       expect(calls[1]?.continuation?.sessionId).toBe("session-first");
-      expect(calls[1]?.contextFilePaths?.every((p) => p.endsWith("agents.pi.md"))).toBe(true);
+      expect(calls[1]?.contextFilePaths?.some((p) => p.endsWith("agents.pi.md"))).toBe(true);
+      expect(calls[1]?.contextFilePaths?.some((p) => p.endsWith("/inputs.json"))).toBe(true);
       expect(new Set(calls.map((call) => call.sessionDir))).toHaveLength(1);
       expect(calls[0]?.sessionDir).toContain("sessions/trajectory-pi-basic-root");
     } finally {
@@ -2721,7 +2807,7 @@ workflow:
     }
   });
 
-  it("serializes ready stages that share the root workspace, then joins ordered handoffs", async () => {
+  it("serializes ready stages that share the root workspace, then joins ordered inputs", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-fan-out-run-"));
     try {
       await writeFile(join(root, "fan-out.yml"), FAN_OUT_WORKFLOW);
@@ -2757,9 +2843,9 @@ workflow:
       // All three stages share the `basic` worker, so the join continues the
       // last accepted turn — right's.
       expect(joinCall?.continuation?.sessionId).toBe("session-right");
-      const handoffPath = joinCall?.contextFilePaths?.find((path) => path.endsWith("/joined.json"));
-      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ stage: string; text: string }> };
-      expect(handoff.inputs).toMatchObject([
+      const inputsPath = joinCall?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
+      const inputs = JSON.parse(await readFile(inputsPath!, "utf8")) as { inputs: Array<{ stage: string; text: string }> };
+      expect(inputs.inputs).toMatchObject([
         { stage: "left", text: "left output" },
         { stage: "right", text: "right output" },
       ]);
@@ -2775,12 +2861,12 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "loop", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
           const invocation = invocationId(request);
-          if (stage === "tune.propose") {
+          if (stage === "seed" || stage === "tune.propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({ text: invocation }));
@@ -2795,11 +2881,11 @@ workflow:
       }));
       const proposes = calls.filter((call) => stageId(call) === "tune.propose");
       expect(proposes).toHaveLength(3);
-      // The seed stage shares the `basic` worker, so the loop entry continues
+      // The seed stage shares the `test-text` worker, so the loop entry continues
       // the seed's conversation; each iteration then continues the last one.
       expect(proposes.map((call) => call.continuation?.sessionId)).toEqual(["seed-1", "tune.propose-1", "tune.propose-2"]);
       expect(new Set(proposes.map((call) => call.sessionDir))).toHaveLength(1);
-      expect(proposes[0]?.sessionDir).toContain("sessions/trajectory-pi-basic-root");
+      expect(proposes[0]?.sessionDir).toContain("sessions/trajectory-pi-test-text-root");
       expect(new Set(proposes.map(validationPath)).size).toBe(3);
       // Every iteration's acceptance landed as its own stream row, under its
       // own runtime instance, matching the stages the run produced.
@@ -2810,29 +2896,29 @@ workflow:
         "tune.propose@tune/iter-1",
         "tune.propose@tune/iter-2",
       ]);
-      const handoffPaths = proposes.map((call) => call.contextFilePaths?.find((path) => path.endsWith("/seed.json")));
-      expect(new Set(handoffPaths).size).toBe(3);
+      const inputsPaths = proposes.map((call) => call.contextFilePaths?.find((path) => path.endsWith("/inputs.json")));
+      expect(new Set(inputsPaths).size).toBe(3);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("starts each memory-disabled loop turn fresh while preserving handoff context", async () => {
+  it("starts each memory-disabled loop turn fresh while preserving automatic inputs", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-loop-no-memory-run-"));
     try {
       await writeFile(join(root, "loop.yml"), LOOP_WORKFLOW.replace(
-        "              validate: text-response\n",
-        "              validate: text-response\n              memory: false\n",
+        "              name: propose\n              worker: test-text\n",
+        "              name: propose\n              worker: test-text\n              memory: false\n",
       ));
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-no-memory", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "loop-no-memory", cwd: root, prompt: "iterate",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
           const invocation = invocationId(request);
-          if (stage === "tune.propose") {
+          if (stage === "seed" || stage === "tune.propose") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({ text: invocation }));
@@ -2849,9 +2935,9 @@ workflow:
       const proposes = calls.filter((call) => stageId(call) === "tune.propose");
       expect(proposes).toHaveLength(3);
       expect(proposes.map((call) => call.continuation)).toEqual([undefined, undefined, undefined]);
-      const handoffPaths = proposes.map((call) => call.contextFilePaths?.find((path) => path.endsWith("/seed.json")));
-      expect(handoffPaths.every((path) => path !== undefined)).toBe(true);
-      expect(new Set(handoffPaths).size).toBe(3);
+      const inputsPaths = proposes.map((call) => call.contextFilePaths?.find((path) => path.endsWith("/inputs.json")));
+      expect(inputsPaths.every((path) => path !== undefined)).toBe(true);
+      expect(new Set(inputsPaths).size).toBe(3);
       expect(result.stages.filter((stage) => stage.stageId === "tune.propose")).toHaveLength(3);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -2868,6 +2954,7 @@ workflow:
       await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "loop-feedback.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
         runId: "loop-feedback",
         cwd: root,
@@ -2890,7 +2977,7 @@ workflow:
               current: { status: "running", stageId: "seed", attempt: 1 },
             });
           }
-          if (stage === "tune.profile" || stage === "tune.measure") {
+          if (stage === "seed" || stage === "tune.profile" || stage === "tune.measure") {
             const path = validationPath(request);
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, JSON.stringify({ text: invocation }));
@@ -2911,9 +2998,9 @@ workflow:
       const measures = calls.filter((call) => stageId(call) === "tune.measure");
       expect(profiles).toHaveLength(3);
       expect(measures).toHaveLength(3);
-      // seed, profile, and measure all use `basic`, so one conversation runs
-      // through the whole loop: each turn continues whatever was accepted
-      // last in the root lane. The feedback handoff below is unaffected.
+      // seed, profile, and measure all use `test-text`, so one conversation
+      // runs through the whole loop: each turn continues whatever was accepted
+      // last in the root lane. The feedback inputs below are unaffected.
       expect(profiles.map((call) => call.continuation?.sessionId)).toEqual([
         "seed-session-1",
         "tune.measure-session-1",
@@ -2926,7 +3013,7 @@ workflow:
       ]);
 
       const contexts = await Promise.all(profiles.map(async (call) => {
-        const path = call.contextFilePaths?.find((candidate) => candidate.endsWith("/iteration-inputs.json"));
+        const path = call.contextFilePaths?.find((candidate) => candidate.endsWith("/inputs.json"));
         expect(path).toBeDefined();
         return JSON.parse(await readFile(path!, "utf8")) as {
           inputs: Array<{ id: string; stageId: string; resultPayload?: { text: string } }>;
@@ -2947,7 +3034,7 @@ workflow:
       });
       // The accepted invocations, in acceptance order, are the state
       // document's job cursor; the payloads themselves are asserted in memory
-      // and in the handoff records above.
+      // and in the acceptance records above.
       const status = await readRunStatusFile(session.runDir);
       const acceptedIds = (status.jobs.at(-1)?.accepted ?? []).map((entry) => entry.invocationId);
       expect(acceptedIds).toHaveLength(7);
@@ -3143,7 +3230,7 @@ workflow:
       const summary = calls.find((call) => stageId(call) === "summary");
       // summary shares `basic` with the root-lane propose, so it continues it.
       expect(summary?.continuation?.sessionId).toBe("propose-propose-root");
-      const summaryPath = summary?.contextFilePaths?.find((path) => path.endsWith("/candidates.json"));
+      const summaryPath = summary?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
       const summaryInputs = JSON.parse(await readFile(summaryPath!, "utf8")) as {
         inputs: Array<{ instanceId: string; stageId: string; workspace: { key: string; cwd: string; kind: string; recordPath: string } }>;
       };
@@ -3213,10 +3300,10 @@ workflow:
     const root = await mkdtemp(join(tmpdir(), "piano-projected-map-run-"));
     try {
       await writeFile(join(root, "map.yml"), PROJECTED_MAP_WORKFLOW);
-      await mkdir(join(root, "recipes", "projected-map-source"), { recursive: true });
+      await mkdir(join(root, "recipes", "contracts"), { recursive: true });
       await mkdir(join(root, "recipes", "basic"), { recursive: true });
       await writeFile(
-        join(root, "recipes", "projected-map-source", "contract.json"),
+        join(root, "recipes", "contracts", "projected-map-source.json"),
         JSON.stringify(projectedMapContract(true)),
       );
       const session = await testSession(root);
@@ -3250,21 +3337,19 @@ workflow:
       expect(result.stages.find((stage) => stage.stageId === "propose")?.projections).toContainEqual(
         expect.objectContaining({ id: "workflow.map-items", pointer: "/authoritative" }),
       );
-      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(log).not.toContain("workflow.map.legacy-payload-adapter");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("rejects a canonical worker contract that omits workflow.map-items", async () => {
+  it("rejects a worker contract that omits workflow.map-items", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-legacy-map-adapter-"));
     try {
       await writeFile(join(root, "map.yml"), PROJECTED_MAP_WORKFLOW);
-      await mkdir(join(root, "recipes", "projected-map-source"), { recursive: true });
+      await mkdir(join(root, "recipes", "contracts"), { recursive: true });
       await mkdir(join(root, "recipes", "basic"), { recursive: true });
       await writeFile(
-        join(root, "recipes", "projected-map-source", "contract.json"),
+        join(root, "recipes", "contracts", "projected-map-source.json"),
         JSON.stringify(projectedMapContract(false)),
       );
       const session = await testSession(root);
@@ -3292,83 +3377,55 @@ workflow:
             return { sessionId: id, transcriptPath: `/tmp/${id}.jsonl`, text: id };
           }),
         })),
-      ))).rejects.toThrow(/canonical worker contract without required projection "workflow\.map-items"/);
+      ))).rejects.toThrow(/must declare projection "workflow\.map-items"/);
 
       expect(mappedIds).toEqual([]);
-      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(log).not.toContain('"event":"workflow.map.legacy-payload-adapter"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("keeps named-validator legacy map payload fallback compatible", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-legacy-named-map-adapter-"));
+  it("names an upstream stage's validation warning when its map source has no projection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-warned-map-source-"));
     try {
-      const workflow = `version: 3
-workflow:
-  name: legacy-named-map
-  nodes:
-    - stage:
-        name: propose
-        worker: basic
-        validate: tournament-results
-        from: []
-    - tournament:
-        name: tournament
-        from: [propose]
-        over: propose.candidates
-        count: 2
-        entry: implement
-        exit: implement
-        nodes:
-          - stage:
-              name: implement
-              worker: basic
-              from: []
-`;
-      await writeFile(join(root, "map.yml"), workflow);
+      await writeFile(join(root, "map.yml"), PROJECTED_MAP_WORKFLOW);
+      await mkdir(join(root, "recipes", "contracts"), { recursive: true });
       await mkdir(join(root, "recipes", "basic"), { recursive: true });
+      // The declaration exists; the result is what failed validation.
+      await writeFile(
+        join(root, "recipes", "contracts", "projected-map-source.json"),
+        JSON.stringify(projectedMapContract(true)),
+      );
       const session = await testSession(root);
-      const mappedIds: string[] = [];
-      await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
+      const calls: AgentRequest[] = [];
+      const failure = await runWorkflow(session, loadWorkflow(join(root, "map.yml"), root, root).pipe(
         Effect.flatMap((loaded) => executeWorkflow(loaded, {
           runDir: session.runDir,
-          runId: "legacy-named-map-adapter",
+          runId: "warned-map-source",
           cwd: root,
-          prompt: "map a legacy named-validator result",
+          prompt: "map an invalid upstream result",
           agentRunner: (request) => Effect.promise(async () => {
+            calls.push(request);
             const stage = stageId(request);
             if (stage === "propose") {
               await mkdir(dirname(validationPath(request)), { recursive: true });
-              await writeFile(validationPath(request), JSON.stringify({
-                target_metric: "latency",
-                baseline: { agent_id: "baseline", metrics: { latency: 10 }, correctness_passed: true },
-                candidates: [
-                  { agent_id: "legacy-a", proposal_summary: "first", token_cost: 1, correctness_passed: true, metrics: { latency: 9 }, speedup_vs_baseline: 1.1, verdict: "improved" },
-                  { agent_id: "legacy-b", proposal_summary: "second", token_cost: 1, correctness_passed: true, metrics: { latency: 8 }, speedup_vs_baseline: 1.2, verdict: "improved" },
-                ],
-                ranking: ["legacy-b", "legacy-a"],
-                winner: null,
-                narrative: "legacy map source",
-                measurement_status: "measured",
-                metric_direction: "higher",
-              }));
-            } else {
-              const mapItemPath = request.contextFilePaths?.find((path) => path.endsWith("/map-item.json"));
-              const context = JSON.parse(await readFile(mapItemPath!, "utf8")) as { item: { value: { agent_id: string } } };
-              mappedIds.push(context.item.value.agent_id);
+              // Always invalid: after the one repair turn the stage is
+              // accepted with a warning and carries no projections.
+              await writeFile(validationPath(request), JSON.stringify({ wrong: true }));
             }
-            const id = `${stage}-${invocationId(request).replaceAll("/", "-")}`;
-            return { sessionId: id, transcriptPath: `/tmp/${id}.jsonl`, text: id };
+            const id = `${stage}-${calls.length}`;
+            return { sessionId: id, transcriptPath: `/tmp/${id}.jsonl`, text: id, continuation: continuation(id) };
           }),
         })),
-      ));
+      )).then(() => undefined, (error: unknown) => error);
 
-      expect(mappedIds.sort()).toEqual(["legacy-a", "legacy-b"]);
-      const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(log).toContain('"event":"workflow.map.legacy-payload-adapter"');
-      expect(log).toContain("declare outputs.projections id workflow.map-items");
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toContain('stage "propose"');
+      expect(message).toContain('worker "projected-map-source"');
+      expect(message).toContain("failed validation");
+      expect(message).toContain('failed contract "projected-map-source"');
+      expect(message).not.toContain('must declare projection "workflow.map-items"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3501,7 +3558,6 @@ workflow:
     - stage:
         name: propose
         worker: basic
-        validate: optimization-proposal
         from: []
     - tournament:
         name: tournament
@@ -3518,7 +3574,6 @@ workflow:
           - stage:
               name: verify
               worker: blocked-race
-              validate: true
               from: [implement]
     - stage:
         name: summary
@@ -3527,10 +3582,8 @@ workflow:
 `);
       const workerDir = join(root, "recipes", "blocked-race");
       await mkdir(workerDir, { recursive: true });
-      await mkdir(join(root, "recipes", "basic"), { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "blocked-race-result",
+      await installTestProposalContract(root, "basic");
+      await writeWorkerContract(workerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -3856,7 +3909,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, runId: "retry", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "retry", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3887,37 +3940,104 @@ workflow:
       expect(produces[1]?.prompt).toContain("Validation repair required");
       expect(validationPath(produces[0]!)).not.toBe(validationPath(produces[1]!));
       const consume = calls.find((call) => stageId(call) === "consume");
-      const handoffPath = consume?.contextFilePaths?.find((path) => path.endsWith("/accepted.json"));
-      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ text: string; resultPayload: { text: string }; resultPath: string }> };
-      expect(handoff.inputs).toMatchObject([{ text: "produce attempt 2", resultPayload: { text: "accepted" } }]);
-      expect(handoff.inputs[0]?.resultPath).toBe(validationPath(produces[1]!));
+      const inputsPath = consume?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
+      const inputs = JSON.parse(await readFile(inputsPath!, "utf8")) as { inputs: Array<{ text: string; resultPayload: { text: string }; resultPath: string }> };
+      expect(inputs.inputs).toMatchObject([{ text: "produce attempt 2", resultPayload: { text: "accepted" } }]);
+      expect(inputs.inputs[0]?.resultPath).toBe(validationPath(produces[1]!));
       expect(result.stages.find((stage) => stage.stageId === "produce")?.attempts).toBe(2);
-      // The record pins the accepted result file by content, so a reader can
-      // verify the evidence still holds what was accepted — and who wrote it.
+      // The record keeps the accepted result path; the run-local contract copy
+      // is the identity, so no content pin rides the row.
       const produceStage = result.stages.find((stage) => stage.stageId === "produce")!;
-      const acceptedBytes = await readFile(produceStage.resultPath!);
       const acceptedRow = (await acceptedRows(session.runDir)).find((row) => row.invocationId === produceStage.id);
-      expect(acceptedRow?.result).toEqual({
-        path: produceStage.resultPath,
-        sha256: `sha256:${createHash("sha256").update(acceptedBytes).digest("hex")}`,
-        trust: "worker",
-      });
+      expect(acceptedRow?.resultPath).toBe(produceStage.resultPath);
+      expect(acceptedRow).not.toHaveProperty("result");
+      expect(acceptedRow).not.toHaveProperty("contract");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("starts validation repair fresh when stage memory is disabled without changing its handoff", async () => {
+  it("warns after the one repair turn and carries the warning into inputs and the downstream prompt", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-warning-propagation-"));
+    try {
+      await writeFile(join(root, "retry.yml"), RETRY_WORKFLOW);
+      const session = await testSession(root);
+      const calls: AgentRequest[] = [];
+      const result = await runWorkflow(session, loadAndExecuteWorkflow({
+        root, workflowPath: join(root, "retry.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "warning-propagation", cwd: root, prompt: "produce valid json",
+        agentRunner: (request) => Effect.promise(async () => {
+          calls.push(request);
+          const stage = stageId(request);
+          if (stage === "produce") {
+            const path = validationPath(request);
+            await mkdir(dirname(path), { recursive: true });
+            // Always invalid: the initial attempt plus exactly one repair turn.
+            await writeFile(path, JSON.stringify({ wrong: true }));
+          }
+          const number = calls.filter((call) => stageId(call) === stage).length;
+          return {
+            sessionId: `${stage}-${number}`,
+            transcriptPath: `/tmp/${stage}-${number}.jsonl`,
+            text: `${stage} attempt ${number}`,
+            continuation: continuation(`${stage}-${number}`),
+          };
+        }),
+      }));
+
+      const produces = calls.filter((call) => stageId(call) === "produce");
+      expect(produces).toHaveLength(2);
+      expect(produces[1]?.prompt).toContain("Validation repair required");
+      const produceStage = result.stages.find((stage) => stage.stageId === "produce")!;
+      expect(produceStage.attempts).toBe(2);
+      expect(produceStage.validationWarning).toMatchObject({
+        worker: "test-text",
+        contractPath: expect.stringContaining("contracts/test-text.json"),
+        message: expect.stringContaining('failed contract "test-text"'),
+      });
+      expect(produceStage.resultPayload).toBeUndefined();
+      expect(produceStage.metrics).toBeUndefined();
+      expect(produceStage.projections).toBeUndefined();
+
+      const consume = calls.find((call) => stageId(call) === "consume");
+      expect(consume?.prompt).toContain("## Upstream validation warnings");
+      expect(consume?.prompt).toContain("after `produce` (worker `test-text`");
+      expect(consume?.prompt).toContain('failed contract "test-text"');
+      const inputsPath = consume?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
+      const inputs = JSON.parse(await readFile(inputsPath!, "utf8")) as {
+        inputs: Array<{
+          stage: string;
+          resultPath?: string;
+          resultPayload?: unknown;
+          validationWarning?: { worker: string; contractPath?: string; message: string };
+        }>;
+      };
+      expect(inputs.inputs).toHaveLength(1);
+      expect(inputs.inputs[0]).toMatchObject({
+        stage: "produce",
+        resultPath: produceStage.resultPath,
+        validationWarning: {
+          worker: "test-text",
+          contractPath: expect.stringContaining("contracts/test-text.json"),
+          message: expect.stringContaining('failed contract "test-text"'),
+        },
+      });
+      expect(inputs.inputs[0]?.resultPayload).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("starts validation repair fresh when stage memory is disabled without changing its inputs", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-retry-no-memory-run-"));
     try {
       await writeFile(join(root, "retry.yml"), RETRY_WORKFLOW.replace(
-        "        validate: text-response\n",
-        "        validate: text-response\n        memory: false\n",
+        "        worker: test-text\n",
+        "        worker: test-text\n        memory: false\n",
       ));
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: session.runDir, runId: "retry-no-memory", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "retry-no-memory", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -3946,9 +4066,9 @@ workflow:
       expect(produces.map((call) => call.continuation)).toEqual([undefined, undefined]);
       expect(produces[1]?.prompt).toContain("Validation repair required");
       const consume = calls.find((call) => stageId(call) === "consume");
-      const handoffPath = consume?.contextFilePaths?.find((path) => path.endsWith("/accepted.json"));
-      const handoff = JSON.parse(await readFile(handoffPath!, "utf8")) as { inputs: Array<{ text: string; resultPayload: { text: string } }> };
-      expect(handoff.inputs).toMatchObject([{ text: "produce attempt 2", resultPayload: { text: "accepted" } }]);
+      const inputsPath = consume?.contextFilePaths?.find((path) => path.endsWith("/inputs.json"));
+      const inputs = JSON.parse(await readFile(inputsPath!, "utf8")) as { inputs: Array<{ text: string; resultPayload: { text: string } }> };
+      expect(inputs.inputs).toMatchObject([{ text: "produce attempt 2", resultPayload: { text: "accepted" } }]);
       expect(result.stages.find((stage) => stage.stageId === "produce")?.attempts).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -3962,7 +4082,7 @@ workflow:
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
       await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "retry.yml"), runDir: join(root, "run$&path"), runId: "repair-path", cwd: root, prompt: "produce valid json",
+        root, workflowPath: join(root, "retry.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: join(root, "run$&path"), runId: "repair-path", cwd: root, prompt: "produce valid json",
         agentRunner: (request) => Effect.promise(async () => {
           calls.push(request);
           const stage = stageId(request);
@@ -4011,7 +4131,6 @@ workflow:
     - stage:
         name: measure
         worker: triton-benchmark-store
-        validate: true
         memory: false
         from: []
 `;
@@ -4085,16 +4204,18 @@ workflow:
 
       expect(calls).toHaveLength(2);
       expect(calls[1]?.continuation).toBeUndefined();
-      expect(result.stages[0]).toMatchObject({ attempts: 2, contract: { id: "triton-round-result" } });
+      expect(result.stages[0]).toMatchObject({ attempts: 2, worker: "triton-benchmark-store" });
       expect(result.stages[0]?.projections).toEqual(expect.arrayContaining([
         expect.objectContaining({ id: "round.materialization-v1", pointer: "" }),
         expect.objectContaining({ id: "round.decision", value: "KEEP" }),
       ]));
 
-      const contractReference = result.stages[0]?.contract;
-      expect(contractReference).toBeDefined();
-      expect(calls[0]?.contextFilePaths).toContain(contractReference!.snapshotPath);
-      expect(JSON.parse(await readFile(contractReference!.snapshotPath, "utf8"))).toMatchObject({ id: "triton-round-result" });
+      const contractSnapshotPath = join(session.runDir, "contracts", "triton-benchmark-store.json");
+      expect(calls[0]?.contextFilePaths).toContain(contractSnapshotPath);
+      expect(JSON.parse(await readFile(contractSnapshotPath, "utf8"))).toMatchObject({
+        schema: expect.any(Object),
+        example: expect.any(Object),
+      });
       const benchmark = (await readFile(join(session.runDir, "eval-metrics", "benchmark.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
       expect(benchmark).toHaveLength(1);
@@ -4102,8 +4223,8 @@ workflow:
         kind: "benchmark",
         invocationId: "measure@root",
         sessionId: "measure-2",
+        worker: "triton-benchmark-store",
         metric: { name: "throughput", unit: "items/s", best: 12 },
-        contract: { id: "triton-round-result" },
       });
       const tokens = (await readFile(join(session.runDir, "eval-metrics", "token-usage.jsonl"), "utf8"))
         .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -4136,7 +4257,6 @@ workflow:
           - stage:
               name: measure
               worker: triton-benchmark-store
-              validate: true
               from: []
 `;
       await writeFile(join(root, "contract-loop.yml"), workflow);
@@ -4210,15 +4330,16 @@ workflow:
     }
   });
 
-  it("fails an invalid validate result without retry when the harness has no continuation", async () => {
+  it("accepts an invalid result with a warning when the harness cannot resume for a repair", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-validate-no-continuation-"));
     try {
       await writeFile(join(root, "validate.yml"), VALIDATE_WORKFLOW);
       const session = await testSession(root);
       const calls: AgentRequest[] = [];
-      const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+      const result = await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "validate.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
         runId: "no-continuation",
         cwd: root,
@@ -4234,15 +4355,23 @@ workflow:
             text: "invalid",
           };
         }),
-      }).pipe(
-        Effect.provideService(Logging, loggingService(session.log, session.trace)),
-        Effect.provide(NodeFileSystem.layer),
-      ));
-      expect(Exit.isFailure(exit)).toBe(true);
+      }));
+      // No continuation means the one repair turn is impossible: the stage is
+      // accepted with the warning instead of failing the run.
       expect(calls).toHaveLength(1);
-      // A stage that never published a result publishes no acceptance either:
-      // the stream stays empty of its rows.
-      expect((await acceptedRows(session.runDir)).map((row) => row.invocationId)).toEqual([]);
+      const stage = result.stages[0]!;
+      expect(stage.validationWarning).toMatchObject({
+        worker: "test-text",
+        message: expect.stringContaining("failed contract"),
+      });
+      expect(stage.resultPayload).toBeUndefined();
+      expect(stage.metrics).toBeUndefined();
+      expect(stage.projections).toBeUndefined();
+      const accepted = (await acceptedRows(session.runDir))[0];
+      expect(accepted).toMatchObject({
+        validationWarning: { worker: "test-text", message: expect.stringContaining("failed contract") },
+      });
+      expect(accepted?.resultPath).toBe(stage.resultPath);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4262,7 +4391,6 @@ workflow:
     - stage:
         name: downstream
         worker: basic
-        handoff: input.json
         from: [broken]
 `;
       await writeFile(join(root, "broken.yml"), workflow);
@@ -4374,30 +4502,40 @@ workflow:
     }
   });
 
-  it("preserves validation failure evidence and never marks the stage complete", async () => {
+  it("accepts a missing result with a warning after the one repair turn", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-validate-missing-"));
     try {
       const session = await testSession(root);
       await writeFile(join(root, "workflow.yml"), VALIDATE_WORKFLOW);
-      const result = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+      const result = await runWorkflow(session, loadAndExecuteWorkflow({
         root,
         workflowPath: join(root, "workflow.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
         runId: "missing-validate",
         cwd: root,
         prompt: "hello",
         agentOptions: { provider: "test-provider", model: "test-model" },
         agentRunner: fakeAgentRunner(fakeSdk()),
-      }).pipe(
-        Effect.provideService(Logging, loggingService(session.log, session.trace)),
-        Effect.provide(NodeFileSystem.layer),
-      ));
-      expect(Exit.isFailure(result)).toBe(true);
+      }));
+      // The first attempt fails, the one repair turn runs, and its missing
+      // result becomes a warning instead of a failed stage.
+      expect(result.stages[0]?.attempts).toBe(2);
+      expect(result.stages[0]?.validationWarning).toMatchObject({
+        worker: "test-text",
+        message: expect.stringContaining("validation result missing"),
+      });
+      expect(result.stages[0]?.resultPayload).toBeUndefined();
       const log = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
       const trace = await readFile(join(session.runDir, "system-log", "trace.jsonl"), "utf8");
       expect(log).toContain('"event":"stage.validation.retrying"');
-      expect(log).toContain('"event":"stage.failed"');
+      expect(log).toContain('"event":"stage.validation.warning"');
+      expect(log).toContain('"event":"stage.completed"');
+      expect(log).not.toContain('"event":"stage.failed"');
       expect(trace).toContain('"fn":"validateStageResult"');
+      const accepted = (await acceptedRows(session.runDir))[0];
+      expect(accepted?.validationWarning).toMatchObject({ worker: "test-text" });
+      expect(accepted?.resultPath).toBe(result.stages[0]?.resultPath);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -4690,14 +4828,11 @@ workflow:
         nodes:
           - stage:
               name: propose
-              worker: basic
-              handoff: seed.json
-              validate: text-response
+              worker: test-text
               from: []
           - stage:
               name: report
               worker: smoke-test-agent
-              handoff: proposal.json
               from: [propose]
     - stage:
         name: close
@@ -4740,7 +4875,7 @@ workflow:
       };
 
       const fiber = Effect.runFork(loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
         agentRunner,
       }).pipe(
         Effect.provideService(Logging, loggingService(session.log, session.trace)),
@@ -4766,7 +4901,7 @@ workflow:
 
       run = 1;
       const secondRun = await runWorkflow(session, loadAndExecuteWorkflow({
-        root, workflowPath: join(root, "loop.yml"), runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
+        root, workflowPath: join(root, "loop.yml"), recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT, runDir: session.runDir, runId: "loop-skip", cwd: root, prompt: "iterate",
         agentRunner,
         continueJob: {
           jobOrdinal: cursorJob.jobOrdinal,
@@ -5146,8 +5281,7 @@ workflow:
   nodes:
     - stage:
         name: propose
-        worker: basic
-        validate: optimization-proposal
+        worker: triton-idea
         from: []
     - tournament:
         name: race
@@ -5160,14 +5294,238 @@ workflow:
           - stage:
               name: implement
               worker: basic
-              handoff: strategy.json
               from: []
           - stage:
               name: bench
               worker: triton-benchmark-store
-              validate: true
               from: [implement]
 `;
+
+  /** A self-contained tournament whose exit contract declares exactly one
+   * metric and no GPU-round projections: a lane can fail validation without
+   * pulling in the materialization protocol. */
+  const WARNING_TOURNAMENT = `version: 3
+workflow:
+  name: warning-tournament
+  nodes:
+    - stage:
+        name: propose
+        worker: warning-propose
+        from: []
+    - tournament:
+        name: race
+        from: [propose]
+        over: propose.strategies
+        count: 2
+        entry: implement
+        exit: bench
+        nodes:
+          - stage:
+              name: implement
+              worker: warning-implement
+              from: []
+          - stage:
+              name: bench
+              worker: warning-bench
+              from: [implement]
+`;
+
+  function warningBenchmark(best: number): Record<string, unknown> {
+    return {
+      name: "throughput",
+      unit: "items/s",
+      direction: "higher",
+      samples: [best],
+      best,
+      median: best,
+      runs: 1,
+      warmup: 0,
+    };
+  }
+
+  async function installWarningTournamentRecipes(root: string): Promise<void> {
+    const contractsDir = join(root, "recipes", "contracts");
+    await mkdir(contractsDir, { recursive: true });
+    await writeFile(join(contractsDir, "warning-propose.json"), JSON.stringify({
+      schema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        required: ["strategies"],
+        properties: {
+          strategies: {
+            type: "array",
+            minItems: 2,
+            items: {
+              type: "object",
+              required: ["id", "bottleneck", "technique", "rationale", "predicted_speedup", "risk_level"],
+              properties: {
+                id: { type: "string" },
+                bottleneck: { type: "string" },
+                technique: { type: "string" },
+                rationale: { type: "string" },
+                predicted_speedup: { type: "number" },
+                risk_level: { enum: ["low", "medium", "high"] },
+              },
+            },
+          },
+        },
+        additionalProperties: false,
+      },
+      example: {
+        strategies: [
+          { id: "a", bottleneck: "memory", technique: "tile", rationale: "a", predicted_speedup: 1.1, risk_level: "low" },
+          { id: "b", bottleneck: "compute", technique: "warp", rationale: "b", predicted_speedup: 1.2, risk_level: "low" },
+        ],
+      },
+      outputs: {
+        metrics: [],
+        projections: [{ id: "workflow.map-items", pointer: "/strategies", format: "json", required: true }],
+      },
+    }));
+    await writeFile(join(contractsDir, "warning-implement.json"), JSON.stringify({
+      schema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        additionalProperties: true,
+      },
+      example: {},
+      outputs: { metrics: [], projections: [] },
+    }));
+    await writeFile(join(contractsDir, "warning-bench.json"), JSON.stringify({
+      schema: {
+        $schema: "https://json-schema.org/draft/2020-12/schema",
+        type: "object",
+        required: ["benchmark"],
+        properties: {
+          benchmark: {
+            type: "object",
+            required: ["name", "unit", "direction", "samples", "best", "median", "runs", "warmup"],
+            properties: {
+              name: { type: "string" },
+              unit: { type: "string" },
+              direction: { enum: ["higher", "lower"] },
+              samples: { type: "array", items: { type: "number" } },
+              best: { type: "number" },
+              median: { type: "number" },
+              runs: { type: "integer" },
+              warmup: { type: "integer" },
+            },
+          },
+        },
+        additionalProperties: false,
+      },
+      example: { benchmark: warningBenchmark(1) },
+      outputs: {
+        metrics: [{ pointer: "/benchmark", format: "benchmark/v1" }],
+        projections: [],
+      },
+    }));
+  }
+
+  /** Run WARNING_TOURNAMENT with the given lane validity: an invalid lane
+   * writes a payload whose metric would win outright but which violates the
+   * contract, so only validation eligibility can exclude it. */
+  async function runWarningTournament(validSlots: readonly number[]) {
+    const root = await mkdtemp(join(tmpdir(), "piano-warning-tournament-"));
+    await writeFile(join(root, "race.yml"), WARNING_TOURNAMENT);
+    await installWarningTournamentRecipes(root);
+    await writeFile(join(root, "kernel.py"), "baseline\n");
+    const session = await testSession(root);
+    const calls: AgentRequest[] = [];
+    const result = await runWorkflow(session, loadAndExecuteWorkflow({
+      root,
+      workflowPath: join(root, "race.yml"),
+      recipeRepositoryRoot: root,
+      runDir: session.runDir,
+      runId: "warning-tournament",
+      cwd: root,
+      prompt: "race toward a trustworthy winner",
+      agentRunner: (request) => Effect.promise(async () => {
+        calls.push(request);
+        const stage = stageId(request);
+        if (stage === "propose") {
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, JSON.stringify({
+            strategies: [
+              { id: "slot-0", bottleneck: "memory", technique: "tile", rationale: "a", predicted_speedup: 1.1, risk_level: "low" },
+              { id: "slot-1", bottleneck: "compute", technique: "warp", rationale: "b", predicted_speedup: 1.2, risk_level: "low" },
+            ],
+          }));
+        } else if (stage === "race.implement") {
+          const slot = await strategySlot(request);
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, JSON.stringify({}));
+          await writeFile(join(request.cwd, "kernel.py"), `kernel-${slot}\n`);
+        } else if (stage === "race.bench") {
+          const slot = await strategySlot(request);
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(path, JSON.stringify(
+            validSlots.includes(slot)
+              ? { benchmark: warningBenchmark(slot === 0 ? 4 : 9) }
+              : { benchmark: warningBenchmark(99), unexpected: true },
+          ));
+        }
+        return {
+          sessionId: `${stage}-${invocationId(request).replaceAll("/", "-")}-${calls.length}`,
+          transcriptPath: `/tmp/warning-${calls.length}.jsonl`,
+          text: `${stage}:${invocationId(request)}`,
+          continuation: continuation(`${stage}-${calls.length}`),
+        };
+      }),
+    }));
+    return { session, result, calls };
+  }
+
+  it("excludes a warned tournament branch from selection even though its metric would win", async () => {
+    const { session, result, calls } = await runWarningTournament([1]);
+    try {
+      // The invalid lane spends its one repair turn and then warns.
+      expect(calls.filter((call) => stageId(call) === "race.bench")).toHaveLength(3);
+      const benchRows = (await acceptedRows(session.runDir)).filter((row) => row.stageId === "race.bench");
+      const warned = benchRows.find((row) => row.instanceId === "race/slot-0");
+      const clean = benchRows.find((row) => row.instanceId === "race/slot-1");
+      expect(warned?.validationWarning).toMatchObject({ worker: "warning-bench" });
+      expect(warned?.metrics).toBeUndefined();
+      expect(clean?.validationWarning).toBeUndefined();
+      expect(clean?.metrics).toHaveLength(1);
+
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
+      const records = (await readFile(selectionPath, "utf8")).trim().split("\n")
+        .map((line) => JSON.parse(line) as { outcome: string; winnerKey?: string });
+      expect(records).toHaveLength(1);
+      expect(records[0]).toMatchObject({ outcome: "carried", winnerKey: "job-1/race/slot-1" });
+      expect(result.terminalStages[0]).toMatchObject({ stageId: "race.bench", instanceId: "race/slot-1" });
+      expect(result.terminalStages[0]?.validationWarning).toBeUndefined();
+    } finally {
+      await rm(session.root, { recursive: true, force: true });
+    }
+  });
+
+  it("selects no winner when every tournament branch warns", async () => {
+    const { session, result } = await runWarningTournament([]);
+    try {
+      const benchRows = (await acceptedRows(session.runDir)).filter((row) => row.stageId === "race.bench");
+      expect(benchRows).toHaveLength(2);
+      expect(benchRows.every((row) => row.validationWarning !== undefined)).toBe(true);
+
+      const selectionPath = join(session.runDir, "eval-metrics", "selection.jsonl");
+      const records = (await readFile(selectionPath, "utf8")).trim().split("\n")
+        .map((line) => JSON.parse(line) as { outcome: string; winnerKey?: string });
+      expect(records).toHaveLength(1);
+      expect(records[0]?.outcome).toBe("metricless");
+      expect(records[0]?.winnerKey).toBeUndefined();
+      expect(result.terminalStages.every((stage) => stage.validationWarning !== undefined)).toBe(true);
+      const status = await readRunStatusFile(session.runDir);
+      expect(Object.values(status.jobs.at(-1)?.regions ?? {})).toMatchObject([
+        { instance: "race", outcome: "no-winner" },
+      ]);
+    } finally {
+      await rm(session.root, { recursive: true, force: true });
+    }
+  });
 
   it("auto-promotes a snapshot tournament winner through the engine and records a selection", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-metric-tournament-"));
@@ -5556,7 +5914,6 @@ workflow:
     - stage:
         name: propose
         worker: racer
-        validate: true
         from: []
     - tournament:
         name: race
@@ -5573,7 +5930,6 @@ workflow:
           - stage:
               name: bench
               worker: racer
-              validate: true
               from: [implement]
     - stage:
         name: summary
@@ -5582,9 +5938,7 @@ workflow:
 `);
       const workerDir = join(root, "recipes", "racer");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "generic-race-result",
+      await writeWorkerContract(workerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -5818,7 +6172,6 @@ workflow:
           - stage:
               name: propose
               worker: racer
-              validate: true
               from: []
           - tournament:
               name: race
@@ -5835,14 +6188,11 @@ workflow:
                 - stage:
                     name: bench
                     worker: racer
-                    validate: true
                     from: [implement]
 `);
       const workerDir = join(root, "recipes", "racer");
       await mkdir(workerDir, { recursive: true });
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "mixed-block-scope-result",
+      await writeWorkerContract(workerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -6194,7 +6544,6 @@ workflow:
           - stage:
               name: propose
               worker: basic
-              validate: optimization-proposal
               from: []
           - tournament:
               name: race
@@ -6207,12 +6556,10 @@ workflow:
                 - stage:
                     name: implement
                     worker: basic
-                    handoff: strategy.json
                     from: []
                 - stage:
                     name: bench
                     worker: loop-benchmark-store
-                    validate: true
                     from: [implement]
 `;
     const root = await mkdtemp(join(tmpdir(), "piano-loop-race-"));
@@ -6225,12 +6572,10 @@ workflow:
         current_best: { path: "state/current-best.py", metric: { name: "tflops", best: 1, direction: "higher" } },
         history: [],
       }));
-      await mkdir(join(root, "recipes", "basic"), { recursive: true });
+      await installTestProposalContract(root, "basic");
       const benchmarkWorkerDir = join(root, "recipes", "loop-benchmark-store");
       await mkdir(benchmarkWorkerDir, { recursive: true });
-      await writeFile(join(benchmarkWorkerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "loop-benchmark-result",
+      await writeWorkerContract(benchmarkWorkerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -6388,8 +6733,7 @@ workflow:
   nodes:
     - stage:
         name: propose
-        worker: basic
-        validate: optimization-proposal
+        worker: triton-idea
         from: []
     - tournament:
         name: outer
@@ -6401,8 +6745,7 @@ workflow:
         nodes:
           - stage:
               name: seed-a
-              worker: basic
-              validate: optimization-proposal
+              worker: triton-idea
               from: []
           - tournament:
               name: race-a
@@ -6419,12 +6762,10 @@ workflow:
                 - stage:
                     name: bench-a
                     worker: triton-benchmark-store
-                    validate: true
                     from: [implement-a]
           - stage:
               name: seed-b
-              worker: basic
-              validate: optimization-proposal
+              worker: triton-idea
               from: [race-a]
           - tournament:
               name: race-b
@@ -6441,7 +6782,6 @@ workflow:
                 - stage:
                     name: bench-b
                     worker: triton-benchmark-store
-                    validate: true
                     from: [implement-b]
 `;
     const root = await mkdtemp(join(tmpdir(), "piano-nested-metric-races-"));
@@ -6575,7 +6915,6 @@ workflow:
     - stage:
         name: propose
         worker: racer
-        validate: true
         from: []
     - tournament:
         name: race
@@ -6592,14 +6931,11 @@ workflow:
           - stage:
               name: bench
               worker: racer
-              validate: true
               from: [implement]
 `);
       // A competing exit whose contract declares two benchmark metrics cannot be
       // ordered by a single referee: refusing to begin is a load error.
-      await writeFile(join(workerDir, "contract.json"), JSON.stringify({
-        version: 1,
-        id: "racer-result",
+      await writeWorkerContract(workerDir, JSON.stringify({
         schema: {
           $schema: "https://json-schema.org/draft/2020-12/schema",
           type: "object",
@@ -6640,7 +6976,7 @@ workflow:
       if (Exit.isFailure(exit)) {
         const message = String(exit.cause);
         expect(message).toContain("declares 2 output metric");
-        expect(message).toContain('worker "racer-result"');
+        expect(message).toContain('worker "racer"');
         expect(message).toContain("/latency");
         expect(message).toContain("/throughput");
       }
@@ -6819,13 +7155,12 @@ describe(" stage sign-off", () => {
   });
 });
 
-describe("workflow auto-commit (ISSUE-017)", () => {
+describe("loop auto-commit", () => {
   const execFileAsync = promisify(execFile);
 
-  const AUTO_COMMIT_LOOP_WORKFLOW = `version: 3
+  const LOOP_WORKFLOW = `version: 3
 workflow:
-  name: auto-commit-loop
-  autoCommit: true
+  name: loop-commit
   nodes:
     - loop:
         name: tune
@@ -6837,102 +7172,31 @@ workflow:
         nodes:
           - stage:
               name: implement
-              worker: basic
-              handoff: implementation-inputs.json
-              validate: implementation-report
+              worker: test-implement
               from: []
           - stage:
               name: measure
-              worker: basic
-              handoff: round.json
-              validate: round-result
+              worker: test-round
               from: [implement]
     - stage:
         name: summary
-        worker: basic
-        validate: summary-report
+        worker: test-summary
         from: [tune]
 `;
-  const NO_AUTO_COMMIT_LOOP_WORKFLOW = AUTO_COMMIT_LOOP_WORKFLOW.replace("  autoCommit: true\n", "");
 
-  function duplicateProducerWorkflow(kind: "changed-files" | "decision"): string {
-    const implementation = kind === "changed-files"
-      ? `          - stage:
-              name: implement-a
-              worker: basic
-              validate: implementation-report
-              from: []
-          - stage:
-              name: implement-b
-              worker: basic
-              validate: implementation-report
-              from: [implement-a]
-          - stage:
-              name: measure
-              worker: basic
-              validate: round-result
-              from: [implement-b]`
-      : `          - stage:
-              name: implement
-              worker: basic
-              validate: implementation-report
-              from: []
-          - stage:
-              name: measure-a
-              worker: basic
-              validate: round-result
-              from: [implement]
-          - stage:
-              name: measure-b
-              worker: basic
-              validate: round-result
-              from: [measure-a]`;
-    const entry = kind === "changed-files" ? "implement-a" : "implement";
-    const exit = kind === "changed-files" ? "measure" : "measure-b";
-    return `version: 3
-workflow:
-  name: duplicate-${kind}-producer
-  autoCommit: true
-  nodes:
-    - loop:
-        name: tune
-        from: []
-        feedback: ${exit}
-        entry: ${entry}
-        exit: ${exit}
-        iterations: 1
-        nodes:
-${implementation}
-    - stage:
+  const LOOP_ONLY_WORKFLOW = LOOP_WORKFLOW.replace(
+    `    - stage:
         name: summary
-        worker: basic
-        validate: summary-report
+        worker: test-summary
         from: [tune]
-`;
-  }
+`,
+    "",
+  );
 
-  const DUPLICATE_PROGRESS_PRODUCER_WORKFLOW = AUTO_COMMIT_LOOP_WORKFLOW
-    .replace("        iterations: 3", "        iterations: 1")
-    .replace(
-      `    - stage:
-        name: summary
-        worker: basic
-        validate: summary-report
-        from: [tune]`,
-      `    - stage:
-        name: summary-a
-        worker: basic
-        validate: summary-report
-        from: [tune]
-    - stage:
-        name: summary-b
-        worker: basic
-        validate: summary-report
-        from: [summary-a]`,
-    );
-
-  /** A real git repo workspace: one initial commit plus a pre-existing user
-   * change that auto-commit must never sweep into a winner commit. */
+  /** A real git repo workspace: one initial commit, one pre-existing tracked
+   * modification, one already-staged addition, and one pre-existing untracked
+   * file. Loop commits must never sweep any of that pre-existing dirt into a
+   * commit. */
   async function initRepo(root: string): Promise<string> {
     const repo = join(root, "repo");
     await mkdir(repo, { recursive: true });
@@ -6942,8 +7206,12 @@ ${implementation}
     await writeFile(join(repo, "seed.py"), "seed\n");
     await execFileAsync("git", ["-C", repo, "add", "seed.py"], { encoding: "utf8" });
     await execFileAsync("git", ["-C", repo, "commit", "-m", "initial"], { encoding: "utf8" });
-    // Pre-existing user / other-task change, present at run start.
+    await writeFile(join(repo, "seed.py"), "seed changed before the run\n");
     await writeFile(join(repo, "user-preexisting.md"), "user work\n");
+    // A pre-existing change already in the index: a bare `git commit` would
+    // sweep it into the first loop commit even though the scan excludes it.
+    await writeFile(join(repo, "pre-staged.md"), "staged before the run\n");
+    await execFileAsync("git", ["-C", repo, "add", "pre-staged.md"], { encoding: "utf8" });
     return repo;
   }
 
@@ -6952,38 +7220,40 @@ ${implementation}
     return result.stdout;
   }
 
-  /** Mock agentRunner for the minimal tune loop: implement writes the winner
-   * source file + changed_files; measure decides KEEP on even rounds and
-   * DISCARD on odd rounds; summary writes the progress-record file. */
+  /** Full commit hashes, newest first. */
+  async function gitHashes(repo: string): Promise<readonly string[]> {
+    const result = await execFileAsync("git", ["-C", repo, "log", "--format=%H"], { encoding: "utf8" });
+    return result.stdout.trim().split("\n");
+  }
+
+  async function readRunLog(session: Awaited<ReturnType<typeof testSession>>): Promise<string> {
+    return readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
+  }
+
+  /** Mock agentRunner for the tune loop: implement writes a kernel file and an
+   * agent memory document; measure decides KEEP on even rounds and DISCARD on
+   * odd rounds; summary writes the progress-record file. */
   function tuneRunner(repo: string): AgentRunner {
     return (request) => Effect.promise(async () => {
       const stage = stageId(request);
       const path = validationPath(request);
       await mkdir(dirname(path), { recursive: true });
-      if (stage === "tune.decoy") {
-        // Deliberately carries implementation-shaped fields the decoy's
-        // contract does not declare. autoCommit must not discover these by
-        // inspecting resultPayload.
-        await writeFile(path, JSON.stringify({
-          status: "timing-only",
-          target_operator: "decoy",
-          device: { name: "decoy", architecture: "decoy" },
-          metrics: { kernel_latency_us: 1 },
-          bottlenecks: [{ type: "memory", description: "decoy", evidence: "none" }],
-          analysis: "decoy profile",
-          changed_files: ["should-not-commit.cc"],
-        }));
-      } else if (/^tune\.implement(?:-[ab])?$/u.test(stage)) {
+      if (stage === "tune.implement") {
         const iteration = iterationOf(request);
         await writeFile(join(repo, `kernel-r${iteration}.cc`), `// r${iteration}\n`);
+        // The agent's own memory document: never named in the result payload,
+        // but it must ride in the iteration's commit.
+        await writeFile(join(repo, "MEMORY.md"), `# memory\niteration ${iteration}\n`);
         await writeFile(path, JSON.stringify({
           status: "compiled",
           variable: `var-${iteration}`,
           diff_summary: `applied change ${iteration}`,
-          changed_files: [`kernel-r${iteration}.cc`],
+          // A stale commit-only field from the removed projection: it must
+          // never control what is staged.
+          changed_files: ["declared-but-not-committed.cc"],
           compile: { passed: true, target: "gemm", so_commit: "abc123" },
         }));
-      } else if (/^tune\.measure(?:-[ab])?$/u.test(stage)) {
+      } else if (stage === "tune.measure") {
         const iteration = iterationOf(request);
         const keep = iteration % 2 === 0;
         await writeFile(path, JSON.stringify({
@@ -7000,23 +7270,24 @@ ${implementation}
             ? { promoted: true, resulting_best: { path: `kernel-r${iteration}.cc` }, reason: "improved" }
             : { promoted: false, resulting_best: { path: "state/current-best.py" }, reason: "regressed" },
           next_variable: "next",
-          records: { round_path: `rounds/iter-${String(iteration).padStart(3, "0")}.json`, state_path: "state/tuning-state.json" },
+          records: {
+            round_path: `rounds/iter-${String(iteration).padStart(3, "0")}.json`,
+            state_path: "state/tuning-state.json",
+          },
         }));
-      } else if (/^summary(?:-[ab])?$/u.test(stage)) {
-        const progressFile = stage === "summary"
-          ? "tests/unit/regression_test.cc"
-          : `tests/unit/regression_test-${stage.at(-1)}.cc`;
+      } else if (stage === "summary") {
+        const progressFile = "tests/unit/regression_test.cc";
         await mkdir(dirname(join(repo, progressFile)), { recursive: true });
         await writeFile(join(repo, progressFile), "// header\nR8: iter-2 winner\n");
         await writeFile(path, JSON.stringify({
-          run_id: "auto-commit-run",
+          run_id: "loop-commit-run",
           summary: "target met",
           outcome: "improved",
           winner: "iter-2",
           progress_record: {
             file_path: progressFile,
             current_status: "stable",
-            entry: "R8: iter-2 winner KEEP 158.50us / 2588.51 GB/s | evidence: auto-commit-run | next: none",
+            entry: "R8: iter-2 winner KEEP 158.50us / 2588.51 GB/s | evidence: loop-commit-run | next: none",
           },
         }));
       } else {
@@ -7031,93 +7302,325 @@ ${implementation}
     });
   }
 
-  it("does not auto-commit a KEEP demoted to DISCARD during GPU materialization", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-demoted-keep-commit-"));
+  it("commits every loop iteration, KEEP or DISCARD, including agent-written memory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-"));
     try {
+      await writeFile(join(root, "loop.yml"), LOOP_WORKFLOW);
       const repo = await initRepo(root);
-      await mkdir(join(repo, "state"), { recursive: true });
-      await writeFile(join(repo, "kernel.py"), "baseline\n");
-      await writeFile(join(repo, "state", "current-best.py"), "baseline\n");
-      await writeFile(join(repo, "state", "tuning-state.json"), JSON.stringify({
-        current_best: {
-          path: "state/current-best.py",
-          metric_tflops: 2,
-          metric: { name: "tflops", best: 2, direction: "higher" },
-        },
-        history: [],
-      }));
-      await execFileAsync("git", ["-C", repo, "add", "kernel.py", "state"], { encoding: "utf8" });
-      await execFileAsync("git", ["-C", repo, "commit", "-m", "gpu baseline"], { encoding: "utf8" });
-      const before = await execFileAsync("git", ["-C", repo, "rev-list", "--count", "HEAD"], { encoding: "utf8" });
-      const workflowPath = join(root, "demoted.yml");
-      await writeFile(workflowPath, `version: 3
-workflow:
-  name: demoted-keep
-  autoCommit: true
-  nodes:
-    - loop:
-        name: tune
-        from: []
-        entry: implement
-        exit: measure
-        iterations: 1
-        nodes:
-          - stage:
-              name: implement
-              worker: basic
-              validate: implementation-report
-              from: []
-          - stage:
-              name: measure
-              worker: basic
-              validate: cuda-round-result
-              from: [implement]
-`);
       const session = await testSession(root);
       const result = await runWorkflow(session, loadAndExecuteWorkflow({
         root,
-        workflowPath,
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
-        runId: "demoted-keep",
+        runId: "loop-commit",
         cwd: repo,
-        prompt: "keep only a real improvement",
+        prompt: "tune gemm TR-1234",
+        agentRunner: tuneRunner(repo),
+      }));
+
+      // The loop really mixed decisions: iteration 1 was a DISCARD and still
+      // committed. The removed workspace.changed-files projection is gone
+      // from the accepted results.
+      expect(result.stages
+        .filter((stage) => stage.stageId === "tune.measure")
+        .map((stage) => stage.projections?.find((projection) => projection.id === "round.decision")?.value))
+        .toEqual(["KEEP", "DISCARD", "KEEP"]);
+      const implementation = result.stages.find((stage) => stage.stageId === "tune.implement");
+      expect(implementation?.projections?.some((projection) => projection.id === "workspace.changed-files")).toBe(false);
+
+      const hashes = await gitHashes(repo);
+      // Initial + one commit for each of the three iterations. The summary
+      // stage is outside the loop, so it does not commit.
+      expect(hashes).toHaveLength(4);
+      const log = await gitLog(repo);
+      expect(log).toContain("kernel-r0.cc");
+      expect(log).toContain("kernel-r1.cc");
+      expect(log).toContain("kernel-r2.cc");
+      // Every commit uses the neutral loop template, including the DISCARD
+      // rounds. The message names the loop itself, not a tuning projection.
+      expect(log).toContain("[Feature](TR-1234): tune R0");
+      expect(log).toContain("[Feature](TR-1234): tune R1");
+      expect(log).toContain("[Feature](TR-1234): tune R2");
+      // Memory written by the agent rides in the commit even though the
+      // result payload never names it.
+      expect(log).toContain("MEMORY.md");
+      // Stale commit-only projection data is ignored: the workspace is the
+      // source of truth for what gets staged.
+      expect(log).not.toContain("declared-but-not-committed.cc");
+      // Pre-existing tracked and untracked changes are never swept in. (The
+      // initial commit legitimately contains seed.py, so inspect only the
+      // loop commits' changed files.)
+      expect(log).not.toContain("user-preexisting.md");
+      expect(log).not.toContain("pre-staged.md");
+      const stagedAfter = await execFileAsync("git", ["-C", repo, "diff", "--cached", "--name-only"], { encoding: "utf8" });
+      expect(stagedAfter.stdout).toContain("pre-staged.md");
+      const loopChanges = await execFileAsync("git", ["-C", repo, "diff", "--name-only", "HEAD~3", "HEAD"], { encoding: "utf8" });
+      expect(loopChanges.stdout).not.toContain("seed.py");
+      expect(loopChanges.stdout).not.toContain("user-preexisting.md");
+      expect(await readFile(join(repo, "seed.py"), "utf8")).toBe("seed changed before the run\n");
+      // The summary stage's progress record is outside the loop and stays
+      // uncommitted: only loops commit.
+      expect(log).not.toContain("tests/unit/regression_test.cc");
+      const porcelain = await execFileAsync("git", ["-C", repo, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" });
+      expect(porcelain.stdout).toContain("tests/unit/regression_test.cc");
+
+      // The latest loop commit carries the neutral loop message: region,
+      // iteration, and changed-file count. Tuning projections have no shipped
+      // producer, so none of their values may leak into the message.
+      const message = (await execFileAsync("git", ["-C", repo, "log", "-1", "--format=%B"], { encoding: "utf8" })).stdout;
+      expect(message).toContain("Root Cause:");
+      expect(message).toContain('loop "tune" iteration 2 completed');
+      expect(message).toContain("Solution:");
+      expect(message).toContain('commit 2 changed files after loop "tune" iteration 2');
+      expect(message).toContain("Fix status:");
+      expect(message).toContain("done");
+      expect(message).not.toContain("hide DTE wait");
+      expect(message).not.toContain("applied change");
+      expect(message).not.toContain("160.50us");
+
+      // The loop's region-finalized evidence records every iteration's commit.
+      const after = await readRunStatusFile(session.runDir);
+      expect(after.jobs.at(-1)?.regions?.tune?.commits).toEqual([
+        { iteration: 0, commit: hashes[2] },
+        { iteration: 1, commit: hashes[1] },
+        { iteration: 2, commit: hashes[0] },
+      ]);
+      const runLog = await readRunLog(session);
+      expect(runLog).toContain('"event":"auto.commit.committed"');
+      expect(runLog).not.toContain('"event":"auto.commit.failed"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("skips the commit in a non-git workspace with an explicit reason", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-nogit-"));
+    try {
+      await writeFile(join(root, "loop.yml"), LOOP_ONLY_WORKFLOW.replace("        iterations: 3", "        iterations: 2"));
+      const session = await testSession(root);
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root,
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
+        runDir: session.runDir,
+        runId: "loop-commit-nogit",
+        cwd: root,
+        prompt: "tune gemm",
+        agentRunner: tuneRunner(root),
+      }));
+      // The agent's files stay in the non-git workspace; there is no commit
+      // target, so the run completes without inventing one.
+      await expect(readFile(join(root, "kernel-r0.cc"), "utf8")).resolves.toBe("// r0\n");
+      const runLog = await readRunLog(session);
+      expect(runLog).toContain('"event":"auto.commit.skipped"');
+      expect(runLog).toContain('"reason":"not-a-git-worktree"');
+      expect(runLog).not.toContain('"event":"auto.commit.failed"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("logs a no-changes skip when an iteration leaves the workspace clean", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-clean-"));
+    try {
+      await writeFile(join(root, "loop.yml"), LOOP_ONLY_WORKFLOW.replace("        iterations: 3", "        iterations: 2"));
+      const repo = await initRepo(root);
+      const session = await testSession(root);
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root,
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
+        runDir: session.runDir,
+        runId: "loop-commit-clean",
+        cwd: repo,
+        prompt: "tune gemm",
         agentRunner: (request) => Effect.promise(async () => {
           const stage = stageId(request);
           const path = validationPath(request);
           await mkdir(dirname(path), { recursive: true });
           if (stage === "tune.implement") {
-            await writeFile(join(repo, "winner.txt"), "must remain uncommitted\n");
-            await writeFile(path, JSON.stringify({
-              status: "compiled",
-              variable: "regressing candidate",
-              diff_summary: "write an apparent winner",
-              changed_files: ["winner.txt"],
-              compile: { passed: true, target: "kernel" },
-            }));
+            await writeFile(path, JSON.stringify({ status: "compiled" }));
           } else if (stage === "tune.measure") {
-            await writeFile(join(repo, "kernel.py"), "regression\n");
-            await writeFile(path, JSON.stringify({
-              iteration: 0,
-              decision: "KEEP",
-              candidate: { path: "kernel.py" },
-              current_best: { path: "state/current-best.py" },
-              verification: { compile_passed: true, verify_passed: true },
-              benchmark: {
-                metric: "tflops",
-                direction: "higher",
-                samples: [1],
-                best: 1,
-                median: 1,
-                runs: 1,
-                warmup: 0,
-              },
-              promotion: {
-                promoted: true,
-                resulting_best: { path: "kernel.py" },
-                reason: "worker thought it improved",
-              },
-              records: { round_path: "rounds/iter-000.json", state_path: "state/tuning-state.json" },
-            }));
+            await writeFile(path, JSON.stringify({ decision: "DISCARD" }));
+          } else {
+            throw new Error(`unexpected stage: ${stage}`);
+          }
+          return {
+            sessionId: `${stage}-session`,
+            transcriptPath: `/tmp/${stage}.jsonl`,
+            text: stage,
+            continuation: continuation(`${stage}-session`),
+          };
+        }),
+      }));
+      expect(await gitHashes(repo)).toHaveLength(1);
+      const runLog = await readRunLog(session);
+      expect(runLog.match(/"reason":"no-changes"/gu)).toHaveLength(2);
+      expect(runLog).not.toContain('"event":"auto.commit.failed"');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the run after three rejected commit attempts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-reject-"));
+    try {
+      await writeFile(join(root, "loop.yml"), LOOP_ONLY_WORKFLOW.replace("        iterations: 3", "        iterations: 1"));
+      const repo = await initRepo(root);
+      const hookDir = join(root, "hooks");
+      await mkdir(hookDir, { recursive: true });
+      const attemptsFile = join(root, "commit-attempts.log");
+      await writeFile(
+        join(hookDir, "commit-msg"),
+        `#!/bin/sh\nprintf 'attempt\\n' >> ${JSON.stringify(attemptsFile)}\necho REJECTED-BY-HOOK: bad ticket >&2\nexit 1\n`,
+        { mode: 0o755 },
+      );
+      await execFileAsync("git", ["-C", repo, "config", "core.hooksPath", hookDir], { encoding: "utf8" });
+      const session = await testSession(root);
+      const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+        root,
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
+        runDir: session.runDir,
+        runId: "loop-commit-reject",
+        cwd: repo,
+        prompt: "tune gemm, no ticket in mission",
+        agentRunner: tuneRunner(repo),
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) throw new Error("expected the run to fail");
+      const failure = Cause.pretty(exit.cause);
+      expect(failure).toContain("loop auto-commit failed after 3 attempts");
+      expect(failure).toContain("REJECTED-BY-HOOK");
+      // Exactly one initial attempt plus two retries.
+      expect((await readFile(attemptsFile, "utf8")).trim().split("\n")).toHaveLength(3);
+      // A rejected commit leaves NOTHING staged — otherwise a later round's
+      // `git checkout -- <file>` revert would restore the staged candidate
+      // content instead of HEAD (silently corrupting tuning state).
+      const staged = await execFileAsync("git", ["-C", repo, "diff", "--cached", "--name-only"], { encoding: "utf8" });
+      // The pre-existing staged addition is not ours to unstage; the failed
+      // attempt must leave only that entry in the index.
+      expect(staged.stdout.trim()).toBe("pre-staged.md");
+      const commits = await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" });
+      expect(commits.stdout.trim().split("\n")).toHaveLength(1);
+      const runLog = await readRunLog(session);
+      expect(runLog).toContain('"event":"auto.commit.retrying"');
+      expect(runLog).toContain('"event":"auto.commit.failed"');
+      expect(runLog).toContain("REJECTED-BY-HOOK");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to a generic loop message when the iteration has no projections", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-generic-"));
+    try {
+      await writeFile(join(root, "loop.yml"), `version: 3
+workflow:
+  name: generic-loop
+  nodes:
+    - loop:
+        name: polish
+        from: []
+        entry: draft
+        exit: draft
+        iterations: 1
+        nodes:
+          - stage:
+              name: draft
+              worker: test-text
+              from: []
+`);
+      const repo = await initRepo(root);
+      const session = await testSession(root);
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root,
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
+        runDir: session.runDir,
+        runId: "loop-commit-generic",
+        cwd: repo,
+        prompt: "draft once",
+        agentRunner: (request) => Effect.promise(async () => {
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(join(repo, "notes.txt"), "draft 0\n");
+          await writeFile(path, JSON.stringify({ text: "drafted" }));
+          return {
+            sessionId: "draft-session",
+            transcriptPath: "/tmp/draft.jsonl",
+            text: "drafted",
+            continuation: continuation("draft-session"),
+          };
+        }),
+      }));
+      const log = await gitLog(repo);
+      expect(log).toContain("notes.txt");
+      const message = (await execFileAsync("git", ["-C", repo, "log", "-1", "--format=%B"], { encoding: "utf8" })).stdout;
+      expect(message).toContain("[Feature](no-ticket): polish R0");
+      expect(message).toContain('loop "polish" iteration 0 completed');
+      expect(message).toContain('commit 1 changed file after loop "polish" iteration 0');
+      expect(message).toContain("not reported");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("commits deletions, renames, and literal paths while leaving pre-existing dirt alone", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-statuses-"));
+    try {
+      await writeFile(join(root, "loop.yml"), LOOP_ONLY_WORKFLOW.replace("        iterations: 3", "        iterations: 1"));
+      const repo = join(root, "repo");
+      await mkdir(repo, { recursive: true });
+      const git = (...args: string[]) => execFileAsync("git", ["-C", repo, ...args], { encoding: "utf8" });
+      await git("init", "-q", "-b", "main");
+      await git("config", "user.name", "Test Agent");
+      await git("config", "user.email", "agent@test.local");
+      await writeFile(join(repo, "seed.txt"), "seed\n");
+      await writeFile(join(repo, "delete-me.txt"), "delete\n");
+      await writeFile(join(repo, "rename-me.txt"), "rename\n");
+      await git("add", "seed.txt", "delete-me.txt", "rename-me.txt");
+      await git("commit", "-qm", "initial");
+
+      // Pre-existing dirt, including a path whose leading/trailing spaces a
+      // trim would corrupt, plus a pre-staged addition. Neither may enter the
+      // loop commit.
+      const preExistingSpacey = "  preexisting notes.md  ";
+      await writeFile(join(repo, preExistingSpacey), "user work\n");
+      await writeFile(join(repo, "pre-staged.md"), "staged before the run\n");
+      await git("add", "pre-staged.md");
+
+      const literalPath = "weird[1]*?.txt";
+      const agentSpacey = "agent notes.md";
+      const session = await testSession(root);
+      await runWorkflow(session, loadAndExecuteWorkflow({
+        root,
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
+        runDir: session.runDir,
+        runId: "loop-commit-statuses",
+        cwd: repo,
+        prompt: "tune gemm",
+        agentRunner: (request) => Effect.promise(async () => {
+          const stage = stageId(request);
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          if (stage === "tune.implement") {
+            // A staged deletion and a staged rename, the two porcelain shapes
+            // that a naive `git add -- <path>` would fail on.
+            await git("rm", "-q", "delete-me.txt");
+            await git("mv", "rename-me.txt", "renamed.txt");
+            // Pathspec metacharacters and a spaced name must be literal.
+            await writeFile(join(repo, literalPath), "literal\n");
+            await writeFile(join(repo, agentSpacey), "notes\n");
+            await writeFile(path, JSON.stringify({ status: "compiled" }));
+          } else if (stage === "tune.measure") {
+            await writeFile(path, JSON.stringify({ decision: "DISCARD" }));
           } else {
             throw new Error(`unexpected stage: ${stage}`);
           }
@@ -7130,295 +7633,131 @@ workflow:
         }),
       }));
 
-      expect(result.stages.find((stage) => stage.stageId === "tune.measure")?.projections)
-        .toContainEqual(expect.objectContaining({ id: "round.decision", value: "DISCARD" }));
-      const after = await execFileAsync("git", ["-C", repo, "rev-list", "--count", "HEAD"], { encoding: "utf8" });
-      expect(after.stdout.trim()).toBe(before.stdout.trim());
-      expect(await readFile(join(repo, "winner.txt"), "utf8")).toBe("must remain uncommitted\n");
+      expect(await gitHashes(repo)).toHaveLength(2);
+      const committed = (await git("log", "-1", "--format=", "--name-status")).stdout;
+      expect(committed).toMatch(/^D\tdelete-me\.txt$/mu);
+      expect(committed).toMatch(/^R100\trename-me\.txt\trenamed\.txt$/mu);
+      expect(committed).toMatch(/^A\tweird\[1\]\*\?\.txt$/mu);
+      expect(committed).toMatch(/^A\tagent notes\.md$/mu);
+      expect(committed).not.toContain("pre-staged.md");
+      expect(committed).not.toContain("preexisting notes.md");
+      // The pre-existing staged addition is untouched and still staged.
+      const staged = await git("diff", "--cached", "--name-only");
+      expect(staged.stdout).toBe("pre-staged.md\n");
+      // The spaced pre-existing path survives byte-for-byte and stays
+      // untracked; a trimmed path would not match this entry.
+      const status = await git("status", "--porcelain=v1", "-z", "--untracked-files=all");
+      expect(status.stdout).toContain(`?? ${preExistingSpacey}\0`);
+      await expect(readFile(join(repo, preExistingSpacey), "utf8")).resolves.toBe("user work\n");
+      const message = (await git("log", "-1", "--format=%B")).stdout;
+      expect(message).toContain("[Feature](no-ticket): tune R0");
+      expect(message).toContain('commit 4 changed files after loop "tune" iteration 0');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("commits each KEEP round winner, suppresses pre-existing changes and DISCARD rounds, then the summary progress record as a [Docs] follow-up", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-"));
+  it("commits under a fallback identity when the repository configures none", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-identity-"));
+    const savedEnv = {
+      GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+      GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+      GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME,
+      GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL,
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME,
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL,
+      EMAIL: process.env.EMAIL,
+    };
     try {
-      await writeFile(join(root, "auto.yml"), AUTO_COMMIT_LOOP_WORKFLOW);
-      const repo = await initRepo(root);
+      await writeFile(join(root, "loop.yml"), LOOP_ONLY_WORKFLOW.replace("        iterations: 3", "        iterations: 1"));
+      const repo = join(root, "repo");
+      await mkdir(repo, { recursive: true });
+      const git = (...args: string[]) => execFileAsync("git", ["-C", repo, ...args], { encoding: "utf8" });
+      await git("init", "-q", "-b", "main");
+      await writeFile(join(repo, "seed.txt"), "seed\n");
+      await git("add", "seed.txt");
+      // The seed commit is setup; the loop commit is the one under test.
+      await git("-c", "user.name=Setup", "-c", "user.email=setup@test.local", "commit", "-qm", "initial");
+      // Remove every ambient identity so only the orchestrator's fallback can
+      // author the loop commit.
+      process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+      process.env.GIT_CONFIG_SYSTEM = "/dev/null";
+      for (const key of ["GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"]) {
+        delete process.env[key];
+      }
+
       const session = await testSession(root);
       await runWorkflow(session, loadAndExecuteWorkflow({
         root,
-        workflowPath: join(root, "auto.yml"),
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
-        runId: "auto-commit",
+        runId: "loop-commit-identity",
         cwd: repo,
-        prompt: "tune gemm TR-1234",
-        agentRunner: tuneRunner(repo),
+        prompt: "tune gemm",
+        agentRunner: (request) => Effect.promise(async () => {
+          const stage = stageId(request);
+          const path = validationPath(request);
+          await mkdir(dirname(path), { recursive: true });
+          if (stage === "tune.implement") {
+            await writeFile(join(repo, "notes.txt"), "no identity configured\n");
+            await writeFile(path, JSON.stringify({ status: "compiled" }));
+          } else {
+            await writeFile(path, JSON.stringify({ decision: "DISCARD" }));
+          }
+          return {
+            sessionId: `${stage}-session`,
+            transcriptPath: `/tmp/${stage}.jsonl`,
+            text: stage,
+            continuation: continuation(`${stage}-session`),
+          };
+        }),
       }));
-      // Initial + round-0 KEEP + round-2 KEEP + summary [Docs] follow-up.
-      expect((await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" })).stdout.trim().split("\n")).toHaveLength(4);
-      const log = await gitLog(repo);
-      // KEEP rounds commit their winner file with the winner-commit subject.
-      expect(log).toContain("[Feature](TR-1234): ");
-      expect(log).toContain("kernel-r0.cc");
-      expect(log).toContain("kernel-r2.cc");
-      // The DISCARD round produced no commit at all.
-      expect(log).not.toContain("kernel-r1.cc");
-      // The pre-existing user change never entered any commit.
-      expect(log).not.toContain("user-preexisting.md");
-      // Summary progress record committed as a [Docs] follow-up.
-      expect(log).toContain("[Docs](TR-1234): ");
-      expect(log).toContain("tests/unit/regression_test.cc");
-      // The latest (summary follow-up) body follows the winner-commit template.
-      const message = (await execFileAsync("git", ["-C", repo, "log", "-1", "--format=%B"], { encoding: "utf8" })).stdout;
-      expect(message).toContain("Root Cause:");
-      expect(message).toContain("Solution:");
-      expect(message).toContain("Impact area:");
-      expect(message).toContain("Fix status:");
-      expect(message).toContain("done");
-      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(runLog).not.toContain("ambiguous projection producers");
+
+      expect(await gitHashes(repo)).toHaveLength(2);
+      const identity = (await git("log", "-1", "--format=%an <%ae>|%cn <%ce>")).stdout.trim();
+      expect(identity).toBe("Piano <piano@localhost>|Piano <piano@localhost>");
     } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  it("skips the winner commit with a warning when changed-files has duplicate stage producers", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-ambiguous-files-"));
+  it("fails the run when the workspace git status cannot be read", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-loop-commit-broken-status-"));
     try {
-      await writeFile(join(root, "auto.yml"), duplicateProducerWorkflow("changed-files"));
+      await writeFile(join(root, "loop.yml"), LOOP_ONLY_WORKFLOW.replace("        iterations: 3", "        iterations: 1"));
       const repo = await initRepo(root);
       const session = await testSession(root);
-      await runWorkflow(session, loadAndExecuteWorkflow({
+      // A corrupt index makes `git status` fail while `git rev-parse` still
+      // reports a worktree: the snapshot must fail the run rather than start
+      // empty and sweep pre-existing changes into the first commit.
+      await writeFile(join(repo, ".git", "index"), "corrupt\n");
+      let workerRuns = 0;
+      const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
         root,
-        workflowPath: join(root, "auto.yml"),
+        workflowPath: join(root, "loop.yml"),
+        recipeRepositoryRoot: WORKFLOW_RECIPE_ROOT,
         runDir: session.runDir,
-        runId: "ambiguous-changed-files",
+        runId: "loop-commit-broken-status",
         cwd: repo,
-        prompt: "tune gemm TR-1234",
-        agentRunner: tuneRunner(repo),
-      }));
+        prompt: "tune gemm",
+        agentRunner: () => {
+          workerRuns += 1;
+          return Effect.die(new Error("the worker must not run"));
+        },
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
 
-      const log = await gitLog(repo);
-      expect(log).not.toContain("kernel-r0.cc");
-      expect(log).toContain("tests/unit/regression_test.cc");
-      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(runLog).toContain('"event":"auto.commit.skipped"');
-      expect(runLog).toContain('"severity":"warn"');
-      expect(runLog).toContain('"reason":"ambiguous projection producers"');
-      expect(runLog).toContain('"id":"workspace.changed-files"');
-      expect(runLog).toContain('"stageId":"tune.implement-a"');
-      expect(runLog).toContain('"stageId":"tune.implement-b"');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("skips the winner commit with a warning when decision has duplicate stage producers", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-ambiguous-decision-"));
-    try {
-      await writeFile(join(root, "auto.yml"), duplicateProducerWorkflow("decision"));
-      const repo = await initRepo(root);
-      const session = await testSession(root);
-      await runWorkflow(session, loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "auto.yml"),
-        runDir: session.runDir,
-        runId: "ambiguous-decision",
-        cwd: repo,
-        prompt: "tune gemm TR-1234",
-        agentRunner: tuneRunner(repo),
-      }));
-
-      const log = await gitLog(repo);
-      expect(log).not.toContain("kernel-r0.cc");
-      expect(log).toContain("tests/unit/regression_test.cc");
-      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(runLog).toContain('"event":"auto.commit.skipped"');
-      expect(runLog).toContain('"severity":"warn"');
-      expect(runLog).toContain('"reason":"ambiguous projection producers"');
-      expect(runLog).toContain('"id":"round.decision"');
-      expect(runLog).toContain('"stageId":"tune.measure-a"');
-      expect(runLog).toContain('"stageId":"tune.measure-b"');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("skips the summary commit with a warning when progress-record has duplicate stage producers", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-ambiguous-progress-"));
-    try {
-      await writeFile(join(root, "auto.yml"), DUPLICATE_PROGRESS_PRODUCER_WORKFLOW);
-      const repo = await initRepo(root);
-      const session = await testSession(root);
-      await runWorkflow(session, loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "auto.yml"),
-        runDir: session.runDir,
-        runId: "ambiguous-progress-record",
-        cwd: repo,
-        prompt: "tune gemm TR-1234",
-        agentRunner: tuneRunner(repo),
-      }));
-
-      const log = await gitLog(repo);
-      expect(log).toContain("kernel-r0.cc");
-      expect(log).not.toContain("regression_test-a.cc");
-      expect(log).not.toContain("regression_test-b.cc");
-      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(runLog).toContain('"event":"auto.commit.skipped"');
-      expect(runLog).toContain('"reason":"ambiguous projection producers"');
-      expect(runLog).toContain('"id":"progress-record.path"');
-      expect(runLog).toContain('"stageId":"summary-a"');
-      expect(runLog).toContain('"stageId":"summary-b"');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("does not infer projections from an undeclared worker payload", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-projections-"));
-    try {
-      const workflow = AUTO_COMMIT_LOOP_WORKFLOW.replace(
-        "          - stage:\n              name: implement",
-        "          - stage:\n              name: decoy\n              worker: basic\n              validate: profile-report\n              from: []\n          - stage:\n              name: implement",
-      ).replace("        entry: implement", "        entry: decoy")
-        .replace("              from: []\n          - stage:\n              name: measure", "              from: [decoy]\n          - stage:\n              name: measure");
-      await writeFile(join(root, "auto.yml"), workflow);
-      const repo = await initRepo(root);
-      const session = await testSession(root);
-      const result = await runWorkflow(session, loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "auto.yml"),
-        runDir: session.runDir,
-        runId: "auto-commit-projections",
-        cwd: repo,
-        prompt: "tune gemm TR-1234",
-        agentRunner: tuneRunner(repo),
-      }));
-      const decoy = result.stages.find((stage) => stage.stageId === "tune.decoy");
-      const implementation = result.stages.find((stage) => stage.stageId === "tune.implement");
-      const measure = result.stages.find((stage) => stage.stageId === "tune.measure");
-      expect(decoy?.projections).toEqual([
-        expect.objectContaining({ id: "workflow.status", value: "timing-only" }),
-      ]);
-      expect(implementation?.projections).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "workspace.changed-files" }),
-        expect.objectContaining({ id: "build.target" }),
-        expect.objectContaining({ id: "change.summary" }),
-      ]));
-      expect(measure?.projections).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: "round.decision" }),
-        expect.objectContaining({ id: "round.hypothesis" }),
-      ]));
-      const log = await gitLog(repo);
-      expect(log).toContain("kernel-r0.cc");
-
-      // The new worker path and deprecated named path feed the exact same
-      // projection shape/IDs, while an undeclared payload yields nothing.
-      const legacy = projectLegacyContractProjections("round-result", {
-        iteration: 0,
-        variable: "x",
-        hypothesis: "h",
-        decision: "KEEP",
-        candidate: { path: "x" },
-        current_best: { path: "x" },
-        promotion: { promoted: true, resulting_best: { path: "x" }, reason: "r" },
-        next_variable: null,
-        records: { round_path: "r", state_path: "s" },
-      });
-      const worker = projectContractProjections("new-round", [
-        { id: "round.decision", pointer: "/decision", format: "string", required: true },
-        { id: "round.hypothesis", pointer: "/hypothesis", format: "string", required: true },
-      ], { decision: "KEEP", hypothesis: "h" });
-      expect(legacy.filter((projection) => ["round.decision", "round.hypothesis"].includes(projection.id)))
-        .toEqual(worker);
-      const blockedLegacy = projectLegacyContractProjections("round-result", {
-        iteration: 0,
-        variable: "blocked-variable",
-        hypothesis: "blocked hypothesis",
-        decision: "BLOCKED",
-        candidate: { path: "candidate" },
-        current_best: { path: "current" },
-        promotion: { promoted: false, resulting_best: { path: "current" }, reason: "blocked" },
-        next_variable: null,
-        blocker: "device unavailable",
-        records: { round_path: "round", state_path: "state" },
-      });
-      expect(blockedLegacy.map((projection) => projection.id)).toEqual([
-        "round.decision",
-        "round.hypothesis",
-      ]);
-      expect(projectContractProjections("decoy", [], {
-        changed_files: ["should-not-commit"],
-        decision: "KEEP",
-      })).toEqual([]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("unstages and surfaces the real stderr when a commit-msg hook rejects the winner commit", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-auto-commit-reject-"));
-    try {
-      await writeFile(join(root, "auto.yml"), AUTO_COMMIT_LOOP_WORKFLOW);
-      const repo = await initRepo(root);
-      // Reject every commit from here on via stderr, like a real hook
-      // commit-msg hook does when the ticket is missing (L4-2round evidence).
-      const hookDir = join(root, "hooks");
-      await mkdir(hookDir, { recursive: true });
-      await writeFile(join(hookDir, "commit-msg"), "#!/bin/sh\necho REJECTED-BY-HOOK: bad ticket >&2\nexit 1\n", { mode: 0o755 });
-      await execFileAsync("git", ["-C", repo, "config", "core.hooksPath", hookDir], { encoding: "utf8" });
-      const session = await testSession(root);
-      await runWorkflow(session, loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "auto.yml"),
-        runDir: session.runDir,
-        runId: "auto-commit-reject",
-        cwd: repo,
-        prompt: "tune gemm, no ticket in mission",
-        agentRunner: tuneRunner(repo),
-      }));
-      // Initial commit only: both KEEP rounds and the [Docs] follow-up were rejected.
-      const log = (await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" })).stdout;
-      expect(log.trim().split("\n")).toHaveLength(1);
-      // A rejected commit must leave NOTHING staged — otherwise a later round's
-      // `git checkout -- <file>` revert would restore the staged candidate
-      // content instead of HEAD (silently corrupting tuning state).
-      const staged = (await execFileAsync("git", ["-C", repo, "diff", "--cached", "--name-only"], { encoding: "utf8" })).stdout;
-      expect(staged.trim()).toBe("");
-      const porcelain = (await execFileAsync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" })).stdout;
-      expect(porcelain).toContain("?? kernel-r0.cc");
-      expect(porcelain).not.toMatch(/^A /mu);
-      // The warning carries the hook's stderr, not Effect's generic wrapper text.
-      const runLog = await readFile(join(session.runDir, "system-log", "log.jsonl"), "utf8");
-      expect(runLog).toContain("auto.commit.failed");
-      expect(runLog).toContain("REJECTED-BY-HOOK");
-      expect(runLog).not.toContain("An unknown error occurred in Effect.tryPromise");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("does not auto-commit when autoCommit is off (opt-in default)", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-no-auto-commit-"));
-    try {
-      await writeFile(join(root, "no.yml"), NO_AUTO_COMMIT_LOOP_WORKFLOW);
-      const repo = await initRepo(root);
-      const session = await testSession(root);
-      await runWorkflow(session, loadAndExecuteWorkflow({
-        root,
-        workflowPath: join(root, "no.yml"),
-        runDir: session.runDir,
-        runId: "no-auto-commit",
-        cwd: repo,
-        prompt: "tune gemm TR-1234",
-        agentRunner: tuneRunner(repo),
-      }));
-      const log = (await execFileAsync("git", ["-C", repo, "log", "--oneline"], { encoding: "utf8" })).stdout;
-      expect(log.trim().split("\n")).toHaveLength(1);
-      expect(log).toContain("initial");
-      expect(log).not.toContain("[Feature]");
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (!Exit.isFailure(exit)) throw new Error("expected the run to fail");
+      expect(Cause.pretty(exit.cause)).toContain("cannot read workspace git status");
+      expect(workerRuns).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

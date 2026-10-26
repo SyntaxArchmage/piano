@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import { z } from "zod";
 import { workspaceRelativePathViolation } from "./workspace-path.js";
@@ -101,8 +101,6 @@ const projectionOutputSchema = z.object({
 
 /** Piano-owned schema for a user-authored worker contract manifest. */
 export const workerContractManifestSchema = z.object({
-  version: z.literal(1),
-  id: z.string().regex(CONTRACT_ID, "must be a stable contract identifier"),
   schema: z.record(z.unknown()).refine(
     (schema) => schema.$schema === JSON_SCHEMA_DRAFT_2020_12,
     `must declare $schema as ${JSON_SCHEMA_DRAFT_2020_12}`,
@@ -167,8 +165,9 @@ export interface ContractMetric {
 
 export interface CompiledWorkerContract {
   readonly path: string;
+  /** The worker this contract belongs to: the manifest file's base name. */
+  readonly worker: string;
   readonly source: string;
-  readonly digest: string;
   readonly manifest: WorkerContractManifest;
   /** The example after the same strip normalization applied to worker output. */
   readonly normalizedExample: unknown;
@@ -1209,11 +1208,11 @@ function projectMetrics(
     if (projected === MISSING || projected === null) {
       if (!output.required) continue;
       return new ContractValidationError({
-        contract: contract.manifest.id,
+        contract: contract.worker,
         message: `required metric output ${output.pointer || "(root)"} is missing`,
       });
     }
-    const normalized = normalizeBenchmarkMetric(contract.manifest.id, output.pointer, projected);
+    const normalized = normalizeBenchmarkMetric(contract.worker, output.pointer, projected);
     if (normalized instanceof ContractValidationError) return normalized;
     metrics.push({ pointer: output.pointer, format: output.format, value: normalized });
   }
@@ -1261,8 +1260,8 @@ export function compileWorkerContract(source: string, path: string): CompiledWor
   }
   const contract: CompiledWorkerContract = {
     path,
+    worker: basename(path, ".json"),
     source,
-    digest: createHash("sha256").update(source).digest("hex"),
     manifest: parsed.data,
     normalizedExample,
     validate,
@@ -1272,7 +1271,7 @@ export function compileWorkerContract(source: string, path: string): CompiledWor
     throw new WorkerContractLoadError(path, `contract example has invalid outputs: ${exampleMetrics.message}`);
   }
   const exampleProjections = projectContractProjections(
-    parsed.data.id,
+    contract.worker,
     parsed.data.outputs.projections,
     normalizedExample,
   );
@@ -1300,7 +1299,7 @@ export function validateWorkerContract(
     return {
       success: false,
       error: new ContractValidationError({
-        contract: contract.manifest.id,
+        contract: contract.worker,
         message: `validation payload could not be cloned for normalization: ${normalized.error}`,
       }),
     };
@@ -1309,15 +1308,15 @@ export function validateWorkerContract(
     return {
       success: false,
       error: new ContractValidationError({
-        contract: contract.manifest.id,
-        message: `validation result failed contract "${contract.manifest.id}": ${formatJsonSchemaErrors(contract.validate.errors)}`,
+        contract: contract.worker,
+        message: `validation result failed contract "${contract.worker}": ${formatJsonSchemaErrors(contract.validate.errors)}`,
       }),
     };
   }
   const metrics = projectMetrics(contract, normalized.value);
   if (metrics instanceof ContractValidationError) return { success: false, error: metrics };
   const projections = projectContractProjections(
-    contract.manifest.id,
+    contract.worker,
     contract.manifest.outputs.projections,
     normalized.value,
   );

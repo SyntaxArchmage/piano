@@ -154,7 +154,6 @@ export interface WorkflowBenchmarkPoint {
   readonly invocationId?: string;
   readonly stageId?: string;
   readonly worker?: string;
-  readonly contractDigest?: string;
 }
 
 /** One trial's canonical evaluation result: the whole system's only metric

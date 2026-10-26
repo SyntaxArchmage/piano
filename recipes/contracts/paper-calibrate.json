@@ -1,0 +1,174 @@
+{
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": [
+      "sources",
+      "section_budget",
+      "storyline_arc",
+      "figure_grammar",
+      "prose_patterns",
+      "reference_spec_path"
+    ],
+    "properties": {
+      "sources": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["path", "role", "resolved"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "role": { "enum": ["figure-grammar", "storyline", "evaluation", "prose", "overall"] },
+            "resolved": { "type": "boolean", "description": "False when the path did not exist; say so rather than substituting another paper." },
+            "pages": { "type": "number", "exclusiveMinimum": 0 },
+            "sections": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "section_budget": {
+        "type": "array",
+        "minItems": 4,
+        "items": {
+          "type": "object",
+          "required": ["section", "pages", "job"],
+          "properties": {
+            "section": { "type": "string", "minLength": 2 },
+            "pages": { "type": "number", "exclusiveMinimum": 0 },
+            "job": { "type": "string", "minLength": 12, "description": "One sentence a writer could follow." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "storyline_arc": {
+        "type": "array",
+        "minItems": 4,
+        "items": {
+          "type": "object",
+          "required": ["move", "how", "exemplar"],
+          "properties": {
+            "move": { "type": "string", "minLength": 3, "description": "context | tension | gap | insight | built | contributions | result" },
+            "how": { "type": "string", "minLength": 12 },
+            "exemplar": { "type": "string", "minLength": 20, "description": "A quoted sentence from a reference paper; a rule without one is unusable." },
+            "source": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "figure_grammar": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["role", "type", "rules"],
+          "properties": {
+            "role": { "type": "string", "minLength": 4 },
+            "type": { "type": "string", "minLength": 3 },
+            "rules": { "type": "array", "items": { "type": "string", "minLength": 8 }, "minItems": 1 },
+            "caption_exemplar": { "type": "string", "minLength": 20 },
+            "reference_figure": { "type": "string", "description": "Where it came from, e.g. 'gemm_sp_paper fig 5'." }
+          },
+          "additionalProperties": false
+        }
+      },
+      "prose_patterns": {
+        "type": "object",
+        "required": ["openers", "transitions", "claims", "banned"],
+        "properties": {
+          "openers": { "type": "array", "items": { "type": "string", "minLength": 20 } },
+          "transitions": { "type": "array", "items": { "type": "string", "minLength": 20 } },
+          "claims": { "type": "array", "items": { "type": "string", "minLength": 20 } },
+          "banned": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 8 },
+            "description": "Constructions the reference papers never use, derived from reading them rather than from generic style advice."
+          }
+        },
+        "additionalProperties": false
+      },
+      "reference_spec_path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The durable markdown spec later stages read as a file."
+      }
+    },
+    "additionalProperties": false
+  },
+  "example": {
+    "sources": [
+      {
+        "path": "../gemm_sp_paper",
+        "role": "figure-grammar",
+        "resolved": true,
+        "pages": 11,
+        "sections": ["Introduction", "Background", "Format", "Kernel design", "Evaluation", "Related work", "Conclusion"]
+      }
+    ],
+    "section_budget": [
+      { "section": "1 Introduction", "pages": 1.5, "job": "Set the tension that the status quo cannot resolve, name the one insight, list contributions, show the headline number before §2." },
+      { "section": "2 Background", "pages": 1.5, "job": "Establish the template paradigm and its three failure dimensions; end able to say why each is fatal." },
+      { "section": "3 Design", "pages": 3, "job": "Present the grammar, then the compiler-harness co-design; every feature paired with its tuning impact." },
+      { "section": "4 Implementation", "pages": 0.75, "job": "State what is real, what is a shortcut, and the artifact layout." },
+      { "section": "5 Evaluation", "pages": 3, "job": "Headline speedup, then per-operator spread, then ablations that isolate each contribution." },
+      { "section": "6 Related work", "pages": 0.75, "job": "Position against template DSLs and autotuners by axis, not paper by paper." },
+      { "section": "7 Conclusion", "pages": 0.5, "job": "Restate the claim at the level of generality it earned, then the open problem." }
+    ],
+    "storyline_arc": [
+      {
+        "move": "tension",
+        "how": "Name a practice that everyone accepts and show its cost in the same sentence.",
+        "exemplar": "Kernel authors today re-state the same tiling decision once per operator, and pay for it in porting cost rather than in cycles.",
+        "source": "../gemm_sp_paper/main.tex §1 ¶2"
+      },
+      {
+        "move": "insight",
+        "how": "One sentence, no hedging, immediately after the gap.",
+        "exemplar": "The decision is the same in both cases; only the spelling differs, so the spelling is what a compiler should own.",
+        "source": "../gemm_sp_paper/main.tex §1 ¶3"
+      },
+      {
+        "move": "gap",
+        "how": "State what the closest prior work cannot deliver, on one named axis, so the boundary is checkable.",
+        "exemplar": "Templated libraries expose the decision but keep it per operator, so a new format still costs a new template.",
+        "source": "../gemm_sp_paper/main.tex §1 ¶2"
+      },
+      {
+        "move": "contributions",
+        "how": "Three to four bullets, each naming the artifact that establishes it, never a promise about future sections.",
+        "exemplar": "We present a single operator grammar whose configurations reach within 8% of hand-tuned kernels on six sparse shapes.",
+        "source": "../gemm_sp_paper/main.tex §1 ¶5"
+      }
+    ],
+    "figure_grammar": [
+      {
+        "role": "headline-speedup",
+        "type": "grouped bar with baseline band",
+        "rules": [
+          "One bar per baseline library, grouped by operator; the fastest custom kernel is annotated with its numeric speedup.",
+          "A dashed horizontal line at 1.0 marks parity, never the fastest baseline.",
+          "The caption's first sentence states the claim; later sentences only tell the reader which axis to compare."
+        ],
+        "caption_exemplar": "Speedup over the released library for each operator. Bars above the dashed line are faster than cuBLAS; the annotated value is the best configuration found by the tuner.",
+        "reference_figure": "gemm_sp_paper fig 5"
+      }
+    ],
+    "prose_patterns": {
+      "openers": [
+        "A subsection opens with the mechanism's consequence, not with what the subsection will discuss: \"The check runs before the kernel, so a tiling error costs a message instead of a hang.\""
+      ],
+      "transitions": [
+        "A section closes by naming the next section's precondition: \"Those checks are cheap only if the compiler already knows the layout, which is what §3.3 provides.\""
+      ],
+      "claims": [
+        "A result is stated with its measurement basis attached: \"1.58x over the released baseline, measured over 240 shapes with the harness in §4.2.\""
+      ],
+      "banned": [
+        "No 'In recent years' or 'With the rapid development of' openings.",
+        "No contribution stated without its validating artifact.",
+        "No figure reference without a reading instruction for the reader."
+      ]
+    },
+    "reference_spec_path": "plan/reference-spec.md"
+  }
+}

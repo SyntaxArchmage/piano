@@ -16,8 +16,6 @@ workflow:
         model: qwen3.8-flash
         thinkingLevel: high
         tools: [Read, Bash, Edit, Write]
-        handoff: preparation.json
-        validate: true
         from: []
 
     - loop:
@@ -35,8 +33,6 @@ workflow:
               model: qwen3.8-flash
               thinkingLevel: high
               tools: [Read, Bash, Edit, Write]
-              handoff: iteration.json
-              validate: true
               from: []
 
           - stage:
@@ -46,8 +42,6 @@ workflow:
               model: qwen3.8-flash
               thinkingLevel: high
               tools: [Read, Bash, Edit, Write]
-              handoff: profile.json
-              validate: true
               from: [profile]
 
           - stage:
@@ -57,8 +51,6 @@ workflow:
               model: qwen3.8-flash
               thinkingLevel: high
               tools: [Read, Bash, Edit, Write]
-              handoff: implementation-inputs.json
-              validate: true
               from: [profile, idea]
 
           - stage:
@@ -68,8 +60,6 @@ workflow:
               model: qwen3.8-flash
               thinkingLevel: high
               tools: [Read, Bash, Edit, Write]
-              handoff: round.json
-              validate: true
               from: [idea, implement]
 
     - stage:
@@ -79,6 +69,4 @@ workflow:
         model: qwen3.8-flash
         thinkingLevel: high
         tools: [Read, Bash, Edit, Write]
-        handoff: tuning.json
-        validate: true
         from: [tune]

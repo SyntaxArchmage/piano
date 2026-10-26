@@ -24,7 +24,7 @@ promotion/restoration and durable round/state writes after the worker exits.
    `verification.report_path`. Absolute paths, `..` escapes, and run-owned
    `/.../invocations/.../result.json` paths are invalid. Compare the measured
    candidate value with the current-best metric using the
-   case direction and threshold. Write the requested `cuda-round-result-v2` to
+   case direction and threshold. Write the result JSON for this stage to
    the supplied result path, including a real candidate digest, raw benchmark
    path/output, and `KEEP` or `DISCARD`.
 4. If compile or verification failed, do not benchmark. Write `COMPILE_FAIL` or

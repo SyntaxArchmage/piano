@@ -12,8 +12,6 @@ workflow:
         memory: false
         thinkingLevel: high
         tools: [read, bash, edit, write]
-        handoff: preparation.json
-        validate: true
         from: []
 
     - loop:
@@ -31,8 +29,6 @@ workflow:
               memory: false
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: iteration.json
-              validate: true
               from: []
 
           - stage:
@@ -42,8 +38,6 @@ workflow:
               memory: false
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: profile.json
-              validate: true
               from: [profile]
 
           - stage:
@@ -53,8 +47,6 @@ workflow:
               memory: false
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: implementation-inputs.json
-              validate: true
               from: [profile, idea]
 
           - stage:
@@ -64,8 +56,6 @@ workflow:
               memory: false
               thinkingLevel: high
               tools: [read, bash, edit, write]
-              handoff: round.json
-              validate: true
               from: [idea, implement]
 
     - stage:
@@ -75,6 +65,4 @@ workflow:
         memory: false
         thinkingLevel: high
         tools: [read, bash, edit, write]
-        handoff: tuning.json
-        validate: true
         from: [tune]

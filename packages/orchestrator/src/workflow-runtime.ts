@@ -195,8 +195,8 @@ export function actorSessionDirectory(
   );
 }
 
-export function mapOverParts(region: WorkflowRegionPlan): readonly [string, readonly string[]] | undefined {
+export function mapOverParts(region: WorkflowRegionPlan): string | undefined {
   if (region.kind !== "map" || region.over === undefined) return undefined;
-  const [source, ...path] = region.over.split(".");
-  return source === undefined || source === "" ? undefined : [source, path];
+  const source = region.over.split(".")[0];
+  return source === undefined || source === "" ? undefined : source;
 }

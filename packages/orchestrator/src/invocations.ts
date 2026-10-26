@@ -3,9 +3,8 @@
  *
  * One NDJSON row per invocation event the orchestrator records — an
  * invocation's `invocation-started` allocation and an accepted attempt's
- * `invocation-accepted` producer evidence. The stream is the metadata home the
- * per-invocation `handoff/record.json` documents used to be: append-only
- * evidence, validated on write by the schemas here and read back tolerantly
+ * `invocation-accepted` producer evidence. The stream is the run's append-only
+ * acceptance evidence, validated on write by the schemas here and read back tolerantly
  * (a torn or unknown row drops, the same contract every run stream keeps).
  *
  * It is evidence, not state: nothing here folds `status.json`, and the state
@@ -32,23 +31,18 @@ const workspaceBindingSchema = z.custom<WorkflowWorkspaceBinding>(
 const metricListSchema = z.custom<readonly ContractMetric[]>((value) => Array.isArray(value));
 const projectionListSchema = z.custom<readonly ContractProjection[]>((value) => Array.isArray(value));
 
-const contractReferenceSchema = z.object({
-  id: z.string().min(1),
-  version: z.literal(1),
-  digest: z.string().min(1),
-  snapshotPath: z.string().min(1),
-});
-
-const resultReferenceSchema = z.object({
-  path: z.string().min(1),
-  sha256: z.string().startsWith("sha256:"),
-  trust: z.enum(["worker", "orchestrator-materialized"]),
+/** Why an accepted result failed its worker contract even after the one repair
+ * turn. The row still records the worker's text and session; downstream
+ * consumers read this warning and treat the result as untrusted. */
+const validationWarningSchema = z.object({
+  worker: z.string().min(1),
+  contractPath: z.string().min(1).optional(),
+  message: z.string().min(1),
 });
 
 /** The envelope every invocation row carries: which run, which job, which
  * invocation, and the flat `inv-<serial>` name its evidence paths use. */
 const invocationRowEnvelope = {
-  version: z.literal(1),
   timestamp: z.string().min(1),
   runId: z.string().min(1),
   jobOrdinal: z.number().int().positive(),
@@ -78,19 +72,17 @@ const invocationAcceptedObject = z.object({
   text: z.string(),
   workspace: workspaceBindingSchema,
   resultPath: z.string().min(1).optional(),
-  result: resultReferenceSchema.optional(),
   metrics: metricListSchema.optional(),
   projections: projectionListSchema.optional(),
-  contract: contractReferenceSchema.optional(),
+  validationWarning: validationWarningSchema.optional(),
   requestedModel: z.string().optional(),
   requestedThinkingLevel: z.string().optional(),
   model: z.string().optional(),
   thinkingLevel: z.string().optional(),
 });
 
-/** One accepted attempt's row. The `result` pin is the payload's only claim:
- * the payload itself stays in its result file, verified by `sha256`, so the
- * stream never holds a second or third copy of a worker's JSON. */
+/** One accepted attempt's row. The payload itself stays in its result file,
+ * so the stream never holds a second or third copy of a worker's JSON. */
 export type InvocationAcceptedRecord = z.infer<typeof invocationAcceptedObject>;
 
 /** One invocation's allocation row: the `ref` its evidence paths use. */
@@ -193,7 +185,6 @@ export function recordInvocationStart(
     if (prior !== undefined) return prior.ref;
     const ref = nextInvocationRef(rows);
     yield* appendInvocationRecord(runDir, {
-      version: 1,
       kind: "invocation-started",
       timestamp: new Date().toISOString(),
       runId: identity.runId,

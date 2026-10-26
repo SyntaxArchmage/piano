@@ -15,8 +15,9 @@
 Piano will replace its tuning-specific metric extraction with one workflow-wide
 trajectory model.
 
-A workflow stage may opt into validation with `validate: true`. The stage's
-worker owns an optional declarative `recipes/<worker>/contract.json`, containing
+A workflow stage is validated automatically when its worker owns a contract.
+The stage's worker owns an optional declarative `recipes/contracts/<worker>.json`,
+containing
 the worker result JSON Schema, an accepted example, and declarations for any
 metric outputs. After a worker result passes that contract, Piano projects the
 declared metrics into normalized records and sends workflow observations through
@@ -33,28 +34,28 @@ The initial recorders are:
 
 Each record pattern owns one append-only JSONL artifact. Existing
 `log.jsonl`, `trace.jsonl`, `trajectory.json`, `progress.jsonl`, `progress.json`,
-handoffs, result files, and harness transcripts remain intact. The new files are
+context inputs, result files, and harness transcripts remain intact. The new files are
 additive and become the common data surface consumed by normal runs and evals.
 
-`WorkflowEvaluator` implements a generic TypeScript capability interface,
-`TrajectoryEvaluator<Input, Output>`. Evals keeps case selection, queuing,
-independent trials, launch association, grader-owned baseline/final benchmark,
-judges, history, variants, and reporting. It stops understanding worker contract
-names or worker payload shapes.
+`WorkflowEvaluator` is the generic evaluation capability. Evals keeps case
+selection, queuing, independent trials, launch association, grader-owned
+baseline/final benchmark, judges, history, variants, and reporting. It stops
+understanding worker contract names or worker payload shapes.
 
 ## 2. Problem
 
 ### 2.1 Metrics are inferred from one GPU-specific payload shape
 
-Today evals discovers progress measurements by reaching into
-`progress.jsonl` and assuming `resultPayload.benchmark.best`. This couples the
-evaluation layer to `cuda-round-result`, prevents custom workers from declaring
-their own outputs, and makes throughput/latency support accidental rather than a
-general workflow capability.
+Before this design, evals discovered progress measurements by reaching into
+`progress.jsonl` and assuming `resultPayload.benchmark.best`. This coupled the
+evaluation layer to one GPU-specific payload shape, prevented custom workers
+from declaring their own outputs, and made throughput/latency support
+accidental rather than a general workflow capability.
 
-### 2.2 Worker contracts are compiled into Piano source
+### 2.2 Worker contracts were compiled into Piano source
 
-Workflow YAML names validators from a source-code Zod registry. A custom worker
+Before this design, workflow YAML named validators that were compiled into
+Piano's TypeScript source. A custom worker
 can change its prompt and skills but cannot own or evolve its result contract
 without changing Piano itself. The schema authority is therefore in the wrong
 layer.
@@ -84,8 +85,9 @@ record the same normalized trajectory that evals reads.
 ## 3. Goals
 
 1. Let each worker own its result contract as declarative data in its recipe.
-2. Make `validate: true` the only new DSL primitive needed to validate a worker
-   and expose its declared metrics.
+2. Make the worker-owned contract the only new artifact needed to validate a
+   worker and expose its declared metrics; contract presence selects it, with no
+   workflow switch.
 3. Record benchmark, duration, token, and tool-call trajectories with stable,
    versioned, invocation-level attribution.
 4. Let loop metadata naturally produce iteration-indexed records without a
@@ -126,7 +128,7 @@ required by the workflow or evaluator.
 
 ### 5.2 The worker owns the payload; Piano owns the normalized record
 
-`contract.json` defines what the worker must write. Piano validates that unknown
+The worker contract defines what the worker must write. Piano validates that unknown
 payload at the worker boundary, then converts only declared outputs into
 Piano-owned records. Evals reads those records and never imports concrete worker
 payload types.
@@ -152,7 +154,7 @@ workflow success.
 
 ## 6. Terminology
 
-- **Worker contract**: `recipes/<worker>/contract.json`, owned by one worker.
+- **Worker contract**: `recipes/contracts/<worker>.json`, owned by one worker.
 - **Accepted payload**: the worker result after JSON parsing, contract
   validation, declared metric normalization, and any preserved domain hook.
 - **Workflow observation**: a normalized Piano-internal lifecycle event supplied
@@ -171,26 +173,24 @@ workflow success.
 ### 7.1 Location and ownership
 
 ```text
-recipes/<worker>/
-├── agents.md
-├── contract.json       # optional, worker-owned
-└── skills/
+recipes/
+├── contracts/
+│   └── <worker>.json   # optional, worker-owned
+└── <worker>/
+    ├── agents.md
+    └── skills/
 ```
 
 Every concrete GPU worker that currently uses a built-in validator receives its
 own contract file. CUDA and Triton workers may start with equivalent contracts,
-but each owns an independent file and may evolve independently. The CUDA and
-Triton round contracts use distinct diagnostic ids (`cuda-round-result-v2` and
-`triton-round-result`); worker identity plus contract digest remains the full
-lineage key, so equivalent generic stage contracts may retain the same id. New
-GPU workflow execution does not take its payload schema from Piano source.
+but each owns an independent file and may evolve independently. The contract's
+identity is its worker name; there is no manifest id or digest. New GPU workflow
+execution does not take its payload schema from Piano source.
 
-### 7.2 Manifest v1
+### 7.2 Manifest
 
 ```json
 {
-  "version": 1,
-  "id": "cuda-round-result-v2",
   "schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -272,12 +272,10 @@ Manifest fields:
 
 | Field | Meaning |
 |---|---|
-| `version` | Piano worker-contract manifest version. Initially `1`. |
-| `id` | Stable diagnostic identity. It is not selected by workflow YAML. |
 | `schema` | JSON Schema Draft 2020-12 for the complete result payload. |
 | `example` | Prompt guidance; it must itself pass the schema and output normalization at load time. |
 | `outputs.metrics` | Optional list of task metric projections. |
-| `outputs.projections` | Optional worker-owned semantic projections for generic handoff/progress transport. |
+| `outputs.projections` | Optional worker-owned semantic projections for generic acceptance/progress transport. |
 | `pointer` | RFC 6901 JSON Pointer into the accepted payload. No custom selector language. |
 | `format` | Metric declarations use Piano's normalized `benchmark/v1` protocol; semantic projections use a declared generic format such as `string` or `json`. |
 | `required` | If true, a missing/null pointer rejects the result and enters normal repair. If false, no corresponding metric or projection record is emitted when absent. A present value must always normalize successfully. |
@@ -286,10 +284,11 @@ Manifest fields:
 
 Worker recipes are user-editable data. Loading `.ts` or Zod source would execute
 user code, require a TypeScript runtime, couple recipes to Piano's Zod version,
-and make contract snapshots non-portable. JSON Schema is declarative, language
-neutral, serializable, and digestible. Piano compiles Draft 2020-12 schemas with
-Ajv in strict, all-errors mode during workflow loading, so malformed schemas and
-invalid examples fail before dispatch rather than becoming runtime surprises.
+and make run-local contract copies non-portable. JSON Schema is declarative,
+language neutral, serializable, and inspectable. Piano compiles Draft 2020-12
+schemas with Ajv in strict, all-errors mode during workflow loading, so
+malformed schemas and invalid examples fail before dispatch rather than
+becoming runtime surprises.
 
 ### 7.4 Why JSON Pointer, not a `select` or `recorder` DSL field
 
@@ -322,15 +321,18 @@ normalized internal observation or record.
 - stage:
     name: measure
     worker: cuda-benchmark-store
-    validate: true
     from: [idea, implement]
 ```
 
-- Omitted `validate`: execute the worker without requiring a result contract.
-- `validate: true`: resolve `contract.json` from that stage's worker directory.
-- `validate: true` with no contract: fail workflow load before any worker runs.
-- `validate: false`: rejected as unnecessary and ambiguous; omit the field.
-- A validating stage must still allow a tool capable of writing its result.
+- Contract presence is the only switch: a stage whose worker owns
+  `recipes/contracts/<worker>.json` validates its result, and a worker without
+  one runs unvalidated.
+- The DSL has no `validate` field. A workflow that still declares it fails
+  parse with a removal message instead of silently changing behavior.
+- A malformed contract or invalid example fails workflow load before any
+  worker runs.
+- A contract-bearing stage must still allow a tool capable of writing its
+  result.
 
 There is no `metrics`, `recorder`, `select`, `sourceWorker`, or tuning marker in
 the workflow DSL. The stage already names the worker, the worker names its
@@ -339,63 +341,46 @@ contract by ownership, and the contract declares metric outputs.
 `loadWorkflow` resolves and compiles every stage's worker resources once and
 stores those immutable resources on `LoadedWorkflow`, keyed by worker and
 harness. Execution consumes that cached resource snapshot; it does not resolve
-the worker again against a different recipe root. Contract parsing is enabled
-for a worker/harness resource key only when at least one matching stage declares
-`validate: true`; an unused malformed contract cannot break an unvalidated
-stage. Before a validating worker starts, Piano writes the exact loaded
-`contract.json` into the run's `contracts/` directory, injects that snapshot as
-worker context, shows the validated example in the result instructions, and
-supplies the invocation-local result path. This is how a worker learns both
-which contract applies and which fields to write; canonical execution consumes
-contract projections rather than worker-specific source-code payload switches.
-Historical workflow map paths and historical run payloads are interpreted only
-inside their explicit, deprecated compatibility adapters.
+the worker again against a different recipe root. Contract parsing runs for
+every worker/harness resource key, so a malformed contract cannot hide behind a
+stage that does not seem to use it. Before a contract-bearing worker starts,
+Piano copies the exact loaded contract into the run's `contracts/` directory
+under the worker name, injects that run-local copy as worker context, shows the
+validated example in the result instructions, and supplies the invocation-local
+result path. This is how a worker learns both which contract applies and which
+fields to write; canonical execution consumes contract projections rather than
+worker-specific source-code payload switches.
+A map source must declare the worker-contract `workflow.map-items` projection;
+no historical payload adapter remains.
 
-### 8.2 Legacy compatibility
+A malformed or missing result gets one repair turn in the same actor session.
+A result that still fails that turn is accepted with a `validationWarning`
+rather than failing the stage or scheduling a retry: the warning travels into
+`inputs.json`, the prompt of every downstream consumer, and tournament
+selection excludes the branch. Worker execution errors still fail the stage.
 
-The old `validate: <contract-name>` syntax remains readable for one compatibility
-window so historical/custom workflow files do not fail immediately. It:
+### 8.2 Legacy compatibility (removed)
 
-1. resolves only through the existing built-in registry;
-2. emits a user-visible `PIANO_LEGACY_WORKER_CONTRACT` warning during workflow
-   load and retains a structured warning in the run log during execution;
-3. does not support new metric declarations;
-4. is not used by any migrated built-in GPU workflow;
-5. is covered by explicit compatibility tests and can be removed separately.
+Both the old `validate: <contract-name>` syntax and the boolean `validate`
+switch were removed. Any `validate` key is rejected at parse time with a
+migration message pointing at `recipes/contracts/<worker>.json`. Legacy
+projections and the per-stage `stage.validation.legacy` event were removed
+together; only worker-owned contracts participate in result validation.
 
-This boundary is intentionally one-way: no new source-defined worker contracts
-may be added to the registry.
+One legacy boundary remains:
 
-The warning is part of workflow loading, not eval-only reporting. After parsing,
-`loadWorkflow` recursively collects stages inside the top level, loops, and maps.
-If any stage uses a string validator, one `process.emitWarning` call for that load
-lists every affected stage and contract name, identifies the workflow path, uses
-type `DeprecationWarning` and code `PIANO_LEGACY_WORKER_CONTRACT`, and gives the
-`contract.json` plus `validate: true` migration. This happens before worker
-resource resolution completes and before any worker is dispatched. The existing
-per-stage `stage.validation.legacy` run-log event remains so persisted evidence
-also explains which compatibility path executed.
-
-There are two deliberately separate legacy boundaries:
-
-1. **Named-contract compatibility** reads old workflow source. It includes the
-   string-valued DSL form, source-defined schema registry, a deprecated
-   validation adapter, and warning. After adaptation, accepted results use the
-   same normalized handoff/progress/trajectory runtime as canonical worker
-   contracts. It is temporary and its removal is tracked by GitLab issue #48
-   after the warning has shipped for one compatibility window.
-2. **`LegacyRunAdapter` compatibility** reads historical run artifacts that
-   predate native trajectory streams. Removing named contracts must not remove
-   this adapter or make old runs unevaluable.
+- **`LegacyRunAdapter` compatibility** reads historical run artifacts that
+  predate native trajectory streams. Removing named validators does not remove
+  this adapter or make old runs unevaluable.
 
 ## 9. Validation and recording lifecycle
 
 ```text
 workflow load
     │
-    ├─ resolve recipes/<worker>/contract.json when validate:true
+    ├─ resolve recipes/contracts/<worker>.json for every stage worker
     ├─ validate manifest + JSON Schema + example
-    └─ compute immutable contract digest
+    └─ copy each contract into the run under the worker name
             │
             ▼
 stage attempt starts ──► WorkflowTrajectory.observe(stage_attempt_started)
@@ -407,9 +392,9 @@ worker agent measures and writes result.json
 generic JSON validation
     │ fail                         │ success
     └─ same actor repair turn      ▼
-                         project declared metrics and semantic outputs
-                           │ fail                 │ success
-                           └─ same repair path    ▼
+       (one turn; failure after    project declared metrics and semantic outputs
+        it becomes a warning)        │ fail                 │ success
+                                     └─ same repair path    ▼
                                           preserved domain hook
                                                    │
                                                    ▼
@@ -417,7 +402,7 @@ generic JSON validation
                                                    │
                          ┌─────────────────────────┴──────────────┐
                          ▼                                        ▼
-              existing handoff/progress                 stage_accepted observation
+              existing acceptance/progress                 stage_accepted observation
                                                                │
                                                                ▼
                                                      WorkflowTrajectory
@@ -438,30 +423,31 @@ eval evidence to fail.
 
 | Owner | Responsibility | Must not own |
 |---|---|---|
-| `recipes/<worker>/contract.json` | Editable worker payload schema, accepted example, metric pointers, and semantic projections | Runtime classes, executable validation code, workflow scheduling |
+| `recipes/contracts/<worker>.json` | Editable worker payload schema, accepted example, metric pointers, and semantic projections | Runtime classes, executable validation code, workflow scheduling |
 | `packages/contract/src/worker-contract.ts` | Parse the Piano-owned manifest with Zod, compile its payload JSON Schema with Ajv, validate results, normalize declared metrics, and produce guidance | Worker-name switches, workflow lookup, eval policy |
-| `packages/orchestrator/src/workflow.ts` | Parse `validate` and the workflow AST | Concrete worker payload schemas |
-| `packages/orchestrator/src/workflow-file.ts` | Resolve worker/harness resources, pin compiled contracts on `LoadedWorkflow`, fail missing contracts early, and emit the legacy load warning | Running workers or evaluating scores |
-| `packages/orchestrator/src/workflow-execution.ts` | Snapshot/inject the pinned contract, provide the result path, run validation and same-actor repair, preserve explicit GPU materialization, and emit accepted observations | Selecting metrics by worker name or scoring trajectories |
+| `packages/orchestrator/src/workflow.ts` | Parse the workflow AST | Concrete worker payload schemas |
+| `packages/orchestrator/src/workflow-file.ts` | Resolve worker/harness resources, compile every present contract onto `LoadedWorkflow`, fail malformed contracts and contract-bearing stages without a write/exec tool | Running workers or evaluating scores |
+| `packages/orchestrator/src/workflow-execution.ts` | Write/inject the run-local contract copy, provide the result path, run validation and same-actor repair, turn a surviving contract failure into a warning, preserve explicit GPU materialization, and emit accepted observations | Selecting metrics by worker name or scoring trajectories |
 | `packages/trajectory` | Define normalized observations/records, dispatch them through `WorkflowTrajectory`, own recorder files and their local score functions, and maintain the trajectory index | Worker execution, agent repair, grader truth |
-| `packages/evals/src/workflow-evaluator.ts` | Implement the generic `TrajectoryEvaluator` capability by reading native streams and applying recorder scores | Worker contracts, payload-field knowledge, workflow execution |
+| `packages/evals/src/workflow-evaluator.ts` | Implement the generic workflow evaluation capability by reading native streams and applying recorder scores | Worker contracts, payload-field knowledge, workflow execution |
 | `packages/evals/src/legacy-run-adapter.ts` | Isolate reconstruction of pre-migration run evidence | New-run recording or named workflow-contract compatibility |
-| `packages/contract/src/schemas.ts` | Temporary registry for string-valued legacy validators only | Any new contract or metric protocol |
 
 The concrete control and data ownership chain is:
 
 1. `loadWorkflow` uses `stage.worker` and `stage.harness` as the worker-resource
-   key. Only `validate: true` requests and compiles that worker's
-   `contract.json`; omission leaves the stage unvalidated.
-2. Before dispatch, execution snapshots the exact loaded contract, injects its
-   example as guidance, and gives the worker an invocation-local result path.
+   key and compiles `recipes/contracts/<worker>.json` whenever it exists. A
+   missing contract leaves the stage unvalidated; a malformed one fails load.
+2. Before dispatch, execution writes the exact loaded contract to the run-local
+   copy, injects its example as guidance, and gives the worker an
+   invocation-local result path.
 3. The worker measures task performance and writes its payload. Schema failure,
    missing required metrics, or invalid normalized metrics enters the existing
    one-turn same-actor repair path.
 4. Only an accepted payload can emit `stage_accepted`; its normalized metrics,
-   contract lineage, and declared semantic projections then flow through the
-   shared handoff/progress/trajectory path. Runtime duration, tokens, and tools
-   come from orchestrator/harness observations instead of the worker payload.
+   worker name and run-local contract copy, and declared semantic projections
+   then flow through the shared acceptance/progress/trajectory path. Runtime
+   duration, tokens, and tools come from orchestrator/harness observations
+   instead of the worker payload.
 5. Normal user runs and eval-launched runs use this same path and artifact
    layout. Evals adds queueing and independent grader measurements, then reads
    the already-recorded trajectories through `WorkflowEvaluator`.
@@ -517,7 +503,7 @@ The word “selection” therefore means a JSON Pointer declared beside the work
 payload schema; it is not a separate recorder or workflow primitive. The loop
 runtime supplies iteration attribution to every observation. A measure worker
 knows to emit throughput or latency because its own injected contract example
-names that metric, while the workflow only says `worker` plus `validate: true`.
+names that metric, while the workflow only names the `worker`.
 
 ## 11. WorkflowTrajectory and recorder interfaces
 
@@ -548,10 +534,6 @@ interface TrajectoryRecorder<TRecord, TScore>
   score(records: readonly TRecord[]): TScore;
 }
 
-interface TrajectoryEvaluator<TInput, TResult> {
-  evaluate(input: TInput): Effect.Effect<TResult, TrajectoryEvaluationError>;
-}
-
 final class WorkflowTrajectory {
   static open(
     runDir: string,
@@ -562,17 +544,15 @@ final class WorkflowTrajectory {
   close(status: WorkflowCompletion): Effect.Effect<void, never>;
 }
 
-final class WorkflowEvaluator
-  implements TrajectoryEvaluator<WorkflowEvaluationInput, WorkflowEvaluationResult> {
-  // Composes recorder read/score capabilities.
+final class WorkflowEvaluator {
+  // Composes recorder read/score capabilities over WorkflowEvaluationInput.
 }
 ```
 
 The exact Effect environment is implementation-owned. Public inputs and outputs
 remain readonly, unknown data is parsed at boundaries, and record types are
-discriminated/versioned. `TrajectoryEvaluator` is only a structural capability;
-`WorkflowEvaluator` implements it directly. It is not stored as a field or
-treated as a subsystem inside `WorkflowEvaluator`.
+discriminated/versioned. `WorkflowEvaluator` composes the recorder read/score
+capabilities directly; no separate evaluator interface layer is defined.
 
 `WorkflowTrajectory` dispatches observations to recorders in registration order,
 similar to a compiler pass manager. Recorders do not call one another and do not
@@ -603,7 +583,7 @@ interface TrajectoryRecordContext {
 ```
 
 `iteration` comes from the existing loop runtime frame. It is never parsed from
-a worker payload. A loop stage marked only with `validate: true` therefore
+a worker payload. A loop stage whose worker owns a contract therefore
 naturally produces an iteration-indexed benchmark trajectory.
 
 Invocation identity is mandatory because one actor/session transcript can span
@@ -625,7 +605,7 @@ invocation attribution remain the source of truth.
 ├── progress.jsonl                   # existing accepted-stage ledger
 ├── progress.json                    # existing latest progress view
 ├── contracts/
-│   └── <sha256>.json                # exact worker contract snapshots
+│   └── <worker>.json                # run-local worker contract copies
 ├── trajectories/
 │   ├── index.json                   # stream discovery + completeness
 │   ├── benchmark.jsonl              # BenchmarkRecordV1
@@ -633,7 +613,7 @@ invocation attribution remain the source of truth.
 │   ├── token-usage.jsonl            # TokenUsageRecordV1
 │   ├── tool-calls.jsonl             # ToolCallRecordV1
 │   └── selection.jsonl              # SelectionRecordV1
-└── executions/...                   # existing results/handoffs/transcripts
+└── executions/...                   # existing results/context/transcripts
 ```
 
 `trajectories/index.json` contains:
@@ -657,7 +637,7 @@ rewriting the index.
 
 - Input: normalized metrics on `stage_accepted`.
 - Output: one record per declared and present metric.
-- Keeps contract id/version/digest and JSON Pointer for lineage.
+- Keeps the worker identity and JSON Pointer for attribution.
 - Preserves the worker's sample set and summary; does not rerun benchmarks.
 - Score: per-name/unit ordered trajectory plus the direction-aware best value
   and chronological last value. Comparative change remains an evaluator/report
@@ -697,24 +677,21 @@ rewriting the index.
   `trajectory.json` and complete in transcripts.
 - Score: total calls, failures, unique names, and summed paired duration.
 
-## 15. Contract snapshots and reproducibility
+## 15. Contract run copies and reproducibility
 
 At workflow load and first use of a contract in a run, Piano:
 
 1. reads its exact bytes while resolving `LoadedWorkflow` resources;
 2. validates the manifest, JSON Schema, example, and projected example outputs;
-3. computes a SHA-256 digest and pins the compiled contract in the loaded
-   workflow;
-4. before dispatch, writes the exact document to
-   `contracts/<digest>.json` atomically and injects it as worker context;
-5. stores `{ id, version, digest, snapshotPath }` in accepted progress/handoff
+3. before dispatch, writes the exact document to
+   `contracts/<worker>.json` atomically and injects it as worker context;
+4. stores the worker name and result path in accepted progress/acceptance
    metadata and benchmark records.
 
-Snapshots are immutable and deduplicated by digest. Every attempt under one
-loaded workflow uses the pinned contract, including same-actor repair. A later
-workflow reload (including a resumed process) may load changed recipe bytes and
-therefore use a new digest; records expose that boundary rather than silently
-rewriting history.
+The run-local copy is the contract's identity. It is written once and reused by
+every attempt under one loaded workflow, including same-actor repair. No id,
+version, digest, or content hash rides accepted evidence, so a later workflow
+reload never pretends to pin bytes it did not verify.
 
 ## 16. Evals design
 
@@ -774,8 +751,8 @@ Core evals no longer:
 `WorkflowEvaluator` reads `trajectories/index.json`, validates each known stream,
 and delegates scoring to the corresponding recorder implementation. Unknown
 future stream ids remain discoverable evidence and do not crash evaluation.
-Malformed declared streams, records attributed to another execution, and
-missing or digest-mismatched contract snapshots fail evidence explicitly.
+Malformed declared streams and records attributed to another execution fail
+evidence explicitly.
 
 The output separates:
 
@@ -792,7 +769,7 @@ Historical runs without `trajectories/index.json` remain evaluable through one
 isolated compatibility adapter. It may reconstruct:
 
 - tokens/tools from `trajectory.json` and transcripts;
-- stage timing/attribution from log, handoff, and progress records;
+- stage timing/attribution from log, acceptance, and progress records;
 - old benchmark points from legacy `progress.jsonl` payloads.
 
 The adapter is explicitly incomplete: malformed legacy JSONL, trajectory events,
@@ -812,53 +789,55 @@ confused with a validated v1 trajectory stream.
 
 | Failure | Result |
 |---|---|
-| Missing contract for `validate: true` | Workflow load fails before execution. |
+| Missing worker contract | Stage runs unvalidated; no structured result is required. |
 | Invalid contract manifest/schema/example | Workflow load fails with worker/path detail. |
 | Worker result missing or invalid JSON | Existing same-actor validation repair path. |
 | Payload fails JSON Schema | Existing same-actor validation repair path with concise JSON Pointer errors. |
 | Required metric pointer missing | Validation repair. |
 | Present metric fails normalized protocol | Validation repair. |
+| Contract failure survives the one repair turn | Stage is accepted with a `validationWarning`; the workflow continues and downstream inputs/prompts treat the result as untrusted. |
 | Optional metric pointer absent | Stage may be accepted; no fabricated metric record. |
-| Contract snapshot write fails | Validating stage does not start because reproducibility cannot be established. |
+| Run-local contract copy write fails | Validating stage does not start because its context cannot be injected. |
 | Recorder stream write fails after acceptance | Workflow continues; log error and mark trajectory incomplete. |
-| Contract snapshot later missing or digest-mismatched | Evals marks native trajectory evidence incomplete. |
 | Evals sees incomplete/malformed new stream | Evidence fails closed; task result remains separately reported. |
 | Evals sees no new index on historical run | Use `LegacyRunAdapter`, marked legacy. |
 
 ## 18. Migration plan
 
-1. Add worker-contract manifest loading, JSON Schema validation, digesting, and
-   `validate: true`; retain the named registry only as a deprecated reader.
-2. Move all concrete CUDA/Triton schemas and examples into their worker recipe
-   directories. Migrate built-in workflows to `validate: true`.
+1. Add worker-contract manifest loading and JSON Schema validation; contract
+   presence alone selects it, and all validation authority moves to
+   `recipes/contracts/`.
+2. Move all concrete CUDA/Triton schemas and examples into the flat
+   `recipes/contracts/` directory. Built-in workflows carry no validation switch.
 3. Add normalized trajectory protocols, `WorkflowTrajectory`, and the four
    recorders. Wire observations at existing workflow execution boundaries.
-4. Snapshot contracts and attach lineage to accepted evidence.
+4. Copy contracts into the run under the worker name; accepted evidence records
+   the worker name and the run-local contract copy, never a version or digest.
 5. Add `WorkflowEvaluator`; migrate eval result/scoring/reporting to its output.
 6. Remove active `write`/`tuning` branching and migrate case manifests.
 7. Add legacy reconstruction for pre-migration runs.
 8. Keep existing artifact writers and current CUDA/Triton promotion behavior
    intact.
-9. During the compatibility window, warn at workflow load and in persisted run
-   logs for every named validator. After that window, execute GitLab issue #48
-   to reject string validators and remove only the named-contract adapter.
+9. The compatibility window is closed: string validators are rejected at
+   parse time; the warning and legacy run-log event are removed.
 
 ## 19. Acceptance criteria
 
 ### Contracts and DSL
 
-- A custom recipe can add `contract.json`; `validate: true` loads it without a
-  Piano source change.
-- Missing/malformed contracts fail before the first worker invocation.
+- A custom recipe can add `recipes/contracts/<worker>.json`; the stage picks it
+  up without a Piano source change or a workflow switch.
+- Malformed contracts and invalid examples fail before the first worker
+  invocation; a missing contract leaves the stage unvalidated.
 - Contract examples are checked at load time.
-- A failed result reopens the same actor and succeeds after a corrected result.
-- Built-in CUDA and Triton workflows contain no named `validate` values.
+- A failed result reopens the same actor and succeeds after a corrected result;
+  a failure that survives that one repair turn is accepted with a
+  `validationWarning` instead of failing the stage.
+- Built-in CUDA and Triton workflows carry no `validate` switch.
 - No built-in GPU workflow selects a concrete payload schema from Piano
-  TypeScript. Existing source-defined schemas remain reachable only through the
-  explicitly deprecated string-validator compatibility path.
-- A workflow that still uses string-valued validation emits the user-visible
-  `PIANO_LEGACY_WORKER_CONTRACT` load warning with migration guidance and retains
-  a structured `stage.validation.legacy` event in its run log.
+  TypeScript. Only worker-owned contracts validate results.
+- A workflow that still declares any `validate` value fails at parse time with
+  removal guidance pointing at `recipes/contracts/<worker>.json`.
 
 ### Trajectory recording
 
@@ -871,7 +850,8 @@ confused with a validated v1 trajectory stream.
   as repeated cumulative snapshots.
 - Tool calls and durations carry the correct stage, invocation, attempt, and
   iteration.
-- Every metric record links to an immutable contract digest.
+- Every metric record links to its worker; the run-local contract copy is the
+  identity.
 - Existing run artifacts remain byte-shape compatible for their current readers.
 
 ### Evals
@@ -900,32 +880,32 @@ confused with a validated v1 trajectory stream.
 
 1. **Unified workflow model.** Tuning is an ordinary workflow with loop metadata
    and metric-producing workers.
-2. **Worker-local declarative contracts.** New schema authority lives in recipe
-   directories, not evals or the legacy source registry.
-3. **`validate: true`.** Worker identity already selects the contract.
+2. **Worker-local declarative contracts.** Schema authority lives in
+   `recipes/contracts/`, not in evals or Piano source.
+3. **Automatic contract selection.** Worker identity already names the contract;
+   no stage-level `validate` field exists.
 4. **JSON Schema + JSON Pointer.** Declarative validation and minimal projection
    without executing user code or inventing an expression language.
 5. **One benchmark recorder.** Throughput and latency differ in metadata and
    direction, not record lifecycle.
 6. **Trajectory as pass manager.** `WorkflowTrajectory` drives independent
    recorders but never drives workers.
-7. **Capability interface.** `TrajectoryEvaluator` describes behavior;
-   `WorkflowEvaluator` implements it directly.
+7. **Generic evaluator.** `WorkflowEvaluator` composes recorder read/score
+   capabilities without a separate evaluator interface.
 8. **Additive evidence.** Current log/trace/trajectory/progress/transcript files
    are preserved.
 9. **Shared run/eval artifacts.** Evals reads what normal runs already record.
 10. **Internal Zod only.** User contracts stay portable JSON.
 11. **Independent grader truth.** Validated worker metrics remain evidence, not
     the final correctness/performance authority.
-12. **Bounded compatibility.** Named validators and old-run reconstruction are
-    isolated migration adapters, not the new design.
+12. **Bounded compatibility.** Old-run reconstruction is an isolated migration
+    adapter; named validators are removed, not adapted.
 13. **Preserved transcript topology.** A case is one logical run, while its
     independent worker sessions retain their existing physical transcripts;
     trajectory records link them instead of creating a lossy merged transcript.
-14. **Two-surface deprecation.** The process warning reaches an interactive user
-    before execution; the structured run-log event preserves the same fact for
-    later diagnosis. Both belong to the temporary named-contract adapter and are
-    removed together, independently of historical-run support.
+14. **No named-validator compatibility layer.** Validation comes only from
+    `recipes/contracts/<worker>.json`; historical run evidence remains readable
+    through the legacy reconstruction path.
 
 ### Rejected
 
@@ -945,10 +925,10 @@ confused with a validated v1 trajectory stream.
 2. Recorder failures are evidence failures, not workflow-result failures,
    because recording occurs after accepted work and must not trigger duplicate
    agent actions.
-3. Contract snapshot failure is earlier and fatal because a validating stage
-   must not run under an unrecorded mutable contract.
-4. Built-in workflows migrate immediately; string validation remains only to
-   read existing custom workflows for one compatibility window.
+3. Run-local contract copy failure is earlier and fatal because a validating
+   stage must not run under an unrecorded mutable contract.
+4. Built-in workflows migrate immediately; string validation is rejected at
+   parse time rather than kept as a compatibility window.
 5. GPU round materialization is an explicit contract-owned capability. A
    validating worker opts in by declaring `round.materialization-v1` together
    with the complete required semantic projections and formats. The executor
@@ -959,8 +939,8 @@ confused with a validated v1 trajectory stream.
 
 ## 21. Open questions
 
-There are no blocking product questions for implementation. Named-contract
-removal is no longer an implicit open question: GitLab issue #48 owns it and may
-start only after the warning has shipped for one compatibility window. Future
-GPU materialization changes must be proposed as new protocol versions rather
-than as worker-name or contract-ID switches.
+There are no blocking product questions for implementation. The named-validator
+compatibility layer has been removed; validation comes only from
+`recipes/contracts/<worker>.json`. Future GPU materialization changes must be
+proposed as new protocol versions rather than as worker-name or contract-ID
+switches.

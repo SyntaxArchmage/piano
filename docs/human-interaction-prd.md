@@ -261,7 +261,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 | **V1** | **多 prompt 调优会话里，用量每次提交归零** | `tui.ts:1072` 每次 `submitPrompt` 执行 `stats = emptyRunStats()`；`tui.ts:828` 接管 run 时同样归零。而 `run-stats.ts:1-8` 的注释自称"ONE running total per run … so the footer can always report the whole run's consumption"——**两处意图互相矛盾**。调优 = 一个 run 多次 prompt，用户最想看的恰是 run 级累计 |
 | **V2** | 没有 per-stage token 归属 | footer 只有全局 `tokens ↑↓`；DAG 有 per-stage 耗时但无 per-stage token。`usage` 事件在 `trajectory.ts:231` 只作为一条 ledger 行，不做 stage 归集。**"哪个 stage 烧了钱"无法回答** |
 | **V3** | 完全没有成本（金额）会计 | 全仓无 cost/price 计算 |
-| **V4** | **stage prompt 不可见** | `stagePrompt`（`workflow-execution.ts:556-621`）会内联 handoff 上下文、validation guidance、repair 原因、signoff feedback，但 chat 只回显用户原始输入（`tui.ts:1070` 的 `renderUserMessage(prompt)`）。想确认"模型到底被告知了什么"必须去读 harness transcript 文件 |
+| **V4** | **stage prompt 不可见** | `stagePrompt`（`workflow-execution.ts:556-621`）会内联自动 inputs 上下文、validation guidance、repair 原因、signoff feedback，但 chat 只回显用户原始输入（`tui.ts:1070` 的 `renderUserMessage(prompt)`）。想确认"模型到底被告知了什么"必须去读 harness transcript 文件 |
 | **V5** | `/resume` 后 trajectory 面板只剩最后一个 turn | `tui.ts:806-816` 注释："The trajectory panel is per-prompt, so it carries the last turn only"。chat 是全量回放，但 ledger 不是 |
 | **V6** | discuss 的问答没有专门呈现 | signoff 用 `signoffDecisionText` 回显成用户消息（`tui.ts:936-950`），discuss 没有等价物（`tui.ts:954-955`），只在 ledger 里和任意一个 tool_call 长得一样 |
 | **V7** | 没有 `/status` 汇总视图 | 当前 stage / attempt / round / 剩余 stage / 已耗时 / 已花 token 只能从 footer DAG + 上滚 chat 里拼 |
@@ -426,7 +426,7 @@ promptRunning ─┬─ steerActive 缺失/返回 no-active-turn ─┬─ promp
 |---|---|---|---|
 | Q1 | "侵入"最终确认指哪一层？ | 控制流（§2.5）—— 另两层里，指令级其实在 discuss 身上 | 决定改控制流还是只改措辞 |
 | Q2 | dialog 触发粒度：workflow 级每 stage 都弹，还是沿用 stage 级开关？ | workflow 级开关 + 可选 stage 级覆盖 | 决定 UI 与 DSL |
-| Q3 | `continue` 的用户文本作用域：只给紧邻下一个 stage / 此后所有 stage / 写进 handoff？ | 只给紧邻的下一个 stage，用完即弃（最小惊讶，且与 `before` 的"invocation 局部"语义一致） | 决定 `stagePrompt` 契约 |
+| Q3 | `continue` 的用户文本作用域：只给紧邻下一个 stage / 此后所有 stage / 写进下游 inputs？ | 只给紧邻的下一个 stage，用完即弃（最小惊讶，且与 `before` 的"invocation 局部"语义一致） | 决定 `stagePrompt` 契约 |
 | Q4 | `retry` 是否产生新 attempt（新 resultPath、重新 validate）？retry 之后是否再弹？ | 产生新 attempt（否则无法改结果，见 §2.4，`after` 不能复用）；**必须设轮次上限**，否则 §6.1 保留 | 决定 §6.1 是否保留 |
 | Q5 | discuss 覆盖目标：桥接全部 harness，还是只保 pi + 其余预检显式失败？ | 分两步：先做"显式失败"（P0-2，立即消除静默 no-op），再把桥接立为 P2 | 决定是否现在写 MCP server |
 

@@ -8,14 +8,14 @@ description: Review the manuscript as the target venue's reviewer would, score i
 Deliverable: a review a real program committee would recognize, plus
 `next_round_target` — the loop's steering signal.
 
-Read the manuscript and the injected handoff context: the `paper-storyline`
+Read the manuscript and the injected accepted-input context: the `paper-storyline`
 result — whose `context` block is the only place this stage can learn the venue,
 the page limit, the core claim, the contribution list and the reference spec
 path — plus this round's `paper-draft`, `paper-figures` and `paper-audit`
 results.
 
-Upstream results are not workspace files: each entry in the handoff record's
-`inputs[]` carries the producer's `resultPayload` under its contract id and the
+Upstream results are not workspace files: each entry in `inputs.json`'s
+`inputs[]` carries the producer's worker name, `resultPayload`, and the
 `resultPath` it was written to. Read them from there.
 
 The audit result is not your job repeated: it checks truth against files, you

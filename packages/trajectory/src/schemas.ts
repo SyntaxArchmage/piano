@@ -38,20 +38,22 @@ const benchmarkMetricSchema = z.object({
   rawPath: z.string().min(1).optional(),
 }).strict();
 
-const contractReferenceSchema = z.object({
-  id: z.string().min(1),
-  version: z.literal(1),
-  digest: z.string().regex(/^[a-f0-9]{64}$/),
-  snapshotPath: z.string().min(1),
-}).strict();
-
-export const benchmarkRecordSchema = z.object({
+const benchmarkRecordShape = {
   ...context,
   kind: z.literal("benchmark"),
   metric: benchmarkMetricSchema,
   pointer: z.string(),
-  contract: contractReferenceSchema,
-}).strict();
+};
+
+export const benchmarkRecordSchema = z.object(benchmarkRecordShape).strict();
+
+/** Read-side compatibility for rows written before the contract reference was
+ * removed. The retired `contract` field parses and is dropped, so a historical
+ * benchmark stream stays evaluable without reintroducing lineage metadata. */
+export const benchmarkRecordReadSchema = z.object({
+  ...benchmarkRecordShape,
+  contract: z.unknown().optional(),
+}).strict().transform(({ contract: _contract, ...record }) => record);
 
 export const durationRecordSchema = z.object({
   ...context,

@@ -10,23 +10,12 @@ export {
   toolSuccessRate,
 } from "./recorders.js";
 export {
-  benchmarkRecordSchema,
-  durationRecordSchema,
-  selectionRecordSchema,
-  tokenUsageRecordSchema,
-  toolCallRecordSchema,
-} from "./schemas.js";
-export {
   streamPath,
 } from "./storage.js";
 export {
-  defaultTrajectoryRecorders,
   WorkflowTrajectory,
-  type WorkflowTrajectorySnapshot,
-  type WorkflowTrajectoryStream,
 } from "./workflow-trajectory.js";
 export type {
-  AttemptSummary,
   BenchmarkRecord,
   BenchmarkScore,
   BenchmarkSeriesPoint,
@@ -36,20 +25,12 @@ export type {
   SelectionScore,
   StageAttemptOutcome,
   TokenUsage,
-  TokenUsageRecord,
   TokenUsageScore,
-  ToolCallRecord,
   ToolCallScore,
-  TrajectoryContractReference,
-  TrajectoryEvaluator,
-  TrajectoryRecorder,
   TrajectoryRecordContext,
-  TrajectoryStreamDescriptor,
   WorkflowObservation,
   WorkflowObservationRecorder,
 } from "./types.js";
 export {
-  TrajectoryEvaluationError,
-  TrajectoryReadError,
   TrajectoryRecordError,
 } from "./types.js";
