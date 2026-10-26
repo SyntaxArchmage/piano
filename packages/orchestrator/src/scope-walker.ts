@@ -687,6 +687,25 @@ const executeScope = (
     const directInputs = nodeFrom(node).flatMap((dependency) => completed.get(dependency)?.results ?? []);
     const inputs = mergeScopeInputs(inheritedInputs, directInputs);
     if ("stage" in node) {
+      if (node.stage.async === true) {
+        return Effect.gen(function* () {
+          yield* stageRunnerContext.asyncQueue.submit({
+            stageId: node.id,
+            run: executeStage(
+              stageRunnerContext,
+              node,
+              frames,
+              inputs,
+              mapItem?.over !== undefined && mapItem.index >= 0 && node.id === entryStageId ? mapItem : undefined,
+              workspace,
+            ),
+          });
+          // The scheduler treats the stage as a satisfied dependency with no
+          // current result. Downstream stages collect the queue's ready
+          // results when they start, so this is 0-to-1 at this point.
+          return { boundary: { results: [] }, stages: [] } satisfies NodeExecution;
+        });
+      }
       return executeStage(
         stageRunnerContext,
         node,
