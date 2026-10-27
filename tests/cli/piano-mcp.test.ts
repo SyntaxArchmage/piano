@@ -293,6 +293,56 @@ describe("piano MCP server", () => {
     }
   }, 60_000);
 
+  it("ignores a message_end embedded in a tool result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mcp-embedded-"));
+    const runDir = join(root, ".piano", "runs", "embedded");
+    await mkdir(join(runDir, "system-log"), { recursive: true });
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", plannedStages: 1, completedStages: 1 }));
+    await writeFile(join(runDir, "system-log", "trajectory.jsonl"), [
+      // A tool that read another run's log put a whole message_end in its result.
+      JSON.stringify({ events: [{ type: "tool_execution_end", result: { payload: { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "EMBEDDED" }] } } } }] }),
+      JSON.stringify({ events: [{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "REAL-FINAL" }] } }] }),
+    ].join("\n") + "\n");
+    const server = await startServer(root, {});
+    try {
+      const result = await server.request("tools/call", {
+        name: "piano_result",
+        arguments: { runId: "embedded" },
+      });
+      expect(result.structuredContent).toMatchObject({ output: "REAL-FINAL" });
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("widens the window when the cut record holds the only reply", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mcp-cutfinal-"));
+    const runDir = join(root, ".piano", "runs", "cut-final");
+    await mkdir(join(runDir, "system-log"), { recursive: true });
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", plannedStages: 1, completedStages: 1 }));
+    // The only assistant event sits past the start of the 4MB window, so that
+    // window holds a fragment of this record and nothing else.
+    const filler = "x".repeat(5 * 1024 * 1024);
+    await writeFile(join(runDir, "system-log", "trajectory.jsonl"), `${JSON.stringify({
+      events: [
+        { type: "message_end", message: { role: "user", content: [{ type: "text", text: filler }] } },
+        { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "only reply" }] } },
+      ],
+    })}\n`);
+    const server = await startServer(root, {});
+    try {
+      const result = await server.request("tools/call", {
+        name: "piano_result",
+        arguments: { runId: "cut-final" },
+      });
+      expect(result.structuredContent).toMatchObject({ output: "only reply" });
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("rejects a run id that could leave the runs root", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-mcp-traversal-"));
     const server = await startServer(root, { PIANO_MCP_PIANO_BIN: await fakePiano(root) });

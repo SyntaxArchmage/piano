@@ -10,9 +10,9 @@
  */
 import { io } from "@piano/base";
 import { Effect } from "effect";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { agentHome, unusableHome } from "./agent-home.js";
 import { CliArgumentError, SkillInstallError } from "./errors.js";
 import { programName } from "./program-name.js";
 
@@ -49,20 +49,23 @@ const failed = (cause: unknown): SkillInstallError => new SkillInstallError({
   message: cause instanceof Error ? cause.message : String(cause),
 });
 
-function claudeHome(): string {
-  const value = process.env.CLAUDE_CONFIG_DIR?.trim();
-  return value === undefined || value === "" ? join(homedir(), ".claude") : value;
-}
+/** The running Claude Code's version as three integers, or why it could not be
+ * read: the CLI is missing, it hung, or its output is not a version. */
+type ClaudeVersion =
+  | { readonly kind: "version"; readonly value: readonly number[] }
+  | { readonly kind: "missing" | "hung" | "unreadable" };
 
-/** The running Claude Code's version as three integers, or undefined when the
- * CLI is missing or prints something unparsable. */
-function claudeVersion(): Effect.Effect<readonly number[] | undefined> {
+function claudeVersion(): Effect.Effect<ClaudeVersion> {
   return io.execFileResult("claude", ["--version"], { timeoutMs: 15_000 }).pipe(
-    Effect.map((result) => {
+    Effect.map((result): ClaudeVersion => {
+      if (result.code === io.NOT_STARTED) return { kind: "missing" };
+      if (result.code === io.TIMED_OUT) return { kind: "hung" };
       const match = /(\d+)\.(\d+)\.(\d+)/.exec(result.stdout);
-      return match === null ? undefined : [Number(match[1]), Number(match[2]), Number(match[3])];
+      return match === null
+        ? { kind: "unreadable" }
+        : { kind: "version", value: [Number(match[1]), Number(match[2]), Number(match[3])] };
     }),
-    Effect.catchAll(() => Effect.succeed(undefined)),
+    Effect.catchAll(() => Effect.succeed<ClaudeVersion>({ kind: "missing" })),
   );
 }
 
@@ -78,20 +81,27 @@ function belowFloor(version: readonly number[]): boolean {
 export function installPluginCommand(args: readonly string[]): Effect.Effect<void, CliArgumentError | SkillInstallError> {
   return Effect.gen(function* () {
     const options = yield* parseArgs(args);
-    const home = claudeHome();
-    if (!(yield* io.exists(home))) {
-      yield* report(`[WARN] claude: skipped (home not found: ${home})`);
+    const home = agentHome("claude");
+    const unusable = yield* unusableHome(home);
+    if (unusable !== undefined) {
+      yield* report(`[WARN] claude: skipped (${unusable === "missing" ? "home not found" : "home is not a directory"}: ${home})`);
       return;
     }
 
     const version = yield* claudeVersion();
-    if (version === undefined) {
+    if (version.kind !== "version") {
+      if (version.kind === "hung") {
+        return yield* Effect.fail(failed(new Error("claude --version did not answer within 15s")));
+      }
+      if (version.kind === "unreadable") {
+        return yield* Effect.fail(failed(new Error("claude --version did not print a version")));
+      }
       yield* report("[WARN] claude: skipped (claude CLI not found)");
       return;
     }
-    if (belowFloor(version)) {
+    if (belowFloor(version.value)) {
       yield* report(
-        `[WARN] claude: skipped (Claude Code ${version.join(".")} is below the mod API floor ${MIN_CLAUDE_VERSION.join(".")}); use 'piano install-mcp'`,
+        `[WARN] claude: skipped (Claude Code ${version.value.join(".")} is below the mod API floor ${MIN_CLAUDE_VERSION.join(".")}); use 'piano install-mcp'`,
       );
       return;
     }

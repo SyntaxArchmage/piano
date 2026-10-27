@@ -134,13 +134,21 @@ function finalTextIn(tail) {
   return undefined;
 }
 
+/** The windows to read, smallest first. Real trajectories reach ~90MB, so the
+ * last window covers them; the cap keeps one call from allocating without
+ * bound, and a larger file reports no output instead. */
+const TAIL_WINDOWS = [4 * 1024 * 1024, 16 * 1024 * 1024, 256 * 1024 * 1024];
+
 /** The last assistant text a finished run recorded. This is the fallback when
  * the MCP server has no live state (for example after a host restart). */
 function finalTextFromRun(runId) {
   const path = trajectoryPath(runId);
-  for (const window of [4 * 1024 * 1024, 16 * 1024 * 1024, Infinity]) {
+  for (const window of TAIL_WINDOWS) {
     const tail = readTail(path, window);
     if (tail === undefined) return undefined;
+    // The window ends at EOF, so every line but its first is a whole record;
+    // when that first fragment is all there is, this returns nothing and the
+    // next, wider window has the room to finish it.
     const found = finalTextIn(tail);
     if (found !== undefined) return found;
     // Nothing in the window and nothing beyond it: the run recorded no reply.
