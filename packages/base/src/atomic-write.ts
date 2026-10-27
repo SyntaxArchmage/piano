@@ -8,9 +8,9 @@
 import { FileSystem } from "@effect/platform";
 import { Effect, Either } from "effect";
 import { randomUUID } from "node:crypto";
-import { lstatSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { errorMessage } from "./errors.js";
+import * as io from "./io.js";
 
 /** One step of an atomic write, named so a caller can keep its own error
  * wording per step rather than settling for one message for all three. */
@@ -122,16 +122,12 @@ export function writeFileAtomic<E>(
     // file gets the platform default. Read through `lstat`, not `stat`: the
     // rename replaces the name itself, so a symlink's target is neither read
     // nor written here and its mode must not be adopted.
-    const mode = options.mode ?? (yield* Effect.sync(() => {
-      try {
-        const stats = lstatSync(path);
-        return stats.isFile() ? stats.mode & 0o7777 : undefined;
-      } catch {
-        // No readable file at the name: a new document, or one this process
-        // cannot stat. Either way the platform default applies.
-        return undefined;
-      }
-    }));
+    const mode = options.mode ?? (yield* io.lstat(path).pipe(
+      Effect.map((stats) => (stats.isFile() ? stats.mode & 0o7777 : undefined)),
+      // Nothing readable at the name: a new document, or one this process
+      // cannot stat. Either way the platform default applies.
+      Effect.orElseSucceed(() => undefined),
+    ));
     // Both flags are optional; when neither is set the platform defaults apply.
     const writeOptions = options.exclusiveStaging === true || mode !== undefined
       ? {
