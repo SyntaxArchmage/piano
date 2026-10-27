@@ -23,8 +23,13 @@ export function agentHome(name: AgentName): string {
   return value === undefined || value === "" ? join(homedir(), directory) : value;
 }
 
-/** Why a home cannot be written to, or undefined when it can. A home that is a
- * file or a symlink is not a directory the installers may add skills under. */
+/** Why a home cannot be written to, or undefined when it can.
+ *
+ * `stat` follows links on purpose: a home symlinked to a real directory is
+ * usable. That is a different question from the one `install-skill` asks of
+ * `skills/piano` and `skills/piano.md`, where `lstat` refuses a symlink even
+ * when its target is a directory — there the name itself is what is being
+ * claimed, and a link is someone else's. */
 export function unusableHome(home: string): Effect.Effect<"missing" | "not-directory" | undefined> {
   return io.stat(home).pipe(
     Effect.map((stats) => (stats.isDirectory() ? undefined : "not-directory")),

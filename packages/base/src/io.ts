@@ -205,9 +205,12 @@ export interface CommandOptions {
 export const NOT_STARTED = -1;
 
 /** A command the caller's timeout killed. Distinct from `NOT_STARTED` so a
- * caller can tell "the CLI is not installed" from "the CLI hung"; the same
- * value `runShell` reports. */
-export const TIMED_OUT = 124;
+ * caller can tell "the CLI is not installed" from "the CLI hung".
+ *
+ * These three sentinels are negative because a real exit status is 0–255: a
+ * command that itself exits `124` must stay distinguishable from one the
+ * caller's timeout killed. Both `execFile*` and `runShell` report this. */
+export const TIMED_OUT = -3;
 
 /** A command whose output overflowed the caller's `maxBuffer`; the command did
  * run, so this is not "not installed". */
@@ -332,7 +335,7 @@ export function runShell(command: string, cwd: string, timeoutMs?: number): Effe
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.on("error", (error) => finish({ code: NOT_STARTED, stdout, stderr: `${stderr}${String(error)}` }));
-    child.on("exit", (code) => finish({ code: timedOut ? 124 : code ?? 1, stdout, stderr }));
+    child.on("exit", (code) => finish({ code: timedOut ? TIMED_OUT : code ?? 1, stdout, stderr }));
     return Effect.sync(() => {
       settled = true;
       if (timeout !== undefined) clearTimeout(timeout);
