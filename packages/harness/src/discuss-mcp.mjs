@@ -7,13 +7,27 @@
 // diagnostics stay on stderr so a malformed child never corrupts MCP.
 import { connect } from "node:net";
 import { createInterface } from "node:readline";
+import { URL } from "node:url";
 
 const PROTOCOL_VERSION = "2025-06-18";
 const TOOL_NAME = "discuss";
 const MAX_QUESTION_CHARS = 16_000;
 
-const bridgeUrl = process.env.PIANO_DISCUSS_URL;
 const bridgeToken = process.env.PIANO_DISCUSS_TOKEN;
+
+function bridgeTarget(value) {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "tcp:" || url.hostname === "" || url.port === "") return undefined;
+    return { host: url.hostname, port: Number(url.port) };
+  } catch {
+    return undefined;
+  }
+}
+
+const target = bridgeTarget(process.env.PIANO_DISCUSS_URL);
+const configured = target !== undefined && typeof bridgeToken === "string" && bridgeToken !== "";
 
 function send(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -27,13 +41,6 @@ function sendError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-function bridgeTarget() {
-  if (typeof bridgeUrl !== "string") return undefined;
-  const match = /^tcp:\/\/([^:]+):(\d+)$/u.exec(bridgeUrl);
-  if (match === null) return undefined;
-  return { host: match[1], port: Number(match[2]) };
-}
-
 function errorMessage(cause) {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -42,8 +49,7 @@ function errorMessage(cause) {
  * one line; a closed connection before that line is a tool failure, not a
  * silent default answer. */
 function askSupervisor(question) {
-  const target = bridgeTarget();
-  if (target === undefined || typeof bridgeToken !== "string" || bridgeToken === "") {
+  if (!configured) {
     return Promise.reject(new Error("Piano's discussion bridge is not configured"));
   }
   return new Promise((resolve, reject) => {
@@ -98,59 +104,48 @@ const tool = {
 async function handle(message) {
   const id = message?.id;
   const method = message?.method;
-  if (typeof method !== "string") return;
-  if (method === "initialize") {
-    if (id !== undefined) {
-      sendResult(id, {
+  if (typeof method !== "string" || method.startsWith("notifications/") || id === undefined) return;
+  const reply = (result) => sendResult(id, result);
+  const toolError = (text) => reply({ content: [{ type: "text", text }], isError: true });
+  switch (method) {
+    case "initialize":
+      reply({
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: "piano-discuss", version: "0.1.0" },
       });
-    }
-    return;
-  }
-  if (method === "notifications/initialized" || method === "notifications/cancelled") return;
-  if (method === "ping") {
-    if (id !== undefined) sendResult(id, {});
-    return;
-  }
-  if (method === "tools/list") {
-    if (id !== undefined) sendResult(id, { tools: [tool] });
-    return;
-  }
-  if (method === "tools/call") {
-    const name = message?.params?.name;
-    const question = message?.params?.arguments?.question;
-    if (name !== TOOL_NAME) {
-      if (id !== undefined) sendError(id, -32602, `unknown tool: ${String(name)}`);
+      return;
+    case "ping":
+      reply({});
+      return;
+    case "tools/list":
+      reply({ tools: [tool] });
+      return;
+    case "tools/call": {
+      const name = message?.params?.name;
+      const question = message?.params?.arguments?.question;
+      if (name !== TOOL_NAME) {
+        sendError(id, -32602, `unknown tool: ${String(name)}`);
+        return;
+      }
+      if (typeof question !== "string" || question.trim() === "") {
+        toolError("discuss requires a non-empty question");
+        return;
+      }
+      if (question.length > MAX_QUESTION_CHARS) {
+        toolError(`question exceeds ${MAX_QUESTION_CHARS} characters`);
+        return;
+      }
+      try {
+        reply({ content: [{ type: "text", text: await askSupervisor(question) }] });
+      } catch (cause) {
+        toolError(`discuss failed: ${errorMessage(cause)}`);
+      }
       return;
     }
-    if (typeof question !== "string" || question.trim() === "") {
-      if (id !== undefined) sendResult(id, {
-        content: [{ type: "text", text: "discuss requires a non-empty question" }],
-        isError: true,
-      });
-      return;
-    }
-    if (question.length > MAX_QUESTION_CHARS) {
-      if (id !== undefined) sendResult(id, {
-        content: [{ type: "text", text: `question exceeds ${MAX_QUESTION_CHARS} characters` }],
-        isError: true,
-      });
-      return;
-    }
-    try {
-      const answer = await askSupervisor(question);
-      if (id !== undefined) sendResult(id, { content: [{ type: "text", text: answer }] });
-    } catch (cause) {
-      if (id !== undefined) sendResult(id, {
-        content: [{ type: "text", text: `discuss failed: ${errorMessage(cause)}` }],
-        isError: true,
-      });
-    }
-    return;
+    default:
+      sendError(id, -32601, `unknown method: ${method}`);
   }
-  if (id !== undefined) sendError(id, -32601, `unknown method: ${method}`);
 }
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });

@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { startDiscussBridge } from "../../packages/harness/src/discuss-bridge.js";
+import { DISCUSS_MCP_ENV_TOKEN, DISCUSS_MCP_ENV_URL } from "../../packages/harness/src/discuss-mcp-config.js";
 import { discussMcpServerPath } from "../../packages/harness/src/discuss-mcp-path.js";
 
 interface JsonRpc {
@@ -25,8 +26,8 @@ function startMcp(bridge: { readonly url: string; readonly token: string }): {
   const child = spawn(process.execPath, [discussMcpServerPath()], {
     env: {
       ...process.env,
-      PIANO_DISCUSS_URL: bridge.url,
-      PIANO_DISCUSS_TOKEN: bridge.token,
+      [DISCUSS_MCP_ENV_URL]: bridge.url,
+      [DISCUSS_MCP_ENV_TOKEN]: bridge.token,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });

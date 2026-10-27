@@ -52,10 +52,11 @@ describe("harness tool-name registry", () => {
     expect(isKnownToolName("claude", "Bogus(x)")).toBe(false);
   });
 
-  it("accepts mcp server tool names only on claude", () => {
+  it("accepts mcp server tool names on MCP-capable harnesses", () => {
     expect(isKnownToolName("claude", "mcp__github__list_issues")).toBe(true);
     expect(isKnownToolName("claude", "mcp__github")).toBe(true);
     expect(isKnownToolName("claude", "mcp__")).toBe(false);
+    expect(isKnownToolName("dsh", "mcp__piano__discuss")).toBe(true);
     expect(isKnownToolName("pi", "mcp__github__list_issues")).toBe(false);
   });
 

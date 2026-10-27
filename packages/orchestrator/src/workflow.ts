@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { asRecord } from "@piano/logging";
 import {
   configuredWorkflowHarness,
+  DISCUSS_TOOL_NAME,
   HARNESS_NAMES,
   harnessToolNames,
   isHarnessName,
@@ -1111,7 +1112,7 @@ export function compileWorkflow(
           }
         }
         if (leaf.stage.discuss === true) {
-          if (!isKnownToolName(leaf.stage.harness, "discuss")) {
+          if (!isKnownToolName(leaf.stage.harness, DISCUSS_TOOL_NAME)) {
             throw scopeError(
               sourcePath,
               `stage "${leaf.stage.name}" declares discuss: true but harness "${leaf.stage.harness}" cannot mount the discuss tool`,
@@ -1119,10 +1120,10 @@ export function compileWorkflow(
           }
           // The pi adapter passes the stage's tool list as the session
           // allowlist; a tool the list omits is never mounted.
-          if (leaf.stage.tools !== undefined && !leaf.stage.tools.includes("discuss")) {
+          if (leaf.stage.tools !== undefined && !leaf.stage.tools.includes(DISCUSS_TOOL_NAME)) {
             throw scopeError(
               sourcePath,
-              `stage "${leaf.stage.name}" declares discuss: true but does not list "discuss" in tools`,
+              `stage "${leaf.stage.name}" declares discuss: true but does not list "${DISCUSS_TOOL_NAME}" in tools`,
             );
           }
         }

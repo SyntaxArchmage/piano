@@ -37,9 +37,11 @@ import {
   type DshSessionEvidence,
 } from "./dsh-session-storage.js";
 import { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
-import { DSH_API_KEY_ENV, dshDiscussPatchPath, dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
+import { DSH_API_KEY_ENV, dshDiscussMcpPath, dshDiscussPatchPath, dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
 import { startDiscussBridge, type DiscussBridge } from "./discuss-bridge.js";
+import { DISCUSS_MCP_ENV_TOKEN, DISCUSS_MCP_ENV_URL } from "./discuss-mcp-config.js";
 import { discussMcpServerPath } from "./discuss-mcp-path.js";
+import { harnessDiscussTransport } from "./tool-names.js";
 import {
   agentConfigPath,
   resolveHarnessConfig,
@@ -288,13 +290,17 @@ export function executeSubprocessAgent(
   // stdin protocol forwards each frame to the host agent's `Agent.steer`; and
   // pi/pi-cli bind through their RPC stdin protocol (task as the first `prompt`
   // frame, mid-turn injections as `steer` frames).
-  return withAgentRetries(
-    (attempt) => runSubprocessAttempt(harness, request, options, attempt),
-    options.retryDelaysMs ?? AGENT_RETRY_DELAYS_MS,
-    request.signal,
-    (notice) => request.onEvent?.({ type: "retry", ...notice }),
-  ).pipe(
-    Effect.map((outcome) => outcome.result),
+  return Effect.acquireUseRelease(
+    startDiscussBridgeFor(harness, request),
+    (discuss) => withAgentRetries(
+      (attempt) => runSubprocessAttempt(harness, request, options, attempt, discuss),
+      options.retryDelaysMs ?? AGENT_RETRY_DELAYS_MS,
+      request.signal,
+      (notice) => request.onEvent?.({ type: "retry", ...notice }),
+    ).pipe(
+      Effect.map((outcome) => outcome.result),
+    ),
+    (discuss) => discuss === undefined ? Effect.void : discuss.close(),
   );
 }
 
@@ -338,17 +344,18 @@ function attemptFailure(
   });
 }
 
-/** Start the per-attempt discussion bridge only for harnesses whose workers
+/** Start the per-request discussion bridge only for harnesses whose workers
  * reach it through MCP. `pi` mounts the tool in-process, and headless
  * channels still answer through the same callback. */
 function startDiscussBridgeFor(
   harness: HarnessName,
   request: AgentRequest,
 ): Effect.Effect<DiscussBridge | undefined, AgentError> {
-  if (request.discuss === undefined || (harness !== "claude" && harness !== "dsh")) {
+  const handler = request.discuss;
+  if (handler === undefined || harnessDiscussTransport(harness) !== "mcp") {
     return Effect.succeed(undefined);
   }
-  return startDiscussBridge((question) => request.discuss!(question));
+  return startDiscussBridge((question) => handler(question));
 }
 
 function prepareAttempt(input: {
@@ -379,8 +386,8 @@ function prepareAttempt(input: {
     if (harness === "dsh" && discuss !== undefined) {
       // The generated patch reads these two variables; the values are unique
       // to this attempt and never reach another process.
-      environment.PIANO_DISCUSS_URL = discuss.url;
-      environment.PIANO_DISCUSS_TOKEN = discuss.token;
+      environment[DISCUSS_MCP_ENV_URL] = discuss.url;
+      environment[DISCUSS_MCP_ENV_TOKEN] = discuss.token;
     }
     // Pre-spawn guards keep stale generated homes and incomplete web-search
     // configuration from becoming opaque child failures or memory-only A/B
@@ -415,14 +422,8 @@ function prepareAttempt(input: {
           + "re-run the mission bootstrap so Piano regenerates the harness home",
       );
     }
-    if ((harness === "claude" || harness === "dsh") && request.discuss !== undefined) {
-      if (discuss === undefined) {
-        return yield* failBeforeSpawn(new AgentError({
-          kind: "session-artifact",
-          message: `the ${harness} discussion bridge was not started`,
-        }));
-      }
-      const scriptPath = discussMcpServerPath();
+    if (discuss !== undefined) {
+      const scriptPath = harness === "dsh" ? dshDiscussMcpPath(dshHome) : discussMcpServerPath();
       yield* requireOverlay(
         scriptPath,
         "session-artifact",
@@ -471,7 +472,7 @@ function prepareAttempt(input: {
     const argv = harness === "claude"
       ? claudeArguments(request, config, thinking, resources, discuss)
       : harness === "dsh"
-        ? dshArguments(request, config, resources, dshHome, dshContext)
+        ? dshArguments(request, config, resources, dshHome, dshContext, discuss)
         : harness === "codex"
           ? codexArguments(request, config, thinking, resources, options.additionalWritableDirs ?? [])
           : piArguments(request, config, thinking, resources, transcriptPath, harness === "pi");
@@ -501,6 +502,7 @@ function runSubprocessAttempt(
   request: AgentRequest,
   options: AgentHarnessOptions,
   attempt: AgentRetryAttempt,
+  discuss: DiscussBridge | undefined,
 ): Effect.Effect<AgentRetryOutcome, AgentError, Logging | FileSystem.FileSystem> {
   const requestedConfig: ResolvedHarnessConfig = {
     provider: request.provider ?? options.provider,
@@ -522,9 +524,7 @@ function runSubprocessAttempt(
   const thinking = config.thinkingLevel;
   const sourcePath = config.binPath
     ?? (harness === "claude" ? "claude" : harness === "dsh" ? "dsh" : harness === "codex" ? "codex" : "pi");
-  return Effect.acquireUseRelease(
-    startDiscussBridgeFor(harness, request),
-    (discuss) => Effect.gen(function* () {
+  return Effect.gen(function* () {
     if (request.signal?.aborted) return yield* Effect.fail(new AgentError({ kind: "cancelled", message: `${harness} request cancelled` }));
     const observed: AgentEvent[] = [];
     const emit = (event: AgentEvent): void => {
@@ -822,9 +822,5 @@ function runSubprocessAttempt(
     emit({ type: "done", exitStatus: 0, sessionId, transcriptPath: auditPath });
     yield* persistAgentEvents(observed, sessionId);
     return { result };
-    }),
-    (discuss) => discuss === undefined
-      ? Effect.void
-      : discuss.close().pipe(Effect.catchAll(() => Effect.void)),
-  );
+  });
 }
