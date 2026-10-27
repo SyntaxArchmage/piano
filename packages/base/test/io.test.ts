@@ -65,6 +65,9 @@ describe("io", () => {
     // "not installed" from "hung".
     const hung = await Effect.runPromise(io.execFileResult("sleep", ["5"], { timeoutMs: 100 }));
     expect(hung.code).toBe(io.TIMED_OUT);
+    // A command that ran and printed too much is neither missing nor hung.
+    const overflow = await Effect.runPromise(io.execFileResult("bash", ["-lc", "head -c 4000 /dev/zero"], { maxBuffer: 128 }));
+    expect(overflow.code).toBe(io.OUTPUT_OVERFLOW);
   });
 
   it("starts a detached process and exposes its pid", async () => {

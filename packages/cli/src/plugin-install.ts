@@ -106,23 +106,33 @@ export function installPluginCommand(args: readonly string[]): Effect.Effect<voi
       return;
     }
 
-    const installed = yield* io.execFileResult("claude", ["plugin", "list", "--json"], { timeoutMs: 30_000 }).pipe(
+    const listing = yield* io.execFileResult("claude", ["plugin", "list", "--json"], {
+      timeoutMs: 30_000,
+      maxBuffer: 8 * 1024 * 1024,
+    }).pipe(
       Effect.map((result) => {
         try {
           const plugins: unknown = JSON.parse(result.stdout);
-          return Array.isArray(plugins) && plugins.some((plugin) =>
-            isRecord(plugin) && plugin["id"] === "piano@piano-local");
+          if (!Array.isArray(plugins)) return { read: false, installed: false };
+          const entry = plugins.find((plugin) => isRecord(plugin) && plugin["id"] === "piano@piano-local");
+          return { read: true, installed: entry !== undefined };
         } catch {
-          return false;
+          return { read: false, installed: false };
         }
       }),
-      Effect.catchAll(() => Effect.succeed(false)),
+      Effect.catchAll(() => Effect.succeed({ read: false, installed: false })),
     )
+    if (!listing.read) {
+      // An unreadable listing is not "not installed": that would reinstall over
+      // a plugin whose config a person may have changed.
+      return yield* Effect.fail(failed(new Error("claude plugin list did not return a machine-readable list")));
+    }
+    const installed = listing.installed;
     if (installed) yield* report("[PASS] claude: piano plugin already installed");
     if (installed && !options.native) {
       // The plugin may already carry the setting from an earlier run; this
       // command was simply not asked to change it.
-      yield* report("[INFO] claude: --native not requested; the plugin's current config is unchanged");
+      yield* report("[INFO] claude: --native not requested; the plugin's current config is unchanged. Run with --native to register piano_run.");
       return;
     }
     // `--config` applies the userConfig in the same call, and re-running it on

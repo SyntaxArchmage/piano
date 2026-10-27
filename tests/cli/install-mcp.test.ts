@@ -1,6 +1,7 @@
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMcpCommand } from "../../packages/cli/src/mcp-install.js";
@@ -59,7 +60,8 @@ describe("piano install-mcp", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  const run = (args: readonly string[] = []) => Effect.runPromise(installMcpCommand(args));
+  const run = (args: readonly string[] = []) =>
+    Effect.runPromise(installMcpCommand(args).pipe(Effect.provide(NodeFileSystem.layer)));
 
   it("registers Claude and Codex and writes the dsh patch", async () => {
     for (const name of ["claude", "codex", "dsh"]) await mkdir(join(root, name), { recursive: true });
