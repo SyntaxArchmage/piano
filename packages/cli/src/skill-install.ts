@@ -9,9 +9,9 @@
  */
 import { io } from "@piano/base";
 import { Effect } from "effect";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { agentHome, unusableHome } from "./agent-home.js";
 import { CliArgumentError, SkillInstallError } from "./errors.js";
 import { programName } from "./program-name.js";
 
@@ -44,15 +44,6 @@ function parseArgs(args: readonly string[]): Effect.Effect<
   return Effect.succeed({ targets: [...new Set(names)], dryRun });
 }
 
-function configuredHomes(): Record<TargetName, string> {
-  const claude = process.env.CLAUDE_CONFIG_DIR?.trim();
-  const dsh = process.env.DSH_HOME?.trim();
-  return {
-    claude: claude === undefined || claude === "" ? join(homedir(), ".claude") : claude,
-    dsh: dsh === undefined || dsh === "" ? join(homedir(), ".dsh") : dsh,
-  };
-}
-
 function report(line: string): Effect.Effect<void> {
   return Effect.sync(() => console.log(line));
 }
@@ -65,13 +56,9 @@ const failed = (path: string, cause: unknown): SkillInstallError => new SkillIns
 
 function installOne(name: TargetName, home: string, template: string, dryRun: boolean): Effect.Effect<void, SkillInstallError> {
   return Effect.gen(function* () {
-    const homeStats = yield* Effect.either(io.stat(home));
-    if (homeStats._tag === "Left") {
-      yield* report(`[WARN] ${name}: skipped (home not found: ${home})`);
-      return;
-    }
-    if (!homeStats.right.isDirectory()) {
-      yield* report(`[WARN] ${name}: skipped (home is not a directory: ${home})`);
+    const unusable = yield* unusableHome(home);
+    if (unusable !== undefined) {
+      yield* report(`[WARN] ${name}: skipped (${unusable === "missing" ? "home not found" : "home is not a directory"}: ${home})`);
       return;
     }
 
@@ -135,11 +122,10 @@ export function installSkillCommand(args: readonly string[]): Effect.Effect<void
     const template = yield* io.readText(TEMPLATE_PATH).pipe(
       Effect.mapError((cause) => failed(TEMPLATE_PATH, cause)),
     );
-    const homes = configuredHomes();
     // One home failing must not stop the others, same as install-mcp.
     const failures: SkillInstallError[] = [];
     for (const name of options.targets) {
-      const outcome = yield* Effect.either(installOne(name, homes[name], template, options.dryRun));
+      const outcome = yield* Effect.either(installOne(name, agentHome(name), template, options.dryRun));
       if (outcome._tag === "Left") {
         failures.push(outcome.left);
         yield* report(`[FAIL] ${name}: ${outcome.left.message}`);

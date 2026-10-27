@@ -60,7 +60,11 @@ describe("io", () => {
     await expect(Effect.runPromise(io.execFile("bash", ["-lc", "echo ok"]))).resolves.toMatchObject({ code: 0, stdout: "ok\n" });
     // A command that never started has no exit status of its own.
     const missing = await Effect.runPromise(io.execFileResult("piano-no-such-binary", ["--version"]));
-    expect(missing.code).toBe(-1);
+    expect(missing.code).toBe(io.NOT_STARTED);
+    // A killed timeout is not a missing binary: the caller must be able to tell
+    // "not installed" from "hung".
+    const hung = await Effect.runPromise(io.execFileResult("sleep", ["5"], { timeoutMs: 100 }));
+    expect(hung.code).toBe(io.TIMED_OUT);
   });
 
   it("starts a detached process and exposes its pid", async () => {
