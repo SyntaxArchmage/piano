@@ -19,11 +19,6 @@ const TEMPLATE_PATH = fileURLToPath(new URL("../../../skills/piano/SKILL.md", im
 
 type TargetName = "claude" | "dsh";
 
-interface Target {
-  readonly name: TargetName;
-  readonly home: string;
-}
-
 const usage = `usage: ${programName()} install-skill [--target <claude|dsh|all>] [--dry-run]`;
 
 function parseArgs(args: readonly string[]): Effect.Effect<
@@ -49,12 +44,12 @@ function parseArgs(args: readonly string[]): Effect.Effect<
   return Effect.succeed({ targets: [...new Set(names)], dryRun });
 }
 
-function configuredTargets(): Record<TargetName, Target> {
+function configuredHomes(): Record<TargetName, string> {
   const claude = process.env.CLAUDE_CONFIG_DIR?.trim();
   const dsh = process.env.DSH_HOME?.trim();
   return {
-    claude: { name: "claude", home: claude === undefined || claude === "" ? join(homedir(), ".claude") : claude },
-    dsh: { name: "dsh", home: dsh === undefined || dsh === "" ? join(homedir(), ".dsh") : dsh },
+    claude: claude === undefined || claude === "" ? join(homedir(), ".claude") : claude,
+    dsh: dsh === undefined || dsh === "" ? join(homedir(), ".dsh") : dsh,
   };
 }
 
@@ -68,32 +63,32 @@ const failed = (path: string, cause: unknown): SkillInstallError => new SkillIns
   message: cause instanceof Error ? cause.message : String(cause),
 });
 
-function installOne(target: Target, template: string, dryRun: boolean): Effect.Effect<void, SkillInstallError> {
+function installOne(name: TargetName, home: string, template: string, dryRun: boolean): Effect.Effect<void, SkillInstallError> {
   return Effect.gen(function* () {
-    const homeStats = yield* Effect.either(io.stat(target.home));
+    const homeStats = yield* Effect.either(io.stat(home));
     if (homeStats._tag === "Left") {
-      yield* report(`[WARN] ${target.name}: skipped (home not found: ${target.home})`);
+      yield* report(`[WARN] ${name}: skipped (home not found: ${home})`);
       return;
     }
     if (!homeStats.right.isDirectory()) {
-      yield* report(`[WARN] ${target.name}: skipped (home is not a directory: ${target.home})`);
+      yield* report(`[WARN] ${name}: skipped (home is not a directory: ${home})`);
       return;
     }
 
-    const skills = join(target.home, "skills");
+    const skills = join(home, "skills");
     const piano = join(skills, "piano");
     const destination = join(piano, "SKILL.md");
     const existing = yield* Effect.either(io.lstat(destination));
     if (existing._tag === "Right") {
       if (existing.right.isSymbolicLink() || !existing.right.isFile()) {
-        yield* report(`[WARN] ${target.name}: conflict (${destination} is not a regular file); left untouched`);
+        yield* report(`[WARN] ${name}: conflict (${destination} is not a regular file); left untouched`);
         return;
       }
       const current = yield* Effect.either(io.readText(destination));
       if (current._tag === "Right" && current.right === template) {
-        yield* report(`[PASS] ${target.name}: up-to-date (${destination})`);
+        yield* report(`[PASS] ${name}: up-to-date (${destination})`);
       } else {
-        yield* report(`[WARN] ${target.name}: conflict (${destination} exists with different content); left untouched`);
+        yield* report(`[WARN] ${name}: conflict (${destination} exists with different content); left untouched`);
       }
       return;
     }
@@ -101,26 +96,26 @@ function installOne(target: Target, template: string, dryRun: boolean): Effect.E
     const pianoStats = yield* Effect.either(io.lstat(piano));
     if (pianoStats._tag === "Right") {
       if (pianoStats.right.isSymbolicLink() || !pianoStats.right.isDirectory()) {
-        yield* report(`[WARN] ${target.name}: conflict (${piano} is not a directory); left untouched`);
+        yield* report(`[WARN] ${name}: conflict (${piano} is not a directory); left untouched`);
       } else {
-        yield* report(`[WARN] ${target.name}: conflict (${piano} exists without SKILL.md); left untouched`);
+        yield* report(`[WARN] ${name}: conflict (${piano} exists without SKILL.md); left untouched`);
       }
       return;
     }
     const flat = join(skills, "piano.md");
     // lstat, not stat: a dangling symlink still occupies the name.
     if ((yield* Effect.either(io.lstat(flat)))._tag === "Right") {
-      yield* report(`[WARN] ${target.name}: conflict (${flat} exists); left untouched`);
+      yield* report(`[WARN] ${name}: conflict (${flat} exists); left untouched`);
       return;
     }
     const skillsStats = yield* Effect.either(io.lstat(skills));
     if (skillsStats._tag === "Right" && (skillsStats.right.isSymbolicLink() || !skillsStats.right.isDirectory())) {
-      yield* report(`[WARN] ${target.name}: conflict (${skills} is not a directory); left untouched`);
+      yield* report(`[WARN] ${name}: conflict (${skills} is not a directory); left untouched`);
       return;
     }
 
     if (dryRun) {
-      yield* report(`[INFO] ${target.name}: would install ${destination}`);
+      yield* report(`[INFO] ${name}: would install ${destination}`);
       return;
     }
     yield* io.mkdir(piano, { recursive: true, mode: 0o755 }).pipe(
@@ -129,8 +124,8 @@ function installOne(target: Target, template: string, dryRun: boolean): Effect.E
     const created = yield* io.createExclusive(destination, template).pipe(
       Effect.mapError((cause) => failed(destination, cause)),
     );
-    if (created) yield* report(`[PASS] ${target.name}: installed (${destination})`);
-    else yield* report(`[WARN] ${target.name}: conflict (${destination} appeared concurrently); left untouched`);
+    if (created) yield* report(`[PASS] ${name}: installed (${destination})`);
+    else yield* report(`[WARN] ${name}: conflict (${destination} appeared concurrently); left untouched`);
   });
 }
 
@@ -140,9 +135,9 @@ export function installSkillCommand(args: readonly string[]): Effect.Effect<void
     const template = yield* io.readText(TEMPLATE_PATH).pipe(
       Effect.mapError((cause) => failed(TEMPLATE_PATH, cause)),
     );
-    const homes = configuredTargets();
+    const homes = configuredHomes();
     for (const name of options.targets) {
-      yield* installOne(homes[name], template, options.dryRun);
+      yield* installOne(name, homes[name], template, options.dryRun);
     }
   });
 }
