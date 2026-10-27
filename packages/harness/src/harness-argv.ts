@@ -9,10 +9,11 @@ import {
   dshResumeOverlayPath,
   dshWebSearchOffPatchPath,
 } from "./harness-home.js";
-import { discussMcpServerPath } from "./discuss-mcp-path.js";
+import { discussMcpServerConfig } from "./discuss-mcp-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, piWebSearchExtensionPath } from "./pi-web-search.js";
 import {
   CLAUDE_BARE_UNAVAILABLE_TOOLS,
+  DISCUSS_MCP_SERVER_NAME,
   DISCUSS_MCP_TOOL_NAME,
   DISCUSS_TOOL_NAME,
 } from "./tool-names.js";
@@ -126,24 +127,25 @@ function codexResumeId(continuation: AgentContinuation | undefined): string | un
   return UUID_SESSION_ID.test(continuation.sessionId) ? continuation.sessionId : undefined;
 }
 
+function sections(...parts: Array<string | undefined>): string {
+  return parts.filter((value): value is string => value !== undefined && value !== "").join("\n\n");
+}
+
 function resourceAppendix(resources: LoadedResources, includeSkills: boolean): string {
-  return [
+  return sections(
     resources.systemPrompt,
     ...resources.contextFiles.map((file) => `# ${file.path}\n${file.content}`),
     ...(includeSkills ? resources.skills.map((file) => `# ${file.path}\n${file.content}`) : []),
-  ].filter((value): value is string => value !== undefined && value !== "").join("\n\n");
+  );
 }
 
-/** The actual tool id a Claude/dsh worker sees for a `discuss: true` stage.
- * The stage's `discuss` callback is mounted by Piano's MCP server, so the
- * model needs the namespaced id rather than pi's in-process tool name. */
-function discussInstruction(): string {
-  return [
-    "## Supervisor discussion",
-    `Use the \`${DISCUSS_MCP_TOOL_NAME}\` tool to ask the supervisor one focused question.`,
-    "The answer is guidance, not approval; continue the task after receiving it.",
-  ].join("\n");
-}
+/** Name the actual tool a Claude/dsh worker sees for a `discuss: true` stage.
+ * The behavior is already in the MCP tool description; this only prevents the
+ * worker from looking for pi's bare `discuss` id. */
+const DISCUSS_INSTRUCTION = sections(
+  "## Supervisor discussion",
+  `Use the \`${DISCUSS_MCP_TOOL_NAME}\` tool to ask the supervisor one focused question.`,
+);
 
 /** Claude's `--resume` takes one of its own session ids (or a session
  * title). Piano's logical actor id is neither, and the CLI aborts the whole
@@ -198,23 +200,15 @@ export function claudeArguments(
   if (thinking !== undefined) args.push("--effort", claudeEffortLabel(thinking, config.model));
   const resumeId = claudeResumeId(request.continuation);
   if (resumeId !== undefined) args.push("--resume", resumeId);
-  const appendix = [
+  const appendix = sections(
     resourceAppendix(resources, true),
-    discuss === undefined ? "" : discussInstruction(),
-  ].filter((value) => value !== "").join("\n\n");
+    discuss === undefined ? undefined : DISCUSS_INSTRUCTION,
+  );
   if (appendix !== "") args.push("--append-system-prompt", appendix);
   if (discuss !== undefined) {
     args.push("--mcp-config", JSON.stringify({
       mcpServers: {
-        piano: {
-          type: "stdio",
-          command: process.execPath,
-          args: [discussMcpServerPath()],
-          env: {
-            PIANO_DISCUSS_URL: discuss.url,
-            PIANO_DISCUSS_TOKEN: discuss.token,
-          },
-        },
+        [DISCUSS_MCP_SERVER_NAME]: { type: "stdio", ...discussMcpServerConfig(discuss) },
       },
     }));
   }
@@ -314,15 +308,13 @@ export function dshArguments(
   resources: LoadedResources,
   dshHome: string,
   continuationContext?: string,
+  discuss?: DiscussBridge,
 ): string[] {
   const appendix = resourceAppendix(resources, true);
   const task = continuationContext === undefined
     ? request.prompt
     : `${continuationContext}\n\n## New task\n${request.prompt}`;
-  const guidance = [
-    appendix,
-    request.discuss === undefined ? "" : discussInstruction(),
-  ].filter((value) => value !== "").join("\n\n");
+  const guidance = sections(appendix, discuss === undefined ? undefined : DISCUSS_INSTRUCTION);
   const prompt = guidance === "" ? task : `${guidance}\n\n## Task\n${task}`;
   const ablateWebSearch = request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) !== true;
   return [
@@ -335,7 +327,7 @@ export function dshArguments(
     // profile layer, so the row it disables is the one the headless bundle
     // inserted.
     "--patch", dshResumeOverlayPath(dshHome),
-    ...(request.discuss === undefined ? [] : ["--patch", dshDiscussPatchPath(dshHome)]),
+    ...(discuss === undefined ? [] : ["--patch", dshDiscussPatchPath(dshHome)]),
     prompt,
   ];
 }

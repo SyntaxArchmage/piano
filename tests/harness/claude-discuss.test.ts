@@ -2,8 +2,9 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { AgentRequest } from "../../packages/harness/src/agent-contract.js";
 import type { DiscussBridge } from "../../packages/harness/src/discuss-bridge.js";
+import { DISCUSS_MCP_ENV_TOKEN, DISCUSS_MCP_ENV_URL } from "../../packages/harness/src/discuss-mcp-config.js";
 import { claudeArguments, type LoadedResources } from "../../packages/harness/src/harness-argv.js";
-import { DISCUSS_MCP_TOOL_NAME, DISCUSS_TOOL_NAME } from "../../packages/harness/src/tool-names.js";
+import { DISCUSS_MCP_TOOL_NAME, DISCUSS_MCP_SERVER_NAME, DISCUSS_TOOL_NAME } from "../../packages/harness/src/tool-names.js";
 
 const resources: LoadedResources = { contextFiles: [], skills: [] };
 
@@ -30,16 +31,16 @@ describe("Claude discuss wiring", () => {
     const configIndex = args.indexOf("--mcp-config");
     expect(configIndex).toBeGreaterThanOrEqual(0);
     const config = JSON.parse(args[configIndex + 1]!) as {
-      mcpServers?: { piano?: { type?: string; args?: string[]; env?: Record<string, string> } };
+      mcpServers?: Record<string, { type?: string; args?: string[]; env?: Record<string, string> }>;
     };
-    expect(config.mcpServers?.piano).toMatchObject({
+    expect(config.mcpServers?.[DISCUSS_MCP_SERVER_NAME]).toMatchObject({
       type: "stdio",
       env: {
-        PIANO_DISCUSS_URL: "tcp://127.0.0.1:43210",
-        PIANO_DISCUSS_TOKEN: "test-token",
+        [DISCUSS_MCP_ENV_URL]: "tcp://127.0.0.1:43210",
+        [DISCUSS_MCP_ENV_TOKEN]: "test-token",
       },
     });
-    expect(config.mcpServers?.piano?.args?.[0]).toContain("discuss-mcp.mjs");
+    expect(config.mcpServers?.[DISCUSS_MCP_SERVER_NAME]?.args?.[0]).toContain("discuss-mcp.mjs");
 
     const allowedIndex = args.indexOf("--allowed-tools");
     expect(allowedIndex).toBeGreaterThanOrEqual(0);

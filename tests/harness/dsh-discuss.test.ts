@@ -5,13 +5,23 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import type { AgentRequest } from "../../packages/harness/src/agent-contract.js";
+import type { DiscussBridge } from "../../packages/harness/src/discuss-bridge.js";
+import { DISCUSS_MCP_ENV_URL } from "../../packages/harness/src/discuss-mcp-config.js";
 import {
   dshArguments,
   type LoadedResources,
 } from "../../packages/harness/src/harness-argv.js";
-import { dshDiscussPatchPath, prepareHarnessHomes } from "../../packages/harness/src/harness-home.js";
+import { dshDiscussMcpPath, dshDiscussPatchPath, prepareHarnessHomes } from "../../packages/harness/src/harness-home.js";
 
 const resources: LoadedResources = { contextFiles: [], skills: [] };
+
+function bridge(): DiscussBridge {
+  return {
+    url: "tcp://127.0.0.1:43210",
+    token: "test-token",
+    close: () => Effect.void,
+  };
+}
 
 function request(overrides: Partial<AgentRequest> = {}): AgentRequest {
   return {
@@ -33,14 +43,18 @@ describe("dsh discuss wiring", () => {
       expect(patch).toContain("@deepseek-ai/dsh-mcp-client");
       expect(patch).toContain("serverName: piano");
       expect(patch).toContain("transport: stdio");
-      expect(patch).toContain("PIANO_DISCUSS_URL");
+      expect(patch).toContain(DISCUSS_MCP_ENV_URL);
       expect(patch).toContain("failOnStartupError: true");
+      expect(patch).toContain(dshDiscussMcpPath(homes.paths.dsh));
+      await expect(readFile(dshDiscussMcpPath(homes.paths.dsh), "utf8")).resolves.toContain("stdio MCP server");
 
       const discussing = dshArguments(
         request({ discuss: () => Effect.succeed("answer") }),
         {},
         resources,
         homes.paths.dsh,
+        undefined,
+        bridge(),
       );
       expect(discussing).toContain("--patch");
       expect(discussing).toContain(patchPath);

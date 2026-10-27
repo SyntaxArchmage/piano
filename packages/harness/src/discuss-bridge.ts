@@ -3,94 +3,90 @@
  *
  * The harness runs our stdio MCP server as a child; that server forwards each
  * `discuss` tool call over a loopback TCP connection to this bridge. The
- * bridge is the only place that knows the attempt's `AgentRequest.discuss`
+ * bridge is the only place that knows the request's `AgentRequest.discuss`
  * callback, so the TUI and headless channels stay exactly as they are.
  *
- * Loopback + a per-attempt token keep the channel private to this process.
+ * Loopback + a per-request token keep the channel private to this process.
  */
 import { randomUUID } from "node:crypto";
 import { createServer, type Socket } from "node:net";
-import { Effect } from "effect";
+import { createInterface } from "node:readline";
+import { Effect, Fiber } from "effect";
+import { errorMessage } from "@piano/base";
 import { agentError, type AgentError } from "./errors.js";
+import { asRecord, nonEmptyString } from "./json-narrowing.js";
 
 export interface DiscussBridge {
   /** `tcp://127.0.0.1:<port>`; the MCP child reads this from its env. */
   readonly url: string;
-  /** Per-attempt capability token. */
+  /** Per-request capability token. */
   readonly token: string;
-  close(): Effect.Effect<void, AgentError>;
+  close(): Effect.Effect<void>;
 }
 
+/** Mirrored by `discuss-mcp.mjs`; the MCP server owns the user-facing message,
+ * while this bound is the last defense at the local trust boundary. */
 const MAX_QUESTION_CHARS = 16_000;
-
-interface WireRequest {
-  readonly token?: unknown;
-  readonly question?: unknown;
-}
 
 function writeLine(socket: Socket, value: unknown): void {
   if (socket.destroyed) return;
   socket.write(`${JSON.stringify(value)}\n`);
 }
 
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-/** Start the per-attempt bridge. The listener never leaves loopback and the
- * returned `close` destroys every pending socket before closing the server. */
+/** Start the per-request bridge. The listener never leaves loopback and the
+ * returned `close` interrupts any in-flight handler, then closes every socket. */
 export function startDiscussBridge(
   handler: (question: string) => Effect.Effect<string, unknown>,
 ): Effect.Effect<DiscussBridge, AgentError> {
   return Effect.tryPromise({
     try: () => new Promise<DiscussBridge>((resolve, reject) => {
       const token = randomUUID();
+      const handlers = new Set<Fiber.RuntimeFiber<string, unknown>>();
       const sockets = new Set<Socket>();
 
       const handleLine = async (socket: Socket, line: string): Promise<void> => {
-        let request: WireRequest;
+        let parsed: unknown;
         try {
-          request = JSON.parse(line) as WireRequest;
+          parsed = JSON.parse(line);
         } catch {
           writeLine(socket, { error: "invalid request" });
           return;
         }
-        if (request.token !== token) {
+        const request = asRecord(parsed);
+        if (nonEmptyString(request?.token) !== token) {
           writeLine(socket, { error: "invalid token" });
           return;
         }
-        if (typeof request.question !== "string" || request.question.trim() === "") {
+        const question = nonEmptyString(request?.question);
+        if (question === undefined || question.trim() === "") {
           writeLine(socket, { error: "question must be a non-empty string" });
           return;
         }
-        if (request.question.length > MAX_QUESTION_CHARS) {
+        if (question.length > MAX_QUESTION_CHARS) {
           writeLine(socket, { error: `question exceeds ${MAX_QUESTION_CHARS} characters` });
           return;
         }
+        const fiber = Effect.runFork(handler(question));
+        handlers.add(fiber);
         try {
-          const answer = await Effect.runPromise(handler(request.question));
+          const answer = await Effect.runPromise(Fiber.join(fiber));
           writeLine(socket, { answer });
         } catch (cause) {
           writeLine(socket, { error: errorMessage(cause) });
+        } finally {
+          handlers.delete(fiber);
         }
       };
 
       const server = createServer((socket) => {
         sockets.add(socket);
-        let buffer = "";
-        socket.setEncoding("utf8");
-        socket.on("data", (chunk) => {
-          buffer += chunk;
-          let newline = buffer.indexOf("\n");
-          while (newline >= 0) {
-            const line = buffer.slice(0, newline).trim();
-            buffer = buffer.slice(newline + 1);
-            if (line !== "") void handleLine(socket, line);
-            newline = buffer.indexOf("\n");
-          }
-        });
         socket.on("close", () => sockets.delete(socket));
         socket.on("error", () => sockets.delete(socket));
+        const lines = createInterface({ input: socket, crlfDelay: Infinity });
+        lines.on("line", (line) => {
+          const trimmed = line.trim();
+          if (trimmed !== "") void handleLine(socket, trimmed);
+        });
       });
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
@@ -103,17 +99,13 @@ export function startDiscussBridge(
         resolve({
           url: `tcp://127.0.0.1:${address.port}`,
           token,
-          close: () => Effect.tryPromise({
-            try: () => new Promise<void>((closeResolve, closeReject) => {
-              for (const socket of sockets) socket.destroy();
-              sockets.clear();
-              server.close((error) => {
-                if (error === undefined) closeResolve();
-                else closeReject(error);
-              });
-            }),
-            catch: (cause) => agentError("session-artifact", cause),
-          }),
+          close: () => Effect.promise(() => new Promise<void>((closeResolve) => {
+            for (const fiber of handlers) Effect.runFork(Fiber.interrupt(fiber));
+            handlers.clear();
+            for (const socket of sockets) socket.destroy();
+            sockets.clear();
+            server.close(() => closeResolve());
+          })),
         });
       });
     }),

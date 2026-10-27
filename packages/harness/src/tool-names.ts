@@ -8,21 +8,17 @@ export const PI_TOOL_NAMES = ["bash", "edit", "find", "grep", "ls", "read", "wri
 /** Additional tool ids injected as customTools by piano's Pi SDK adapter.
  * These are NOT built into the Pi SDK — piano implements them and passes them
  * via CreateAgentSessionOptions.customTools at session creation time. */
-export const PI_CUSTOM_TOOL_NAMES = ["web_fetch", "discuss"] as const;
-
-/** The workflow's logical name for Piano's supervisor-question tool. */
 export const DISCUSS_TOOL_NAME = "discuss";
+
+/** MCP server name shared by Claude and dsh; the tool id is
+ * `mcp__piano__discuss`. */
+export const DISCUSS_MCP_SERVER_NAME = "piano";
 
 /** The actual Claude/dsh tool id: both harnesses namespace MCP tools as
  * `mcp__<server>__<tool>`. */
-export const DISCUSS_MCP_TOOL_NAME = "mcp__piano__discuss";
+export const DISCUSS_MCP_TOOL_NAME = `mcp__${DISCUSS_MCP_SERVER_NAME}__${DISCUSS_TOOL_NAME}`;
 
-/** Harnesses that can mount the `discuss` tool. `pi` exposes it natively;
- * `claude` and `dsh` receive it through Piano's stdio MCP server. `pi-cli` and
- * `codex` have no custom-tool seam. */
-export function harnessSupportsDiscuss(harness: HarnessName): boolean {
-  return harness === "pi" || harness === "claude" || harness === "dsh";
-}
+export const PI_CUSTOM_TOOL_NAMES = ["web_fetch", DISCUSS_TOOL_NAME] as const;
 
 /** Tool ids Piano mounts as Pi extensions. These are available to both the
  * in-process SDK adapter and the pi-cli subprocess when a stage declares them. */
@@ -129,24 +125,36 @@ interface HarnessToolCatalog {
   readonly write: readonly string[];
   /** Base names that let a stage run arbitrary commands. */
   readonly exec: readonly string[];
+  /** How this harness mounts Piano's supervisor-question tool, if at all. */
+  readonly discuss?: "native" | "mcp";
 }
 
 const PI_SDK_TOOL_NAMES = [...PI_TOOL_NAMES, ...PI_CUSTOM_TOOL_NAMES, ...PI_EXTENSION_TOOL_NAMES] as const;
 const PI_CLI_TOOL_NAMES = [...PI_TOOL_NAMES, ...PI_EXTENSION_TOOL_NAMES] as const;
 
 const CATALOGS: Record<HarnessName, HarnessToolCatalog> = {
-  pi: { known: PI_SDK_TOOL_NAMES, supportsScopedNames: false, supportsMcpNames: false, write: ["write"], exec: ["bash"] },
+  pi: { known: PI_SDK_TOOL_NAMES, supportsScopedNames: false, supportsMcpNames: false, write: ["write"], exec: ["bash"], discuss: "native" },
   "pi-cli": { known: PI_CLI_TOOL_NAMES, supportsScopedNames: false, supportsMcpNames: false, write: ["write"], exec: ["bash"] },
-  claude: { known: CLAUDE_TOOL_NAMES, supportsScopedNames: true, supportsMcpNames: true, write: ["Write"], exec: ["Bash"] },
-  dsh: { known: DSH_TOOL_NAMES, supportsScopedNames: false, supportsMcpNames: false, write: ["write"], exec: ["bash"] },
+  claude: { known: CLAUDE_TOOL_NAMES, supportsScopedNames: true, supportsMcpNames: true, write: ["Write"], exec: ["Bash"], discuss: "mcp" },
+  dsh: { known: DSH_TOOL_NAMES, supportsScopedNames: false, supportsMcpNames: true, write: ["write"], exec: ["bash"], discuss: "mcp" },
   codex: { known: CODEX_TOOL_NAMES, supportsScopedNames: false, supportsMcpNames: false, write: ["edit", "write"], exec: ["bash"] },
 };
 
+/** How this harness mounts Piano's supervisor-question tool, if at all. */
+export function harnessDiscussTransport(harness: HarnessName): "native" | "mcp" | undefined {
+  return CATALOGS[harness].discuss;
+}
+
+/** Whether this harness can mount Piano's supervisor-question tool. */
+export function harnessSupportsDiscuss(harness: HarnessName): boolean {
+  return harnessDiscussTransport(harness) !== undefined;
+}
+
 /** The catalog for a harness, e.g. to list valid names in an error message. */
 export function harnessToolNames(harness: HarnessName): readonly string[] {
-  const known = CATALOGS[harness].known;
-  if (!harnessSupportsDiscuss(harness) || known.includes(DISCUSS_TOOL_NAME)) return known;
-  return [...known, DISCUSS_TOOL_NAME];
+  const catalog = CATALOGS[harness];
+  if (catalog.discuss === undefined || catalog.known.includes(DISCUSS_TOOL_NAME)) return catalog.known;
+  return [...catalog.known, DISCUSS_TOOL_NAME];
 }
 
 /** Strip a `Name(spec)` permission-rule suffix. Only meaningful for harnesses
@@ -160,8 +168,8 @@ function toolSpecParts(harness: HarnessName, tool: string): { base: string; scop
 /** True when `tool` is a name the harness itself would accept: an exact
  * native id (plus scoped/mcp forms where the harness CLI understands them). */
 export function isKnownToolName(harness: HarnessName, tool: string): boolean {
-  if (tool === DISCUSS_TOOL_NAME && harnessSupportsDiscuss(harness)) return true;
   const catalog = CATALOGS[harness];
+  if (tool === DISCUSS_TOOL_NAME && catalog.discuss !== undefined) return true;
   const { base, scoped } = toolSpecParts(harness, tool);
   if (scoped && !catalog.supportsScopedNames) return false;
   if (scoped && !catalog.known.includes(base)) return false;
