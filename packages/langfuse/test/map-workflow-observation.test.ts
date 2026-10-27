@@ -134,7 +134,8 @@ describe("mapWorkflowObservation", () => {
       metrics: [{ pointer: "/throughput", value: metric }],
     };
     expect(mapWorkflowObservation(accepted)).toEqual([{
-      action: "event",
+      action: "emit",
+      type: "event",
       name: "stage.accepted",
       parentHandle: attemptHandle(context),
       metadata: expect.objectContaining({
@@ -154,7 +155,8 @@ describe("mapWorkflowObservation", () => {
       commit: "abc123",
     };
     expect(mapWorkflowObservation(selection)).toEqual([{
-      action: "event",
+      action: "emit",
+      type: "event",
       name: "selection",
       metadata: {
         runId: "run-1",

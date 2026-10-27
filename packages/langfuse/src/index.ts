@@ -3,6 +3,11 @@ export {
   type LangfuseConfig,
 } from "./config.js";
 export {
+  advanceAgentEventContext,
+  mapAgentEvent,
+  type AgentEventExportContext,
+} from "./map-agent-event.js";
+export {
   attemptHandle,
   contextMetadata,
   mapWorkflowObservation,
@@ -20,5 +25,7 @@ export {
   type LangfuseRuntime,
 } from "./runtime.js";
 export {
+  createLangfuseExport,
   createLangfuseObservationExport,
+  type LangfuseExport,
 } from "./sink.js";

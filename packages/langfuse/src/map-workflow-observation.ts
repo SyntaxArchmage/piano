@@ -1,8 +1,4 @@
-import type {
-  StageAttemptOutcome,
-  TrajectoryRecordContext,
-  WorkflowObservation,
-} from "@piano/trajectory";
+import type { StageAttemptOutcome, TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
 
 /** One export intent the sink executes against Langfuse.
  *
@@ -32,10 +28,14 @@ export type LangfuseAction =
     readonly metadata?: Record<string, unknown>;
   }
   | {
-    readonly action: "event";
+    readonly action: "emit";
+    readonly type: "event" | "generation";
     readonly name: string;
     readonly parentHandle?: string;
+    readonly input?: unknown;
     readonly output?: unknown;
+    readonly model?: string;
+    readonly usageDetails?: Record<string, number>;
     readonly metadata: Record<string, unknown>;
   };
 
@@ -148,7 +148,8 @@ export function mapWorkflowObservation(
     }
     case "stage_accepted": {
       return [{
-        action: "event",
+        action: "emit",
+        type: "event",
         name: "stage.accepted",
         parentHandle: attemptHandle(observation.context),
         metadata: {
@@ -162,7 +163,8 @@ export function mapWorkflowObservation(
     }
     case "selection": {
       return [{
-        action: "event",
+        action: "emit",
+        type: "event",
         name: "selection",
         metadata: {
           runId: observation.runId,

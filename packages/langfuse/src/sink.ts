@@ -1,8 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { TraceFlags, type SpanContext } from "@opentelemetry/api";
-import { createTraceId, startObservation, type LangfuseObservation } from "@langfuse/tracing";
+import {
+  createTraceId,
+  startObservation,
+  type LangfuseObservation,
+} from "@langfuse/tracing";
 import { Effect } from "effect";
+import type { AgentEvent } from "@piano/harness";
 import type { WorkflowObservation, WorkflowObservationExport } from "@piano/trajectory";
+import {
+  advanceAgentEventContext,
+  mapAgentEvent,
+  type AgentEventExportContext,
+} from "./map-agent-event.js";
 import {
   mapWorkflowObservation,
   type LangfuseAction,
@@ -48,6 +58,24 @@ function startObservationFor(
   return startObservation(action.name, attributes, { parentSpanContext });
 }
 
+function emitObservationFor(
+  action: Extract<LangfuseAction, { action: "emit" }>,
+  parentSpanContext: SpanContext,
+): void {
+  const attributes = {
+    ...(action.input === undefined ? {} : { input: action.input }),
+    ...(action.output === undefined ? {} : { output: action.output }),
+    ...(action.model === undefined ? {} : { model: action.model }),
+    ...(action.usageDetails === undefined ? {} : { usageDetails: action.usageDetails }),
+    metadata: action.metadata,
+  };
+  if (action.type === "generation") {
+    startObservation(action.name, attributes, { asType: "generation", parentSpanContext }).end();
+    return;
+  }
+  startObservation(action.name, attributes, { asType: "event", parentSpanContext });
+}
+
 function applyAction(
   action: LangfuseAction,
   handles: Map<string, LangfuseObservation>,
@@ -78,18 +106,18 @@ function applyAction(
       handles.delete(action.handle);
       return;
     }
-    case "event": {
-      startObservation(
-        action.name,
-        {
-          ...(action.output === undefined ? {} : { output: action.output }),
-          metadata: action.metadata,
-        },
-        { asType: "event", parentSpanContext: parentContext(action, handles, traceId) },
-      );
+    case "emit": {
+      emitObservationFor(action, parentContext(action, handles, traceId));
       return;
     }
   }
+}
+
+/** The two export seams of one run, sharing one Langfuse trace and one handle
+ * map so agent messages nest under their stage attempt. */
+export interface LangfuseExport {
+  readonly observation: WorkflowObservationExport;
+  readonly onAgentEvent: (event: AgentEvent) => void;
 }
 
 /** Build the Langfuse export sink for one run.
@@ -97,22 +125,41 @@ function applyAction(
  * Asynchronous because `createTraceId` derives the deterministic trace id.
  * Export is best-effort: a mapping or SDK failure is dropped and never
  * touches the run. */
+export async function createLangfuseExport(runId: string): Promise<LangfuseExport> {
+  const traceId = await createTraceId(runId);
+  const handles = new Map<string, LangfuseObservation>();
+  let eventContext: AgentEventExportContext = { sequence: 0 };
+
+  const apply = (actions: readonly LangfuseAction[]): void => {
+    for (const action of actions) applyAction(action, handles, traceId);
+  };
+
+  return {
+    observation: {
+      id: "langfuse",
+      export: (observation: WorkflowObservation) =>
+        Effect.sync(() => {
+          try {
+            apply(mapWorkflowObservation(observation));
+          } catch {
+            // Export never fails the run or the local evidence.
+          }
+        }),
+    },
+    onAgentEvent: (event: AgentEvent) => {
+      try {
+        apply(mapAgentEvent(event, eventContext));
+        eventContext = advanceAgentEventContext(event, eventContext);
+      } catch {
+        // Export never fails the run or the local evidence.
+      }
+    },
+  };
+}
+
+/** Observation-only sink. Kept for callers that have no agent-event stream. */
 export async function createLangfuseObservationExport(
   runId: string,
 ): Promise<WorkflowObservationExport> {
-  const traceId = await createTraceId(runId);
-  const handles = new Map<string, LangfuseObservation>();
-  return {
-    id: "langfuse",
-    export: (observation: WorkflowObservation) =>
-      Effect.sync(() => {
-        try {
-          for (const action of mapWorkflowObservation(observation)) {
-            applyAction(action, handles, traceId);
-          }
-        } catch {
-          // Export never fails the run or the local evidence.
-        }
-      }),
-  };
+  return (await createLangfuseExport(runId)).observation;
 }

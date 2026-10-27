@@ -716,6 +716,7 @@ export function executeStage(
           const decorated = decorateEvent(event);
           const observation = trajectoryAgentObservation(decorated, trajectoryContext(attempt));
           if (observation !== undefined) attemptObservations.push(observation);
+          request.agentEventExport?.(decorated);
           request.onEvent?.(decorated);
         },
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
@@ -1233,7 +1234,11 @@ export function executeStage(
         ...(memoryEnabled ? { continuation: acceptedWorker.continuation } : {}),
         // The follow-up is still this actor's turn, so its output streams
         // under the same stage attribution as the accepted one.
-        onEvent: (event: AgentEvent) => request.onEvent?.(decorateEvent(event)),
+        onEvent: (event: AgentEvent) => {
+          const decorated = decorateEvent(event);
+          request.agentEventExport?.(decorated);
+          request.onEvent?.(decorated);
+        },
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
       }, agentOptions).pipe(
         Effect.asVoid,

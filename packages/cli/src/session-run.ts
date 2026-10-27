@@ -46,6 +46,11 @@ import {
   type WorkflowDiscussRequest,
 } from "@piano/orchestrator";
 import {
+  createLangfuseExport,
+  resolveLangfuseConfig,
+  type LangfuseExport,
+} from "@piano/langfuse";
+import {
   createSteeringChannel,
   executeAgent,
   prepareHarnessHomes,
@@ -145,6 +150,17 @@ function graphOf(workflow: LoadedWorkflow) {
         })),
     })),
   );
+}
+
+/** Build the opt-in Langfuse export pair for one run, or undefined when export
+ * is not configured. Local evidence is unaffected either way. */
+function langfuseExportFor(
+  runId: string,
+): Effect.Effect<LangfuseExport | undefined, never, never> {
+  return Effect.promise(async () => {
+    if (resolveLangfuseConfig(process.env) === undefined) return undefined;
+    return createLangfuseExport(runId);
+  });
 }
 
 /** Turn a live logging session into a replay loop: run the headless prompt or
@@ -294,6 +310,7 @@ function runSessionBody(
               // so it also owns naming: pass --mnemonic instead of relying on
               // the summary.
               const allowSummary = options.agentRunner === undefined;
+              const langfuseExport = yield* langfuseExportFor(current.session.id);
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
@@ -320,6 +337,12 @@ function runSessionBody(
                 ...(options.agentRunner === undefined ? {} : { agentRunner: options.agentRunner }),
                 signoff,
                 discuss,
+                ...(langfuseExport === undefined
+                  ? {}
+                  : {
+                    observationExport: langfuseExport.observation,
+                    agentEventExport: langfuseExport.onAgentEvent,
+                  }),
                 onEvent: (event: AgentEvent) => {
                   events.push(event);
                   onEvent(event);
