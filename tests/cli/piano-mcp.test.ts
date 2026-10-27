@@ -241,6 +241,55 @@ describe("piano MCP server", () => {
     }
   }, 30_000);
 
+  it("finds the final text in a record larger than the read window", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mcp-bigrecord-"));
+    const runDir = join(root, ".piano", "runs", "big-record");
+    await mkdir(join(runDir, "system-log"), { recursive: true });
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", plannedStages: 1, completedStages: 1 }));
+    // One record, 20MB of it, so the tail window cannot hold the whole line.
+    const filler = "x".repeat(20 * 1024 * 1024);
+    await writeFile(join(runDir, "system-log", "trajectory.jsonl"), `${JSON.stringify({
+      runId: "big-record",
+      events: [
+        { type: "message_end", message: { role: "user", content: [{ type: "text", text: filler }] } },
+        { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "tail text" }] } },
+      ],
+    })}\n`);
+    const server = await startServer(root, {});
+    try {
+      const result = await server.request("tools/call", {
+        name: "piano_result",
+        arguments: { runId: "big-record" },
+      });
+      expect(result.structuredContent).toMatchObject({ output: "tail text" });
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("reads a run that predates the system-log layout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mcp-legacy-"));
+    const runDir = join(root, ".piano", "runs", "legacy-run");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", plannedStages: 1, completedStages: 1 }));
+    // Old runs kept the stream at the run root instead of system-log/.
+    await writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({
+      events: [{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "legacy output" }] } }],
+    })}\n`);
+    const server = await startServer(root, {});
+    try {
+      const result = await server.request("tools/call", {
+        name: "piano_result",
+        arguments: { runId: "legacy-run" },
+      });
+      expect(result.structuredContent).toMatchObject({ output: "legacy output" });
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("rejects a run id that could leave the runs root", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-mcp-traversal-"));
     const server = await startServer(root, { PIANO_MCP_PIANO_BIN: await fakePiano(root) });

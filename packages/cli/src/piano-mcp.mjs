@@ -75,12 +75,15 @@ function statusPath(runId) {
 }
 
 function trajectoryPath(runId) {
-  return join(RUNS_ROOT, runId, "system-log", "trajectory.jsonl");
+  const current = join(RUNS_ROOT, runId, "system-log", "trajectory.jsonl");
+  if (existsSync(current)) return current;
+  // Runs recorded before the system-log layout kept the stream at the run root.
+  return join(RUNS_ROOT, runId, "trajectory.jsonl");
 }
 
-/** The tail of a file as text, plus whether the window cut the file short. A
- * finished run's trajectory can be tens of megabytes; the final text is at the
- * end. */
+/** The tail of a file as text. A finished run's trajectory can be tens of
+ * megabytes and the final text is at the end, so only the tail is read;
+ * `Infinity` reads the whole file for a record larger than any window. */
 function readTail(path, maxBytes) {
   let fd;
   try {
@@ -89,7 +92,7 @@ function readTail(path, maxBytes) {
     const length = Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
     readSync(fd, buffer, 0, length, size - length);
-    return { text: buffer.toString("utf8"), truncated: size > length };
+    return buffer.toString("utf8");
   } catch {
     return undefined;
   } finally {
@@ -97,32 +100,74 @@ function readTail(path, maxBytes) {
   }
 }
 
+/** The end index of the JSON object starting at `start`, or -1 when the window
+ * ended first. Strings are skipped so braces inside text do not count. */
+function endOfObject(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index++) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function assistantTextOf(event) {
+  if (event?.type !== "message_end" || event?.message?.role !== "assistant") return undefined;
+  const content = Array.isArray(event.message.content) ? event.message.content : [];
+  const text = content
+    .filter((block) => block?.type === "text" && typeof block.text === "string")
+    .map((block) => block.text)
+    .join("");
+  return text === "" ? undefined : text;
+}
+
+/** The last assistant text in one window of the trajectory. The final record
+ * can itself be larger than the window, so the last `message_end` is located by
+ * name and only its own event object is parsed. The name is matched without the
+ * surrounding quotes because the writer's spacing is not guaranteed. */
+function finalTextIn(window) {
+  let from = window.length;
+  for (;;) {
+    const at = window.lastIndexOf("message_end", from);
+    if (at < 0) return undefined;
+    const start = window.lastIndexOf("{", at);
+    if (start < 0) return undefined;
+    const end = endOfObject(window, start);
+    if (end > 0) {
+      try {
+        const text = assistantTextOf(JSON.parse(window.slice(start, end + 1)));
+        if (text !== undefined) return text;
+      } catch {
+        // A cut fragment or an inner object; keep looking earlier.
+      }
+    }
+    from = at - 1;
+  }
+}
+
 /** The last assistant text a finished run recorded. This is the fallback when
  * the MCP server has no live state (for example after a host restart). */
 function finalTextFromRun(runId) {
-  const tail = readTail(trajectoryPath(runId), 4 * 1024 * 1024);
-  if (tail === undefined) return undefined;
-  const lines = tail.text.split("\n");
-  // A cut window starts mid-record, so its first line is not parseable.
-  const firstComplete = tail.truncated ? 1 : 0;
-  for (let index = lines.length - 1; index >= firstComplete; index--) {
-    let record;
-    try {
-      record = JSON.parse(lines[index]);
-    } catch {
-      continue;
-    }
-    const events = Array.isArray(record?.events) ? record.events : [];
-    for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
-      const event = events[eventIndex];
-      if (event?.type !== "message_end" || event?.message?.role !== "assistant") continue;
-      const content = Array.isArray(event.message.content) ? event.message.content : [];
-      const text = content
-        .filter((block) => block?.type === "text" && typeof block.text === "string")
-        .map((block) => block.text)
-        .join("");
-      if (text !== "") return text;
-    }
+  const path = trajectoryPath(runId);
+  for (const window of [4 * 1024 * 1024, 16 * 1024 * 1024, Infinity]) {
+    const text = readTail(path, window);
+    if (text === undefined) return undefined;
+    const found = finalTextIn(text);
+    if (found !== undefined) return found;
+    if (text.length < window) return undefined;
   }
   return undefined;
 }
