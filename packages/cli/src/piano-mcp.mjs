@@ -65,6 +65,11 @@ function pianoCommand() {
   return { command: "piano", args: [] };
 }
 
+/** A run id is a directory name under the runs root, and it arrives from model
+ * input, so it must not be able to walk out of that root. Same shape the
+ * dashboard accepts. */
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 function statusPath(runId) {
   return join(RUNS_ROOT, runId, "status.json");
 }
@@ -114,15 +119,12 @@ function readPersistedStatus(runId) {
   }
 }
 
+/** The stage the orchestrator says is running, from the authoritative
+ * `current` field. An accepted entry is the last finished stage, not progress. */
 function currentStageOf(status) {
-  const counts = isRecord(status?.stageCounts) ? status.stageCounts : {};
-  for (const [stage, value] of Object.entries(counts)) {
-    if (isRecord(value) && typeof value.completed === "number" && typeof value.planned === "number" &&
-      value.completed < value.planned) {
-      return stage;
-    }
-  }
-  return undefined;
+  const current = isRecord(status?.current) ? status.current : undefined;
+  if (current?.status !== "running") return undefined;
+  return typeof current.stageId === "string" ? current.stageId : undefined;
 }
 
 /** Fill stage counters from the run's authoritative state document. The
@@ -144,8 +146,7 @@ function summaryOf(state) {
     ? ` · ${state.completedStages ?? 0}/${state.plannedStages} stages`
     : "";
   const stage = state.currentStage === undefined ? "" : ` · ${state.currentStage}`;
-  const status = state.status === "running" ? "running" : state.status;
-  return `Piano ${state.runId}: ${status}${stages}${stage}`;
+  return `Piano ${state.runId}: ${state.status}${stages}${stage}`;
 }
 
 function structuredOf(state) {
@@ -217,10 +218,8 @@ function parseLine(state, line) {
   if (!isRecord(message)) return;
   if (message.event === "run.started") {
     state.runId = typeof message.run_id === "string" ? message.run_id : state.runId;
-    if (typeof message.cwd === "string") state.cwd = message.cwd;
     if (typeof message.workflow === "string") state.workflow = message.workflow;
     state.status = "running";
-    runs.delete(state.runId);
     runs.set(state.runId, state);
     pruneFinishedRuns();
     state.started?.();
@@ -277,10 +276,14 @@ function startRun(args) {
   const startedPromise = new Promise((resolveStarted) => { started = resolveStarted; });
   let done;
   const donePromise = new Promise((resolveDone) => { done = resolveDone; });
+  const child = spawn(command, commandArgs, {
+    cwd,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   const state = {
     runId: undefined,
-    child: undefined,
-    cwd,
+    child,
     workflow,
     status: "starting",
     startedAt: Date.now(),
@@ -293,15 +296,10 @@ function startRun(args) {
     started,
     done,
   };
-  state.child = spawn(command, commandArgs, {
-    cwd,
-    env: { ...process.env, PIANO_MCP: "1" },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  state.child.stdout.setEncoding("utf8");
-  state.child.stderr.setEncoding("utf8");
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
   let buffer = "";
-  state.child.stdout.on("data", (chunk) => {
+  child.stdout.on("data", (chunk) => {
     buffer += chunk;
     for (;;) {
       const newline = buffer.indexOf("\n");
@@ -312,16 +310,16 @@ function startRun(args) {
     }
   });
   let stderr = "";
-  state.child.stderr.on("data", (chunk) => {
+  child.stderr.on("data", (chunk) => {
     stderr = cap(`${stderr}${chunk}`, 4_000);
   });
-  state.child.on("error", (cause) => {
+  child.on("error", (cause) => {
     state.status = "failed";
     state.error = `piano failed to start: ${errorMessage(cause)}`;
     state.done?.();
     state.started?.();
   });
-  state.child.on("close", (code, signal) => {
+  child.on("close", (code, signal) => {
     if (state.status === "completed" || state.status === "failed") return;
     state.status = "failed";
     state.error = `piano exited ${code ?? signal ?? "unknown"}${stderr.trim() === "" ? "" : `: ${stderr.trim()}`}`;
@@ -331,17 +329,23 @@ function startRun(args) {
   return { state, startedPromise, donePromise, waitSeconds };
 }
 
+/** Await `promise`, or give up after `ms`. The timer is cleared either way so a
+ * finished wait leaves nothing pending on the event loop. */
+async function waitFor(promise, ms) {
+  let timer;
+  try {
+    await Promise.race([promise, new Promise((resolveTimeout) => {
+      timer = setTimeout(resolveTimeout, ms);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function runTool(args) {
   const { state, startedPromise, donePromise, waitSeconds } = startRun(args);
-  let startTimer;
-  const startOutcome = await Promise.race([
-    startedPromise.then(() => "started"),
-    new Promise((resolveTimeout) => {
-      startTimer = setTimeout(() => resolveTimeout("timeout"), 15_000);
-    }),
-  ]);
-  clearTimeout(startTimer);
-  if (startOutcome === "timeout" || state.runId === undefined) {
+  await waitFor(startedPromise, 15_000);
+  if (state.runId === undefined) {
     if (state.status === "failed") {
       return {
         content: [{ type: "text", text: state.error ?? "Piano failed before reporting a run id" }],
@@ -353,21 +357,13 @@ async function runTool(args) {
     state.child?.kill();
     return { content: [{ type: "text", text: state.error }], isError: true };
   }
-  runs.set(state.runId, state);
   if (waitSeconds === 0) return resultOf(state);
-  let waitTimer;
-  await Promise.race([
-    donePromise.then(() => "done"),
-    new Promise((resolveTimeout) => {
-      waitTimer = setTimeout(() => resolveTimeout("timeout"), waitSeconds * 1000);
-    }),
-  ]);
-  clearTimeout(waitTimer);
+  await waitFor(donePromise, waitSeconds * 1000);
   return resultOf(state);
 }
 
 function lookupRun(runId) {
-  if (typeof runId !== "string" || runId.trim() === "") throw new Error("runId must be a non-empty string");
+  if (typeof runId !== "string" || !RUN_ID.test(runId)) throw new Error("runId must be a Piano run id");
   const live = runs.get(runId);
   if (live !== undefined) {
     // Counters only move while the run is live; a finished run's status.json

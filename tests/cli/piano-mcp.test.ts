@@ -239,6 +239,22 @@ describe("piano MCP server", () => {
     }
   }, 30_000);
 
+  it("rejects a run id that could leave the runs root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mcp-traversal-"));
+    const server = await startServer(root, { PIANO_MCP_PIANO_BIN: await fakePiano(root) });
+    try {
+      const result = await server.request("tools/call", {
+        name: "piano_status",
+        arguments: { runId: "../../etc" },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain("runId must be a Piano run id");
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("rejects an unknown run id", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-mcp-unknown-"));
     const server = await startServer(root, { PIANO_MCP_PIANO_BIN: await fakePiano(root) });

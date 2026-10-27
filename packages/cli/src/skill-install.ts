@@ -49,13 +49,13 @@ function parseArgs(args: readonly string[]): Effect.Effect<
   return Effect.succeed({ targets: [...new Set(names)], dryRun });
 }
 
-function configuredTargets(): readonly Target[] {
+function configuredTargets(): Record<TargetName, Target> {
   const claude = process.env.CLAUDE_CONFIG_DIR?.trim();
   const dsh = process.env.DSH_HOME?.trim();
-  return [
-    { name: "claude", home: claude === undefined || claude === "" ? join(homedir(), ".claude") : claude },
-    { name: "dsh", home: dsh === undefined || dsh === "" ? join(homedir(), ".dsh") : dsh },
-  ];
+  return {
+    claude: { name: "claude", home: claude === undefined || claude === "" ? join(homedir(), ".claude") : claude },
+    dsh: { name: "dsh", home: dsh === undefined || dsh === "" ? join(homedir(), ".dsh") : dsh },
+  };
 }
 
 function report(line: string): Effect.Effect<void> {
@@ -140,11 +140,9 @@ export function installSkillCommand(args: readonly string[]): Effect.Effect<void
     const template = yield* io.readText(TEMPLATE_PATH).pipe(
       Effect.mapError((cause) => failed(TEMPLATE_PATH, cause)),
     );
-    const all = configuredTargets();
+    const homes = configuredTargets();
     for (const name of options.targets) {
-      const target = all.find((candidate) => candidate.name === name);
-      if (target === undefined) continue;
-      yield* installOne(target, template, options.dryRun);
+      yield* installOne(homes[name], template, options.dryRun);
     }
   });
 }
