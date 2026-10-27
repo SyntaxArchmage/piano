@@ -47,7 +47,7 @@ download_checkpoint() {
   "$VENV/bin/python" - <<'PY'
 from laya import Router
 
-Router(device="cpu", preload=["english"])
+Router(device="cpu").preload(["english"])
 print("Laya English checkpoint downloaded and loadable")
 PY
 }

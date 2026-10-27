@@ -10,7 +10,6 @@
  */
 import { randomUUID } from "node:crypto";
 import { createServer, type Socket } from "node:net";
-import { createInterface } from "node:readline";
 import { Effect, Fiber } from "effect";
 import { errorMessage } from "@piano/base";
 import { agentError, type AgentError } from "./errors.js";
@@ -27,6 +26,8 @@ export interface DiscussBridge {
 /** Mirrored by `discuss-mcp.mjs`; the MCP server owns the user-facing message,
  * while this bound is the last defense at the local trust boundary. */
 const MAX_QUESTION_CHARS = 16_000;
+/** A complete request line carries the question plus token/JSON overhead. */
+const MAX_LINE_CHARS = 32_000;
 
 function writeLine(socket: Socket, value: unknown): void {
   if (socket.destroyed) return;
@@ -82,10 +83,22 @@ export function startDiscussBridge(
         sockets.add(socket);
         socket.on("close", () => sockets.delete(socket));
         socket.on("error", () => sockets.delete(socket));
-        const lines = createInterface({ input: socket, crlfDelay: Infinity });
-        lines.on("line", (line) => {
-          const trimmed = line.trim();
-          if (trimmed !== "") void handleLine(socket, trimmed);
+        socket.setEncoding("utf8");
+        let buffer = "";
+        socket.on("data", (chunk: string) => {
+          buffer += chunk;
+          if (buffer.length > MAX_LINE_CHARS) {
+            writeLine(socket, { error: "request too large" });
+            socket.destroy();
+            return;
+          }
+          let newline = buffer.indexOf("\n");
+          while (newline >= 0) {
+            const line = buffer.slice(0, newline).trim();
+            buffer = buffer.slice(newline + 1);
+            if (line !== "") void handleLine(socket, line);
+            newline = buffer.indexOf("\n");
+          }
         });
       });
       server.once("error", reject);

@@ -3,7 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Effect } from "effect";
 import { FileSystem } from "@effect/platform";
-import { io } from "@piano/base";
+import { io, writeFileAtomic } from "@piano/base";
 import type { Logging } from "@piano/logging";
 import { AgentError, agentError } from "./errors.js";
 import {
@@ -39,7 +39,7 @@ import {
 import { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
 import { DSH_API_KEY_ENV, dshDiscussMcpPath, dshDiscussPatchPath, dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
 import { startDiscussBridge, type DiscussBridge } from "./discuss-bridge.js";
-import { DISCUSS_MCP_ENV_TOKEN, DISCUSS_MCP_ENV_URL } from "./discuss-mcp-config.js";
+import { DISCUSS_MCP_ENV_TOKEN, DISCUSS_MCP_ENV_URL, discussMcpConfigJson } from "./discuss-mcp-config.js";
 import { discussMcpServerPath } from "./discuss-mcp-path.js";
 import { harnessDiscussTransport } from "./tool-names.js";
 import {
@@ -380,7 +380,24 @@ function prepareAttempt(input: {
     yield* io.mkdir(dirname(transcriptPath), { recursive: true }).pipe(
       Effect.mapError((cause) => agentError("session-artifact", cause)),
     );
-    const environment = childEnv(harness, config, options, (request.tools?.length ?? 0) > 0);
+    let discussMcpConfigPath: string | undefined;
+    if (harness === "claude" && discuss !== undefined) {
+      discussMcpConfigPath = join(sessionDirectory, `discuss-mcp-${provisionalId}.json`);
+      yield* writeFileAtomic<AgentError>(
+        discussMcpConfigPath,
+        `${discussMcpConfigJson(discuss)}\n`,
+        {
+          mode: 0o600,
+          mapError: (cause) => agentError("session-artifact", cause),
+        },
+      );
+    }
+    const environment = childEnv(
+      harness,
+      config,
+      options,
+      (request.tools?.length ?? 0) > 0 || request.discuss !== undefined,
+    );
     // Resolved before argv because dsh's model overlay lives inside this home.
     const dshHome = environment.DSH_HOME ?? join(homedir(), ".dsh");
     if (harness === "dsh" && discuss !== undefined) {
@@ -470,7 +487,7 @@ function prepareAttempt(input: {
       ? yield* dshContinuationContext(request, dshResumeId)
       : undefined;
     const argv = harness === "claude"
-      ? claudeArguments(request, config, thinking, resources, discuss)
+      ? claudeArguments(request, config, thinking, resources, discuss, discussMcpConfigPath)
       : harness === "dsh"
         ? dshArguments(request, config, resources, dshHome, dshContext, discuss)
         : harness === "codex"

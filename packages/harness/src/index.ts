@@ -51,6 +51,7 @@ export { discussMcpServerPath } from "./discuss-mcp-path.js";
 export {
   DISCUSS_MCP_ENV_TOKEN,
   DISCUSS_MCP_ENV_URL,
+  discussMcpConfigJson,
   discussMcpServerConfig,
   type DiscussMcpEndpoint,
   type DiscussMcpServerConfig,

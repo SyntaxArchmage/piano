@@ -1111,6 +1111,12 @@ export function compileWorkflow(
             );
           }
         }
+        if (leaf.stage.tools?.includes(DISCUSS_TOOL_NAME) && leaf.stage.discuss !== true) {
+          throw scopeError(
+            sourcePath,
+            `stage "${leaf.stage.name}" lists "${DISCUSS_TOOL_NAME}" in tools but does not declare discuss: true`,
+          );
+        }
         if (leaf.stage.discuss === true) {
           if (!isKnownToolName(leaf.stage.harness, DISCUSS_TOOL_NAME)) {
             throw scopeError(

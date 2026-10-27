@@ -49,6 +49,20 @@ describe("Claude discuss wiring", () => {
     expect(args[args.indexOf("--append-system-prompt") + 1]).toContain(DISCUSS_MCP_TOOL_NAME);
   });
 
+  it("enables non-interactive permissions for a discuss-only stage", () => {
+    const args = claudeArguments(request({ tools: undefined }), {}, undefined, resources, bridge());
+    const modeIndex = args.indexOf("--permission-mode");
+    expect(modeIndex).toBeGreaterThanOrEqual(0);
+    expect(args[modeIndex + 1]).toBe("bypassPermissions");
+    expect(args[args.indexOf("--add-dir") + 1]).toBe("/tmp/piano");
+    expect(args).not.toContain("--allowed-tools");
+  });
+
+  it("uses a config file path when production supplies one", () => {
+    const args = claudeArguments(request(), {}, undefined, resources, bridge(), "/tmp/discuss-mcp.json");
+    expect(args[args.indexOf("--mcp-config") + 1]).toBe("/tmp/discuss-mcp.json");
+  });
+
   it("leaves the ordinary Claude argument list untouched", () => {
     const args = claudeArguments(request({ tools: ["read", "bash"] }), {}, undefined, resources);
     expect(args).not.toContain("--mcp-config");
