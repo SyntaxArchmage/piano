@@ -209,9 +209,14 @@ export const NOT_STARTED = -1;
  * value `runShell` reports. */
 export const TIMED_OUT = 124;
 
+/** A command whose output overflowed the caller's `maxBuffer`; the command did
+ * run, so this is not "not installed". */
+export const OUTPUT_OVERFLOW = -2;
+
 export interface CommandResult {
-  /** The exit status, `NOT_STARTED` when the command never ran, or `TIMED_OUT`
-   * when the caller's timeout killed it. */
+  /** The exit status, `NOT_STARTED` when the command never ran, `TIMED_OUT`
+   * when the caller's timeout killed it, or `OUTPUT_OVERFLOW` when it printed
+   * more than the caller's `maxBuffer` allowed. */
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -257,13 +262,16 @@ function runCommand(
       }
       const code = typeof (error as { code?: unknown }).code === "number"
         ? (error as { code: number }).code
-        // Node reports a timeout by killing the child: `code` is null and
-        // `killed` is set, which is not the same as a command that never ran.
-        : (error as { killed?: unknown }).killed === true || (error as { signal?: unknown }).signal === "SIGTERM"
-          ? TIMED_OUT
-          // A spawn failure (`ENOENT`, `EACCES`) never ran the command, so it
-          // has no exit status of its own.
-          : NOT_STARTED;
+        : (error as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+          // The child ran and produced too much output for the caller's limit.
+          ? OUTPUT_OVERFLOW
+          // Node reports a timeout by killing the child: `code` is null and
+          // `killed` is set, which is not the same as a command that never ran.
+          : (error as { killed?: unknown }).killed === true || (error as { signal?: unknown }).signal === "SIGTERM"
+            ? TIMED_OUT
+            // A spawn failure (`ENOENT`, `EACCES`) never ran the command, so it
+            // has no exit status of its own.
+            : NOT_STARTED;
       if (!failOnNonZero) {
         resume(Effect.succeed({ code, stdout: out, stderr: err }));
         return;

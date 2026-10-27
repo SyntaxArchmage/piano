@@ -7,7 +7,7 @@
  * equivalent registry; it gets a generated profile patch under Piano's own
  * `~/.piano/dsh` directory, never under `~/.dsh`.
  */
-import { io } from "@piano/base";
+import { io, writeFileAtomic } from "@piano/base";
 import { Effect } from "effect";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -91,6 +91,9 @@ function installHost(name: "claude" | "codex", scope: readonly string[], dryRun:
     if (existing === io.TIMED_OUT) {
       return yield* Effect.fail(failed(hostHome, new Error(`${name} mcp get did not answer within 30s`)));
     }
+    if (existing === io.OUTPUT_OVERFLOW) {
+      return yield* Effect.fail(failed(hostHome, new Error(`${name} mcp get printed more than the 1MB the probe reads`)));
+    }
     const args = ["mcp", "add", ...scope, "piano", "--", process.execPath, SIDECAR];
     if (dryRun) {
       yield* report(`[INFO] ${name}: would run ${name} ${args.join(" ")}`);
@@ -126,7 +129,7 @@ function dshPatch(): string {
   ].join("\n");
 }
 
-function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
+function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError, import("@effect/platform").FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const unusable = yield* unusableHome(agentHome("dsh"));
     if (unusable !== undefined) {
@@ -156,12 +159,12 @@ function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
       Effect.mapError((cause) => failed(target, cause)),
     );
     const written = stale
-      // Temp then rename, so a killed update never leaves a half-written patch.
-      ? yield* io.writeFile(`${target}.tmp-${String(process.pid)}`, patch).pipe(
-        Effect.flatMap(() => io.rename(`${target}.tmp-${String(process.pid)}`, target)),
-        Effect.as(true),
-        Effect.mapError((cause) => failed(target, cause)),
-      )
+      // The shared atomic write asks for a fresh staging name per call and
+      // removes it on failure, so two updates cannot collide and a failed
+      // rename leaves nothing behind.
+      ? yield* writeFileAtomic(target, patch, {
+        mapError: (cause, step) => failed(target, new Error(`${step}: ${cause instanceof Error ? cause.message : String(cause)}`)),
+      }).pipe(Effect.as(true))
       : yield* io.createExclusive(target, patch).pipe(Effect.mapError((cause) => failed(target, cause)));
     if (!written) {
       yield* report(`[WARN] dsh: conflict (${target} appeared concurrently); left untouched`);
@@ -171,7 +174,9 @@ function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
   });
 }
 
-export function installMcpCommand(args: readonly string[]): Effect.Effect<void, CliArgumentError | SkillInstallError> {
+export function installMcpCommand(
+  args: readonly string[],
+): Effect.Effect<void, CliArgumentError | SkillInstallError, import("@effect/platform").FileSystem.FileSystem> {
   return Effect.gen(function* () {
     const options = yield* parseArgs(args);
     const failures: SkillInstallError[] = [];
