@@ -12,6 +12,8 @@ import {
   TrajectoryRecordError,
   WorkflowTrajectory,
   type TrajectoryRecordContext,
+  type WorkflowObservation,
+  type WorkflowObservationExport,
   type WorkflowObservationRecorder,
 } from "../src/index.js";
 
@@ -234,5 +236,32 @@ describe("WorkflowTrajectory", () => {
       streams: [{ id: "broken", status: "error", errors: ["disk unavailable"] }],
     });
 
+  });
+
+  it("drops an export sink failure without marking local streams incomplete", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-trajectory-export-"));
+    roots.push(runDir);
+    const exported: WorkflowObservation[] = [];
+    const failing: WorkflowObservationExport = {
+      id: "failing",
+      export: () => Effect.die("langfuse unreachable"),
+    };
+    const recording: WorkflowObservationExport = {
+      id: "recording",
+      export: (observation) => Effect.sync(() => {
+        exported.push(observation);
+      }),
+    };
+    const duration = new DurationRecorder(runDir);
+    const trajectory = await run(
+      WorkflowTrajectory.open(runDir, "execution-1", [duration], [failing, recording]),
+    );
+    await run(trajectory.observe({ type: "stage_attempt_started", context: context(0), monotonicMs: 0 }));
+    await run(trajectory.observe({ type: "stage_attempt_finished", context: context(0), monotonicMs: 5, outcome: "accepted" }));
+    await run(trajectory.close("completed"));
+
+    expect(exported).toHaveLength(2);
+    expect(trajectory.snapshot().streams.every((stream) => stream.status === "completed")).toBe(true);
+    expect(await run(duration.read(runDir))).toHaveLength(1);
   });
 });

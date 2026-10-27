@@ -23,6 +23,7 @@ import {
 } from "@piano/contract";
 import {
   WorkflowTrajectory,
+  type WorkflowObservationExport,
 } from "@piano/trajectory";
 import {
   compileWorkflow,
@@ -147,6 +148,9 @@ export interface WorkflowExecutionRequest {
   readonly agentOptions?: AgentHarnessOptions;
   readonly agentRunner?: AgentRunner;
   readonly onEvent?: (event: AgentEvent) => void;
+  /** Optional external export sink for workflow observations. Local
+   * `eval-metrics` recorders always run; this sink is additive and best-effort. */
+  readonly observationExport?: WorkflowObservationExport;
   /** Human sign-off channel for stages declaring `signoff: true`. The engine
    * calls it after each attempt that is otherwise ready to be published, and
    * blocks until the reviewer chooses: `continue` publishes the attempt,
@@ -673,10 +677,23 @@ export function executeWorkflow(
       ...jobLedger.abandonedOrdinals,
       ...(request.restartOrdinal === undefined ? [] : [request.restartOrdinal]),
     ]);
-    const workflowTrajectory = yield* WorkflowTrajectory.open(request.runDir, runId);
+    const workflowTrajectory = yield* WorkflowTrajectory.open(
+      request.runDir,
+      runId,
+      undefined,
+      request.observationExport === undefined ? [] : [request.observationExport],
+    );
     const closeWorkflowTrajectory = (status: TurnOutcome) =>
       Effect.gen(function* () {
         yield* workflowTrajectory.close(status);
+        yield* Effect.forEach(
+          workflowTrajectory.exports,
+          (exporter) => {
+            const flushed = exporter.flush?.();
+            return flushed === undefined ? Effect.void : flushed.pipe(Effect.catchAllCause(() => Effect.void));
+          },
+          { discard: true },
+        );
         yield* Effect.forEach(
           workflowTrajectory.snapshot().streams.filter((stream) => stream.status === "error"),
           (stream) => WORKFLOW_LOG.error("workflow.trajectory.incomplete", {

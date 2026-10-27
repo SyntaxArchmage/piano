@@ -16,6 +16,9 @@ export {
   WorkflowTrajectory,
 } from "./workflow-trajectory.js";
 export type {
+  WorkflowObservationExport,
+} from "./export.js";
+export type {
   BenchmarkRecord,
   BenchmarkScore,
   BenchmarkSeriesPoint,

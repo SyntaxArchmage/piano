@@ -5,6 +5,7 @@
  * packages are loaded lazily inside `startLangfuseRuntime`. */
 
 import { resolveLangfuseConfig, type LangfuseConfig } from "./config.js";
+import { maskLangfusePayload } from "./mask.js";
 
 export interface LangfuseRuntime {
   readonly config: LangfuseConfig;
@@ -33,6 +34,7 @@ export async function startLangfuseRuntime(config: LangfuseConfig): Promise<Lang
     baseUrl: config.baseUrl,
     ...(config.environment === undefined ? {} : { environment: config.environment }),
     ...(config.release === undefined ? {} : { release: config.release }),
+    ...(config.mask ? { mask: maskLangfusePayload } : {}),
     // Transcripts stay on disk; export never uploads media from them.
     mediaUploadEnabled: false,
   });

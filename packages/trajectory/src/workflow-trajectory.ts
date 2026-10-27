@@ -12,6 +12,7 @@ import type {
   WorkflowObservation,
   WorkflowObservationRecorder,
 } from "./types.js";
+import type { WorkflowObservationExport } from "./export.js";
 
 /** One recorder stream's health while the run is live. Nothing is persisted:
  * the stream files are the evidence, and a reader derives their health by
@@ -43,6 +44,7 @@ export class WorkflowTrajectory {
     readonly runDir: string,
     readonly runId: string,
     readonly recorders: readonly WorkflowObservationRecorder[],
+    readonly exports: readonly WorkflowObservationExport[] = [],
   ) {
     this.streams = recorders.map((recorder) => ({
       ...recorder.descriptor,
@@ -55,8 +57,9 @@ export class WorkflowTrajectory {
     runDir: string,
     runId: string,
     recorders: readonly WorkflowObservationRecorder[] = defaultTrajectoryRecorders(runDir),
+    exports: readonly WorkflowObservationExport[] = [],
   ): Effect.Effect<WorkflowTrajectory, never, import("@effect/platform").FileSystem.FileSystem> {
-    const trajectory = new WorkflowTrajectory(runDir, runId, recorders);
+    const trajectory = new WorkflowTrajectory(runDir, runId, recorders, exports);
     return Effect.gen(function* () {
       for (const recorder of recorders) {
         if (recorder.initialize === undefined) continue;
@@ -74,6 +77,11 @@ export class WorkflowTrajectory {
       for (const recorder of this.recorders) {
         const result = yield* recorder.observe(observation).pipe(Effect.either);
         if (result._tag === "Left") this.recordStreamError(recorder.descriptor.id, result.left.message);
+      }
+      // Export sinks are best-effort: a network failure or defect must not
+      // mark the local stream incomplete, so it never touches stream health.
+      for (const exporter of this.exports) {
+        yield* exporter.export(observation).pipe(Effect.catchAllCause(() => Effect.void));
       }
     }));
   }
