@@ -10,6 +10,9 @@ import { resumeCommand } from "./resume.js";
 import { clearAllCommand } from "./clear.js";
 import { dashboardCommand } from "./dashboard.js";
 import { doctorCommand } from "./doctor.js";
+import { installSkillCommand } from "./skill-install.js";
+import { installMcpCommand } from "./mcp-install.js";
+import { installPluginCommand } from "./plugin-install.js";
 import { ensureSystemCaTrust } from "./ca-certs.js";
 import { CliArgumentError } from "./errors.js";
 import { programName } from "./program-name.js";
@@ -106,6 +109,9 @@ export function main(
   if (args[0] === "clear-all") return clearAllCommand(args.slice(1));
   if (args[0] === "dashboard") return dashboardCommand(args.slice(1));
   if (args[0] === "doctor") return doctorCommand(args.slice(1));
+  if (args[0] === "install-skill") return installSkillCommand(args.slice(1));
+  if (args[0] === "install-mcp") return installMcpCommand(args.slice(1));
+  if (args[0] === "install-plugin") return installPluginCommand(args.slice(1));
   return parseMainArgs(args).pipe(Effect.flatMap((options) => Effect.gen(function* () {
     // A staging session writes nothing until the first prompt is submitted, so
     // opening Piano and leaving again — including via `/resume`, which hands the

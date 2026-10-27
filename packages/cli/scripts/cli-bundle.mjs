@@ -28,6 +28,7 @@ const ARTIFACT_NAMES = [
   "pi-web-search.js",
   "dsh-resume-runner.mjs",
   "discuss-mcp.mjs",
+  "piano-mcp.mjs",
   "piano-dashboard.mjs",
   "public/index.html",
   "public/app.js",
@@ -148,6 +149,7 @@ async function buildInto(staging, root) {
   });
   await cp(join(root, "packages", "harness", "src", "dsh-resume-runner.mjs"), join(staging, "dsh-resume-runner.mjs"));
   await cp(join(root, "packages", "harness", "src", "discuss-mcp.mjs"), join(staging, "discuss-mcp.mjs"));
+  await cp(join(root, "packages", "cli", "src", "piano-mcp.mjs"), join(staging, "piano-mcp.mjs"));
   await cp(join(root, "packages", "dashboard", "server", "piano-dashboard.mjs"), join(staging, "piano-dashboard.mjs"));
   await cp(join(root, "packages", "dashboard", "server", "public"), join(staging, "public"), { recursive: true });
 }

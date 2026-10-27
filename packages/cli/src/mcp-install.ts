@@ -1,0 +1,206 @@
+/**
+ * `piano install-mcp` — register Piano's stdio MCP server with the coding
+ * agents the user already has.
+ *
+ * Claude Code and Codex have first-party `mcp add` commands, so this command
+ * delegates to them rather than editing their config files. dsh has no
+ * equivalent registry; it gets a generated profile patch under Piano's own
+ * `~/.piano/dsh` directory, never under `~/.dsh`.
+ */
+import { io } from "@piano/base";
+import { Effect } from "effect";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { CliArgumentError, SkillInstallError } from "./errors.js";
+import { programName } from "./program-name.js";
+
+const SIDECAR = fileURLToPath(new URL("./piano-mcp.mjs", import.meta.url));
+
+function dshPatchPath(): string {
+  return join(homedir(), ".piano", "dsh", "piano-mcp.yml");
+}
+
+type TargetName = "claude" | "codex" | "dsh";
+
+const usage = `usage: ${programName()} install-mcp [--target <claude|codex|dsh|all>] [--dry-run]`;
+
+function parseArgs(args: readonly string[]): Effect.Effect<
+  { readonly targets: readonly TargetName[]; readonly dryRun: boolean },
+  CliArgumentError
+> {
+  const names: TargetName[] = [];
+  let dryRun = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--dry-run") {
+      dryRun = true;
+      continue;
+    }
+    const value = arg === "--target" ? args[index + 1] : arg?.startsWith("--target=") ? arg.slice(9) : undefined;
+    if (arg === "--target") index += 1;
+    if (value === undefined) return Effect.fail(new CliArgumentError({ message: `unknown option: ${String(arg)}\n${usage}` }));
+    if (value === "all") names.push("claude", "codex", "dsh");
+    else if (value === "claude" || value === "codex" || value === "dsh") names.push(value);
+    else return Effect.fail(new CliArgumentError({ message: `unknown target: ${value}\n${usage}` }));
+  }
+  if (names.length === 0) names.push("claude", "codex", "dsh");
+  return Effect.succeed({ targets: [...new Set(names)], dryRun });
+}
+
+function report(line: string): Effect.Effect<void> {
+  return Effect.sync(() => console.log(line));
+}
+
+const failed = (path: string, cause: unknown): SkillInstallError => new SkillInstallError({
+  operation: "install-mcp",
+  path,
+  message: cause instanceof Error ? cause.message : String(cause),
+});
+
+function home(name: TargetName): string {
+  if (name === "claude") {
+    const value = process.env.CLAUDE_CONFIG_DIR?.trim();
+    return value === undefined || value === "" ? join(homedir(), ".claude") : value;
+  }
+  if (name === "codex") {
+    const value = process.env.CODEX_HOME?.trim();
+    return value === undefined || value === "" ? join(homedir(), ".codex") : value;
+  }
+  const value = process.env.DSH_HOME?.trim();
+  return value === undefined || value === "" ? join(homedir(), ".dsh") : value;
+}
+
+function exists(path: string): Effect.Effect<boolean> {
+  return io.stat(path).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)));
+}
+
+/** Run a host CLI with the caller's environment; a missing binary is reported
+ * as "not available", not as a failed install. */
+function runHost(command: string, args: readonly string[]): Effect.Effect<{ code: number; stdout: string }, never> {
+  return io.execFileResult(command, args, { timeoutMs: 30_000 }).pipe(
+    Effect.map((result) => ({ code: result.code, stdout: result.stdout })),
+    Effect.catchAll(() => Effect.succeed({ code: -1, stdout: "" })),
+  );
+}
+
+function installClaude(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
+  return Effect.gen(function* () {
+    if (!(yield* exists(home("claude")))) {
+      yield* report("[WARN] claude: skipped (home not found)");
+      return;
+    }
+    const existing = yield* runHost("claude", ["mcp", "get", "piano"]);
+    if (existing.code === 0) {
+      yield* report("[PASS] claude: piano MCP server already configured");
+      return;
+    }
+    if (existing.code === -1) {
+      yield* report("[WARN] claude: skipped (claude CLI not found)");
+      return;
+    }
+    const args = ["mcp", "add", "--scope", "user", "piano", "--", process.execPath, SIDECAR];
+    if (dryRun) {
+      yield* report(`[INFO] claude: would run claude ${args.join(" ")}`);
+      return;
+    }
+    const added = yield* io.execFile("claude", args, { timeoutMs: 30_000 }).pipe(
+      Effect.mapError((cause) => failed(home("claude"), cause)),
+    );
+    if (added.code !== 0) return yield* Effect.fail(failed(home("claude"), new Error(added.stderr || "claude mcp add failed")));
+    yield* report("[PASS] claude: registered piano MCP server");
+  });
+}
+
+function installCodex(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
+  return Effect.gen(function* () {
+    if (!(yield* exists(home("codex")))) {
+      yield* report("[WARN] codex: skipped (home not found)");
+      return;
+    }
+    const existing = yield* runHost("codex", ["mcp", "get", "piano"]);
+    if (existing.code === 0) {
+      yield* report("[PASS] codex: piano MCP server already configured");
+      return;
+    }
+    if (existing.code === -1) {
+      yield* report("[WARN] codex: skipped (codex CLI not found)");
+      return;
+    }
+    const args = ["mcp", "add", "piano", "--", process.execPath, SIDECAR];
+    if (dryRun) {
+      yield* report(`[INFO] codex: would run codex ${args.join(" ")}`);
+      return;
+    }
+    const added = yield* io.execFile("codex", args, { timeoutMs: 30_000 }).pipe(
+      Effect.mapError((cause) => failed(home("codex"), cause)),
+    );
+    if (added.code !== 0) return yield* Effect.fail(failed(home("codex"), new Error(added.stderr || "codex mcp add failed")));
+    yield* report("[PASS] codex: registered piano MCP server");
+  });
+}
+
+function dshPatch(): string {
+  return [
+    "# Generated by Piano: mounts the Piano MCP server for /piano.",
+    "- insert:",
+    "    - id: piano-mcp",
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    "      config:",
+    "        serverName: piano",
+    "        transport: stdio",
+    "        command: !!js process.execPath",
+    "        args:",
+    `          - ${JSON.stringify(SIDECAR)}`,
+    "        failOnStartupError: true",
+    "        toolCallTimeoutMs: 3600000",
+    "",
+  ].join("\n");
+}
+
+function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
+  return Effect.gen(function* () {
+    if (!(yield* exists(home("dsh")))) {
+      yield* report("[WARN] dsh: skipped (home not found)");
+      return;
+    }
+    const patch = dshPatch();
+    const target = dshPatchPath();
+    const current = yield* Effect.either(io.readText(target));
+    if (current._tag === "Right") {
+      if (current.right === patch) {
+        yield* report(`[PASS] dsh: up-to-date (${target})`);
+        return;
+      }
+      yield* report(`[WARN] dsh: conflict (${target} exists with different content); left untouched`);
+      return;
+    }
+    if (dryRun) {
+      yield* report(`[INFO] dsh: would write ${target}`);
+      return;
+    }
+    yield* io.mkdir(dirname(target), { recursive: true, mode: 0o755 }).pipe(
+      Effect.mapError((cause) => failed(target, cause)),
+    );
+    const created = yield* io.createExclusive(target, patch).pipe(
+      Effect.mapError((cause) => failed(target, cause)),
+    );
+    if (!created) {
+      yield* report(`[WARN] dsh: conflict (${target} appeared concurrently); left untouched`);
+      return;
+    }
+    yield* report(`[PASS] dsh: wrote ${target}; add it with --patch or to your profile`);
+  });
+}
+
+export function installMcpCommand(args: readonly string[]): Effect.Effect<void, CliArgumentError | SkillInstallError> {
+  return Effect.gen(function* () {
+    const options = yield* parseArgs(args);
+    // Sequential so the report lines read in target order; this runs once.
+    for (const target of options.targets) {
+      if (target === "claude") yield* installClaude(options.dryRun);
+      else if (target === "codex") yield* installCodex(options.dryRun);
+      else yield* installDsh(options.dryRun);
+    }
+  });
+}

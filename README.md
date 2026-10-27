@@ -34,10 +34,14 @@ cd piano
 bash scripts/setup.sh
 ```
 
-`scripts/setup.sh` installs the Node dependencies, links the CLI, and installs
-the default System One model (Laya) into an isolated Python environment. The
+`scripts/setup.sh` installs the Node dependencies, links the CLI, installs
+the default System One model (Laya) into an isolated Python environment, and
+offers Piano to the coding agents it finds (`install-skill` and `install-mcp`,
+see [Use Piano from a coding agent](#use-piano-from-a-coding-agent)). The
 Laya English checkpoint is downloaded during setup, so the first workflow does
-not pay that cost. Set `PIANO_SKIP_LAYA=1` to skip the model installation.
+not pay that cost. Set `PIANO_SKIP_LAYA=1` to skip the model installation, and
+`PIANO_SKIP_SKILL_INSTALL=1` / `PIANO_SKIP_MCP_INSTALL=1` to skip the agent
+steps.
 
 To install the Node side manually instead:
 
@@ -144,6 +148,31 @@ template, for example the plain coding-agent template:
 ```bash
 piano -p --json --workflow recipes/workflows/coding-pi.yml "print the code tree of this repo"
 ```
+
+### Use Piano from a coding agent
+
+Piano can run as a tool inside Claude Code, Codex, and dsh. The install is
+opt-in per agent, never touches an agent home that does not exist, and never
+overwrites a `piano` entry it finds:
+
+```bash
+piano install-skill    # /piano skill into ~/.claude/skills/piano and ~/.dsh/skills/piano
+piano install-mcp      # piano_run/piano_status/piano_result MCP server
+piano install-plugin   # Claude Code plugin; add --native for the in-transcript tool
+```
+
+`install-mcp` is the cross-agent fallback: the agent calls `piano_run` with a
+prompt and gets back a summary plus the final output, and `piano_status` /
+`piano_result` reach a run that outlived the call's wait. On Claude Code
+2.1.311 and newer, `install-plugin --native` replaces the plain tool card with
+a native `piano_run` that streams the run's NDJSON progress into the main
+transcript while the tool is in flight.
+
+The `/piano` skill teaches the agent when to reach for Piano, which workflow to
+choose, where the run evidence lives, and that headless runs cannot ask a person
+for sign-off. See
+[docs/deep-dive-notes/agent-chat-extension-feasibility.md](docs/deep-dive-notes/agent-chat-extension-feasibility.md)
+for what each host can render and what is still missing.
 
 ### Configuration
 
@@ -1034,6 +1063,28 @@ validated; unknown arguments fail with a usage message.
 Run one workflow. With `-p` and a prompt, runs headlessly; without a prompt,
 opens the interactive TUI. `--json` streams newline-delimited events to stdout
 (requires headless mode).
+
+### `piano install-skill [--target <claude|dsh|all>] [--dry-run]`
+
+Copy the packaged `/piano` skill into the agent homes that already exist
+(`~/.claude/skills/piano/SKILL.md`, `~/.dsh/skills/piano/SKILL.md`). A home
+that is absent is skipped, and an existing `piano` entry is never overwritten:
+different content, a symlink, or a flat `piano.md` all leave the target
+untouched and report a conflict. `--dry-run` prints what would happen.
+
+### `piano install-mcp [--target <claude|codex|dsh|all>] [--dry-run]`
+
+Register Piano's stdio MCP server (`piano_run`, `piano_status`,
+`piano_result`) with the agents the user already has. Claude Code and Codex use
+their own `mcp add` commands. dsh has no registry, so this writes the profile
+patch `~/.piano/dsh/piano-mcp.yml` and never touches `~/.dsh`.
+
+### `piano install-plugin [--native] [--dry-run]`
+
+Install Piano's Claude Code plugin. It needs Claude Code 2.1.311 or newer and is
+skipped on older builds, where `install-mcp` remains the path. Without
+`--native` the plugin loads inert; with `--native` it registers a real
+`piano_run` tool and streams run progress into the main transcript.
 
 ### `piano logs [<run-id>]`
 

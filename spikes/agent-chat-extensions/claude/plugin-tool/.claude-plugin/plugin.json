@@ -1,0 +1,5 @@
+{
+  "name": "piano",
+  "version": "0.1.0",
+  "description": "Piano tool spike: register piano_run as a native Claude Code tool and stream its progress with $.ui.log."
+}

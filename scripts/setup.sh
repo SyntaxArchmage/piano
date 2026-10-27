@@ -59,6 +59,26 @@ step "linking piano binary (npm link)"
 (cd "$REPO_ROOT" && npm link --workspace @piano/cli --silent)
 pass "piano linked"
 
+# ── 3b. Agent skill ─────────────────────────────────────────────────────────
+
+step "installing /piano agent skill"
+if [[ "${PIANO_SKIP_SKILL_INSTALL:-0}" == "1" ]]; then
+  warn "skipped via PIANO_SKIP_SKILL_INSTALL=1"
+elif node "$REPO_ROOT/packages/cli/bin/piano.mjs" install-skill; then
+  pass "agent skill step complete"
+else
+  warn "agent skill install failed; run 'piano install-skill' manually"
+fi
+
+step "installing Piano MCP server"
+if [[ "${PIANO_SKIP_MCP_INSTALL:-0}" == "1" ]]; then
+  warn "skipped via PIANO_SKIP_MCP_INSTALL=1"
+elif node "$REPO_ROOT/packages/cli/bin/piano.mjs" install-mcp; then
+  pass "MCP server step complete"
+else
+  warn "MCP install failed; run 'piano install-mcp' manually"
+fi
+
 # ── 4. Agent config ─────────────────────────────────────────────────────────
 
 step "checking agent config"

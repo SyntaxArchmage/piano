@@ -1,0 +1,6 @@
+{
+  "name": "piano-local",
+  "owner": { "name": "Piano" },
+  "description": "Piano's local Claude Code plugin: run Piano/Tuna workflows from the agent.",
+  "plugins": [{ "name": "piano", "source": "./" }]
+}
