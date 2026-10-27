@@ -18,6 +18,11 @@ export {
   maskLangfusePayload,
 } from "./mask.js";
 export {
+  mapAcceptedScores,
+  postLangfuseScores,
+  type LangfuseScoreRequest,
+} from "./scores.js";
+export {
   flushLangfuse,
   shutdownLangfuse,
   startLangfuseRuntime,

@@ -158,8 +158,9 @@ function langfuseExportFor(
   runId: string,
 ): Effect.Effect<LangfuseExport | undefined, never, never> {
   return Effect.promise(async () => {
-    if (resolveLangfuseConfig(process.env) === undefined) return undefined;
-    return createLangfuseExport(runId);
+    const config = resolveLangfuseConfig(process.env);
+    if (config === undefined) return undefined;
+    return createLangfuseExport(runId, config);
   });
 }
 

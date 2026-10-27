@@ -8,6 +8,7 @@ import {
 import { Effect } from "effect";
 import type { AgentEvent } from "@piano/harness";
 import type { WorkflowObservation, WorkflowObservationExport } from "@piano/trajectory";
+import type { LangfuseConfig } from "./config.js";
 import {
   advanceAgentEventContext,
   mapAgentEvent,
@@ -17,6 +18,7 @@ import {
   mapWorkflowObservation,
   type LangfuseAction,
 } from "./map-workflow-observation.js";
+import { mapAcceptedScores, postLangfuseScores } from "./scores.js";
 
 /** Synthetic remote parent that pins a deterministic trace id.
  *
@@ -124,8 +126,12 @@ export interface LangfuseExport {
  *
  * Asynchronous because `createTraceId` derives the deterministic trace id.
  * Export is best-effort: a mapping or SDK failure is dropped and never
- * touches the run. */
-export async function createLangfuseExport(runId: string): Promise<LangfuseExport> {
+ * touches the run. When `config` is present, accepted stage metrics also
+ * become Langfuse scores through the public API. */
+export async function createLangfuseExport(
+  runId: string,
+  config?: LangfuseConfig,
+): Promise<LangfuseExport> {
   const traceId = await createTraceId(runId);
   const handles = new Map<string, LangfuseObservation>();
   let eventContext: AgentEventExportContext = { sequence: 0 };
@@ -141,6 +147,11 @@ export async function createLangfuseExport(runId: string): Promise<LangfuseExpor
         Effect.sync(() => {
           try {
             apply(mapWorkflowObservation(observation));
+            if (config !== undefined && observation.type === "stage_accepted") {
+              const scores = mapAcceptedScores(observation, traceId);
+              // Fire-and-forget: a score gap never fails the run.
+              void postLangfuseScores(config, scores).catch(() => undefined);
+            }
           } catch {
             // Export never fails the run or the local evidence.
           }
@@ -160,6 +171,7 @@ export async function createLangfuseExport(runId: string): Promise<LangfuseExpor
 /** Observation-only sink. Kept for callers that have no agent-event stream. */
 export async function createLangfuseObservationExport(
   runId: string,
+  config?: LangfuseConfig,
 ): Promise<WorkflowObservationExport> {
-  return (await createLangfuseExport(runId)).observation;
+  return (await createLangfuseExport(runId, config)).observation;
 }
