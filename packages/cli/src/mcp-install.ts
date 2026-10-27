@@ -158,14 +158,26 @@ function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError, imp
     yield* io.mkdir(dirname(target), { recursive: true, mode: 0o755 }).pipe(
       Effect.mapError((cause) => failed(target, cause)),
     );
-    const written = stale
+    let written;
+    if (stale) {
+      // A symlinked patch belongs to someone's dotfiles; replace the file it
+      // points at so their link survives. A dangling link has nowhere to write.
+      const link = yield* Effect.either(io.readlink(target));
+      const resolved = link._tag === "Right" ? yield* Effect.either(io.realpath(target)) : undefined;
+      if (link._tag === "Right" && (resolved === undefined || resolved._tag === "Left")) {
+        yield* report(`[WARN] dsh: conflict (${target} is a symlink to a missing file); left untouched`);
+        return;
+      }
+      const path = resolved === undefined || resolved._tag === "Left" ? target : resolved.right;
       // The shared atomic write asks for a fresh staging name per call and
       // removes it on failure, so two updates cannot collide and a failed
       // rename leaves nothing behind.
-      ? yield* writeFileAtomic(target, patch, {
-        mapError: (cause, step) => failed(target, new Error(`${step}: ${cause instanceof Error ? cause.message : String(cause)}`)),
-      }).pipe(Effect.as(true))
-      : yield* io.createExclusive(target, patch).pipe(Effect.mapError((cause) => failed(target, cause)));
+      written = yield* writeFileAtomic(path, patch, {
+        mapError: (cause, step) => failed(path, new Error(`${step}: ${cause instanceof Error ? cause.message : String(cause)}`)),
+      }).pipe(Effect.as(true));
+    } else {
+      written = yield* io.createExclusive(target, patch).pipe(Effect.mapError((cause) => failed(target, cause)));
+    }
     if (!written) {
       yield* report(`[WARN] dsh: conflict (${target} appeared concurrently); left untouched`);
       return;

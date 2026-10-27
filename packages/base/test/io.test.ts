@@ -65,6 +65,11 @@ describe("io", () => {
     // "not installed" from "hung".
     const hung = await Effect.runPromise(io.execFileResult("sleep", ["5"], { timeoutMs: 100 }));
     expect(hung.code).toBe(io.TIMED_OUT);
+    // A command that exits 124 itself is a real exit status, not a timeout.
+    const real124 = await Effect.runPromise(io.execFileResult("bash", ["-lc", "exit 124"]));
+    expect(real124.code).toBe(124);
+    const shellTimeout = await Effect.runPromise(io.runShell("sleep 5", process.cwd(), 100));
+    expect(shellTimeout.code).toBe(io.TIMED_OUT);
     // A command that ran and printed too much is neither missing nor hung.
     const overflow = await Effect.runPromise(io.execFileResult("bash", ["-lc", "head -c 4000 /dev/zero"], { maxBuffer: 128 }));
     expect(overflow.code).toBe(io.OUTPUT_OVERFLOW);
