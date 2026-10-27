@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FileSystem } from "@effect/platform";
@@ -61,6 +61,26 @@ describe("writeFileAtomic", () => {
       }));
       expect(await readFile(path, "utf8")).toBe("next\n");
       expect((await stat(path)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces a symlink itself, taking no mode from its target", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-atomic-link-"));
+    try {
+      const real = join(root, "real.json");
+      const link = join(root, "link.json");
+      await writeFile(real, "target\n", "utf8");
+      await chmod(real, 0o600);
+      await symlink(real, link);
+      await run(writeFileAtomic(link, "next\n", {
+        temporaryPath: () => `${link}.tmp`,
+        mapError: mapError(link),
+      }));
+      expect((await lstat(link)).isSymbolicLink()).toBe(false);
+      expect(await readFile(link, "utf8")).toBe("next\n");
+      expect(await readFile(real, "utf8")).toBe("target\n");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
