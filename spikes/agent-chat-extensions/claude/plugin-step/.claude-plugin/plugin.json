@@ -1,0 +1,5 @@
+{
+  "name": "piano-spike-step",
+  "version": "0.1.0",
+  "description": "Spike: yield assistant-role text chunks from turn.step, sourced from a child process."
+}

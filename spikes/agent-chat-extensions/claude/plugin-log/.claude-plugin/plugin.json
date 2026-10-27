@@ -1,0 +1,5 @@
+{
+  "name": "piano-spike-log",
+  "version": "0.1.0",
+  "description": "Spike: stream Piano/heartbeat progress into the terminal transcript with $.ui.log."
+}

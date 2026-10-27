@@ -1,0 +1,20 @@
+{
+  "name": "piano",
+  "version": "0.1.0",
+  "description": "Run Piano/Tuna workflows from Claude Code: a piano_run tool that returns a summary and output, with live progress in the transcript.",
+  "author": { "name": "Piano" },
+  "userConfig": {
+    "PIANO_CLAUDE_NATIVE": {
+      "type": "string",
+      "title": "Register the native piano_run tool",
+      "description": "Set to 1 to register mcp__piano__piano_run. Leave unset when the Piano MCP server is installed, so only one piano surface exists.",
+      "default": ""
+    },
+    "PIANO_PIANO_BIN": {
+      "type": "string",
+      "title": "Piano binary",
+      "description": "Path to the piano CLI. Empty uses `piano` from PATH.",
+      "default": ""
+    }
+  }
+}

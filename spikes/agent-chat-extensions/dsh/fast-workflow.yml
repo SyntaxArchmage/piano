@@ -1,0 +1,15 @@
+version: 3
+
+# Fast, self-contained workflow for the dsh spike: one stage, one worker, no
+# tools. The CLI prompt is the stage input, so `piano -p --json --workflow
+# <this file> "print OK"` completes in a few seconds on the configured harness.
+workflow:
+  name: dsh-piano-spike-fast
+  nodes:
+    - stage:
+        name: respond
+        worker: basic
+        harness: pi
+        thinkingLevel: low
+        tools: []
+        from: []
