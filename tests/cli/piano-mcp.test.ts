@@ -210,7 +210,7 @@ describe("piano MCP server", () => {
   it("reads a persisted run after the live state is gone", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-mcp-persisted-"));
     const runDir = join(root, ".piano", "runs", "persisted-run");
-    await mkdir(join(runDir, "system-log"), { recursive: true });
+    await mkdir(runDir, { recursive: true });
     await writeFile(join(runDir, "status.json"), JSON.stringify({
       status: "completed",
       plannedStages: 2,
