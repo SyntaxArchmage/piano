@@ -39,6 +39,10 @@ function report(line: string): Effect.Effect<void> {
   return Effect.sync(() => console.log(line));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 const failed = (cause: unknown): SkillInstallError => new SkillInstallError({
   operation: "install-plugin",
   path: join(PLUGIN_DIR, ".claude-plugin", "plugin.json"),
@@ -94,28 +98,34 @@ export function installPluginCommand(args: readonly string[]): Effect.Effect<voi
     }
 
     const installed = yield* io.execFileResult("claude", ["plugin", "list", "--json"], { timeoutMs: 30_000 }).pipe(
-      Effect.map((result) => result.stdout.includes('"piano@piano-local"')),
+      Effect.map((result) => {
+        try {
+          const plugins: unknown = JSON.parse(result.stdout);
+          return Array.isArray(plugins) && plugins.some((plugin) =>
+            isRecord(plugin) && plugin["id"] === "piano@piano-local");
+        } catch {
+          return false;
+        }
+      }),
       Effect.catchAll(() => Effect.succeed(false)),
     )
     if (installed) {
       yield* report("[PASS] claude: piano plugin already installed");
-      if (options.native) yield* configureNative();
-      return;
+    } else {
+      const install = ["plugin", "install", "piano", "--marketplace", PLUGIN_DIR, "--scope", "user", "--json"];
+      if (options.dryRun) {
+        yield* report(`[INFO] claude: would run claude ${install.join(" ")}`);
+        if (options.native) yield* report("[INFO] claude: would set PIANO_CLAUDE_NATIVE=1");
+        return;
+      }
+      const added = yield* io.execFile("claude", install, { timeoutMs: 120_000 }).pipe(
+        Effect.mapError(failed),
+      );
+      if (added.code !== 0) {
+        return yield* Effect.fail(failed(new Error(added.stderr.trim() || "claude plugin install failed")));
+      }
+      yield* report("[PASS] claude: installed the piano plugin");
     }
-
-    const install = ["plugin", "install", "piano", "--marketplace", PLUGIN_DIR, "--scope", "user", "--json"];
-    if (options.dryRun) {
-      yield* report(`[INFO] claude: would run claude ${install.join(" ")}`);
-      if (options.native) yield* report("[INFO] claude: would set PIANO_CLAUDE_NATIVE=1");
-      return;
-    }
-    const added = yield* io.execFile("claude", install, { timeoutMs: 120_000 }).pipe(
-      Effect.mapError(failed),
-    );
-    if (added.code !== 0) {
-      return yield* Effect.fail(failed(new Error(added.stderr.trim() || "claude plugin install failed")));
-    }
-    yield* report("[PASS] claude: installed the piano plugin");
     if (options.native) yield* configureNative();
     else yield* report("[INFO] claude: plugin is inert; run with --native to register piano_run");
   });

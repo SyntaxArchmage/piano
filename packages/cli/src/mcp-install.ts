@@ -71,74 +71,51 @@ function home(name: TargetName): string {
   return value === undefined || value === "" ? join(homedir(), ".dsh") : value;
 }
 
-function exists(path: string): Effect.Effect<boolean> {
-  return io.stat(path).pipe(Effect.as(true), Effect.catchAll(() => Effect.succeed(false)));
-}
-
-/** Run a host CLI with the caller's environment; a missing binary is reported
- * as "not available", not as a failed install. */
-function runHost(command: string, args: readonly string[]): Effect.Effect<{ code: number; stdout: string }, never> {
+/** Run a host CLI with the caller's environment; `-1` means the binary is
+ * missing, which is reported as "not available", not as a failed install. */
+function runHost(command: string, args: readonly string[]): Effect.Effect<number, never> {
   return io.execFileResult(command, args, { timeoutMs: 30_000 }).pipe(
-    Effect.map((result) => ({ code: result.code, stdout: result.stdout })),
-    Effect.catchAll(() => Effect.succeed({ code: -1, stdout: "" })),
+    Effect.map((result) => result.code),
+    Effect.catchAll(() => Effect.succeed(-1)),
   );
 }
 
-function installClaude(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
+/** Register the server with a host that has its own `mcp add`. The two hosts
+ * differ only in where `piano` sits in the argv and in their wording. */
+function installHost(name: "claude" | "codex", scope: readonly string[], dryRun: boolean): Effect.Effect<void, SkillInstallError> {
   return Effect.gen(function* () {
-    if (!(yield* exists(home("claude")))) {
-      yield* report("[WARN] claude: skipped (home not found)");
+    const hostHome = home(name);
+    if (!(yield* io.exists(hostHome))) {
+      yield* report(`[WARN] ${name}: skipped (home not found)`);
       return;
     }
-    const existing = yield* runHost("claude", ["mcp", "get", "piano"]);
-    if (existing.code === 0) {
-      yield* report("[PASS] claude: piano MCP server already configured");
+    const existing = yield* runHost(name, ["mcp", "get", "piano"]);
+    if (existing === 0) {
+      yield* report(`[PASS] ${name}: piano MCP server already configured`);
       return;
     }
-    if (existing.code === -1) {
-      yield* report("[WARN] claude: skipped (claude CLI not found)");
+    if (existing === -1) {
+      yield* report(`[WARN] ${name}: skipped (${name} CLI not found)`);
       return;
     }
-    const args = ["mcp", "add", "--scope", "user", "piano", "--", process.execPath, SIDECAR];
+    const args = ["mcp", "add", ...scope, "piano", "--", process.execPath, SIDECAR];
     if (dryRun) {
-      yield* report(`[INFO] claude: would run claude ${args.join(" ")}`);
+      yield* report(`[INFO] ${name}: would run ${name} ${args.join(" ")}`);
       return;
     }
-    const added = yield* io.execFile("claude", args, { timeoutMs: 30_000 }).pipe(
-      Effect.mapError((cause) => failed(home("claude"), cause)),
+    const added = yield* io.execFile(name, args, { timeoutMs: 30_000 }).pipe(
+      Effect.mapError((cause) => failed(hostHome, cause)),
     );
-    if (added.code !== 0) return yield* Effect.fail(failed(home("claude"), new Error(added.stderr || "claude mcp add failed")));
-    yield* report("[PASS] claude: registered piano MCP server");
+    if (added.code !== 0) return yield* Effect.fail(failed(hostHome, new Error(added.stderr || `${name} mcp add failed`)));
+    yield* report(`[PASS] ${name}: registered piano MCP server`);
   });
 }
 
-function installCodex(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
-  return Effect.gen(function* () {
-    if (!(yield* exists(home("codex")))) {
-      yield* report("[WARN] codex: skipped (home not found)");
-      return;
-    }
-    const existing = yield* runHost("codex", ["mcp", "get", "piano"]);
-    if (existing.code === 0) {
-      yield* report("[PASS] codex: piano MCP server already configured");
-      return;
-    }
-    if (existing.code === -1) {
-      yield* report("[WARN] codex: skipped (codex CLI not found)");
-      return;
-    }
-    const args = ["mcp", "add", "piano", "--", process.execPath, SIDECAR];
-    if (dryRun) {
-      yield* report(`[INFO] codex: would run codex ${args.join(" ")}`);
-      return;
-    }
-    const added = yield* io.execFile("codex", args, { timeoutMs: 30_000 }).pipe(
-      Effect.mapError((cause) => failed(home("codex"), cause)),
-    );
-    if (added.code !== 0) return yield* Effect.fail(failed(home("codex"), new Error(added.stderr || "codex mcp add failed")));
-    yield* report("[PASS] codex: registered piano MCP server");
-  });
-}
+const installClaude = (dryRun: boolean): Effect.Effect<void, SkillInstallError> =>
+  installHost("claude", ["--scope", "user"], dryRun);
+
+const installCodex = (dryRun: boolean): Effect.Effect<void, SkillInstallError> =>
+  installHost("codex", [], dryRun);
 
 function dshPatch(): string {
   return [
@@ -160,7 +137,7 @@ function dshPatch(): string {
 
 function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
   return Effect.gen(function* () {
-    if (!(yield* exists(home("dsh")))) {
+    if (!(yield* io.exists(home("dsh")))) {
       yield* report("[WARN] dsh: skipped (home not found)");
       return;
     }

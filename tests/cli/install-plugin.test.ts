@@ -96,7 +96,7 @@ describe("piano install-plugin", () => {
 
   it("does not reinstall an installed plugin", async () => {
     await mkdir(process.env.CLAUDE_CONFIG_DIR!, { recursive: true });
-    process.env.FAKE_LIST = '["piano@piano-local"]';
+    process.env.FAKE_LIST = '[{"id":"piano@piano-local","enabled":true}]';
     await run(["--native"]);
     const calls = await readFile(log, "utf8");
     expect(calls).not.toContain("plugin install");
