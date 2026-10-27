@@ -919,6 +919,7 @@ export function executeWorkflow(
         undefined,
         undefined,
         sharedWorkspace,
+        compiled.concurrency,
       );
       const terminal = completed.boundary.results;
       const final = terminal.at(-1) ?? completed.stages.at(-1);

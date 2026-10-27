@@ -358,7 +358,18 @@ describe(" pi sdk cancellation", () => {
     const root = await mkdtemp(join(tmpdir(), "piano-pi-discovery-"));
     const commandlessPath = await mkdtemp(join(tmpdir(), "piano-pi-no-npm-"));
     const originalPath = process.env.PATH;
+    const originalPrefix = process.env.npm_config_prefix;
+    const originalExecPath = process.execPath;
     process.env.PATH = commandlessPath;
+    // Make both derivation probes miss, so discovery reaches the npm fallback
+    // this test is about.
+    process.env.npm_config_prefix = commandlessPath;
+    Object.defineProperty(process, "execPath", {
+      value: join(commandlessPath, "bin", "node"),
+      configurable: true,
+      enumerable: true,
+      writable: true,
+    });
     try {
       const runSession = await Effect.runPromise(
         createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
@@ -382,6 +393,14 @@ describe(" pi sdk cancellation", () => {
         }
       }
     } finally {
+      Object.defineProperty(process, "execPath", {
+        value: originalExecPath,
+        configurable: true,
+        enumerable: true,
+        writable: true,
+      });
+      if (originalPrefix === undefined) delete process.env.npm_config_prefix;
+      else process.env.npm_config_prefix = originalPrefix;
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
       await rm(commandlessPath, { recursive: true, force: true });

@@ -169,6 +169,10 @@ export interface WorkflowDocument {
      * when the dashboard cannot start. The server outlives the run so a remote
      * browser can keep reading its evidence. */
     readonly monitor?: boolean;
+    /** Maximum number of independent ready nodes the root scope may run at
+     * once. Default 1 keeps the historical stable serial order; tournament
+     * lanes have their own `parallel` key and are unaffected. */
+    readonly concurrency?: number;
     readonly nodes: readonly WorkflowNode[];
   };
 }
@@ -238,10 +242,12 @@ export interface CompiledWorkflow {
   readonly nodes: readonly WorkflowRuntimeNode[];
   /** Start the web dashboard for this run; see WorkflowDocument. */
   readonly monitor: boolean;
+  /** Root-scope concurrency; 1 is the historical serial scheduler. */
+  readonly concurrency: number;
 }
 
 const DOCUMENT_KEYS = new Set(["version", "workflow"]);
-const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes", "monitor"]);
+const WORKFLOW_KEYS = new Set(["name", "mnemonic", "nodes", "monitor", "concurrency"]);
 const STAGE_KEYS = new Set([
   "name",
   "worker",
@@ -716,8 +722,20 @@ export function parseWorkflow(
         const monitor = workflow.monitor === undefined
           ? false
           : yield* optionalBoolean(workflow, "monitor", sourcePath);
+        const concurrency = workflow.concurrency === undefined
+          ? undefined
+          : yield* positiveInteger(workflow.concurrency, "workflow.concurrency", sourcePath);
         const nodes = yield* parseNodes(workflow.nodes, sourcePath);
-        return { version: 3 as const, workflow: { name, ...(mnemonic === undefined ? {} : { mnemonic }), monitor, nodes } };
+        return {
+          version: 3 as const,
+          workflow: {
+            name,
+            ...(mnemonic === undefined ? {} : { mnemonic }),
+            monitor,
+            ...(concurrency === undefined ? {} : { concurrency }),
+            nodes,
+          },
+        };
       });
     }),
   );
@@ -1160,6 +1178,7 @@ export function compileWorkflow(
         regions: lowered.regions,
         nodes: lowered.nodes,
         monitor: document.workflow.monitor === true,
+        concurrency: document.workflow.concurrency ?? 1,
       };
     },
     catch: (cause) => cause instanceof WorkflowError

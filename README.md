@@ -579,6 +579,17 @@ The shipped GPU tuning templates opt in;
 `piano dashboard [--run <id>]` prints the URL (port 7317 by default) and
 `piano dashboard --stop` stops it.
 
+### Concurrency
+
+`concurrency: 2` in the `workflow` block lets the root scope run up to that many
+independent ready nodes at once. The default is `1`, which keeps the historical
+stable serial order. Only siblings with no dependency between them can overlap,
+and stages that share an actor (same harness and worker) still run one at a
+time. They also share the scope's workspace, so concurrency does not isolate
+writes; enable it only for branches that do not race on the same files. A
+failed node stops new nodes from starting; nodes already running finish,
+then the run fails. Tournament lanes already run in parallel and are unaffected.
+
 ### Stage
 
 ```yaml
