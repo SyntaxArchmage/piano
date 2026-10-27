@@ -136,8 +136,15 @@ export function installSkillCommand(args: readonly string[]): Effect.Effect<void
       Effect.mapError((cause) => failed(TEMPLATE_PATH, cause)),
     );
     const homes = configuredHomes();
+    // One home failing must not stop the others, same as install-mcp.
+    const failures: SkillInstallError[] = [];
     for (const name of options.targets) {
-      yield* installOne(name, homes[name], template, options.dryRun);
+      const outcome = yield* Effect.either(installOne(name, homes[name], template, options.dryRun));
+      if (outcome._tag === "Left") {
+        failures.push(outcome.left);
+        yield* report(`[FAIL] ${name}: ${outcome.left.message}`);
+      }
     }
+    if (failures.length > 0) return yield* Effect.fail(failures[0]!);
   });
 }

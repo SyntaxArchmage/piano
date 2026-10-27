@@ -110,7 +110,9 @@ export function installPluginCommand(args: readonly string[]): Effect.Effect<voi
     )
     if (installed) yield* report("[PASS] claude: piano plugin already installed");
     if (installed && !options.native) {
-      yield* report("[INFO] claude: plugin is inert; run with --native to register piano_run");
+      // The plugin may already carry the setting from an earlier run; this
+      // command was simply not asked to change it.
+      yield* report("[INFO] claude: --native not requested; the plugin's current config is unchanged");
       return;
     }
     // `--config` applies the userConfig in the same call, and re-running it on

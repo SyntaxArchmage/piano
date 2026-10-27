@@ -75,15 +75,13 @@ function statusPath(runId) {
 }
 
 function trajectoryPath(runId) {
-  const current = join(RUNS_ROOT, runId, "system-log", "trajectory.jsonl");
-  if (existsSync(current)) return current;
-  // Runs recorded before the system-log layout kept the stream at the run root.
-  return join(RUNS_ROOT, runId, "trajectory.jsonl");
+  return join(RUNS_ROOT, runId, "system-log", "trajectory.jsonl");
 }
 
-/** The tail of a file as text. A finished run's trajectory can be tens of
- * megabytes and the final text is at the end, so only the tail is read;
- * `Infinity` reads the whole file for a record larger than any window. */
+/** The tail of a file as text, plus whether the file was longer than the
+ * window. A finished run's trajectory can be tens of megabytes and the final
+ * text is at the end, so only the tail is read; `Infinity` reads all of it when
+ * the last record alone is larger than any window. */
 function readTail(path, maxBytes) {
   let fd;
   try {
@@ -92,36 +90,14 @@ function readTail(path, maxBytes) {
     const length = Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
     readSync(fd, buffer, 0, length, size - length);
-    return buffer.toString("utf8");
+    // Decided by bytes, not by the decoded length: a multi-byte character
+    // occupies up to four bytes but only one or two UTF-16 units.
+    return { text: buffer.toString("utf8"), truncated: size > length };
   } catch {
     return undefined;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
-}
-
-/** The end index of the JSON object starting at `start`, or -1 when the window
- * ended first. Strings are skipped so braces inside text do not count. */
-function endOfObject(text, start) {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let index = start; index < text.length; index++) {
-    const character = text[index];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') inString = true;
-    else if (character === "{") depth += 1;
-    else if (character === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
 }
 
 function assistantTextOf(event) {
@@ -134,28 +110,28 @@ function assistantTextOf(event) {
   return text === "" ? undefined : text;
 }
 
-/** The last assistant text in one window of the trajectory. The final record
- * can itself be larger than the window, so the last `message_end` is located by
- * name and only its own event object is parsed. The name is matched without the
- * surrounding quotes because the writer's spacing is not guaranteed. */
-function finalTextIn(window) {
-  let from = window.length;
-  for (;;) {
-    const at = window.lastIndexOf("message_end", from);
-    if (at < 0) return undefined;
-    const start = window.lastIndexOf("{", at);
-    if (start < 0) return undefined;
-    const end = endOfObject(window, start);
-    if (end > 0) {
-      try {
-        const text = assistantTextOf(JSON.parse(window.slice(start, end + 1)));
-        if (text !== undefined) return text;
-      } catch {
-        // A cut fragment or an inner object; keep looking earlier.
-      }
+/** The last assistant text in one window, read from whole records only. A
+ * truncated window starts mid-record, so its first fragment is dropped; every
+ * other line is a complete record and the record's own `events` decide what it
+ * says. Scanning for the marker text instead would take an embedded copy of it
+ * inside a tool result for the real reply. */
+function finalTextIn(tail) {
+  const lines = tail.text.split("\n");
+  const firstComplete = tail.truncated ? 1 : 0;
+  for (let index = lines.length - 1; index >= firstComplete; index--) {
+    let record;
+    try {
+      record = JSON.parse(lines[index]);
+    } catch {
+      continue;
     }
-    from = at - 1;
+    const events = Array.isArray(record?.events) ? record.events : [];
+    for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
+      const text = assistantTextOf(events[eventIndex]);
+      if (text !== undefined) return text;
+    }
   }
+  return undefined;
 }
 
 /** The last assistant text a finished run recorded. This is the fallback when
@@ -163,11 +139,12 @@ function finalTextIn(window) {
 function finalTextFromRun(runId) {
   const path = trajectoryPath(runId);
   for (const window of [4 * 1024 * 1024, 16 * 1024 * 1024, Infinity]) {
-    const text = readTail(path, window);
-    if (text === undefined) return undefined;
-    const found = finalTextIn(text);
+    const tail = readTail(path, window);
+    if (tail === undefined) return undefined;
+    const found = finalTextIn(tail);
     if (found !== undefined) return found;
-    if (text.length < window) return undefined;
+    // Nothing in the window and nothing beyond it: the run recorded no reply.
+    if (!tail.truncated) return undefined;
   }
   return undefined;
 }
