@@ -69,7 +69,7 @@ export class AsyncStageQueue {
           }).pipe(Effect.catchAll(() => Effect.void));
         }
         record.settled = true;
-        if (record.consumers.length === 0) queue.prune(task.stageId);
+        if (record.consumers.length === 0 && record.failure === undefined) queue.prune(task.stageId);
       }));
       const fiber = yield* Effect.fork(worker);
       queue.fibers.push(fiber);
