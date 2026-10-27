@@ -234,7 +234,6 @@ function parseLine(state, line) {
     state.output = cap(typeof message.text === "string" ? message.text : "", MAX_OUTPUT_CHARS);
     if (typeof message.status_path === "string") state.runDir = dirname(message.status_path);
     if (state.runDir === undefined && typeof message.progress_path === "string") state.runDir = dirname(message.progress_path);
-    if (state.runDir === undefined && state.runId !== undefined) state.runDir = join(RUNS_ROOT, state.runId);
     state.durationMs = Date.now() - state.startedAt;
     refreshFromStatus(state);
     state.currentStage = undefined;
@@ -346,15 +345,13 @@ async function runTool(args) {
   const { state, startedPromise, donePromise, waitSeconds } = startRun(args);
   await waitFor(startedPromise, 15_000);
   if (state.runId === undefined) {
-    if (state.status === "failed") {
-      return {
-        content: [{ type: "text", text: state.error ?? "Piano failed before reporting a run id" }],
-        isError: true,
-      };
+    // The only other exit is a spawn error or an early child exit, both of
+    // which already recorded a failure.
+    if (state.status !== "failed") {
+      state.status = "failed";
+      state.error = "Piano did not report run.started within 15s";
+      state.child.kill();
     }
-    state.status = "failed";
-    state.error = `Piano did not report run.started within 15s${state.error === undefined ? "" : `: ${state.error}`}`;
-    state.child?.kill();
     return { content: [{ type: "text", text: state.error }], isError: true };
   }
   if (waitSeconds === 0) return resultOf(state);
