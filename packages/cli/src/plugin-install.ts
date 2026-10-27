@@ -108,40 +108,29 @@ export function installPluginCommand(args: readonly string[]): Effect.Effect<voi
       }),
       Effect.catchAll(() => Effect.succeed(false)),
     )
-    if (installed) {
-      yield* report("[PASS] claude: piano plugin already installed");
-    } else {
-      const install = ["plugin", "install", "piano", "--marketplace", PLUGIN_DIR, "--scope", "user", "--json"];
-      if (options.dryRun) {
-        yield* report(`[INFO] claude: would run claude ${install.join(" ")}`);
-        if (options.native) yield* report("[INFO] claude: would set PIANO_CLAUDE_NATIVE=1");
-        return;
-      }
-      const added = yield* io.execFile("claude", install, { timeoutMs: 120_000 }).pipe(
-        Effect.mapError(failed),
-      );
-      if (added.code !== 0) {
-        return yield* Effect.fail(failed(new Error(added.stderr.trim() || "claude plugin install failed")));
-      }
-      yield* report("[PASS] claude: installed the piano plugin");
+    if (installed) yield* report("[PASS] claude: piano plugin already installed");
+    if (installed && !options.native) {
+      yield* report("[INFO] claude: plugin is inert; run with --native to register piano_run");
+      return;
     }
-    if (options.native) yield* configureNative();
-    else yield* report("[INFO] claude: plugin is inert; run with --native to register piano_run");
+    // `--config` applies the userConfig in the same call, and re-running it on
+    // an installed plugin is how the setting is turned on later. Both paths are
+    // the same command, so dry-run has one gate instead of one per branch.
+    const install = [
+      "plugin", "install", "piano", "--marketplace", PLUGIN_DIR, "--scope", "user", "--json",
+      ...(options.native ? ["--config", "PIANO_CLAUDE_NATIVE=1"] : []),
+    ];
+    if (options.dryRun) {
+      yield* report(`[INFO] claude: would run claude ${install.join(" ")}`);
+      return;
+    }
+    const added = yield* io.execFile("claude", install, { timeoutMs: 120_000 }).pipe(
+      Effect.mapError(failed),
+    );
+    if (added.code !== 0) {
+      return yield* Effect.fail(failed(new Error(added.stderr.trim() || "claude plugin install failed")));
+    }
+    if (!installed) yield* report("[PASS] claude: installed the piano plugin");
+    if (options.native) yield* report("[PASS] claude: enabled the native piano_run tool; restart Claude Code");
   });
-}
-
-/** Turn on the plugin's native tool. `--native` is the user's explicit opt-in,
- * so the plugin's own userConfig now carries it; the host reads that config at
- * plugin load, before the session starts. */
-function configureNative(): Effect.Effect<void, SkillInstallError> {
-  const values = JSON.stringify({ PIANO_CLAUDE_NATIVE: "1" });
-  // The host only reads config values from stdin, and the shell pipeline is the
-  // one path io offers for that.
-  const command = `printf '%s' '${values.replace(/'/g, "'\\''")}' | claude plugin configure piano@piano-local --values-stdin`;
-  return io.runShell(command, process.cwd(), 30_000).pipe(
-    Effect.mapError((cause) => failed(cause)),
-    Effect.flatMap((result) => result.code === 0
-      ? report("[PASS] claude: enabled the native piano_run tool; restart Claude Code")
-      : Effect.fail(failed(new Error(result.stderr.trim() || "claude plugin configure failed")))),
-  );
 }

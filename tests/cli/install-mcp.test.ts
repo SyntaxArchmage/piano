@@ -83,6 +83,17 @@ describe("piano install-mcp", () => {
     expect(output.join("\n")).toContain("dsh: skipped (home not found");
   });
 
+  it("skips a host whose CLI is missing and still finishes the other targets", async () => {
+    for (const name of ["claude", "codex", "dsh"]) await mkdir(join(root, name), { recursive: true });
+    await rm(join(root, "bin", "codex"), { force: true });
+    // Only the stub directory is on PATH, so the real codex cannot be found.
+    process.env.PATH = join(root, "bin");
+    await run(["--target", "codex", "--target", "dsh"]);
+    expect(output.join("\n")).toContain("codex: skipped (codex CLI not found)");
+    const patch = await readFile(join(root, ".piano", "dsh", "piano-mcp.yml"), "utf8");
+    expect(patch).toContain("serverName: piano");
+  });
+
   it("does not add a server that is already configured", async () => {
     for (const name of ["claude", "codex", "dsh"]) await mkdir(join(root, name), { recursive: true });
     process.env.GET_CODE = "0";
