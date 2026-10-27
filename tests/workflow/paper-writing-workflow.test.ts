@@ -198,8 +198,8 @@ describe("paper-writing workflow template", () => {
 
     for (const stage of compiled.stages) {
       expect(stage.stage.retry).toEqual(RETRY_POLICY);
-      // `discuss` is a pi-only custom tool; other harnesses are rejected at
-      // load rather than silently degrading the alignment into a one-shot guess.
+      // This recipe pins pi; its prepare stage mounts Piano's native `discuss`
+      // tool. Claude and dsh use the MCP bridge in their own recipes.
       expect(stage.stage.harness).toBe("pi");
       // Contract presence is what turns validation on for this worker.
       await expect(readFile(join(process.cwd(), "recipes", "contracts", `${stage.stage.worker}.json`), "utf8"))

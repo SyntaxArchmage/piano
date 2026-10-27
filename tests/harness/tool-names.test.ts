@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  harnessSupportsDiscuss,
   harnessToolNames,
   isKnownToolName,
   CODEX_TOOL_NAMES,
@@ -82,6 +83,21 @@ describe("harness tool-name registry", () => {
   it("reports the unknown subset in input order", () => {
     expect(unknownToolNames("pi", ["read", "Read", "bash"])).toEqual(["Read"]);
     expect(unknownToolNames("claude", ["read", "write"])).toEqual(["read", "write"]);
+  });
+
+  it("accepts the logical discuss tool only where the harness can mount it", () => {
+    for (const harness of ["pi", "claude", "dsh"] as const) {
+      expect(harnessSupportsDiscuss(harness)).toBe(true);
+      expect(isKnownToolName(harness, "discuss")).toBe(true);
+      expect(unknownToolNames(harness, ["discuss"])).toEqual([]);
+    }
+    for (const harness of ["pi-cli", "codex"] as const) {
+      expect(harnessSupportsDiscuss(harness)).toBe(false);
+      expect(isKnownToolName(harness, "discuss")).toBe(false);
+      expect(unknownToolNames(harness, ["discuss"])).toEqual(["discuss"]);
+    }
+    expect(harnessToolNames("claude")).toContain("discuss");
+    expect(harnessToolNames("dsh")).toContain("discuss");
   });
 
   it("maps capabilities to harness-native base names", () => {

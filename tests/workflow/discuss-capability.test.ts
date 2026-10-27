@@ -57,13 +57,29 @@ async function run(workflowSource: string): Promise<{ message: string; workerCal
 
 describe("discuss capability at load", () => {
   it("rejects a stage whose harness cannot mount the tool, before any worker runs", async () => {
-    const { message, workerCalls } = await run(workflow(`        name: ask
+    for (const harness of ["pi-cli", "codex"]) {
+      const { message, workerCalls } = await run(workflow(`        name: ask
         worker: basic
-        harness: dsh
+        harness: ${harness}
         discuss: true
         from: []`));
-    expect(workerCalls).toBe(0);
-    expect(message).toContain('stage "ask" declares discuss: true but harness "dsh" cannot mount the discuss tool');
+      expect(workerCalls).toBe(0);
+      expect(message).toContain(`stage "ask" declares discuss: true but harness "${harness}" cannot mount the discuss tool`);
+    }
+  });
+
+  it("accepts claude and dsh, which receive the MCP tool", async () => {
+    for (const harness of ["claude", "dsh"]) {
+      const source = workflow(`        name: ask
+        worker: basic
+        harness: ${harness}
+        discuss: true
+        from: []`);
+      const compiled = await Effect.runPromise(parseWorkflow(source, "/tmp/workflow.yml").pipe(
+        Effect.flatMap((parsed) => compileWorkflow(parsed, "/tmp/workflow.yml")),
+      ));
+      expect(compiled.stages[0]?.stage.discuss).toBe(true);
+    }
   });
 
   it("rejects a pi stage whose tool allowlist omits discuss", async () => {

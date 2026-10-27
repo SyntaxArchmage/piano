@@ -588,7 +588,7 @@ after the process exits. The shipped GPU tuning templates opt in;
     signoff: true                # gate each accepted attempt behind a human review
     prologue: "Read WORKLOG.md before you start."    # spoken before the stage's work, inside its first prompt
     epilogue: "Append your WORKLOG.md entry."       # spoken after acceptance, as one ungraded follow-up turn
-    discuss: true                # pi only: expose Piano's `discuss` tool for interactive alignment
+    discuss: true                # pi, claude, dsh: expose Piano's discuss tool for interactive alignment
     memory: true                 # reuse the actor transcript; false starts each worker turn fresh
     retry:                       # retry a failed attempt instead of failing the run
       attempts: unbounded
@@ -606,13 +606,13 @@ after the process exits. The shipped GPU tuning templates opt in;
 | `worker` | yes | Selects a worker plugin directory under `recipes/`. |
 | `harness` | no | Agent adapter: `pi`, `pi-cli`, `claude`, `dsh`, or `codex`. Defaults to `PIANO_HARNESS` → root `harness` in `~/.piano/agent.config.json` → `pi`. |
 | `from` | yes | Upstream stage/region names in the same scope (empty for entry stages). |
-| `signoff` | no | `true` requires a human to approve each accepted attempt before its result is published. |
-| `discuss` | no | `true` exposes Piano's `discuss` tool so the stage can ask the human questions. Custom-tool support is `pi`-only: a workflow that sets the flag on `pi-cli`, `claude`, `dsh`, or `codex` is rejected at load, and so is a `pi` stage that sets the flag without naming `discuss` in `tools` (the list is the session's allowlist, so the tool would never be mounted). A run without a supervisor channel is rejected before any stage starts. The same allowlist rule applies to the `pi` extension tool `web_search`. |
+| `signoff` | no | `true` pauses each accepted attempt for a human review: Continue publishes it, Retry reopens the same actor with the reviewer's note. The interactive TUI mounts the review; headless `-p` runs auto-continue without a dialog. |
+| `discuss` | no | `true` exposes Piano's supervisor-question tool. `pi` mounts it natively as `discuss`; `claude` and `dsh` receive `mcp__piano__discuss` through Piano's local MCP bridge. `pi-cli` and `codex` are rejected at load, as is a stage whose declared `tools` list omits `discuss`. Headless/evals answer with the deterministic "please make decision by yourself" substitute. |
 | `memory` | no | Defaults to `true`; reuses the stage actor's transcript across loop iterations, retries, and resumed prompts. `false` starts each worker turn in a new harness session while preserving inputs, contract, and other stage context. |
 | `retry` | no | Per-stage retry policy for a failed attempt — see [Retry](#retry). |
 | `model` | no | Stage model override. |
 | `thinkingLevel` | no | Reasoning effort passed to the selected harness; Codex receives it as `model_reasoning_effort`. |
-| `tools` | no | Tool allowlist; must be the stage harness's exact native tool ids — see [Tool selection and naming](#tool-selection-and-naming). |
+| `tools` | no | Tool allowlist; must be the stage harness's exact native tool ids — see [Tool selection and naming](#tool-selection-and-naming). The logical `discuss` id is accepted on `pi`, `claude`, and `dsh`; Claude and dsh translate it to `mcp__piano__discuss`. |
 | `prologue` | no | Prompt text appended to this stage's first prompt, read just before the worker starts. Plain text: never parsed, never validated, never part of a result. Falls back to the worker's `recipes/<worker>/prologue.md`. |
 | `epilogue` | no | One follow-up message sent to the same actor session after the stage is accepted. Same session, so it sees the work it is tidying up; ungraded, so it cannot change the result or fail the stage. Falls back to the worker's `recipes/<worker>/epilogue.md`. |
 | `timeout` | no | Per-stage wall-clock timeout in seconds. |
@@ -682,17 +682,15 @@ declare metric outputs with RFC 6901 pointers. A malformed contract or invalid
 example fails workflow load before any worker runs.
 
 With `signoff: true`, every accepted attempt pauses before its result is
-published and asks the human running Piano to approve it. The review is
+published and asks the human running Piano how to proceed. The review is
 harness-independent — it happens in Piano's own UI after the worker turn
-finishes. Approving publishes the result; rejecting with feedback resumes the
-same actor with the reviewer's notes as a follow-up message, the same way a
-validation repair reuses the session. Cancelling the review fails the stage.
-The run needs a sign-off channel: the interactive TUI mounts each review as the
-last block of the chat area — a bordered panel whose purple outline is the only
-full-width colour over a very dark purple fill, so it reads as a distinct
-sign-off gate pinned right above the prompt; headless `-p` runs render the
-dialog on the controlling terminal. A sign-off stage in a run with no terminal
-fails up front.
+finishes. Continue publishes the result; Retry reopens the same actor with the
+reviewer's note as a follow-up message; either choice may carry a note.
+Cancelling the review fails the stage. The interactive TUI mounts each review as
+the last block of the chat area — a bordered panel so it reads as a distinct
+gate pinned right above the prompt. Headless `-p` runs auto-continue and never
+render the dialog. A programmatic run with a sign-off stage and no sign-off
+channel fails before any stage starts.
 
 ### Loop
 
@@ -990,7 +988,10 @@ The `develop` group contains two repository bug-fix tasks plus a focused
 `coding-team-questions` case. The latter runs `recipes/workflows/team-pi.yml`
 (or `team-pi-mimo.yml` for the mimo coding lanes) and checks that the architect
 resolves both supervisor questions before the implementation tournament; the
-question channel is Piano's `discuss` tool, which only the pi harness mounts.
+question channel is Piano's `discuss` tool (the pi stage mounts it natively;
+Claude and dsh receive the same tool as `mcp__piano__discuss`). Headless eval
+runs receive Piano's deterministic self-decision substitute rather than a
+human answer.
 The generated bug-fix workflows each have one `coding` stage with the `basic`
 worker. Pi covers all configured models at
 `medium` and `max`; Claude and DSH additionally cover the flash and Luna models.

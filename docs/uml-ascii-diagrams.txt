@@ -394,7 +394,7 @@ timeFrame  «union»            │string · promptIndex: number              �
 └─ 结束   │                       │                         │                         │                         │                     │
         │                       │                         │                         │                         │                     │
     注：harness 可为 in-process（Pi SDK，默认 "pi"）或 subprocess（pi-cli / claude / dsh）；     │                         │                     │
-        signoff 阶段会在 TUI 上暂停并等待人工批准/驳回（驳回则带反馈重试）。         │                         │                         │                     │
+        signoff 阶段会暂停等待人工选择 Continue/Retry；headless 自动 Continue。                │                         │                     │
         │                       │                         │                         │                         │                     │
         │                       │                         │                         │                         │                     │
         │                       │                         │                         │                         │                     │

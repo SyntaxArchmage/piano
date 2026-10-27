@@ -739,9 +739,10 @@ export function executeWorkflow(
     // Map slots intentionally run in parallel. Serialize only the small
     // progress writes so no read/modify/write snapshot update is lost.
     const progressSemaphore = Effect.unsafeMakeSemaphore(1);
-    // Map slots may reach their sign-off gates concurrently; one human can
-    // only answer one prompt at a time, so the questions are serialized.
-    const signoffSemaphore = Effect.unsafeMakeSemaphore(1);
+    // Map slots may reach a sign-off or discuss gate concurrently; one human
+    // can only answer one prompt at a time, so every human question shares one
+    // semaphore.
+    const humanInteractionSemaphore = Effect.unsafeMakeSemaphore(1);
     // The static consumer edges, read from the compiled graph's resolved
     // `dependsOn` rather than from a stage's own `from:` list. Compile folds a
     // region's `from:` into its entry leaf, so a loop's entry stage is a real
@@ -785,7 +786,7 @@ export function executeWorkflow(
       counters,
       asyncQueue,
       progressSemaphore,
-      signoffSemaphore,
+      humanInteractionSemaphore,
       semaphoreForActor,
       workflowTrajectory,
       agentOptions: workflowAgentOptions,

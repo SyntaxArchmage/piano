@@ -44,7 +44,7 @@ describe("the bundle built from the real sources", () => {
     expect(built.stderr).toBe("");
     expect(built.code).toBe(0);
 
-    for (const name of ["piano.js", "pi-web-search.js", "dsh-resume-runner.mjs", ".fingerprint"]) {
+    for (const name of ["piano.js", "pi-web-search.js", "dsh-resume-runner.mjs", "discuss-mcp.mjs", ".fingerprint"]) {
       expect(existsSync(join(distDir, name)), `${name} was not published`).toBe(true);
     }
 

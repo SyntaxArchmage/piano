@@ -33,6 +33,9 @@ export {
 } from "./harness-config.js";
 export {
   CODEX_TOOL_NAMES,
+  DISCUSS_MCP_TOOL_NAME,
+  DISCUSS_TOOL_NAME,
+  harnessSupportsDiscuss,
   harnessToolNames,
   isKnownToolName,
   PI_TOOL_NAMES,
@@ -41,6 +44,8 @@ export {
   toolGrantsCapability,
   unknownToolNames,
 } from "./tool-names.js";
+export { startDiscussBridge, type DiscussBridge } from "./discuss-bridge.js";
+export { discussMcpServerPath } from "./discuss-mcp-path.js";
 export { executeSubprocessAgent } from "./subprocess.js";
 export { dshProjectKey } from "./dsh-session-storage.js";
 export {
@@ -65,6 +70,7 @@ export {
 } from "./dsh-capability.js";
 export {
   prepareHarnessHomes,
+  dshDiscussPatchPath,
   dshModelPatchPath,
   dshResumeOverlayPath,
   dshResumeRunnerPath,

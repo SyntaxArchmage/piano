@@ -122,7 +122,7 @@ export interface StageRunnerContext {
   readonly counters: StageRunnerCounters;
   readonly asyncQueue: AsyncStageQueue;
   readonly progressSemaphore: Effect.Semaphore;
-  readonly signoffSemaphore: Effect.Semaphore;
+  readonly humanInteractionSemaphore: Effect.Semaphore;
   readonly semaphoreForActor: (actorKey: string) => Effect.Semaphore;
   readonly workflowTrajectory: WorkflowTrajectory;
   readonly agentOptions: AgentHarnessOptions;
@@ -283,7 +283,7 @@ export function executeStage(
     counters,
     asyncQueue,
     progressSemaphore,
-    signoffSemaphore,
+    humanInteractionSemaphore,
     semaphoreForActor,
     workflowTrajectory,
     agentOptions,
@@ -788,7 +788,7 @@ export function executeStage(
         ));
       }
       const reviewedAttempt = attempt;
-      return signoffSemaphore.withPermits(1)(Effect.gen(function* () {
+      return humanInteractionSemaphore.withPermits(1)(Effect.gen(function* () {
         signoffRounds += 1;
         yield* stageLog.info("stage.signoff.requested", {
           data: { id: runtimeInvocationId(invocation), attempt: reviewedAttempt, round: signoffRounds },
@@ -951,8 +951,10 @@ export function executeStage(
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
         ...(node.stage.discuss !== true || request.discuss === undefined ? {} : {
           // The supervisor channel and the worker contract are both Effect;
-          // the SDK tool's Promise adapter lives only in the harness.
-          discuss: (question: string) => Effect.map(
+          // the SDK tool's Promise adapter lives only in the harness. Share the
+          // human-question semaphore with sign-off so map lanes cannot mount
+          // two panels at once.
+          discuss: (question: string) => humanInteractionSemaphore.withPermits(1)(Effect.map(
             request.discuss!({
               stageId: node.id,
               invocationId: runtimeInvocationId(invocation),
@@ -964,7 +966,7 @@ export function executeStage(
               question,
             }),
             (decision) => decision.answer,
-          ),
+          )),
         }),
       }, agentOptions).pipe(Effect.tapError((error) => {
         const cancelled = isCancellation(error);

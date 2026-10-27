@@ -10,6 +10,20 @@ export const PI_TOOL_NAMES = ["bash", "edit", "find", "grep", "ls", "read", "wri
  * via CreateAgentSessionOptions.customTools at session creation time. */
 export const PI_CUSTOM_TOOL_NAMES = ["web_fetch", "discuss"] as const;
 
+/** The workflow's logical name for Piano's supervisor-question tool. */
+export const DISCUSS_TOOL_NAME = "discuss";
+
+/** The actual Claude/dsh tool id: both harnesses namespace MCP tools as
+ * `mcp__<server>__<tool>`. */
+export const DISCUSS_MCP_TOOL_NAME = "mcp__piano__discuss";
+
+/** Harnesses that can mount the `discuss` tool. `pi` exposes it natively;
+ * `claude` and `dsh` receive it through Piano's stdio MCP server. `pi-cli` and
+ * `codex` have no custom-tool seam. */
+export function harnessSupportsDiscuss(harness: HarnessName): boolean {
+  return harness === "pi" || harness === "claude" || harness === "dsh";
+}
+
 /** Tool ids Piano mounts as Pi extensions. These are available to both the
  * in-process SDK adapter and the pi-cli subprocess when a stage declares them. */
 export const PI_EXTENSION_TOOL_NAMES = ["web_search"] as const;
@@ -130,7 +144,9 @@ const CATALOGS: Record<HarnessName, HarnessToolCatalog> = {
 
 /** The catalog for a harness, e.g. to list valid names in an error message. */
 export function harnessToolNames(harness: HarnessName): readonly string[] {
-  return CATALOGS[harness].known;
+  const known = CATALOGS[harness].known;
+  if (!harnessSupportsDiscuss(harness) || known.includes(DISCUSS_TOOL_NAME)) return known;
+  return [...known, DISCUSS_TOOL_NAME];
 }
 
 /** Strip a `Name(spec)` permission-rule suffix. Only meaningful for harnesses
@@ -144,6 +160,7 @@ function toolSpecParts(harness: HarnessName, tool: string): { base: string; scop
 /** True when `tool` is a name the harness itself would accept: an exact
  * native id (plus scoped/mcp forms where the harness CLI understands them). */
 export function isKnownToolName(harness: HarnessName, tool: string): boolean {
+  if (tool === DISCUSS_TOOL_NAME && harnessSupportsDiscuss(harness)) return true;
   const catalog = CATALOGS[harness];
   const { base, scoped } = toolSpecParts(harness, tool);
   if (scoped && !catalog.supportsScopedNames) return false;

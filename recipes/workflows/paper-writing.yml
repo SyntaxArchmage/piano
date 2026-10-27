@@ -124,10 +124,10 @@ workflow:
     - stage:
         name: prepare
         worker: paper-prepare
-        # pi carries Piano's `discuss` tool; the subprocess harnesses cannot
-        # mount it, so the workflow would be rejected at load there. The
-        # stage's `tools` list below names the tool as well — see the comment
-        # there; omitting it is also a load error.
+        # pi mounts Piano's `discuss` tool natively; claude and dsh receive it
+        # as `mcp__piano__discuss` through Piano's MCP bridge. The stage's
+        # `tools` list below names the logical tool too — on pi omitting it is
+        # a load error.
         harness: pi
         model: gpt-5.6-luna
         thinkingLevel: max

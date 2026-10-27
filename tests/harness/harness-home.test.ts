@@ -181,6 +181,7 @@ describe("Piano-owned harness configuration home", () => {
       // inside the generated directory instead of escaping it.
       expect((await readdir(join(homes.paths.dsh, "patches"))).sort()).toEqual([
         "deepseek-v4-flash.patch.yml",
+        "discuss-mcp.yml",
         "piano-resume.patch.yml",
         "qwen3.8-27b.patch.yml",
         "vendor%2Fnamespaced-model.patch.yml",
