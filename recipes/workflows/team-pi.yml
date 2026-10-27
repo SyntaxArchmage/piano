@@ -3,8 +3,9 @@ version: 3
 # Three-step repository-grounded coding workflow (pi harness):
 # architect -> developer tournament -> review-and-fix.
 # The pi sibling of team-claude.yml; only the harness-specific tool names
-# and mounting differ. `discuss` is a pi-only custom tool: it must appear in
-# the stage's tools list or the discuss flag mounts nothing. The tournament
+# and mounting differ. On pi `discuss` is a Piano custom tool: it must appear in
+# the stage's tools list or the discuss flag mounts nothing. (Claude and dsh
+# receive the same tool as `mcp__piano__discuss`.) The tournament
 # exit is metric-bearing (coding-candidate benchmark/v1), and the reviewer
 # owns the final fix after inspecting the selected candidate.
 workflow:

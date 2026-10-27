@@ -39,6 +39,7 @@ async function fixtureRepo(marker: string, suffix = ""): Promise<string> {
   await writeFile(join(root, "package-lock.json"), "{}\n", "utf8");
   await writeFile(join(root, "packages", "harness", "src", "pi-web-search.ts"), "export const stub = true;\n", "utf8");
   await writeFile(join(root, "packages", "harness", "src", "dsh-resume-runner.mjs"), "// stub\n", "utf8");
+  await writeFile(join(root, "packages", "harness", "src", "discuss-mcp.mjs"), "// stub\n", "utf8");
   await writeMarker(root, marker);
   await symlink(join(repoRoot, "node_modules"), join(root, "node_modules"), "dir");
   return root;
@@ -97,6 +98,7 @@ describe("prebuilt CLI start path", () => {
       "piano.js",
       "pi-web-search.js",
       "dsh-resume-runner.mjs",
+      "discuss-mcp.mjs",
       "piano-dashboard.mjs",
       "public/index.html",
       "public/app.js",

@@ -37,7 +37,9 @@ import {
   type DshSessionEvidence,
 } from "./dsh-session-storage.js";
 import { canonicalTranscriptText, mergeCanonicalTranscript } from "./canonical-transcript.js";
-import { DSH_API_KEY_ENV, dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
+import { DSH_API_KEY_ENV, dshDiscussPatchPath, dshModelPatchPath, dshResumeOverlayPath, dshWebSearchOffPatchPath } from "./harness-home.js";
+import { startDiscussBridge, type DiscussBridge } from "./discuss-bridge.js";
+import { discussMcpServerPath } from "./discuss-mcp-path.js";
 import {
   agentConfigPath,
   resolveHarnessConfig,
@@ -336,6 +338,19 @@ function attemptFailure(
   });
 }
 
+/** Start the per-attempt discussion bridge only for harnesses whose workers
+ * reach it through MCP. `pi` mounts the tool in-process, and headless
+ * channels still answer through the same callback. */
+function startDiscussBridgeFor(
+  harness: HarnessName,
+  request: AgentRequest,
+): Effect.Effect<DiscussBridge | undefined, AgentError> {
+  if (request.discuss === undefined || (harness !== "claude" && harness !== "dsh")) {
+    return Effect.succeed(undefined);
+  }
+  return startDiscussBridge((question) => request.discuss!(question));
+}
+
 function prepareAttempt(input: {
   readonly harness: HarnessName;
   readonly request: AgentRequest;
@@ -344,8 +359,9 @@ function prepareAttempt(input: {
   readonly thinking: ThinkingLevel | undefined;
   readonly observed: AgentEvent[];
   readonly emit: (event: AgentEvent) => void;
+  readonly discuss: DiscussBridge | undefined;
 }): Effect.Effect<AttemptPlan, AgentError, Logging | FileSystem.FileSystem> {
-  const { harness, request, options, config, thinking, observed, emit } = input;
+  const { harness, request, options, config, thinking, observed, emit, discuss } = input;
   return Effect.gen(function* () {
     const resources = yield* loadResources(request, emit);
     emit({ type: "spawn", harness, ...(config.model === undefined ? {} : { model: config.model }), ...(thinking === undefined ? {} : { thinkingLevel: thinking }), skills: [...(request.skillPaths ?? [])], ...(request.continuation?.sessionId === undefined ? {} : { memory: request.continuation.sessionId }) });
@@ -360,6 +376,12 @@ function prepareAttempt(input: {
     const environment = childEnv(harness, config, options, (request.tools?.length ?? 0) > 0);
     // Resolved before argv because dsh's model overlay lives inside this home.
     const dshHome = environment.DSH_HOME ?? join(homedir(), ".dsh");
+    if (harness === "dsh" && discuss !== undefined) {
+      // The generated patch reads these two variables; the values are unique
+      // to this attempt and never reach another process.
+      environment.PIANO_DISCUSS_URL = discuss.url;
+      environment.PIANO_DISCUSS_TOKEN = discuss.token;
+    }
     // Pre-spawn guards keep stale generated homes and incomplete web-search
     // configuration from becoming opaque child failures or memory-only A/B
     // runs.
@@ -393,6 +415,29 @@ function prepareAttempt(input: {
           + "re-run the mission bootstrap so Piano regenerates the harness home",
       );
     }
+    if ((harness === "claude" || harness === "dsh") && request.discuss !== undefined) {
+      if (discuss === undefined) {
+        return yield* failBeforeSpawn(new AgentError({
+          kind: "session-artifact",
+          message: `the ${harness} discussion bridge was not started`,
+        }));
+      }
+      const scriptPath = discussMcpServerPath();
+      yield* requireOverlay(
+        scriptPath,
+        "session-artifact",
+        `the discuss MCP server is missing at ${scriptPath}; reinstall or rebuild the Piano CLI`,
+      );
+      if (harness === "dsh") {
+        const patchPath = dshDiscussPatchPath(dshHome);
+        yield* requireOverlay(
+          patchPath,
+          "session-artifact",
+          `the dsh discuss overlay is missing at ${patchPath}; `
+            + "re-run the mission bootstrap so Piano regenerates the harness home",
+        );
+      }
+    }
     if ((harness === "pi" || harness === "pi-cli")
       && request.tools?.includes(PI_WEB_SEARCH_TOOL_NAME) === true
       && (config.baseUrl === undefined || config.apiKey === undefined)) {
@@ -424,7 +469,7 @@ function prepareAttempt(input: {
       ? yield* dshContinuationContext(request, dshResumeId)
       : undefined;
     const argv = harness === "claude"
-      ? claudeArguments(request, config, thinking, resources)
+      ? claudeArguments(request, config, thinking, resources, discuss)
       : harness === "dsh"
         ? dshArguments(request, config, resources, dshHome, dshContext)
         : harness === "codex"
@@ -477,7 +522,9 @@ function runSubprocessAttempt(
   const thinking = config.thinkingLevel;
   const sourcePath = config.binPath
     ?? (harness === "claude" ? "claude" : harness === "dsh" ? "dsh" : harness === "codex" ? "codex" : "pi");
-  return Effect.gen(function* () {
+  return Effect.acquireUseRelease(
+    startDiscussBridgeFor(harness, request),
+    (discuss) => Effect.gen(function* () {
     if (request.signal?.aborted) return yield* Effect.fail(new AgentError({ kind: "cancelled", message: `${harness} request cancelled` }));
     const observed: AgentEvent[] = [];
     const emit = (event: AgentEvent): void => {
@@ -487,7 +534,7 @@ function runSubprocessAttempt(
     const retryRequest: AgentRequest = attempt.continuation === undefined
       ? request
       : { ...request, continuation: attempt.continuation };
-    const plan = yield* prepareAttempt({ harness, request: retryRequest, options, config, thinking, observed, emit });
+    const plan = yield* prepareAttempt({ harness, request: retryRequest, options, config, thinking, observed, emit, discuss });
     const { accumulator, provisionalId, transcriptPath, environment, argv, dshHome, dshResumeId } = plan;
     const failAttempt = attemptFailure(emit, observed, provisionalId);
     const startedAt = Date.now();
@@ -775,5 +822,9 @@ function runSubprocessAttempt(
     emit({ type: "done", exitStatus: 0, sessionId, transcriptPath: auditPath });
     yield* persistAgentEvents(observed, sessionId);
     return { result };
-  });
+    }),
+    (discuss) => discuss === undefined
+      ? Effect.void
+      : discuss.close().pipe(Effect.catchAll(() => Effect.void)),
+  );
 }
