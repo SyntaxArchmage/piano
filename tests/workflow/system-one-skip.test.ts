@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,7 @@ async function runWorkflow(
   readonly result: WorkflowExecutionResult;
   readonly calls: readonly string[];
   readonly prompts: readonly string[];
+  readonly invocations: readonly { readonly kind?: string; readonly invocationId?: string; readonly stageId?: string }[];
 }> {
   const root = await mkdtemp(join(tmpdir(), "piano-system-one-skip-"));
   try {
@@ -105,7 +106,16 @@ async function runWorkflow(
       Effect.provideService(Logging, loggingService(session.log, session.trace)),
       Effect.provide(NodeFileSystem.layer),
     ));
-    return { result, calls, prompts };
+    return {
+      result,
+      calls,
+      prompts,
+      invocations: (await readFile(join(session.runDir, "system-log", "invocations.jsonl"), "utf8"))
+        .trim()
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as { kind?: string; invocationId?: string; stageId?: string }),
+    };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -113,11 +123,13 @@ async function runWorkflow(
 
 describe("System One skip decision", () => {
   it("skips a no-improvement profile and reuses the previous accepted profile", async () => {
-    const { result, calls, prompts } = await runWorkflow("DISCARD", "skip");
+    const { result, calls, prompts, invocations } = await runWorkflow("DISCARD", "skip");
     expect(calls).toEqual(["tune.profile", "tune.measure", "tune.measure"]);
     const skipped = result.stages.find((stage) => stage.id === "tune.profile@tune/iter-1");
     expect(skipped?.skipped?.model).toBe("fake");
     expect(skipped?.skipped?.confidence).toBe(1);
+    expect(invocations.some((row) =>
+      row.kind === "invocation-accepted" && row.invocationId === "tune.profile@tune/iter-1")).toBe(true);
     expect(skipped?.skipped?.sourceInvocationId).toBe("tune.profile@tune/iter-0");
     expect(skipped?.text).toContain("Skipped by System One");
     expect(prompts.some((prompt) => prompt.includes("Skipped upstream stages"))).toBe(true);

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { describe, expect, it } from "vitest";
 import { createSession, Logging, loggingService } from "../../packages/logging/src/index.js";
 import {
@@ -11,7 +11,7 @@ import {
 } from "../../packages/orchestrator/src/index.js";
 import { AsyncStageQueue } from "../../packages/orchestrator/src/async-stage-queue.js";
 import type { InternalStageResult } from "../../packages/orchestrator/src/execution-types.js";
-import type { AgentRequest } from "../../packages/harness/src/index.js";
+import { AgentError, type AgentRequest } from "../../packages/harness/src/index.js";
 import { validationResultPathFromPrompt } from "../common/validation-path.mjs";
 
 const RECIPE_ROOT = fileURLToPath(new URL("../fixtures/workflow-recipes", import.meta.url));
@@ -45,7 +45,7 @@ function stageId(request: AgentRequest): string {
 }
 
 describe("async stage queue", () => {
-  it("consumes a ready result exactly once", async () => {
+  it("delivers a ready result to every direct consumer exactly once", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-async-queue-"));
     try {
       const session = await Effect.runPromise(
@@ -54,16 +54,22 @@ describe("async stage queue", () => {
       const queue = new AsyncStageQueue();
       const fake = { stageId: "profile", acceptance: { id: "inv-1" } } as unknown as InternalStageResult;
       await Effect.runPromise(Effect.gen(function* () {
-        yield* queue.submit({ stageId: "profile", run: Effect.succeed(fake) });
+        yield* queue.submit({
+          stageId: "profile",
+          consumers: ["measure", "implement"],
+          run: Effect.succeed(fake),
+        });
         yield* queue.idle();
       }).pipe(
         Effect.provideService(Logging, loggingService(session.log, session.trace)),
         Effect.provide(NodeFileSystem.layer),
       ));
-      const first = await Effect.runPromise(queue.consume(["profile"]));
-      const second = await Effect.runPromise(queue.consume(["profile"]));
-      expect(first).toHaveLength(1);
-      expect(second).toHaveLength(0);
+      const measureFirst = await Effect.runPromise(queue.consume(["profile"], "measure"));
+      const implement = await Effect.runPromise(queue.consume(["profile"], "implement"));
+      const measureAgain = await Effect.runPromise(queue.consume(["profile"], "measure"));
+      expect(measureFirst).toHaveLength(1);
+      expect(implement).toHaveLength(1);
+      expect(measureAgain).toHaveLength(0);
       await Effect.runPromise(queue.shutdown());
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -154,6 +160,57 @@ describe("async stage queue", () => {
       expect(invocations.some((row) => row.kind === "invocation-accepted" && row.worker === "test-profile")).toBe(true);
       expect(result.stages.some((stage) => stage.stageId === "tune.profile")).toBe(false);
       expect(result.stages.some((stage) => stage.stageId === "tune.measure")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("fails the run when an async stage fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-async-failure-"));
+    try {
+      const workflowPath = join(root, "workflow.yml");
+      await writeFile(workflowPath, WORKFLOW);
+      const session = await Effect.runPromise(
+        createSession({ root, cwd: root, runsRoot: join(root, "runs") }).pipe(Effect.provide(NodeFileSystem.layer)),
+      );
+      const exit = await Effect.runPromiseExit(loadAndExecuteWorkflow({
+        root,
+        workflowPath,
+        recipeRepositoryRoot: RECIPE_ROOT,
+        runDir: session.runDir,
+        runId: "async-failure",
+        cwd: root,
+        prompt: "tune the kernel",
+        agentRunner: (request) => {
+          const stage = stageId(request);
+          if (stage === "tune.profile") {
+            return Effect.fail(new AgentError({ kind: "unknown", message: "async profile failed" }));
+          }
+          return Effect.promise(async () => {
+            const resultPath = validationResultPathFromPrompt(request.prompt);
+            if (resultPath === undefined) throw new Error("missing result path");
+            await mkdir(dirname(resultPath), { recursive: true });
+            await writeFile(resultPath, JSON.stringify({
+              decision: "DISCARD",
+              iteration: 0,
+              hypothesis: "hold",
+            }));
+            return {
+              sessionId: "measure",
+              transcriptPath: "/tmp/measure.jsonl",
+              text: "measure",
+              continuation: { harness: "pi", sessionId: "measure", transcriptPath: "/tmp/measure.jsonl" },
+            };
+          });
+        },
+      }).pipe(
+        Effect.provideService(Logging, loggingService(session.log, session.trace)),
+        Effect.provide(NodeFileSystem.layer),
+      ));
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) {
+        expect(Cause.pretty(exit.cause)).toContain("async profile failed");
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

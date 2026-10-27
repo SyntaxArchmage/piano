@@ -449,9 +449,9 @@ export function executeStage(
     }
     const resources = yield* stageResources();
     const directDependencies = dependsOnByStage.get(node.id) ?? [];
-    const asyncInputs = yield* asyncQueue.consume(directDependencies);
+    const asyncInputs = yield* asyncQueue.consume(directDependencies, node.id);
     const stageInputs = mergeStageInputs(inputs, asyncInputs);
-    const asyncPendingStages = yield* asyncQueue.pendingFor(directDependencies);
+    const asyncPendingStages = yield* asyncQueue.pendingFor(directDependencies, node.id);
     // A skippable loop stage asks the System One model on every visit. The
     // engine does not impose "no improvement" or any other trigger: it gives
     // the model the bounded context it has and treats the answer as the
@@ -542,26 +542,90 @@ export function executeStage(
                   ...(sourceIteration === undefined ? {} : { sourceIteration }),
                 },
               }).pipe(Effect.catchAll(() => Effect.void));
-              const instanceId = runtimeInstanceId(frames);
-              return {
-                id: runtimeInvocationId(invocation),
+              const skippedAttempt = previousAcceptance.attempt ?? 1;
+              const skippedText = `Skipped by System One (\`${model}\`, confidence ${decision.right.confidence.toFixed(2)}); reusing \`${previousAcceptance.id}\`.`;
+              const ref = yield* recordInvocationStart(request.runDir, {
+                runId: invocation.runId,
+                jobOrdinal: invocation.jobOrdinal,
+                invocationId: runtimeInvocationId(invocation),
                 stageId: node.id,
-                ...(instanceId === undefined ? {} : { instanceId }),
+              });
+              const requestedModel = request.model ?? stageModel;
+              const requestedThinkingLevel = request.thinkingLevel ?? node.stage.thinkingLevel;
+              const acceptance = yield* writeAcceptanceRecord(request.runDir, invocation, {
+                ref,
                 stage: node.stage.name,
                 worker: node.stage.worker,
-                text: `Skipped by System One (\`${model}\`, confidence ${decision.right.confidence.toFixed(2)}); reusing \`${previousAcceptance.id}\`.`,
+                text: skippedText,
                 sessionId: previousAcceptance.sessionId,
                 transcriptPath: previousAcceptance.transcriptPath,
-                attempts: previousAcceptance.attempt ?? 1,
-                workspace: previousAcceptance.workspace,
+                attempt: skippedAttempt,
+                actorKey,
+                ...(requestedModel === undefined ? {} : { requestedModel }),
+                ...(requestedThinkingLevel === undefined ? {} : { requestedThinkingLevel }),
+                ...(previousAcceptance.model === undefined ? {} : { model: previousAcceptance.model }),
+                ...(previousAcceptance.thinkingLevel === undefined ? {} : { thinkingLevel: previousAcceptance.thinkingLevel }),
+                workspace,
                 ...(previousAcceptance.resultPath === undefined ? {} : { resultPath: previousAcceptance.resultPath }),
                 ...(previousAcceptance.resultPayload === undefined ? {} : { resultPayload: previousAcceptance.resultPayload }),
                 ...(previousAcceptance.metrics === undefined ? {} : { metrics: previousAcceptance.metrics }),
                 ...(previousAcceptance.projections === undefined ? {} : { projections: previousAcceptance.projections }),
                 ...(previousAcceptance.validationWarning === undefined ? {} : { validationWarning: previousAcceptance.validationWarning }),
-                acceptance: previousAcceptance,
+              });
+              const result: InternalStageResult = {
+                id: runtimeInvocationId(invocation),
+                stageId: node.id,
+                ...(runtimeInstanceId(frames) === undefined ? {} : { instanceId: runtimeInstanceId(frames) }),
+                stage: node.stage.name,
+                worker: node.stage.worker,
+                text: skippedText,
+                sessionId: acceptance.sessionId,
+                transcriptPath: acceptance.transcriptPath,
+                attempts: skippedAttempt,
+                workspace,
+                ...(acceptance.resultPath === undefined ? {} : { resultPath: acceptance.resultPath }),
+                ...(acceptance.resultPayload === undefined ? {} : { resultPayload: acceptance.resultPayload }),
+                ...(acceptance.metrics === undefined ? {} : { metrics: acceptance.metrics }),
+                ...(acceptance.projections === undefined ? {} : { projections: acceptance.projections }),
+                ...(acceptance.validationWarning === undefined ? {} : { validationWarning: acceptance.validationWarning }),
+                acceptance,
                 skipped,
-              } satisfies InternalStageResult;
+              };
+              const persisted = yield* progressSemaphore.withPermits(1)(Effect.gen(function* () {
+                counters.completedByStage.set(node.id, (counters.completedByStage.get(node.id) ?? 0) + 1);
+                const progress = workflowProgressProjection(compiled, invocation, progressPlan, counters.completedByStage);
+                const progressPath = yield* appendWorkflowProgress(request.runDir, {
+                  runId,
+                  invocationId: result.id,
+                  stageId: result.stageId,
+                  stage: result.stage,
+                  worker: result.worker,
+                  ...(result.instanceId === undefined ? {} : { instanceId: result.instanceId }),
+                  ...(loopFrames(frames)[0] === undefined ? {} : { iteration: loopFrames(frames)[0]!.iteration }),
+                  attempt: result.attempts,
+                  progress,
+                });
+                return { progress, progressPath };
+              }));
+              yield* workflowTrajectory.observe({
+                type: "stage_accepted",
+                context: trajectoryContext(result.attempts, result),
+                metrics: result.metrics ?? [],
+              });
+              yield* stageLog.info("stage.completed", {
+                outcome: "success",
+                data: {
+                  id: result.id,
+                  actorKey,
+                  sessionId: result.sessionId,
+                  transcriptPath: result.transcriptPath,
+                  workspace: result.workspace,
+                  attempts: result.attempts,
+                  progressPath: persisted.progressPath,
+                  textLength: result.text.length,
+                },
+              });
+              return result;
             }
           }
         } else {
