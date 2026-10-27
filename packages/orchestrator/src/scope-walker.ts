@@ -35,6 +35,7 @@ import {
   mapOverParts,
   runtimeFramesFromInstanceId,
   runtimeInstanceId,
+  runtimeInvocationId,
   runtimeRegionInstanceId,
   type WorkflowRuntimeFrame,
 } from "./workflow-runtime.js";
@@ -689,8 +690,26 @@ const executeScope = (
     if ("stage" in node) {
       if (node.stage.async === true) {
         return Effect.gen(function* () {
+          const consumerStages = stageRunnerContext.consumersByStage.get(node.id) ?? [];
+          const accepted = stageRunnerContext.request.continueJob?.accepted;
+          const consumerInvocationId = (stageId: string): string => runtimeInvocationId({
+            runId: stageRunnerContext.runId,
+            jobOrdinal: stageRunnerContext.jobOrdinal,
+            stageId,
+            stageName: stageId,
+            frames,
+          });
+          // On continue, a consumer already rebuilt from evidence has already
+          // had its chance to consume this iteration's result. Do not replay
+          // that result into a later iteration.
+          const consumers = consumerStages.filter((stageId) =>
+            accepted?.has(consumerInvocationId(stageId)) !== true);
+          if (consumerStages.length > 0 && consumers.length === 0) {
+            return { boundary: { results: [] }, stages: [] } satisfies NodeExecution;
+          }
           yield* stageRunnerContext.asyncQueue.submit({
             stageId: node.id,
+            consumers,
             run: executeStage(
               stageRunnerContext,
               node,

@@ -181,6 +181,36 @@ describe(" loop/map workflow DSL", () => {
     }
   });
 
+  it("rejects async stages inside a tournament", async () => {
+    const bad = MAP_WORKFLOW.replace(
+      "              name: verify\n              worker: test-verify",
+      "              name: verify\n              worker: test-verify\n              async: true",
+    );
+    const parsed = await run(parseWorkflow(bad, SOURCE));
+    expect(Exit.isSuccess(parsed)).toBe(true);
+    if (!Exit.isSuccess(parsed)) return;
+    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
+    expect(Exit.isFailure(compiled)).toBe(true);
+    if (Exit.isFailure(compiled)) {
+      expect(String(compiled.cause)).toContain("async stages are not supported in tournaments");
+    }
+  });
+
+  it("rejects async loop exit/feedback stages", async () => {
+    const bad = LOOP_WORKFLOW.replace(
+      "              name: aggregate\n              worker: test-store",
+      "              name: aggregate\n              worker: test-store\n              async: true",
+    );
+    const parsed = await run(parseWorkflow(bad, SOURCE));
+    expect(Exit.isSuccess(parsed)).toBe(true);
+    if (!Exit.isSuccess(parsed)) return;
+    const compiled = await run(compileWorkflow(parsed.value, SOURCE));
+    expect(Exit.isFailure(compiled)).toBe(true);
+    if (Exit.isFailure(compiled)) {
+      expect(String(compiled.cause)).toContain("loop exit/feedback stage");
+    }
+  });
+
   it("rejects a loop entry node that declares local from dependencies", async () => {
     const bad = LOOP_WORKFLOW.replace(
       "              from: []\n          - stage:\n              name: aggregate",

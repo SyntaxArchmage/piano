@@ -10,7 +10,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { io } from "@piano/base";
-import { Duration, Effect } from "effect";
+import { Duration, Effect, Exit } from "effect";
 import {
   HttpSystemOneProvider,
   SystemOneError,
@@ -81,6 +81,8 @@ function launcherEnv(endpoint: URL): NodeJS.ProcessEnv {
  * retried by a later skippable stage. */
 const startSemaphore = Effect.unsafeMakeSemaphore(1);
 let readyEndpoint: string | undefined;
+const START_FAILURE_COOLDOWN_MS = 30_000;
+let lastStartFailure: { readonly endpoint: string; readonly at: number } | undefined;
 
 export function ensureLayaEndpoint(endpoint = configuredEndpoint()): Effect.Effect<string, SystemOneError> {
   return startSemaphore.withPermits(1)(Effect.gen(function* () {
@@ -103,18 +105,32 @@ export function ensureLayaEndpoint(endpoint = configuredEndpoint()): Effect.Effe
         `Laya is not installed at ${binary}; run scripts/setup-laya.sh or set PIANO_LAYA_BIN`,
       ));
     }
-    yield* io.spawnDetached(binary, [], { env: launcherEnv(url) }).pipe(
-      Effect.mapError((cause) => failure(`could not start Laya at ${binary}: ${cause.message}`, cause)),
-    );
-    const deadline = Date.now() + START_TIMEOUT_MS;
-    while (Date.now() < deadline) {
-      if (yield* healthy(endpoint)) {
-        readyEndpoint = endpoint;
-        return endpoint;
-      }
-      yield* Effect.sleep(Duration.millis(250));
+    if (lastStartFailure !== undefined &&
+      lastStartFailure.endpoint === endpoint &&
+      Date.now() - lastStartFailure.at < START_FAILURE_COOLDOWN_MS) {
+      return yield* Effect.fail(failure(
+        `Laya start is cooling down for ${Math.ceil((START_FAILURE_COOLDOWN_MS - (Date.now() - lastStartFailure.at)) / 1000)}s after a recent failed start`,
+      ));
     }
-    return yield* Effect.fail(failure(`Laya did not become healthy within ${START_TIMEOUT_MS / 1000}s`));
+    const startup = Effect.gen(function* () {
+      yield* io.spawnDetached(binary, [], { env: launcherEnv(url) }).pipe(
+        Effect.mapError((cause) => failure(`could not start Laya at ${binary}: ${cause.message}`, cause)),
+      );
+      const deadline = Date.now() + START_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (yield* healthy(endpoint)) {
+          readyEndpoint = endpoint;
+          return endpoint;
+        }
+        yield* Effect.sleep(Duration.millis(250));
+      }
+      return yield* Effect.fail(failure(`Laya did not become healthy within ${START_TIMEOUT_MS / 1000}s`));
+    }).pipe(
+      Effect.onExit((exit) => Effect.sync(() => {
+        lastStartFailure = Exit.isSuccess(exit) ? undefined : { endpoint, at: Date.now() };
+      })),
+    );
+    return yield* startup;
   }));
 }
 

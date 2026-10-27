@@ -1102,8 +1102,26 @@ export function compileWorkflow(
       }
       const regionsById = regionIndex(lowered.regions);
       for (const leaf of ordered) {
+        const enclosing = regionAncestors(regionsById, leaf.parentId);
+        if (leaf.stage.async === true) {
+          if (enclosing.some((region) => region.kind === "map")) {
+            throw scopeError(
+              sourcePath,
+              `stage "${leaf.stage.name}" declares async but is inside a tournament; async stages are not supported in tournaments`,
+            );
+          }
+          const loop = enclosing.find((region) => region.kind === "loop");
+          if (loop !== undefined &&
+            (loop.exitStageId === leaf.id ||
+              loop.feedback === leaf.id ||
+              loop.feedback === leaf.stage.name)) {
+            throw scopeError(
+              sourcePath,
+              `stage "${leaf.stage.name}" declares async but is a loop exit/feedback stage; async stages must be ordinary loop stages`,
+            );
+          }
+        }
         if (leaf.stage.skippable === true || leaf.stage.decision !== undefined || leaf.stage.async === true) {
-          const enclosing = regionAncestors(regionsById, leaf.parentId);
           if (!enclosing.some((region) => region.kind === "loop")) {
             throw scopeError(
               sourcePath,

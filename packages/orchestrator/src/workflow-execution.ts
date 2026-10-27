@@ -925,6 +925,12 @@ export function executeWorkflow(
       if (final === undefined) {
         return yield* Effect.fail(workflowError("schedule", loaded.workflowPath, "workflow completed without a stage result"));
       }
+      // A failed async task must not disappear just because its consumer
+      // started before the failure landed or never started at all. Waiting
+      // here only joins work the run already launched; downstream scheduling
+      // never waited on it.
+      yield* asyncQueue.idle();
+      yield* asyncQueue.assertHealthy();
       // The outcome is settled the moment the terminal stage resolves, so it
       // is recorded before any cleanup runs. Cleanup is re-entrant, optional
       // and allowed to fail; the record of what happened is none of those, and
