@@ -79,8 +79,7 @@ export function installPluginCommand(args: readonly string[]): Effect.Effect<voi
   return Effect.gen(function* () {
     const options = yield* parseArgs(args);
     const home = claudeHome();
-    const homeStats = yield* Effect.either(io.stat(home));
-    if (homeStats._tag === "Left") {
+    if (!(yield* io.exists(home))) {
       yield* report(`[WARN] claude: skipped (home not found: ${home})`);
       return;
     }

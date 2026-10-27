@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { writeTrajectoryRun } from "../common/trajectory-fixture.js";
 
 const SERVER = fileURLToPath(new URL("../../packages/cli/src/piano-mcp.mjs", import.meta.url));
 
@@ -216,9 +217,10 @@ describe("piano MCP server", () => {
       completedStages: 2,
       stageCounts: { a: { planned: 1, completed: 1 }, b: { planned: 1, completed: 1 } },
     }));
-    await writeFile(join(runDir, "system-log", "trajectory.jsonl"), `${JSON.stringify({
+    await writeTrajectoryRun(runDir, {
+      runId: "persisted-run",
       events: [{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "persisted output" }] } }],
-    })}\n`);
+    });
     const server = await startServer(root, {});
     try {
       const status = await server.request("tools/call", {
