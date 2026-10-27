@@ -91,7 +91,7 @@ export function decideProfilingSkip(
         message: "profiling skip decision returned no action answer",
       }));
     }
-    const confidence = answer.probabilities.skip ?? answer.confidence ?? 0;
+    const confidence = answer.probabilities[answer.choice] ?? answer.confidence ?? 0;
     const skip = answer.choice === "skip";
     return {
       skip,

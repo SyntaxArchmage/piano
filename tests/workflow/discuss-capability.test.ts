@@ -68,6 +68,16 @@ describe("discuss capability at load", () => {
     }
   });
 
+  it("rejects a stage whose tools list names discuss without the flag", async () => {
+    const { message, workerCalls } = await run(workflow(`        name: ask
+        worker: basic
+        harness: claude
+        tools: [Read, Bash, discuss]
+        from: []`));
+    expect(workerCalls).toBe(0);
+    expect(message).toContain('lists "discuss" in tools but does not declare discuss: true');
+  });
+
   it("accepts claude and dsh, which receive the MCP tool", async () => {
     for (const harness of ["claude", "dsh"]) {
       const source = workflow(`        name: ask

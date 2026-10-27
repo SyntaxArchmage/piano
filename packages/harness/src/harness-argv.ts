@@ -9,11 +9,10 @@ import {
   dshResumeOverlayPath,
   dshWebSearchOffPatchPath,
 } from "./harness-home.js";
-import { discussMcpServerConfig } from "./discuss-mcp-config.js";
+import { discussMcpConfigJson } from "./discuss-mcp-config.js";
 import { PI_WEB_SEARCH_TOOL_NAME, piWebSearchExtensionPath } from "./pi-web-search.js";
 import {
   CLAUDE_BARE_UNAVAILABLE_TOOLS,
-  DISCUSS_MCP_SERVER_NAME,
   DISCUSS_MCP_TOOL_NAME,
   DISCUSS_TOOL_NAME,
 } from "./tool-names.js";
@@ -180,6 +179,7 @@ export function claudeArguments(
   thinking: ThinkingLevel | undefined,
   resources: LoadedResources,
   discuss?: DiscussBridge,
+  mcpConfigPath?: string,
 ): string[] {
   // `--include-partial-messages` is what makes the output a stream at all.
   // Without it the CLI buffers each block and reports only the completed
@@ -206,11 +206,7 @@ export function claudeArguments(
   );
   if (appendix !== "") args.push("--append-system-prompt", appendix);
   if (discuss !== undefined) {
-    args.push("--mcp-config", JSON.stringify({
-      mcpServers: {
-        [DISCUSS_MCP_SERVER_NAME]: { type: "stdio", ...discussMcpServerConfig(discuss) },
-      },
-    }));
+    args.push("--mcp-config", mcpConfigPath ?? discussMcpConfigJson(discuss));
   }
   // Stage tool names are exact Claude Code ids, validated at workflow parse
   // time against the catalog; `discuss` is the one logical id Piano renames
@@ -222,6 +218,10 @@ export function claudeArguments(
     // permission prompt that has no terminal reader; the workspace boundary is
     // still the caller's cwd and the selected allowed-tools list.
     args.push("--permission-mode", "bypassPermissions", "--add-dir", request.cwd, "--allowed-tools", ...tools);
+  } else if (discuss !== undefined) {
+    // A discuss-only stage has no tools list, but its MCP tool still needs the
+    // non-interactive permission mode and the workspace root.
+    args.push("--permission-mode", "bypassPermissions", "--add-dir", request.cwd);
   }
   return args;
 }

@@ -54,7 +54,13 @@ function healthy(endpoint: string): Effect.Effect<boolean, never> {
 }
 
 function launcher(): string {
-  return process.env.PIANO_LAYA_BIN ?? join(homedir(), ".piano", "laya-venv", "bin", "laya-serve");
+  if (process.env.PIANO_LAYA_BIN !== undefined) return process.env.PIANO_LAYA_BIN;
+  const venv = process.env.PIANO_LAYA_VENV ?? join(homedir(), ".piano", "laya-venv");
+  return join(venv, "bin", "laya-serve");
+}
+
+function hostForProcess(endpoint: URL): string {
+  return endpoint.hostname.replace(/^\[|\]$/gu, "");
 }
 
 function launcherEnv(endpoint: URL): NodeJS.ProcessEnv {
@@ -64,7 +70,7 @@ function launcherEnv(endpoint: URL): NodeJS.ProcessEnv {
     LAYA_DEVICE: "cpu",
     LAYA_MODELS: process.env.LAYA_MODELS ?? "english",
     LAYA_PRELOAD: "1",
-    LAYA_HOST: endpoint.hostname,
+    LAYA_HOST: hostForProcess(endpoint),
     LAYA_PORT: port,
     HF_HUB_OFFLINE: process.env.HF_HUB_OFFLINE ?? "1",
   };
@@ -78,13 +84,17 @@ let readyEndpoint: string | undefined;
 
 export function ensureLayaEndpoint(endpoint = configuredEndpoint()): Effect.Effect<string, SystemOneError> {
   return startSemaphore.withPermits(1)(Effect.gen(function* () {
-    if (readyEndpoint !== undefined) return readyEndpoint;
+    if (readyEndpoint !== undefined) {
+      if (yield* healthy(readyEndpoint)) return readyEndpoint;
+      readyEndpoint = undefined;
+    }
     if (yield* healthy(endpoint)) {
       readyEndpoint = endpoint;
       return endpoint;
     }
     const url = yield* endpointUrl(endpoint);
-    if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost" && url.hostname !== "::1") {
+    const host = hostForProcess(url);
+    if (host !== "127.0.0.1" && host !== "localhost" && host !== "::1") {
       return yield* Effect.fail(failure(`Laya auto-start only supports loopback endpoints, got ${url.hostname}`));
     }
     const binary = launcher();

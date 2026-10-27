@@ -1,4 +1,5 @@
 import { discussMcpServerPath } from "./discuss-mcp-path.js";
+import { DISCUSS_MCP_SERVER_NAME } from "./tool-names.js";
 
 /** Environment variables the stdio MCP server reads for its bridge. Kept here
  * so the Claude config, dsh patch, and attempt environment cannot drift. */
@@ -27,4 +28,14 @@ export function discussMcpServerConfig(endpoint: DiscussMcpEndpoint): DiscussMcp
       [DISCUSS_MCP_ENV_TOKEN]: endpoint.token,
     },
   };
+}
+
+/** Claude's `--mcp-config` document. Production writes this to a 0600 file so
+ * the per-request token never appears in the child's argv. */
+export function discussMcpConfigJson(endpoint: DiscussMcpEndpoint): string {
+  return JSON.stringify({
+    mcpServers: {
+      [DISCUSS_MCP_SERVER_NAME]: { type: "stdio", ...discussMcpServerConfig(endpoint) },
+    },
+  });
 }

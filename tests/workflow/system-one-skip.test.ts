@@ -117,6 +117,7 @@ describe("System One skip decision", () => {
     expect(calls).toEqual(["tune.profile", "tune.measure", "tune.measure"]);
     const skipped = result.stages.find((stage) => stage.id === "tune.profile@tune/iter-1");
     expect(skipped?.skipped?.model).toBe("fake");
+    expect(skipped?.skipped?.confidence).toBe(1);
     expect(skipped?.skipped?.sourceInvocationId).toBe("tune.profile@tune/iter-0");
     expect(skipped?.text).toContain("Skipped by System One");
     expect(prompts.some((prompt) => prompt.includes("Skipped upstream stages"))).toBe(true);
