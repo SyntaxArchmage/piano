@@ -98,7 +98,7 @@ describe("piano install-plugin", () => {
     process.env.FAKE_LIST = '[{"id":"piano@piano-local","enabled":true}]';
     await run();
     expect(output.join("\n")).toContain("already installed");
-    expect(output.join("\n")).toContain("plugin is inert");
+    expect(output.join("\n")).toContain("--native not requested");
   });
 
   it("enables the tool on an installed plugin through the same install call", async () => {

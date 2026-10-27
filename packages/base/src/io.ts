@@ -199,10 +199,13 @@ export interface CommandOptions {
   readonly maxBuffer?: number;
 }
 
+/** A command that never started reports this instead of an exit status. A
+ * spawn error carries a string `code`, and treating it as `1` would make
+ * "the binary is missing" look like "the command failed". */
+export const NOT_STARTED = -1;
+
 export interface CommandResult {
-  /** The exit status. `-1` means the command never started (a missing binary
-   * and a failed command are different outcomes, and a spawn error carries a
-   * string `code`, not a number). */
+  /** The exit status, or `NOT_STARTED` when the command never ran. */
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -250,7 +253,7 @@ function runCommand(
         ? (error as { code: number }).code
         // A spawn failure (`ENOENT`, `EACCES`) never ran the command, so it has
         // no exit status of its own.
-        : -1;
+        : NOT_STARTED;
       if (!failOnNonZero) {
         resume(Effect.succeed({ code, stdout: out, stderr: err }));
         return;
@@ -310,7 +313,7 @@ export function runShell(command: string, cwd: string, timeoutMs?: number): Effe
     };
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", (error) => finish({ code: 1, stdout, stderr: `${stderr}${String(error)}` }));
+    child.on("error", (error) => finish({ code: NOT_STARTED, stdout, stderr: `${stderr}${String(error)}` }));
     child.on("exit", (code) => finish({ code: timedOut ? 124 : code ?? 1, stdout, stderr }));
     return Effect.sync(() => {
       settled = true;

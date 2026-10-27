@@ -268,27 +268,30 @@ describe("piano MCP server", () => {
     }
   }, 60_000);
 
-  it("reads a run that predates the system-log layout", async () => {
-    const root = await mkdtemp(join(tmpdir(), "piano-mcp-legacy-"));
-    const runDir = join(root, ".piano", "runs", "legacy-run");
-    await mkdir(runDir, { recursive: true });
+  it("widens the window when multi-byte text makes the tail shorter than the file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-mcp-multibyte-"));
+    const runDir = join(root, ".piano", "runs", "multibyte");
+    await mkdir(join(runDir, "system-log"), { recursive: true });
     await writeFile(join(runDir, "status.json"), JSON.stringify({ status: "completed", plannedStages: 1, completedStages: 1 }));
-    // Old runs kept the stream at the run root instead of system-log/.
-    await writeFile(join(runDir, "trajectory.jsonl"), `${JSON.stringify({
-      events: [{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "legacy output" }] } }],
-    })}\n`);
+    // Each Chinese character is three bytes but one UTF-16 unit, so the decoded
+    // tail is far shorter than the 4MB byte window it came from.
+    const filler = JSON.stringify({ events: [{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "填".repeat(3000) }] } }] });
+    await writeFile(join(runDir, "system-log", "trajectory.jsonl"), [
+      ...Array.from({ length: 500 }, () => filler),
+      JSON.stringify({ events: [{ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "CJK-FINAL" }] } }] }),
+    ].join("\n") + "\n");
     const server = await startServer(root, {});
     try {
       const result = await server.request("tools/call", {
         name: "piano_result",
-        arguments: { runId: "legacy-run" },
+        arguments: { runId: "multibyte" },
       });
-      expect(result.structuredContent).toMatchObject({ output: "legacy output" });
+      expect(result.structuredContent).toMatchObject({ output: "CJK-FINAL" });
     } finally {
       await server.close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 60_000);
 
   it("rejects a run id that could leave the runs root", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-mcp-traversal-"));

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
@@ -110,6 +110,21 @@ describe("piano install-skill", () => {
     await expect(stat(join(claude, "skills"))).rejects.toThrow();
     await expect(stat(join(dsh, "skills"))).rejects.toThrow();
     expect(output.join("\n")).toContain("would install");
+  });
+
+  it("keeps installing the other target when one home fails", async () => {
+    await mkdir(claude, { recursive: true });
+    await mkdir(dsh, { recursive: true });
+    // Read-only home: creating skills/ inside it fails with EACCES.
+    await chmod(claude, 0o500);
+    try {
+      const result = await Effect.runPromise(Effect.either(installSkillCommand([])));
+      expect(result._tag).toBe("Left");
+      expect(output.join("\n")).toContain("claude: EACCES");
+      expect(await readFile(join(dsh, "skills", "piano", "SKILL.md"), "utf8")).toContain("name: piano");
+    } finally {
+      await chmod(claude, 0o700);
+    }
   });
 
   it("writes nothing outside skills/piano", async () => {
