@@ -585,6 +585,7 @@ const executeScope = (
   entryStageId: string | undefined,
   mapItem: WorkflowMapItem | undefined,
   workspace: WorkflowWorkspaceBinding,
+  concurrency = 1,
 ): Effect.Effect<ScopeExecution, WorkflowExecutionError, FileSystem.FileSystem | Logging> => Effect.suspend(() => {
   const completed = new Map<string, ResultGroup>();
   const pending = new Map(nodes.map((node) => [nodeName(node), node]));
@@ -1041,37 +1042,38 @@ const executeScope = (
         ));
       }
       // A scope has one mutable workspace binding. The DSL does not carry
-      // read-only/write ownership, so stable-order execution avoids races
-      // and makes map lane allocation deterministic. Run one ready node at a
-      // time so a validated blocked result can stop the scope before later
-      // independent nodes consume more model turns. Map slots receive
-      // distinct bindings below and remain the intentional parallel
-      // boundary.
-      const node = ready[0];
-      if (node === undefined) {
-        return yield* Effect.fail(workflowError(
-          "schedule",
-          loaded.workflowPath,
-          `workflow scope "${scopeId ?? "root"}" selected no ready node`,
-        ));
-      }
-      const outcome = yield* runNode(node).pipe(Effect.either);
-      if (Either.isLeft(outcome)) return yield* Effect.fail(outcome.left);
-      completed.set(nodeName(node), outcome.right.boundary);
-      allStages.push(...outcome.right.stages);
-      pending.delete(nodeName(node));
-      // A stopped child scope (loop/map lane) returns its terminal result
-      // to its parent, which may still have a downstream summary node. At
-      // the root scope we therefore record the result and continue normal
-      // dependency scheduling; only a non-root scope must stop consuming
-      // its remaining local nodes.
-      if (outcome.right.stopped === true && scopeId !== undefined) {
-        return {
-          boundary: outcome.right.boundary,
-          stages: allStages,
-          completed,
-          stopped: true,
-        } satisfies ScopeExecution;
+      // read-only/write ownership, so the default is stable serial order.
+      // `concurrency` (root scope only) lets a workflow opt into running a
+      // bounded batch of independent ready nodes at once; map slots receive
+      // distinct bindings below and remain the intentional parallel boundary.
+      const limit = Math.max(1, concurrency);
+      const outcomes = yield* Effect.forEach(
+        ready.slice(0, limit),
+        (node) => runNode(node).pipe(
+          Effect.map((execution) => ({ node, execution } as const)),
+          Effect.either,
+        ),
+        { concurrency: limit },
+      );
+      for (const outcome of outcomes) {
+        if (Either.isLeft(outcome)) return yield* Effect.fail(outcome.left);
+        const { node, execution } = outcome.right;
+        completed.set(nodeName(node), execution.boundary);
+        allStages.push(...execution.stages);
+        pending.delete(nodeName(node));
+        // A stopped child scope (loop/map lane) returns its terminal result
+        // to its parent, which may still have a downstream summary node. At
+        // the root scope we therefore record the result and continue normal
+        // dependency scheduling; only a non-root scope must stop consuming
+        // its remaining local nodes.
+        if (execution.stopped === true && scopeId !== undefined) {
+          return {
+            boundary: execution.boundary,
+            stages: allStages,
+            completed,
+            stopped: true,
+          } satisfies ScopeExecution;
+        }
       }
     }
     return {

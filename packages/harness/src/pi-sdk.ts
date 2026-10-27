@@ -1,6 +1,6 @@
 import { Cause, Effect, Exit } from "effect";
 import { errorMessage, io } from "@piano/base";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { AgentHarnessOptions } from "./agent-contract.js";
 import { AgentError } from "./errors.js";
 
@@ -76,6 +76,7 @@ export interface PiHarnessOptions extends AgentHarnessOptions {
 }
 
 const MIN_PI_VERSION = "0.84.0";
+const PI_SDK_PACKAGE = "@earendil-works/pi-coding-agent";
 const MAX_SDK_LOAD_RETRIES = 2;
 const TRANSIENT_SDK_ERROR_CODES = new Set([
   "EAGAIN", "EBUSY", "EINTR", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "EPIPE",
@@ -90,10 +91,48 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+/** The global modules directory under an npm prefix. */
+function globalModulesDir(prefix: string): string {
+  return process.platform === "win32" ? join(prefix, "node_modules") : join(prefix, "lib", "node_modules");
+}
+
+/** Global module roots implied by the running Node install. `npm_config_prefix`
+ * is authoritative when present; otherwise a POSIX Node under `<prefix>/bin`
+ * puts global packages in `<prefix>/lib/node_modules`. Both are probes, not
+ * assumptions: a miss falls back to `npm root -g`. */
+function derivedGlobalRoots(): readonly string[] {
+  const roots = new Set<string>();
+  const prefix = process.env.npm_config_prefix?.trim();
+  if (prefix !== undefined && prefix !== "") roots.add(globalModulesDir(resolve(prefix)));
+  roots.add(globalModulesDir(process.platform === "win32"
+    ? dirname(process.execPath)
+    : dirname(dirname(process.execPath))));
+  return [...roots];
+}
+
+/** The installed SDK entry point and manifest, the two files every discovery
+ * path needs. */
+function sdkInstalledAt(dir: string): Effect.Effect<boolean> {
+  return Effect.all([
+    io.exists(join(dir, "dist", "index.js")),
+    io.exists(join(dir, "package.json")),
+  ]).pipe(Effect.map(([hasEntry, hasManifest]) => hasEntry && hasManifest));
+}
+
+function probeDerivedSdkRoot(): Effect.Effect<string | undefined> {
+  return Effect.gen(function* () {
+    for (const root of derivedGlobalRoots()) {
+      const candidate = join(root, PI_SDK_PACKAGE);
+      if (yield* sdkInstalledAt(candidate)) return candidate;
+    }
+    return undefined;
+  });
+}
+
 /** The installed pi SDK package directory. `PIANO_PI_SDK_ROOT` is the explicit
  * deployment override — it names `.../@earendil-works/pi-coding-agent` itself —
  * so an install without npm never needs the `npm root -g` shell-out. The
- * npm-derived path is cached for the process; an explicit root is not, so a
+ * resolved path is cached for the process; an explicit root is not, so a
  * long-lived process can retarget it (and tests can vary it).
  *
  * Resolution is Effect-native because io's process adapter is: there is no
@@ -104,12 +143,14 @@ function sdkRoot(): Effect.Effect<string, AgentError> {
     const override = process.env.PIANO_PI_SDK_ROOT;
     if (override !== undefined && override.trim() !== "") return Effect.succeed(resolve(override.trim()));
     if (sdkRootCache !== undefined) return Effect.succeed(sdkRootCache);
-    return io.execFile("npm", ["root", "-g"]).pipe(
-      Effect.map((result) => {
-        sdkRootCache = join(result.stdout.trim(), "@earendil-works/pi-coding-agent");
-        return sdkRootCache;
-      }),
-      Effect.mapError((cause) => sdkDiscoveryError(cause)),
+    return probeDerivedSdkRoot().pipe(
+      Effect.flatMap((derived) => derived !== undefined
+        ? Effect.succeed(derived)
+        : io.execFile("npm", ["root", "-g"]).pipe(
+          Effect.map((result) => join(result.stdout.trim(), PI_SDK_PACKAGE)),
+          Effect.mapError((cause) => sdkDiscoveryError(cause)),
+        )),
+      Effect.map((root) => (sdkRootCache = root)),
     );
   });
 }
@@ -140,8 +181,8 @@ const sdkModuleCache = new WeakMap<SdkLoader, Promise<PiModule>>();
 function sdkAvailable(): Effect.Effect<boolean, AgentError> {
   return Effect.gen(function* () {
     const root = yield* sdkRoot();
+    if (!(yield* sdkInstalledAt(root))) return false;
     const packagePath = join(root, "package.json");
-    if (!(yield* io.exists(join(root, "dist/index.js"))) || !(yield* io.exists(packagePath))) return false;
     const raw = yield* io.readText(packagePath).pipe(Effect.mapError(sdkDiscoveryError));
     const packageJson = yield* Effect.try({
       try: () => JSON.parse(raw) as { version?: string },

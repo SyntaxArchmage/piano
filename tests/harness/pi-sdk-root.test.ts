@@ -8,28 +8,52 @@ import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { piAvailable } from "../../packages/harness/src/index.js";
 
-const original = process.env.PIANO_PI_SDK_ROOT;
+const originalRoot = process.env.PIANO_PI_SDK_ROOT;
+const originalPrefix = process.env.npm_config_prefix;
 
 beforeEach(() => {
   delete process.env.PIANO_PI_SDK_ROOT;
+  delete process.env.npm_config_prefix;
 });
 
 afterEach(() => {
-  if (original === undefined) delete process.env.PIANO_PI_SDK_ROOT;
-  else process.env.PIANO_PI_SDK_ROOT = original;
+  if (originalRoot === undefined) delete process.env.PIANO_PI_SDK_ROOT;
+  else process.env.PIANO_PI_SDK_ROOT = originalRoot;
+  if (originalPrefix === undefined) delete process.env.npm_config_prefix;
+  else process.env.npm_config_prefix = originalPrefix;
 });
+
+async function writeSdkAt(dir: string, version: string, withEntry = true): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "package.json"), JSON.stringify({ version }));
+  if (withEntry) {
+    await mkdir(join(dir, "dist"), { recursive: true });
+    await writeFile(join(dir, "dist", "index.js"), "export {};\n");
+  }
+}
 
 async function sdkDirectory(version: string, withEntry = true): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "piano-pi-sdk-root-"));
-  await writeFile(join(root, "package.json"), JSON.stringify({ version }));
-  if (withEntry) {
-    await mkdir(join(root, "dist"), { recursive: true });
-    await writeFile(join(root, "dist", "index.js"), "export {};\n");
-  }
+  await writeSdkAt(root, version, withEntry);
   return root;
 }
 
 describe("PIANO_PI_SDK_ROOT", () => {
+  it("derives the global module root without spawning npm", async () => {
+    const prefix = await mkdtemp(join(tmpdir(), "piano-pi-prefix-"));
+    const modules = process.platform === "win32"
+      ? join(prefix, "node_modules")
+      : join(prefix, "lib", "node_modules");
+    const sdk = join(modules, "@earendil-works", "pi-coding-agent");
+    try {
+      await writeSdkAt(sdk, "0.99.0");
+      process.env.npm_config_prefix = prefix;
+      expect(await Effect.runPromise(piAvailable())).toBe(true);
+    } finally {
+      await rm(prefix, { recursive: true, force: true });
+    }
+  });
+
   it("uses the explicit root and applies the same availability checks", async () => {
     const modern = await sdkDirectory("0.99.0");
     const old = await sdkDirectory("0.10.0");
