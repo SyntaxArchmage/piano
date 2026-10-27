@@ -115,6 +115,16 @@ describe("piano install-mcp", () => {
     expect(output.join("\n")).toContain("would write");
   });
 
+  it("reports a dangling dsh patch symlink as a conflict, not a race", async () => {
+    await mkdir(join(root, "dsh"), { recursive: true });
+    const target = join(root, ".piano", "dsh", "piano-mcp.yml");
+    await mkdir(join(root, ".piano", "dsh"), { recursive: true });
+    await symlink(join(root, "gone.yml"), target);
+    await run(["--target", "dsh"]);
+    expect(output.join("\n")).toContain("symlink to a missing file");
+    expect(output.join("\n")).not.toContain("appeared concurrently");
+  });
+
   it("leaves an existing dsh patch untouched", async () => {
     await mkdir(join(root, "dsh"), { recursive: true });
     const path = join(root, ".piano", "dsh", "piano-mcp.yml");

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FileSystem } from "@effect/platform";
@@ -44,6 +44,23 @@ describe("writeFileAtomic", () => {
       }));
       expect(result._tag).toBe("Left");
       expect(await readdir(root)).toEqual(["value.json"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the permissions an existing target already had", async () => {
+    const root = await mkdtemp(join(tmpdir(), "piano-atomic-mode-"));
+    try {
+      const path = join(root, "value.json");
+      await writeFile(path, "previous\n", "utf8");
+      await chmod(path, 0o600);
+      await run(writeFileAtomic(path, "next\n", {
+        temporaryPath: () => `${path}.tmp`,
+        mapError: mapError(path),
+      }));
+      expect(await readFile(path, "utf8")).toBe("next\n");
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -138,51 +138,68 @@ function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError, imp
     }
     const patch = dshPatch();
     const target = dshPatchPath();
-    const current = yield* Effect.either(io.readText(target));
-    const stale = current._tag === "Right" && current.right !== patch;
-    if (current._tag === "Right" && !stale) {
-      yield* report(`[PASS] dsh: up-to-date (${target})`);
-      return;
-    }
-    // The sidecar and interpreter are absolute paths, so an upgrade or an nvm
-    // switch makes the generated patch stale. A file this command wrote is
-    // replaced; a file the user edited starts differently and stays untouched.
-    if (stale && !current.right.startsWith(GENERATED_MARKER)) {
-      yield* report(`[WARN] dsh: conflict (${target} was edited; left untouched)`);
+    // Asked of the name itself, before reading: a link is not followed to
+    // decide whether the patch exists, and an unreadable file is not mistaken
+    // for a missing one.
+    const existing = yield* Effect.either(io.lstat(target));
+    if (existing._tag === "Right") {
+      // A symlinked patch belongs to someone's dotfiles; read and write the
+      // file it points at so their link survives. A link with no target has
+      // nothing to write, and saying so is not the same as a lost race.
+      let path = target;
+      if (existing.right.isSymbolicLink()) {
+        const resolved = yield* Effect.either(io.realpath(target));
+        if (resolved._tag === "Left") {
+          yield* report(`[WARN] dsh: conflict (${target} is a symlink to a missing file); left untouched`);
+          return;
+        }
+        path = resolved.right;
+      }
+      const current = yield* Effect.either(io.readText(path));
+      if (current._tag === "Left") {
+        yield* report(`[WARN] dsh: conflict (${path} exists but cannot be read); left untouched`);
+        return;
+      }
+      if (current.right === patch) {
+        yield* report(`[PASS] dsh: up-to-date (${target})`);
+        return;
+      }
+      // The sidecar and interpreter are absolute paths, so an upgrade or an nvm
+      // switch makes the generated patch stale. A file this command wrote is
+      // replaced; a file the user edited starts differently and stays untouched.
+      if (!current.right.startsWith(GENERATED_MARKER)) {
+        yield* report(`[WARN] dsh: conflict (${target} was edited; left untouched)`);
+        return;
+      }
+      if (dryRun) {
+        yield* report(`[INFO] dsh: would update ${target}`);
+        return;
+      }
+      yield* io.mkdir(dirname(path), { recursive: true, mode: 0o755 }).pipe(
+        Effect.mapError((cause) => failed(path, cause)),
+      );
+      // The shared atomic write asks for a fresh staging name per call and
+      // removes it on failure, so two updates cannot collide and a failed
+      // rename leaves nothing behind.
+      yield* writeFileAtomic(path, patch, {
+        mapError: (cause, step) => failed(path, new Error(`${step}: ${cause instanceof Error ? cause.message : String(cause)}`)),
+      });
+      yield* report(`[PASS] dsh: updated ${target}; add it with --patch or to your profile`);
       return;
     }
     if (dryRun) {
-      yield* report(`[INFO] dsh: would ${stale ? "update" : "write"} ${target}`);
+      yield* report(`[INFO] dsh: would write ${target}`);
       return;
     }
     yield* io.mkdir(dirname(target), { recursive: true, mode: 0o755 }).pipe(
       Effect.mapError((cause) => failed(target, cause)),
     );
-    let written;
-    if (stale) {
-      // A symlinked patch belongs to someone's dotfiles; replace the file it
-      // points at so their link survives. A dangling link has nowhere to write.
-      const link = yield* Effect.either(io.readlink(target));
-      const resolved = link._tag === "Right" ? yield* Effect.either(io.realpath(target)) : undefined;
-      if (link._tag === "Right" && (resolved === undefined || resolved._tag === "Left")) {
-        yield* report(`[WARN] dsh: conflict (${target} is a symlink to a missing file); left untouched`);
-        return;
-      }
-      const path = resolved === undefined || resolved._tag === "Left" ? target : resolved.right;
-      // The shared atomic write asks for a fresh staging name per call and
-      // removes it on failure, so two updates cannot collide and a failed
-      // rename leaves nothing behind.
-      written = yield* writeFileAtomic(path, patch, {
-        mapError: (cause, step) => failed(path, new Error(`${step}: ${cause instanceof Error ? cause.message : String(cause)}`)),
-      }).pipe(Effect.as(true));
-    } else {
-      written = yield* io.createExclusive(target, patch).pipe(Effect.mapError((cause) => failed(target, cause)));
-    }
-    if (!written) {
+    const created = yield* io.createExclusive(target, patch).pipe(Effect.mapError((cause) => failed(target, cause)));
+    if (!created) {
       yield* report(`[WARN] dsh: conflict (${target} appeared concurrently); left untouched`);
       return;
     }
-    yield* report(`[PASS] dsh: ${stale ? "updated" : "wrote"} ${target}; add it with --patch or to your profile`);
+    yield* report(`[PASS] dsh: wrote ${target}; add it with --patch or to your profile`);
   });
 }
 

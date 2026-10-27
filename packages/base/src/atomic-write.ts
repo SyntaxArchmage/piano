@@ -98,7 +98,9 @@ export function writeFileAtomic<E>(
     readonly exclusiveStaging?: boolean;
     /** Permission bits for the staging file, so a credential-bearing document
      * never exists world-readable even for the instant between write and
-     * rename. Omitted means the platform default. */
+     * rename. Omitted, an existing target's bits are kept and a new file takes
+     * the platform default: replacing a file must not silently loosen the
+     * permissions its owner chose. */
     readonly mode?: number;
     /** Install through {@link installStagingFile} rather than a bare rename. */
     readonly installWithBackup?: boolean;
@@ -115,11 +117,17 @@ export function writeFileAtomic<E>(
         "write",
       ));
     }
+    // Writing for an untouched target keeps its owner's choice of bits; a new
+    // file gets the platform default.
+    const mode = options.mode ?? (yield* Effect.orElseSucceed(
+      fileSystem.stat(path).pipe(Effect.map((stats) => stats.mode & 0o7777)),
+      () => undefined,
+    ));
     // Both flags are optional; when neither is set the platform defaults apply.
-    const writeOptions = options.exclusiveStaging === true || options.mode !== undefined
+    const writeOptions = options.exclusiveStaging === true || mode !== undefined
       ? {
         ...(options.exclusiveStaging === true ? { flag: "wx" as const } : {}),
-        ...(options.mode === undefined ? {} : { mode: options.mode }),
+        ...(mode === undefined ? {} : { mode }),
       }
       : undefined;
     yield* fileSystem.makeDirectory(dirname(path), { recursive: true }).pipe(
