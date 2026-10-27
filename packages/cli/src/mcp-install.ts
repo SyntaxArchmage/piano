@@ -180,7 +180,12 @@ function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError, imp
       );
       // The shared atomic write asks for a fresh staging name per call and
       // removes it on failure, so two updates cannot collide and a failed
-      // rename leaves nothing behind.
+      // rename leaves nothing behind. An update is an idempotent overwrite, so
+      // two concurrent updates are harmless; only creation claims the name
+      // exclusively. The link could be swapped between the `realpath` above and
+      // this rename (TOCTOU); that needs another process editing the same file
+      // at that instant, and the outcome is a write to whichever path the
+      // second process chose.
       yield* writeFileAtomic(path, patch, {
         mapError: (cause, step) => failed(path, new Error(`${step}: ${cause instanceof Error ? cause.message : String(cause)}`)),
       });
