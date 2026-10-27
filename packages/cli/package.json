@@ -14,6 +14,7 @@
     "@piano/base": "0.1.0",
     "@piano/evals": "0.1.0",
     "@piano/harness": "0.1.0",
+    "@piano/langfuse": "0.1.0",
     "@piano/logging": "0.1.0",
     "@piano/orchestrator": "0.1.0",
     "@resvg/resvg-js": "^2.6.2",

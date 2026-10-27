@@ -11,7 +11,8 @@
       "@piano/workers": ["packages/workers/src/index.ts"],
       "@piano/evals": ["packages/evals/src/index.ts"],
       "@piano/contract": ["packages/contract/src/index.ts"],
-      "@piano/trajectory": ["packages/trajectory/src/index.ts"]
+      "@piano/trajectory": ["packages/trajectory/src/index.ts"],
+      "@piano/langfuse": ["packages/langfuse/src/index.ts"]
     }
   },
   "include": [

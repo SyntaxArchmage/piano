@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { stderr } from "node:process";
 import { createStagingSession } from "@piano/logging";
+import { shutdownLangfuse, startLangfuseRuntimeFromEnv } from "@piano/langfuse";
 import { logsCommand } from "./logs.js";
 import { evalsCommand } from "./evals.js";
 import { resumeCommand } from "./resume.js";
@@ -119,7 +120,13 @@ export function main(
 export function runCli(args: readonly string[] = process.argv.slice(2)): void {
   ensureSystemCaTrust();
   NodeRuntime.runMain(
-    main(args).pipe(
+    // Opt-in export runtime: a process with no Langfuse keys never loads the
+    // OTel SDK, and shutdown flushes whatever a configured run produced.
+    Effect.scoped(Effect.gen(function* () {
+      yield* Effect.promise(() => startLangfuseRuntimeFromEnv()).pipe(Effect.asVoid);
+      yield* Effect.addFinalizer(() => Effect.promise(shutdownLangfuse));
+      return yield* main(args);
+    })).pipe(
       Effect.provide(NodeFileSystem.layer),
       Effect.tapErrorCause((cause) =>
         Effect.sync(() => stderr.write(`${Cause.pretty(cause)}\n`)),
