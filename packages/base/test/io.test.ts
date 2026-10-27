@@ -58,6 +58,9 @@ describe("io", () => {
     const result = await Effect.runPromise(io.execFileResult("bash", ["-lc", "echo boom >&2; exit 3"]));
     expect(result).toMatchObject({ code: 3, stderr: "boom\n" });
     await expect(Effect.runPromise(io.execFile("bash", ["-lc", "echo ok"]))).resolves.toMatchObject({ code: 0, stdout: "ok\n" });
+    // A command that never started has no exit status of its own.
+    const missing = await Effect.runPromise(io.execFileResult("piano-no-such-binary", ["--version"]));
+    expect(missing.code).toBe(-1);
   });
 
   it("starts a detached process and exposes its pid", async () => {

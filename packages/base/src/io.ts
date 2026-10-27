@@ -200,6 +200,9 @@ export interface CommandOptions {
 }
 
 export interface CommandResult {
+  /** The exit status. `-1` means the command never started (a missing binary
+   * and a failed command are different outcomes, and a spawn error carries a
+   * string `code`, not a number). */
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
@@ -245,7 +248,9 @@ function runCommand(
       }
       const code = typeof (error as { code?: unknown }).code === "number"
         ? (error as { code: number }).code
-        : 1;
+        // A spawn failure (`ENOENT`, `EACCES`) never ran the command, so it has
+        // no exit status of its own.
+        : -1;
       if (!failOnNonZero) {
         resume(Effect.succeed({ code, stdout: out, stderr: err }));
         return;

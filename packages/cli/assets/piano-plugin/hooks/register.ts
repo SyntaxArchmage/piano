@@ -52,9 +52,14 @@ interface LineOutcome {
 
 function readLine(line: string): LineOutcome {
   // `message_update` repeats the whole accumulated message on every token and
-  // nothing here reads it; skipping it before JSON.parse keeps this path
-  // linear in the reply length.
-  if (line.includes('"type":"message_update"')) return {};
+  // nothing here reads it or a tool's streaming update; skipping them before
+  // JSON.parse keeps this path linear in the reply length. Only the envelope's
+  // own `type` counts, so the test stops where the payload starts.
+  const dataAt = line.indexOf('"data":');
+  if (dataAt > 0) {
+    const head = line.slice(0, dataAt);
+    if (head.includes('"type":"message_update"') || head.includes('"type":"tool_execution_update"')) return {};
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);

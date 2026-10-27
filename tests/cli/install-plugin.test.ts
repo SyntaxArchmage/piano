@@ -80,7 +80,7 @@ describe("piano install-plugin", () => {
     await run(["--native"]);
     const calls = await readFile(log, "utf8");
     expect(calls).toContain("plugin install piano");
-    expect(calls).toContain("plugin configure piano@piano-local");
+    expect(calls).toContain("--config PIANO_CLAUDE_NATIVE=1");
     expect(output.join("\n")).toContain("installed the piano plugin");
     expect(output.join("\n")).toContain("enabled the native piano_run tool");
   });
@@ -90,27 +90,35 @@ describe("piano install-plugin", () => {
     await run();
     const calls = await readFile(log, "utf8");
     expect(calls).toContain("plugin install piano");
-    expect(calls).not.toContain("plugin configure");
+    expect(calls).not.toContain("--config");
+  });
+
+  it("says the plugin is inert when it was already installed without --native", async () => {
+    await mkdir(process.env.CLAUDE_CONFIG_DIR!, { recursive: true });
+    process.env.FAKE_LIST = '[{"id":"piano@piano-local","enabled":true}]';
+    await run();
+    expect(output.join("\n")).toContain("already installed");
     expect(output.join("\n")).toContain("plugin is inert");
   });
 
-  it("does not reinstall an installed plugin", async () => {
+  it("enables the tool on an installed plugin through the same install call", async () => {
     await mkdir(process.env.CLAUDE_CONFIG_DIR!, { recursive: true });
     process.env.FAKE_LIST = '[{"id":"piano@piano-local","enabled":true}]';
     await run(["--native"]);
     const calls = await readFile(log, "utf8");
-    expect(calls).not.toContain("plugin install");
-    expect(calls).toContain("plugin configure");
+    expect(calls).toContain("plugin install piano");
+    expect(calls).toContain("--config PIANO_CLAUDE_NATIVE=1");
     expect(output.join("\n")).toContain("already installed");
+    expect(output.join("\n")).toContain("enabled the native piano_run tool");
   });
 
-  it("does not install during --dry-run", async () => {
+  it("does not install or configure during --dry-run, installed or not", async () => {
     await mkdir(process.env.CLAUDE_CONFIG_DIR!, { recursive: true });
     await run(["--dry-run", "--native"]);
+    process.env.FAKE_LIST = '[{"id":"piano@piano-local","enabled":true}]';
+    await run(["--dry-run", "--native"]);
     const calls = await readFile(log, "utf8");
-    expect(calls).not.toContain("plugin install");
-    expect(calls).not.toContain("plugin configure");
+    expect(calls).not.toContain("plugin install piano --marketplace");
     expect(output.join("\n")).toContain("would run claude plugin install");
-    expect(output.join("\n")).toContain("would set PIANO_CLAUDE_NATIVE=1");
   });
 });

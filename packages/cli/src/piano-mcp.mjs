@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global process, setTimeout, clearTimeout */
+/* global process, Buffer, setTimeout, clearTimeout */
 // Piano's stdio MCP server for coding agents.
 //
 // One tool surface shared by Claude Code, dsh, and Codex: `piano_run` starts a
@@ -10,7 +10,7 @@
 // Protocol bytes go to stdout only; diagnostics stay on stderr so a malformed
 // child never corrupts MCP.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -78,32 +78,51 @@ function trajectoryPath(runId) {
   return join(RUNS_ROOT, runId, "system-log", "trajectory.jsonl");
 }
 
+/** The tail of a file as text, plus whether the window cut the file short. A
+ * finished run's trajectory can be tens of megabytes; the final text is at the
+ * end. */
+function readTail(path, maxBytes) {
+  let fd;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    readSync(fd, buffer, 0, length, size - length);
+    return { text: buffer.toString("utf8"), truncated: size > length };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /** The last assistant text a finished run recorded. This is the fallback when
  * the MCP server has no live state (for example after a host restart). */
 function finalTextFromRun(runId) {
-  try {
-    const lines = readFileSync(trajectoryPath(runId), "utf8").split("\n").filter(Boolean);
-    for (let index = lines.length - 1; index >= 0; index--) {
-      let record;
-      try {
-        record = JSON.parse(lines[index]);
-      } catch {
-        continue;
-      }
-      const events = Array.isArray(record?.events) ? record.events : [];
-      for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
-        const event = events[eventIndex];
-        if (event?.type !== "message_end" || event?.message?.role !== "assistant") continue;
-        const content = Array.isArray(event.message.content) ? event.message.content : [];
-        const text = content
-          .filter((block) => block?.type === "text" && typeof block.text === "string")
-          .map((block) => block.text)
-          .join("");
-        if (text !== "") return text;
-      }
+  const tail = readTail(trajectoryPath(runId), 4 * 1024 * 1024);
+  if (tail === undefined) return undefined;
+  const lines = tail.text.split("\n");
+  // A cut window starts mid-record, so its first line is not parseable.
+  const firstComplete = tail.truncated ? 1 : 0;
+  for (let index = lines.length - 1; index >= firstComplete; index--) {
+    let record;
+    try {
+      record = JSON.parse(lines[index]);
+    } catch {
+      continue;
     }
-  } catch {
-    // No trajectory yet, or it is still being written.
+    const events = Array.isArray(record?.events) ? record.events : [];
+    for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex--) {
+      const event = events[eventIndex];
+      if (event?.type !== "message_end" || event?.message?.role !== "assistant") continue;
+      const content = Array.isArray(event.message.content) ? event.message.content : [];
+      const text = content
+        .filter((block) => block?.type === "text" && typeof block.text === "string")
+        .map((block) => block.text)
+        .join("");
+      if (text !== "") return text;
+    }
   }
   return undefined;
 }
@@ -136,8 +155,12 @@ function refreshFromStatus(state) {
   if (persisted === undefined) return;
   if (typeof persisted.completedStages === "number") state.completedStages = persisted.completedStages;
   if (typeof persisted.plannedStages === "number") state.plannedStages = persisted.plannedStages;
-  const stage = currentStageOf(persisted);
-  if (stage !== undefined) state.currentStage = stage;
+  // The stream's stage is finer than the document's ("stage: tool"), so only
+  // adopt the document's stage when the stream has not named one.
+  if (state.currentStage === undefined) {
+    const stage = currentStageOf(persisted);
+    if (stage !== undefined) state.currentStage = stage;
+  }
   if (state.runDir === undefined) state.runDir = join(RUNS_ROOT, state.runId);
 }
 
@@ -206,9 +229,13 @@ function release(state) {
 function parseLine(state, line) {
   // A streaming assistant update carries the whole accumulated message on every
   // token, so parsing it would cost the square of the reply length; the server
-  // never reads it. `run.started` and the `agent_event` types it does read are
-  // prefixed with `"type"` early in the record, so a substring test is enough.
-  if (line.includes('"type":"message_update"') || line.includes('"type":"tool_execution_update"')) return;
+  // never reads it. Only the envelope's own `type` counts — a tool argument may
+  // contain the same words, so the test stops where the payload starts.
+  const dataAt = line.indexOf('"data":');
+  if (dataAt > 0) {
+    const head = line.slice(0, dataAt);
+    if (head.includes('"type":"message_update"') || head.includes('"type":"tool_execution_update"')) return;
+  }
   let message;
   try {
     message = JSON.parse(line);
@@ -231,7 +258,7 @@ function parseLine(state, line) {
   }
   if (message.event === "run.completed") {
     state.status = "completed";
-    state.output = cap(typeof message.text === "string" ? message.text : "", MAX_OUTPUT_CHARS);
+    state.output = typeof message.text === "string" ? message.text : "";
     if (typeof message.status_path === "string") state.runDir = dirname(message.status_path);
     if (state.runDir === undefined && typeof message.progress_path === "string") state.runDir = dirname(message.progress_path);
     state.durationMs = Date.now() - state.startedAt;
@@ -300,13 +327,17 @@ function startRun(args) {
   let buffer = "";
   child.stdout.on("data", (chunk) => {
     buffer += chunk;
+    // Scan with a cursor and drop the consumed prefix once per chunk, instead
+    // of copying the remainder on every line.
+    let start = 0;
     for (;;) {
-      const newline = buffer.indexOf("\n");
+      const newline = buffer.indexOf("\n", start);
       if (newline < 0) break;
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
+      const line = buffer.slice(start, newline).trim();
+      start = newline + 1;
       if (line !== "") parseLine(state, line);
     }
+    if (start > 0) buffer = buffer.slice(start);
   });
   let stderr = "";
   child.stderr.on("data", (chunk) => {
@@ -315,6 +346,7 @@ function startRun(args) {
   child.on("error", (cause) => {
     state.status = "failed";
     state.error = `piano failed to start: ${errorMessage(cause)}`;
+    release(state);
     state.done?.();
     state.started?.();
   });
@@ -322,6 +354,7 @@ function startRun(args) {
     if (state.status === "completed" || state.status === "failed") return;
     state.status = "failed";
     state.error = `piano exited ${code ?? signal ?? "unknown"}${stderr.trim() === "" ? "" : `: ${stderr.trim()}`}`;
+    release(state);
     state.done?.();
     state.started?.();
   });

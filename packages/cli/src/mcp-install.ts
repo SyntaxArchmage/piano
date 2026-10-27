@@ -71,8 +71,8 @@ function home(name: TargetName): string {
   return value === undefined || value === "" ? join(homedir(), ".dsh") : value;
 }
 
-/** Run a host CLI with the caller's environment; `-1` means the binary is
- * missing, which is reported as "not available", not as a failed install. */
+/** Run a host CLI with the caller's environment. `-1` means the command never
+ * ran, which is reported as "not available", not as a failed install. */
 function runHost(command: string, args: readonly string[]): Effect.Effect<number, never> {
   return io.execFileResult(command, args, { timeoutMs: 30_000 }).pipe(
     Effect.map((result) => result.code),
@@ -167,11 +167,20 @@ function installDsh(dryRun: boolean): Effect.Effect<void, SkillInstallError> {
 export function installMcpCommand(args: readonly string[]): Effect.Effect<void, CliArgumentError | SkillInstallError> {
   return Effect.gen(function* () {
     const options = yield* parseArgs(args);
-    // Sequential so the report lines read in target order; this runs once.
+    const failures: SkillInstallError[] = [];
+    // One target's failure must not stop the others: a missing host binary is
+    // a skip, and every remaining agent still gets its setup. Each failure is
+    // reported and the run exits non-zero once all targets have been tried.
     for (const target of options.targets) {
-      if (target === "claude") yield* installHost("claude", ["--scope", "user"], options.dryRun);
-      else if (target === "codex") yield* installHost("codex", [], options.dryRun);
-      else yield* installDsh(options.dryRun);
+      const step = target === "claude" ? installHost("claude", ["--scope", "user"], options.dryRun)
+        : target === "codex" ? installHost("codex", [], options.dryRun)
+        : installDsh(options.dryRun);
+      const outcome = yield* Effect.either(step);
+      if (outcome._tag === "Left") {
+        failures.push(outcome.left);
+        yield* report(`[FAIL] ${target}: ${outcome.left.message}`);
+      }
     }
+    if (failures.length > 0) return yield* Effect.fail(failures[0]!);
   });
 }
