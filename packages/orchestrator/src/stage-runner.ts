@@ -636,14 +636,11 @@ export function executeStage(
     });
     /** Collect tool observations from one agent turn and forward the event.
      * Every turn of this actor — the stage's own and an `epilogue` follow-up —
-     * uses it, so tool facts always land on the same observation path. The
-     * type check comes first: streaming noise must not pay for a context. */
+     * uses it, so tool facts always land on the same observation path. */
     const collectObservation = (sink: WorkflowObservation[]) => (event: AgentEvent): void => {
       const decorated = decorateEvent(event);
-      if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
-        const observation = trajectoryAgentObservation(decorated, trajectoryContext(attempt));
-        if (observation !== undefined) sink.push(observation);
-      }
+      const observation = trajectoryAgentObservation(decorated, () => trajectoryContext(attempt));
+      if (observation !== undefined) sink.push(observation);
       request.agentEventExport?.(decorated);
       request.onEvent?.(decorated);
     };

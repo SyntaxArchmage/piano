@@ -94,28 +94,33 @@ export function scheduleStageRetry(
   });
 }
 
+/** The observation one agent event implies, or undefined when it carries none.
+ *
+ * The context is a thunk: streaming noise (`message_update`, tool/bash deltas)
+ * must not pay for a `TrajectoryRecordContext` build it will throw away. The
+ * type check lives here alone so a future mapping cannot be silently dropped
+ * by a gate at the call site. */
 export function trajectoryAgentObservation(
   event: AgentEvent,
-  context: TrajectoryRecordContext,
+  context: () => TrajectoryRecordContext,
 ): WorkflowObservation | undefined {
-  const monotonicMs = performance.now();
   if (event.type === "tool_execution_start") {
     return {
       type: "tool_call_started",
-      context,
+      context: context(),
       toolCallId: event.toolCallId,
       toolName: event.toolName,
-      monotonicMs,
+      monotonicMs: performance.now(),
     };
   }
   if (event.type === "tool_execution_end") {
     return {
       type: "tool_call_finished",
-      context,
+      context: context(),
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       isError: event.isError,
-      monotonicMs,
+      monotonicMs: performance.now(),
     };
   }
   return undefined;
