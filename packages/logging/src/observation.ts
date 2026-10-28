@@ -226,13 +226,15 @@ export function fanoutObservationOps(
 }
 
 /** Append ops to one JSONL stream. Best-effort by construction: a write gap is
- * an evidence gap, never a run failure. */
+ * an evidence gap, never a run failure. `codec` defaults to the raw op; a
+ * caller that wraps ops in its own envelope passes its own line encoder. */
 export function observationStreamSink(
   append: (lines: string) => void,
+  codec: (op: ObservationOp) => string = stringifyObservationOp,
 ): ObservationOpSink {
   return (ops) => {
     if (ops.length === 0) return;
-    append(ops.map((op) => `${stringifyObservationOp(op)}\n`).join(""));
+    append(ops.map((op) => `${codec(op)}\n`).join(""));
   };
 }
 

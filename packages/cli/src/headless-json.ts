@@ -1,13 +1,16 @@
-// `--json` headless event stream: expose the `AgentEvent` stream as a stable
+// `--json` headless event stream: expose the run's trajectory as a stable
 // per-event JSON contract. Every emitted
 // object is a single `JSON.stringify(obj) + "\n"` line on stdout, matching the
 // shape CI/automation consumers can parse without starting the TUI.
 //
-// The workflow execution layer already funnels worker events through one `onEvent`
+// `agent_event` is the `AgentEvent` dialect; `observation_op` is the
+// Langfuse-aligned vocabulary `--langfuse` switches to. The workflow execution
+// layer already funnels worker events through one `onEvent`
 // callback (see `executeWorkflow`'s `request.onEvent`), so the migration is a
 // pure mapping: envelope + lifecycle events here, with no change to the runner.
 
 import type { AgentEvent } from "@piano/harness";
+import type { ObservationOp } from "@piano/logging";
 
 /** A single machine-parseable line emitted on stdout. */
 interface HeadlessJsonLine {
@@ -25,6 +28,19 @@ export function agentEventLine(event: AgentEvent, runId: string): HeadlessJsonLi
     run_id: runId,
     type: event.type,
     data: event,
+  };
+}
+
+/** Wrap one observation op in the `observation_op` envelope. This is the
+ * Langfuse-aligned vocabulary on the wire: the stream `--langfuse` writes to
+ * `system-log/observations.jsonl`, also visible to automation on stdout. `op`
+ * is hoisted as the one discriminator, the way `agentEventLine` hoists `type`. */
+export function observationOpLine(op: ObservationOp, runId: string): HeadlessJsonLine {
+  return {
+    event: "observation_op",
+    run_id: runId,
+    op: op.op,
+    data: op,
   };
 }
 

@@ -88,6 +88,7 @@ import {
   agentEventLine,
   completedLine,
   failedLine,
+  observationOpLine,
   serializeLine,
   startedLine,
 } from "./headless-json.js";
@@ -116,9 +117,11 @@ export interface SessionRunOptions {
   readonly json?: boolean;
   /** Task namespace for lane branches; skips the preflight summary. */
   readonly mnemonic?: string;
-  /** Write the Langfuse-aligned observation stream (`system-log/observations.jsonl`)
-   * alongside the existing evidence. `AgentEvent` keeps flowing to every current
-   * consumer; this is the migration switch, not a replacement. */
+  /** Switch the trajectory surface onto the Langfuse-aligned `ObservationOp`
+   * vocabulary: write `system-log/observations.jsonl`, feed the TUI ledger from
+   * ops, and put `observation_op` on the `--json` wire. `AgentEvent` keeps
+   * working and stays the default; this is the migration switch, not a
+   * replacement. */
   readonly langfuse?: boolean;
   /** Resume this run as soon as the TUI opens. When it is the session's own run,
    * the takeover reuses the open session instead of opening a second one. */
@@ -336,7 +339,9 @@ function runSessionBody(
               const langfuseExport = yield* langfuseExportFor(current.session.id);
               // One production point, several sinks: both mappers run once and
               // the same ops fan out to the local stream and to Langfuse, so the
-              // two can never diverge. `AgentEvent` keeps flowing to `onEvent`.
+              // two can never diverge. `AgentEvent` keeps flowing to `onEvent`;
+              // under `--langfuse` the TUI panel and the headless wire read the
+              // ops instead, and leave that feed unused.
               const fileSystem = yield* FileSystem.FileSystem;
               const observationPath = observationStreamPath(current.session.runDir);
               const sinks: ObservationOpSink[] = [];
@@ -348,6 +353,16 @@ function runSessionBody(
                       .pipe(Effect.ignore),
                   );
                 }));
+                // Headless automation reads the same ops on stdout, so the
+                // `--json` stream can move to the new vocabulary without
+                // waiting for the run directory to be inspected.
+                if (options.json === true) {
+                  const runId = current.session.id;
+                  sinks.push(observationStreamSink(
+                    (lines) => stdout.write(lines),
+                    (op) => serializeLine(observationOpLine(op, runId)),
+                  ));
+                }
               }
               if (langfuseExport !== undefined) sinks.push(langfuseExport.onOps);
               const emitOps = fanoutObservationOps(sinks);
@@ -540,7 +555,9 @@ function runSessionBody(
         );
       };
       if (options.prompt !== undefined) {
-        const onEvent = options.json
+        // Under `--langfuse` the headless stream is the op vocabulary, the same
+        // switch the TUI makes: `agent_event` stays the non-`--langfuse` wire.
+        const onEvent = options.json && options.langfuse !== true
           ? (event: AgentEvent) => {
               stdout.write(`${serializeLine(agentEventLine(event, session.id))}\n`);
             }

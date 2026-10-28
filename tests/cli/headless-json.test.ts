@@ -43,6 +43,7 @@ import {
   agentEventLine,
   completedLine,
   failedLine,
+  observationOpLine,
   serializeLine,
   startedLine,
 } from "../../packages/cli/src/headless-json.js";
@@ -170,6 +171,30 @@ describe("reborn CLI --json event stream", () => {
     expect(written).not.toContain("agent_event");
   });
 
+  it("emits observation_op instead of agent_event when --langfuse is on", async () => {
+    vi.mocked(executeWorkflow).mockImplementation((_loaded, request) => Effect.sync(() => {
+      request.agentEventExport?.({ type: "done", exitStatus: 0, sessionId: "s", transcriptPath: "/t" } as never);
+      request.onEvent?.({ type: "done", exitStatus: 0, sessionId: "s", transcriptPath: "/t" } as never);
+      return {
+        workflow: "smoke", runId: "execution-test", stage: "s", worker: "w", text: "final",
+        sessionId: "sess-1", transcriptPath: "/tmp/sess-1.jsonl", stages: [], terminalStages: [], progressPath: "/tmp/progress.jsonl",
+      };
+    }));
+
+    const out = captureStdout();
+    try {
+      await Effect.runPromise(main(["--json", "--langfuse", "-p", "answer"]).pipe(Effect.provide(NodeFileSystem.layer)));
+    } finally {
+      out.restore();
+    }
+
+    const lines = parseLines(out.calls);
+    expect(lines.some((line) => (line as { event: string }).event === "agent_event")).toBe(false);
+    const ops = lines.filter((line) => (line as { event: string }).event === "observation_op");
+    expect(ops.length).toBeGreaterThan(0);
+    expect(ops[0]).toMatchObject({ event: "observation_op", run_id: "json-stream-run", op: "emit" });
+  });
+
   it("rejects --json without a prompt", async () => {
     const result = await Effect.runPromiseExit(main(["--json"]).pipe(Effect.provide(NodeFileSystem.layer)));
     expect(result._tag).toBe("Failure");
@@ -243,6 +268,32 @@ describe("headless-json emitter mapping", () => {
       run_id: "run-1",
       type: "tool_execution_end",
       data: "[unserializable]",
+    });
+  });
+
+  it("serializes an observation op line with the run id envelope", () => {
+    const line = observationOpLine({
+      version: 1,
+      timestamp: "2026-10-28T10:00:00.000Z",
+      handle: "tool:call-1",
+      op: "start",
+      type: "tool",
+      name: "bash",
+      input: { command: "ls" },
+    }, "run-1");
+    expect(JSON.parse(serializeLine(line))).toEqual({
+      event: "observation_op",
+      run_id: "run-1",
+      op: "start",
+      data: {
+        version: 1,
+        timestamp: "2026-10-28T10:00:00.000Z",
+        handle: "tool:call-1",
+        op: "start",
+        type: "tool",
+        name: "bash",
+        input: { command: "ls" },
+      },
     });
   });
 
