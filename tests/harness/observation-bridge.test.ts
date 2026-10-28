@@ -34,7 +34,7 @@ describe("bridgeAgentEvent", () => {
       handle: "msg:0:measure@loop/iter-1:2",
       op: "emit",
       type: "generation",
-      name: "agent.message",
+      name: "assistant.message",
       parent: "attempt:measure@loop/iter-1:2",
       input: { role: "assistant" },
       output: { role: "assistant", text: "measured 12.3" },
@@ -49,12 +49,26 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
-  it("keeps working from the AgentEvent dialect and skips the high-frequency stream", () => {
+  it("emits a user turn as a point event so the chat ledger can fold from ops alone", () => {
     const user: AgentEvent = {
       type: "message_end",
       message: { role: "user", content: "go" },
       workflow,
     };
+    expect(bridgeAgentEvent(user, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "user:0:measure@loop/iter-1:2",
+      op: "emit",
+      type: "event",
+      name: "user.message",
+      parent: "attempt:measure@loop/iter-1:2",
+      output: { role: "user", text: "go" },
+      metadata: expect.objectContaining({ role: "user", sequence: 0 }),
+    }]);
+  });
+
+  it("skips the high-frequency stream and the tool events already in workflow observations", () => {
     const update: AgentEvent = {
       type: "message_update",
       message: { role: "assistant", content: "partial" },
@@ -76,7 +90,6 @@ describe("bridgeAgentEvent", () => {
       args: { command: "ls" },
       workflow,
     };
-    expect(bridgeAgentEvent(user, context, () => T)).toEqual([]);
     expect(bridgeAgentEvent(update, context, () => T)).toEqual([]);
     expect(bridgeAgentEvent(toolUpdate, context, () => T)).toEqual([]);
     // Tool executions already arrive as tool_call_* workflow observations.

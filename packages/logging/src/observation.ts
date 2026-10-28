@@ -179,6 +179,22 @@ export function toolHandle(toolCallId: string): string {
   return `tool:${toolCallId}`;
 }
 
+/** The inverse of `toolHandle`: the tool call id behind a tool handle, or
+ * `undefined` when the handle names something else. */
+export function toolCallIdFromHandle(handle: string): string | undefined {
+  return handle.startsWith("tool:") ? handle.slice("tool:".length) : undefined;
+}
+
+/** Emit names every mapper and reader shares. A rename lands in one place. */
+export function messageName(role: string): string {
+  return `${role}.message`;
+}
+
+export const AGENT_ERROR_NAME = "agent.error";
+export const AGENT_DONE_NAME = "agent.done";
+export const STAGE_ACCEPTED_NAME = "stage.accepted";
+export const SELECTION_NAME = "selection";
+
 /** A sink receives already-mapped ops. Sinks never translate — the mappers do
  * that once — so several sinks can share one production point without each
  * re-deriving the vocabulary. */

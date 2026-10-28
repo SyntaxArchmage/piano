@@ -1,4 +1,10 @@
-import { attemptHandle, type ObservationOp } from "@piano/logging";
+import {
+  AGENT_DONE_NAME,
+  AGENT_ERROR_NAME,
+  attemptHandle,
+  messageName,
+  type ObservationOp,
+} from "@piano/logging";
 import { messageText } from "./events.js";
 import type { AgentEvent } from "./events.js";
 
@@ -52,24 +58,28 @@ export function bridgeAgentEvent(
 ): readonly ObservationOp[] {
   switch (event.type) {
     case "message_end": {
-      if (event.message.role !== "assistant") return [];
+      const role = event.message.role;
+      // Only the two conversation roles are facts of the ledger. Tool-result
+      // turns (and any other role) belong to the transcript.
+      if (role !== "assistant" && role !== "user") return [];
+      const assistant = role === "assistant";
       const text = messageText(event.message);
       const parent = event.workflow === undefined ? undefined : attemptHandle(event.workflow);
       return [{
         version: 1,
         timestamp: timestamp(),
-        handle: `msg:${context.sequence}:${attemptSuffix(event)}`,
-        op: "emit",
-        type: "generation",
-        name: "agent.message",
+        handle: `${assistant ? "msg" : "user"}:${context.sequence}:${attemptSuffix(event)}`,
+        op: "emit" as const,
+        type: assistant ? ("generation" as const) : ("event" as const),
+        name: messageName(role),
         ...(parent === undefined ? {} : { parent }),
-        input: { role: "assistant" },
-        ...(text === undefined ? {} : { output: { role: "assistant", text } }),
-        ...(context.model === undefined ? {} : { model: context.model }),
-        ...(context.usageDetails === undefined ? {} : { usageDetails: context.usageDetails }),
+        ...(assistant ? { input: { role: "assistant" } } : {}),
+        ...(text === undefined ? {} : { output: { role, text } }),
+        ...(assistant && context.model !== undefined ? { model: context.model } : {}),
+        ...(assistant && context.usageDetails !== undefined ? { usageDetails: context.usageDetails } : {}),
         metadata: {
           ...(event.workflow ?? {}),
-          role: "assistant",
+          role,
           sequence: context.sequence,
         },
       }];
@@ -81,7 +91,7 @@ export function bridgeAgentEvent(
         handle: `err:${context.sequence}:${attemptSuffix(event)}`,
         op: "emit",
         type: "event",
-        name: "agent.error",
+        name: AGENT_ERROR_NAME,
         metadata: {
           ...(event.workflow ?? {}),
           errorType: event.errorType,
@@ -96,7 +106,7 @@ export function bridgeAgentEvent(
         handle: `done:${attemptSuffix(event)}`,
         op: "emit",
         type: "event",
-        name: "agent.done",
+        name: AGENT_DONE_NAME,
         metadata: {
           ...(event.workflow ?? {}),
           exitStatus: event.exitStatus,

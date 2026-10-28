@@ -7,6 +7,14 @@
 // trajectory-panel.ts.
 
 import { messageText, type AgentEvent } from "@piano/harness";
+import {
+  AGENT_DONE_NAME,
+  AGENT_ERROR_NAME,
+  asRecord,
+  messageName,
+  toolCallIdFromHandle,
+  type ObservationOp,
+} from "@piano/logging";
 import { iterationOfInvocationId } from "@piano/orchestrator";
 import { jsonText } from "./text.js";
 
@@ -106,10 +114,7 @@ function toEntry(
   event: AgentEvent,
   now: number,
 ): TrajectoryEntry | null {
-  const seq =
-    state.entries.length === 0
-      ? 1
-      : (state.entries[state.entries.length - 1]?.seq ?? 0) + 1;
+  const seq = nextSeq(state);
 
   switch (event.type) {
     case "spawn": {
@@ -205,23 +210,19 @@ function toEntry(
     }
     case "message_end": {
       const text = messageText(event.message);
-      const firstLine = (text ?? "").split("\n", 1)[0] ?? "";
-      if (firstLine === "") return null;
+      const line = firstLine(text);
+      if (line === "") return null;
       const role = event.message.role;
       return {
         seq,
         kind: role === "user" ? "user_message" : "agent_message",
         label: role === "user" ? "user" : "agent",
-        detail: firstLine,
+        detail: line,
         tsMs: now,
       };
     }
     case "usage": {
-      const u = event.usage;
-      let detail = `↑${u.input ?? 0} ↓${u.output ?? 0}`;
-      if (u.cacheRead !== undefined) detail += ` C${u.cacheRead}`;
-      if (u.cacheWrite !== undefined) detail += ` W${u.cacheWrite}`;
-      return { seq, kind: "usage", label: "usage", detail, tsMs: now };
+      return { seq, kind: "usage", label: "usage", detail: usageDetail(event.usage), tsMs: now };
     }
     case "done": {
       return { seq, kind: "done", label: "done", detail: `exit ${event.exitStatus}`, tsMs: now };
@@ -236,6 +237,56 @@ function toEntry(
   }
 }
 
+
+/** The next ledger seq: 1-based and monotonic per run. */
+function nextSeq(state: TrajectoryState): number {
+  return state.entries.length === 0
+    ? 1
+    : (state.entries[state.entries.length - 1]?.seq ?? 0) + 1;
+}
+
+/** Append one row, sanitizing at the ledger boundary and dropping the oldest
+ * past `maxEntries`. Both reducers share this so retention cannot drift. */
+function appendEntry(
+  entries: TrajectoryEntry[],
+  entry: TrajectoryEntry,
+  maxEntries: number,
+): void {
+  entries.push({ ...entry, detail: sanitizeDetail(entry.detail) });
+  if (entries.length > maxEntries) {
+    entries.splice(0, entries.length - maxEntries);
+  }
+}
+
+/** The one usage line format the ledger shows. */
+function usageDetail(u: {
+  readonly input?: number;
+  readonly output?: number;
+  readonly cacheRead?: number;
+  readonly cacheWrite?: number;
+}): string {
+  let detail = `↑${u.input ?? 0} ↓${u.output ?? 0}`;
+  if (u.cacheRead !== undefined) detail += ` C${u.cacheRead}`;
+  if (u.cacheWrite !== undefined) detail += ` W${u.cacheWrite}`;
+  return detail;
+}
+
+/** The one "first non-empty line" rule the ledger shows for a message. */
+function firstLine(text: string | undefined): string {
+  return (text ?? "").split("\n", 1)[0] ?? "";
+}
+
+function outputText(op: ObservationOp): string | undefined {
+  const output = asRecord("output" in op ? op.output : undefined);
+  const text = output?.text;
+  return typeof text === "string" ? text : undefined;
+}
+
+function metadataString(op: ObservationOp, key: string): string | undefined {
+  const value = op.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
 /** Pure reducer: folds one `AgentEvent` into trajectory state, returning a
  * NEW state (never mutating the input). Events that produce no row
  * (token-level `message_update` deltas, lifecycle boundaries) return the same
@@ -248,11 +299,113 @@ export function applyTrajectoryEvent(
 ): TrajectoryState {
   const entry = toEntry(state, event, now);
   if (entry === null) return state;
-  // Sanitize at the ledger boundary so every retained entry (and any future
-  // entry kind) stays free of `\t`; see sanitizeDetail.
-  const entries = [...state.entries, { ...entry, detail: sanitizeDetail(entry.detail) }];
-  if (entries.length > state.maxEntries) {
-    entries.splice(0, entries.length - state.maxEntries);
+  const entries = [...state.entries];
+  appendEntry(entries, entry, state.maxEntries);
+  return { entries, maxEntries: state.maxEntries };
+}
+
+/** Map one observation op to the ledger rows it implies (0–2).
+ *
+ * This is the chat-area read path for the Langfuse-aligned model: the same
+ * `TrajectoryEntry` ledger the side panel already draws, fed from `ObservationOp`
+ * instead of `AgentEvent`. `--langfuse` uses it; the `AgentEvent` reducer stays. */
+function opToEntries(
+  state: TrajectoryState,
+  op: ObservationOp,
+): TrajectoryEntry[] {
+  const tsMs = Date.parse(op.timestamp);
+  const seq = nextSeq(state);
+
+  if (op.op === "emit" && op.name.endsWith(".message")) {
+    const line = firstLine(outputText(op));
+    if (line === "") return [];
+    // The name is the declared role (`user.message` / `assistant.message`);
+    // metadata.role is a redundant copy some producers omit.
+    const user = op.name === messageName("user") || metadataString(op, "role") === "user";
+    const rows: TrajectoryEntry[] = [{
+      seq,
+      kind: user ? "user_message" : "agent_message",
+      label: user ? "user" : "agent",
+      detail: line,
+      tsMs,
+    }];
+    // A generation carries its call usage the way an AgentEvent `usage` row
+    // does; both are facts of the same turn.
+    if (op.usageDetails !== undefined) {
+      rows.push({ seq: seq + 1, kind: "usage", label: "usage", detail: usageDetail(op.usageDetails), tsMs });
+    }
+    return rows;
   }
+  if (op.op === "emit" && op.name === AGENT_ERROR_NAME) {
+    const errorType = metadataString(op, "errorType") ?? "error";
+    const message = metadataString(op, "message") ?? "";
+    return [{ seq, kind: "error", label: "error", detail: `${errorType}: ${message}`, tsMs }];
+  }
+  if (op.op === "emit" && op.name === AGENT_DONE_NAME) {
+    const exitStatus = typeof op.metadata?.exitStatus === "number" ? op.metadata.exitStatus : 0;
+    return [{ seq, kind: "done", label: "done", detail: `exit ${exitStatus}`, tsMs }];
+  }
+  if (op.op === "start" && op.type === "tool") {
+    return [{
+      seq,
+      kind: "tool_call",
+      label: op.name,
+      detail: "",
+      tsMs,
+      toolCallId: toolCallIdFromHandle(op.handle),
+    }];
+  }
+  if (op.op === "end") {
+    const toolCallId = toolCallIdFromHandle(op.handle);
+    if (toolCallId !== undefined) {
+      const failed = op.level === "ERROR";
+      return [{
+        seq,
+        kind: "tool_result",
+        // The close op carries the tool name; the handle is the join key.
+        label: metadataString(op, "toolName") ?? toolCallId,
+        detail: failed ? `✗ ${op.statusMessage ?? "error"}` : "ok",
+        tsMs,
+        toolCallId,
+      }];
+    }
+  }
+  if (op.op === "start" && op.type === "agent") {
+    const input = asRecord(op.input);
+    const stageId = typeof input?.stageId === "string" ? input.stageId : undefined;
+    const worker = metadataString(op, "worker");
+    const iteration = loopIteration(metadataString(op, "invocationId"));
+    const stageLabel = stageId === undefined
+      ? "agent"
+      : `${stageId}${iteration === undefined ? "" : ` #${iteration + 1}`}`;
+    return [{
+      seq,
+      kind: "spawn",
+      label: stageLabel,
+      detail: worker ?? "",
+      model: op.model,
+      tsMs,
+    }];
+  }
+  if (op.op === "update" && op.usageDetails !== undefined) {
+    return [{ seq, kind: "usage", label: "usage", detail: usageDetail(op.usageDetails), tsMs }];
+  }
+  return [];
+}
+
+/** Fold a batch of observation ops into trajectory state. Same ledger and same
+ * cap as `applyTrajectoryEvent`; only the vocabulary differs. */
+export function applyObservationOps(
+  state: TrajectoryState,
+  ops: readonly ObservationOp[],
+): TrajectoryState {
+  const entries = [...state.entries];
+  const before = entries.length;
+  for (const op of ops) {
+    for (const entry of opToEntries({ entries, maxEntries: state.maxEntries }, op)) {
+      appendEntry(entries, entry, state.maxEntries);
+    }
+  }
+  if (entries.length === before) return state;
   return { entries, maxEntries: state.maxEntries };
 }

@@ -17,16 +17,22 @@ export {
 } from "./errors.js";
 export { errorMessage, failureDetails, isCancellation } from "./errors.js";
 export {
+  AGENT_DONE_NAME,
+  AGENT_ERROR_NAME,
   attemptHandle,
   EMIT_OBSERVATION_TYPES,
   fanoutObservationOps,
   foldObservationOps,
   foldObservationStream,
+  messageName,
   OBSERVATION_TYPES,
   observationStreamSink,
   parseObservationOp,
   parseObservationOps,
+  SELECTION_NAME,
+  STAGE_ACCEPTED_NAME,
   stringifyObservationOp,
+  toolCallIdFromHandle,
   toolHandle,
   type EmitObservationType,
   type ObservationLevel,
