@@ -641,7 +641,6 @@ export function executeStage(
       const decorated = decorateEvent(event);
       const observation = trajectoryAgentObservation(decorated, () => trajectoryContext(attempt));
       if (observation !== undefined) sink.push(observation);
-      request.agentEventExport?.(decorated);
       request.onEvent?.(decorated);
     };
     while (true) {

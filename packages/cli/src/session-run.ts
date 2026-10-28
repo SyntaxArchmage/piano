@@ -394,7 +394,9 @@ function runSessionBody(
                     emitOps(mapWorkflowObservation(observation, now()));
                   }),
               };
-              const agentEventExport = agentEventExporter(emitOps);
+              const projectAgentEvent = sinks.length === 0
+                ? undefined
+                : agentEventExporter(emitOps);
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
@@ -421,10 +423,9 @@ function runSessionBody(
                 ...(options.agentRunner === undefined ? {} : { agentRunner: options.agentRunner }),
                 signoff,
                 discuss,
-                ...(sinks.length === 0
-                  ? {}
-                  : { observationExport, agentEventExport }),
+                ...(sinks.length === 0 ? {} : { observationExport }),
                 onEvent: (event: AgentEvent) => {
+                  projectAgentEvent?.(event);
                   events.push(event);
                   onEvent(event);
                 },
@@ -542,7 +543,7 @@ function runSessionBody(
               langfuseExport: yield* langfuseExportFor(current.session.id),
               fileSystem: yield* FileSystem.FileSystem,
             });
-            const sideOps = sinks.length === 0
+            const projectAgentEvent = sinks.length === 0
               ? undefined
               : agentEventExporter(fanoutObservationOps(sinks));
             return yield* runAgent(
@@ -554,7 +555,7 @@ function runSessionBody(
                 signal: controller.signal,
                 steering,
                 onEvent: (event) => {
-                  sideOps?.(event);
+                  projectAgentEvent?.(event);
                   onEvent(event);
                 },
               }),

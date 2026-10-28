@@ -151,9 +151,6 @@ export interface WorkflowExecutionRequest {
   /** Optional external export sink for workflow observations. Local
    * `eval-metrics` recorders always run; this sink is additive and best-effort. */
   readonly observationExport?: WorkflowObservationExport;
-  /** Optional external export sink for harness agent turns. Same contract as
-   * `observationExport`: additive, best-effort, never fails the run. */
-  readonly agentEventExport?: (event: AgentEvent) => void;
   /** Human sign-off channel for stages declaring `signoff: true`. The engine
    * calls it after each attempt that is otherwise ready to be published, and
    * blocks until the reviewer chooses: `continue` publishes the attempt,

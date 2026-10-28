@@ -173,7 +173,6 @@ describe("reborn CLI --json event stream", () => {
 
   it("emits observation_op instead of agent_event when --langfuse is on", async () => {
     vi.mocked(executeWorkflow).mockImplementation((_loaded, request) => Effect.sync(() => {
-      request.agentEventExport?.({ type: "done", exitStatus: 0, sessionId: "s", transcriptPath: "/t" } as never);
       request.onEvent?.({ type: "done", exitStatus: 0, sessionId: "s", transcriptPath: "/t" } as never);
       return {
         workflow: "smoke", runId: "execution-test", stage: "s", worker: "w", text: "final",
