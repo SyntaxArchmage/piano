@@ -4,6 +4,13 @@ import { applyObservationOps, emptyTrajectoryState } from "../../packages/cli/sr
 
 const T = (ms: number) => new Date(ms).toISOString();
 
+const workflow = {
+  stageId: "loop.measure",
+  invocationId: "measure@loop/iter-1",
+  worker: "benchmark-worker",
+  attempt: 2,
+} as const;
+
 function start(over: Partial<Extract<ObservationOp, { op: "start" }>> = {}): Extract<ObservationOp, { op: "start" }> {
   return {
     version: 1,
@@ -77,8 +84,10 @@ describe("applyObservationOps", () => {
       {
         version: 1,
         timestamp: T(2),
-        handle: "attempt:a:1",
-        op: "update",
+        handle: "usage:0:root:0",
+        op: "emit",
+        type: "event",
+        name: "agent.usage",
         usageDetails: { input: 3, output: 2, cacheRead: 1 },
       },
       {
@@ -128,5 +137,50 @@ describe("applyObservationOps", () => {
       },
     ]);
     expect(state.entries.map((entry) => entry.kind)).toEqual(["spawn"]);
+  });
+});
+
+
+describe("fused op stream", () => {
+  it("folds the full ledger from workflow observations and bridged agent events", async () => {
+    const { bridgeAgentEvent, advanceBridgeContext } = await import("@piano/harness");
+    const { mapWorkflowObservation } = await import("@piano/langfuse");
+    const workflowContext = {
+      version: 1 as const,
+      timestamp: T(0),
+      runId: "run-1",
+      invocationId: "measure@loop/iter-1",
+      stageId: "loop.measure",
+      stage: "measure",
+      worker: "benchmark-worker",
+      attempt: 2,
+    };
+    const events = [
+      { type: "spawn", harness: "pi", model: "m", skills: [], workflow },
+      { type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: { p: 1 }, workflow },
+      { type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: "ok", isError: false, workflow },
+      { type: "message_end", message: { role: "assistant", content: "hello" }, workflow },
+      { type: "usage", usage: { input: 2, output: 3 }, workflow },
+      { type: "done", exitStatus: 0, sessionId: "s", transcriptPath: "/t", workflow },
+    ] as const;
+
+    let ops: ObservationOp[] = [
+      ...mapWorkflowObservation({ type: "stage_attempt_started", context: workflowContext, monotonicMs: 0 }, T(0)),
+    ];
+    let ctx = { sequence: 0 };
+    for (const event of events) {
+      ops = [...ops, ...bridgeAgentEvent(event, ctx, () => T(1000))];
+      ctx = advanceBridgeContext(event, ctx);
+    }
+
+    const state = applyObservationOps(emptyTrajectoryState(), ops);
+    expect(state.entries.map((entry) => entry.kind)).toEqual([
+      "spawn",
+      "tool_call",
+      "tool_result",
+      "agent_message",
+      "usage",
+      "done",
+    ]);
   });
 });

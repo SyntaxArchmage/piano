@@ -66,6 +66,9 @@ function applyOp(
   traceId: string,
 ): void {
   if (op.op === "start") {
+    // The handle is the identity: a second `start` on a live handle is a
+    // no-op, so dual mapper emission cannot open two spans.
+    if (handles.has(op.handle)) return;
     handles.set(op.handle, startObservationFor(op, parentContext(op.parent, handles, traceId)));
     return;
   }

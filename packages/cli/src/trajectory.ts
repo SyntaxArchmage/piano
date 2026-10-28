@@ -10,6 +10,7 @@ import { messageText, type AgentEvent } from "@piano/harness";
 import {
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
+  AGENT_USAGE_NAME,
   asRecord,
   messageName,
   toolCallIdFromHandle,
@@ -322,19 +323,13 @@ function opToEntries(
     // The name is the declared role (`user.message` / `assistant.message`);
     // metadata.role is a redundant copy some producers omit.
     const user = op.name === messageName("user") || metadataString(op, "role") === "user";
-    const rows: TrajectoryEntry[] = [{
+    return [{
       seq,
       kind: user ? "user_message" : "agent_message",
       label: user ? "user" : "agent",
       detail: line,
       tsMs,
     }];
-    // A generation carries its call usage the way an AgentEvent `usage` row
-    // does; both are facts of the same turn.
-    if (op.usageDetails !== undefined) {
-      rows.push({ seq: seq + 1, kind: "usage", label: "usage", detail: usageDetail(op.usageDetails), tsMs });
-    }
-    return rows;
   }
   if (op.op === "emit" && op.name === AGENT_ERROR_NAME) {
     const errorType = metadataString(op, "errorType") ?? "error";
@@ -387,21 +382,32 @@ function opToEntries(
       tsMs,
     }];
   }
-  if (op.op === "update" && op.usageDetails !== undefined) {
+  if (op.op === "emit" && op.name === AGENT_USAGE_NAME && op.usageDetails !== undefined) {
     return [{ seq, kind: "usage", label: "usage", detail: usageDetail(op.usageDetails), tsMs }];
   }
   return [];
 }
 
 /** Fold a batch of observation ops into trajectory state. Same ledger and same
- * cap as `applyTrajectoryEvent`; only the vocabulary differs. */
+ * cap as `applyTrajectoryEvent`; only the vocabulary differs. A second `start`
+ * or `emit` on a handle already on the ledger is dropped — the handle is the
+ * identity, the first open is the fact. */
 export function applyObservationOps(
   state: TrajectoryState,
   ops: readonly ObservationOp[],
 ): TrajectoryState {
+  if (ops.length === 0) return state;
   const entries = [...state.entries];
   const before = entries.length;
+  const open = new Set<string>();
+  for (const entry of entries) {
+    if (entry.toolCallId !== undefined) open.add(`tool:${entry.toolCallId}`);
+  }
   for (const op of ops) {
+    if (op.op === "start" || op.op === "emit") {
+      if (open.has(op.handle)) continue;
+      open.add(op.handle);
+    }
     for (const entry of opToEntries({ entries, maxEntries: state.maxEntries }, op)) {
       appendEntry(entries, entry, state.maxEntries);
     }

@@ -192,6 +192,7 @@ export function messageName(role: string): string {
 
 export const AGENT_ERROR_NAME = "agent.error";
 export const AGENT_DONE_NAME = "agent.done";
+export const AGENT_USAGE_NAME = "agent.usage";
 export const STAGE_ACCEPTED_NAME = "stage.accepted";
 export const SELECTION_NAME = "selection";
 
@@ -204,6 +205,7 @@ export function fanoutObservationOps(
   sinks: readonly ObservationOpSink[],
 ): ObservationOpSink {
   return (ops) => {
+    if (ops.length === 0) return;
     for (const sink of sinks) sink(ops);
   };
 }

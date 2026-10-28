@@ -11,13 +11,14 @@ import { formatCompactDuration } from "./duration.js";
 import { RST, type PianoTheme } from "./theme.js";
 import type { ScrollModifier } from "./shortcuts.js";
 import {
+  applyObservationOps,
   applyTrajectoryEvent,
   emptyTrajectoryState,
   type TrajectoryKind,
   type TrajectoryState,
 } from "./trajectory.js";
 import type { AgentEvent } from "@piano/harness";
-import type { FailureDetails } from "@piano/logging";
+import type { FailureDetails, ObservationOp } from "@piano/logging";
 
 /** Color roles for the panel. */
 type TrajectoryTheme = Pick<
@@ -260,7 +261,9 @@ export class TrajectoryPanel implements Component {
     private readonly scrollModifier: ScrollModifier = "Ctrl",
   ) {}
 
-  start(prompt: string): void {
+  /** Reset the ledger for a new turn. Omit `prompt` when an op sink will
+   * supply the user turn — seeding it here would put it on the ledger twice. */
+  start(prompt?: string): void {
     this.state = emptyTrajectoryState();
     this.sessionId = undefined;
     this.transcriptPath = undefined;
@@ -269,6 +272,7 @@ export class TrajectoryPanel implements Component {
     this.completedAt = undefined;
     this.scrollTop = 0;
     this.pinned = true;
+    if (prompt === undefined) return;
     this.state = applyTrajectoryEvent(
       this.state,
       { type: "message_end", message: { role: "user", content: prompt } },
@@ -284,6 +288,15 @@ export class TrajectoryPanel implements Component {
     // No explicit re-pin here: `render` computes the window from `pinned` and
     // the current ledger length, so staying pinned keeps the newest entry in
     // view automatically as entries stream in.
+  }
+
+  /** Fold pre-mapped observation ops into the same ledger `record` writes.
+   *
+   * The ops must already be the fused stream (workflow observations and the
+   * agent-event bridge both contributing): the panel is a display sink and
+   * never translates. `--langfuse` feeds it this way. */
+  recordOps(ops: readonly ObservationOp[]): void {
+    this.state = applyObservationOps(this.state, ops);
   }
 
   /** Visible window rows (ledger body only, excluding the 2 header rows). */

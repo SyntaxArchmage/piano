@@ -3,7 +3,6 @@ import type { TrajectoryRecordContext, WorkflowObservation } from "@piano/trajec
 import {
   attemptHandle,
   mapWorkflowObservation,
-  toolHandle,
 } from "../src/map-workflow-observation.js";
 
 const T = "2026-10-28T10:00:00.000Z";
@@ -121,7 +120,7 @@ describe("mapWorkflowObservation", () => {
     expect(mapWorkflowObservation(started, T)).toEqual([{
       version: 1,
       timestamp: T,
-      handle: toolHandle("call-1"),
+      handle: `tool:call-1`,
       op: "start",
       type: "tool",
       name: "bash",
@@ -131,7 +130,7 @@ describe("mapWorkflowObservation", () => {
     expect(mapWorkflowObservation(finished, T)).toEqual([{
       version: 1,
       timestamp: T,
-      handle: toolHandle("call-1"),
+      handle: `tool:call-1`,
       op: "end",
       level: "ERROR",
       statusMessage: "tool failed",

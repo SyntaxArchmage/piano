@@ -16,7 +16,7 @@ import {
   type Terminal,
 } from "@earendil-works/pi-tui";
 import { type AgentEvent, type SteerDelivery } from "@piano/harness";
-import { failureDetails, isCancellation, type FailureDetails } from "@piano/logging";
+import { failureDetails, fanoutObservationOps, isCancellation, type FailureDetails, type ObservationOpSink } from "@piano/logging";
 import {
   WorkflowError,
   type WorkflowSignoffDecision,
@@ -106,6 +106,10 @@ export interface TuiOptions {
    * The effect carries no service requirements (the caller provides its own). */
   readonly onRename?: (name: string) => Effect.Effect<void, unknown>;
   readonly workspaceCwd?: string;
+  /** Register a sink for the fused observation-op stream. `--langfuse` wires
+   * the trajectory panel to it so the ledger draws from `ObservationOp`
+   * instead of `AgentEvent`. */
+  readonly attachObservationSink?: (sink: ObservationOpSink) => void;
   readonly onWorkspaceChange?: (cwd: string) => Effect.Effect<void, unknown>;
   readonly onWorkflowChange?: (workflowPath: string, builtinName?: string) => Effect.Effect<WorkflowGraphDefinition, unknown>;
   /** Runs root the `/resume` picker enumerates. `/resume` needs both this and
@@ -449,6 +453,9 @@ export function runTui(
     return Effect.fail(interactiveTerminalRequired());
   }
   const historyRoot = deps.historyRoot ?? join(homedir(), ".piano");
+  // When `--langfuse` registers a fused-op sink, the trajectory ledger draws
+  // from `ObservationOp` and the `AgentEvent` feed is left unused.
+  const opsFed = deps.attachObservationSink !== undefined;
   return Effect.gen(function* () {
     // OSC-11 background probe first so a light shell gets the light palette
     // even without PIANO_THEME/COLORFGBG; env still wins when set.
@@ -484,14 +491,20 @@ export function runTui(
         Math.max(1, terminal.rows - editor.render(terminal.columns).length - footer.render(terminal.columns).length);
       /** Build a screen. Every screen owns its chat area, transcript, ledger and
        * palette; none of them is ever handed to the other. */
+      // Every screen's panel draws from the fused op stream when `--langfuse`
+      // supplies one. The panel is a display sink: it never translates.
+      const opsPanels: ObservationOpSink[] = [];
+      deps.attachObservationSink?.(fanoutObservationOps(opsPanels));
       const makeScreen = (kind: TuiScreenKind, screenTheme: PianoTheme): TuiScreen => {
         const chatArea = new Container();
+        const trajectory = new TrajectoryPanel(screenTheme, paneRows, scrollKeys.modifier);
+        opsPanels.push((ops) => trajectory.recordOps(ops));
         return {
           kind,
           theme: screenTheme,
           chatArea,
           transcript: new TranscriptView(chatArea, screenTheme),
-          trajectory: new TrajectoryPanel(screenTheme, paneRows, scrollKeys.modifier),
+          trajectory,
           stats: emptyRunStats(),
           startedAt: Date.now(),
           get running(): boolean {
@@ -977,8 +990,12 @@ export function runTui(
           // — the same thing it showed when that run stopped.
           const last = result.turns.at(-1);
           if (last !== undefined) {
-            missionScreen.trajectory.start(last.prompt);
-            for (const event of last.events) missionScreen.trajectory.record(event);
+            // When an op sink feeds the panel, the user turn arrives as a
+            // `user.message` op; seeding it here would double the ledger.
+            missionScreen.trajectory.start(opsFed ? undefined : last.prompt);
+            if (!opsFed) {
+              for (const event of last.events) missionScreen.trajectory.record(event);
+            }
             missionScreen.trajectory.complete({
               status: last.status ?? (last.error === undefined ? "completed" : "failed"),
               ...(last.error === undefined ? {} : { error: last.error }),
@@ -1225,7 +1242,7 @@ export function runTui(
           // Keep newly submitted follow-up prompts in view instead of leaving
           // only the previous response's duration marker visible.
           if (screen === front) chatViewport.scrollEnd();
-          screen.trajectory.start(prompt);
+          screen.trajectory.start(opsFed ? undefined : prompt);
           screen.stats = emptyRunStats();
           screen.startedAt = Date.now();
           if (graph !== undefined && screen.kind === "mission") {
@@ -1243,7 +1260,7 @@ export function runTui(
           tui.requestRender();
           const promptEffect = runner(prompt, (event) => {
             screen.transcript.route(event);
-            screen.trajectory.record(event);
+            if (!opsFed) screen.trajectory.record(event);
             const nextStats = applyRunStat(screen.stats, event);
             if (nextStats !== screen.stats) {
               screen.stats = nextStats;

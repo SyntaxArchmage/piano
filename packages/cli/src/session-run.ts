@@ -200,6 +200,9 @@ function runSessionBody(
     )
     : undefined;
   return Effect.gen(function* () {
+    // The TUI registers one fused-op display sink when `--langfuse` is on; the
+    // per-prompt fanout reaches it through this slot.
+    let panelSink: ObservationOpSink | undefined;
     const initialWorkflow = yield* TRACE(
       options.workflowPath === undefined ? LOAD_SOURCE : EXPLICIT_LOAD_SOURCE,
       options.workflowPath === undefined
@@ -338,6 +341,7 @@ function runSessionBody(
               const observationPath = observationStreamPath(current.session.runDir);
               const sinks: ObservationOpSink[] = [];
               if (options.langfuse === true) {
+                sinks.push((ops) => panelSink?.(ops));
                 sinks.push(observationStreamSink((lines) => {
                   void Effect.runPromise(
                     appendJsonlLine(fileSystem, observationPath, lines, () => undefined)
@@ -665,6 +669,9 @@ function runSessionBody(
         const tuiResult = yield* TRACE(TUI_SOURCE, runTui({
           runPrompt,
           runSideAgent,
+          attachObservationSink: options.langfuse === true
+            ? (sink: ObservationOpSink) => { panelSink = sink; }
+            : undefined,
           // The job-level commands are the same prompt path with a different
           // instruction to the engine: resolve the job, then run it. The
           // command text is only the transcript's echo; the input actually run

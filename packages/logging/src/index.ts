@@ -19,6 +19,7 @@ export { errorMessage, failureDetails, isCancellation } from "./errors.js";
 export {
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
+  AGENT_USAGE_NAME,
   attemptHandle,
   EMIT_OBSERVATION_TYPES,
   fanoutObservationOps,

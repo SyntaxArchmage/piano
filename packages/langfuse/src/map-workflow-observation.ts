@@ -87,6 +87,8 @@ export function mapWorkflowObservation(
       }];
     }
     case "tool_call_started": {
+      // Tools may also arrive via the agent-event bridge; consumers treat the
+      // handle as identity, so a second `start` on the same handle is a no-op.
       return [{
         version: 1,
         timestamp,

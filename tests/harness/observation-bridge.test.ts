@@ -17,7 +17,6 @@ const workflow = {
 
 const context: BridgeContext = {
   model: "test-model",
-  usageDetails: { input: 3, output: 2, total: 5 },
   sequence: 0,
 };
 
@@ -39,7 +38,6 @@ describe("bridgeAgentEvent", () => {
       input: { role: "assistant" },
       output: { role: "assistant", text: "measured 12.3" },
       model: "test-model",
-      usageDetails: { input: 3, output: 2, total: 5 },
       metadata: expect.objectContaining({
         role: "assistant",
         sequence: 0,
@@ -68,7 +66,44 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
-  it("skips the high-frequency stream and the tool events already in workflow observations", () => {
+  it("emits tool executions as tool spans under their attempt", () => {
+    const started: AgentEvent = {
+      type: "tool_execution_start",
+      toolCallId: "call-1",
+      toolName: "bash",
+      args: { command: "ls" },
+      workflow,
+    };
+    const ended: AgentEvent = {
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "bash",
+      result: "ok",
+      isError: true,
+      workflow,
+    };
+    expect(bridgeAgentEvent(started, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "tool:call-1",
+      op: "start",
+      type: "tool",
+      name: "bash",
+      parent: "attempt:measure@loop/iter-1:2",
+      metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
+    }]);
+    expect(bridgeAgentEvent(ended, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "tool:call-1",
+      op: "end",
+      level: "ERROR",
+      statusMessage: "tool failed",
+      metadata: expect.objectContaining({ isError: true }),
+    }]);
+  });
+
+  it("skips the high-frequency stream", () => {
     const update: AgentEvent = {
       type: "message_update",
       message: { role: "assistant", content: "partial" },
@@ -83,17 +118,8 @@ describe("bridgeAgentEvent", () => {
       partialResult: "chunk",
       workflow,
     };
-    const toolStart: AgentEvent = {
-      type: "tool_execution_start",
-      toolCallId: "call-1",
-      toolName: "bash",
-      args: { command: "ls" },
-      workflow,
-    };
     expect(bridgeAgentEvent(update, context, () => T)).toEqual([]);
     expect(bridgeAgentEvent(toolUpdate, context, () => T)).toEqual([]);
-    // Tool executions already arrive as tool_call_* workflow observations.
-    expect(bridgeAgentEvent(toolStart, context, () => T)).toEqual([]);
   });
 
   it("exports error and done as point events", () => {
@@ -146,14 +172,14 @@ describe("advanceBridgeContext", () => {
       type: "usage",
       usage: { input: 3, output: 2, totalTokens: 5 },
     }, state);
-    expect(state.usageDetails).toEqual({ input: 3, output: 2, total: 5 });
+    // Usage is its own `agent.usage` op, not carried on the context.
+    expect(state.model).toBe("test-model");
 
     state = advanceBridgeContext({
       type: "message_end",
       message: { role: "assistant", content: "done" },
     }, state);
     expect(state.sequence).toBe(1);
-    expect(state.usageDetails).toBeUndefined();
     expect(state.model).toBe("test-model");
   });
 });

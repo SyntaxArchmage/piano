@@ -1,8 +1,10 @@
 import {
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
+  AGENT_USAGE_NAME,
   attemptHandle,
   messageName,
+  toolHandle,
   type ObservationOp,
 } from "@piano/logging";
 import { messageText } from "./events.js";
@@ -17,7 +19,6 @@ import type { AgentEvent } from "./events.js";
 
 export interface BridgeContext {
   readonly model?: string;
-  readonly usageDetails?: Record<string, number>;
   readonly sequence: number;
 }
 
@@ -46,10 +47,11 @@ function attemptSuffix(event: AgentEvent): string {
  * Map one harness agent event to observation ops.
  *
  * High-frequency `*_update` events stay in the transcript and are skipped,
- * matching `shouldPersistAgentEvent`. Tool executions are skipped too: they
- * already arrive as `tool_call_*` workflow observations, and a second tool span
- * would duplicate them. Attempt totals come from `token_usage`, so a lone
- * `usage` event with no following message is dropped.
+ * matching `shouldPersistAgentEvent`. Tools ride the bridge (`tool_execution_*`);
+ * the workflow mapper drops its `tool_call_*` copy so one fact has one
+ * elevation. Per-call `usage` is its own `update` op (the SDK emits it after
+ * `message_end`, so it cannot ride the generation it belongs to); attempt
+ * totals stay on `token_usage`.
  */
 export function bridgeAgentEvent(
   event: AgentEvent,
@@ -76,11 +78,58 @@ export function bridgeAgentEvent(
         ...(assistant ? { input: { role: "assistant" } } : {}),
         ...(text === undefined ? {} : { output: { role, text } }),
         ...(assistant && context.model !== undefined ? { model: context.model } : {}),
-        ...(assistant && context.usageDetails !== undefined ? { usageDetails: context.usageDetails } : {}),
         metadata: {
           ...(event.workflow ?? {}),
           role,
           sequence: context.sequence,
+        },
+      }];
+    }
+    case "usage": {
+      // One API call's counters are a point fact of the turn. The SDK emits
+      // them after `message_end`, so they cannot ride the generation they
+      // belong to; the attempt's cumulative total still lands via `token_usage`.
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: `usage:${context.sequence}:${attemptSuffix(event)}`,
+        op: "emit" as const,
+        type: "event" as const,
+        name: AGENT_USAGE_NAME,
+        ...(event.workflow === undefined ? {} : { parent: attemptHandle(event.workflow) }),
+        usageDetails: usageDetails(event.usage) ?? {},
+        metadata: { ...(event.workflow ?? {}), sequence: context.sequence },
+      }];
+    }
+    case "tool_execution_start": {
+      const parent = event.workflow === undefined ? undefined : attemptHandle(event.workflow);
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: toolHandle(event.toolCallId),
+        op: "start" as const,
+        type: "tool" as const,
+        name: event.toolName,
+        ...(parent === undefined ? {} : { parent }),
+        metadata: {
+          ...(event.workflow ?? {}),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+        },
+      }];
+    }
+    case "tool_execution_end": {
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: toolHandle(event.toolCallId),
+        op: "end" as const,
+        ...(event.isError ? { level: "ERROR" as const, statusMessage: "tool failed" } : {}),
+        metadata: {
+          ...(event.workflow ?? {}),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          isError: event.isError,
         },
       }];
     }
@@ -118,7 +167,8 @@ export function bridgeAgentEvent(
   }
 }
 
-/** Carry `spawn`'s model and `usage`'s counters forward to the next message. */
+/** Carry `spawn`'s model forward to the next message. Usage is its own op, so
+ * it is not carried: the SDK emits it after `message_end`. */
 export function advanceBridgeContext(
   event: AgentEvent,
   context: BridgeContext,
@@ -126,12 +176,8 @@ export function advanceBridgeContext(
   if (event.type === "spawn" && typeof event.model === "string") {
     return { ...context, model: event.model };
   }
-  if (event.type === "usage") {
-    const details = usageDetails(event.usage);
-    return details === undefined ? context : { ...context, usageDetails: details };
-  }
   if (event.type === "message_end") {
-    return { ...context, sequence: context.sequence + 1, usageDetails: undefined };
+    return { ...context, sequence: context.sequence + 1 };
   }
   return context;
 }
