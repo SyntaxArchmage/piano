@@ -335,12 +335,16 @@ function opToEntries(
   const tsMs = Date.parse(op.timestamp);
   const seq = nextSeq(state);
 
-  if (op.op === "emit" && op.name.endsWith(".message")) {
+  // A message is one row whichever way the producer closes it: `emit` for a
+  // user turn (born-closed), `end` for an assistant generation span. The
+  // op-kind guard is load-bearing — a `start` also carries the message name.
+  const messageNameOf = (op.op === "emit" || op.op === "end") ? op.name : undefined;
+  if (messageNameOf !== undefined && messageNameOf.endsWith(".message")) {
     const line = firstLine(outputText(op));
     if (line === "") return [];
     // The name is the declared role (`user.message` / `assistant.message`);
     // metadata.role is a redundant copy some producers omit.
-    const user = op.name === messageName("user") || metadataString(op, "role") === "user";
+    const user = messageNameOf === messageName("user") || metadataString(op, "role") === "user";
     return [{
       seq,
       kind: user ? "user_message" : "agent_message",

@@ -29,12 +29,15 @@ interface ObservationOpBase {
   readonly metadata?: Record<string, unknown>;
 }
 
-/** Fields an `update`/`end`/`emit` may carry onto its node. */
+/** Fields an `update`/`end`/`emit` may carry onto its node. `name` echoes the
+ * open `start` so an incremental reader can project a row from the close
+ * alone; the fold already knows the name and ignores it. */
 interface ObservationCloseFields {
   readonly output?: unknown;
   readonly level?: ObservationLevel;
   readonly statusMessage?: string;
   readonly usageDetails?: Record<string, number>;
+  readonly name?: string;
 }
 
 export type ObservationOp =
@@ -159,7 +162,13 @@ export function parseObservationOp(line: string): ObservationOp | undefined {
   }
 
   if (op !== "update" && op !== "end") return undefined;
-  return { ...base, op, ...closeFields(record) };
+  const name = stringField(record, "name");
+  return {
+    ...base,
+    op,
+    ...(name === undefined ? {} : { name }),
+    ...closeFields(record),
+  };
 }
 
 export function stringifyObservationOp(op: ObservationOp): string {
@@ -194,6 +203,7 @@ export const AGENT_ERROR_NAME = "agent.error";
 export const AGENT_DONE_NAME = "agent.done";
 export const AGENT_USAGE_NAME = "agent.usage";
 export const AGENT_CONTEXT_NAME = "agent.context";
+export const AGENT_RETRY_NAME = "agent.retry";
 export const STAGE_ACCEPTED_NAME = "stage.accepted";
 export const SELECTION_NAME = "selection";
 

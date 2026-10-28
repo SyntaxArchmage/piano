@@ -20,6 +20,7 @@ export {
   AGENT_CONTEXT_NAME,
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
+  AGENT_RETRY_NAME,
   AGENT_USAGE_NAME,
   attemptHandle,
   contextCounts,

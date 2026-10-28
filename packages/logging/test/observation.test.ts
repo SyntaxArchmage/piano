@@ -50,6 +50,7 @@ describe("parseObservationOp", () => {
       start({ input: { stageId: "loop.measure" }, metadata: { attempt: 1 } }),
       update({ usageDetails: { input: 60, output: 40, total: 100 } }),
       end({ output: { outcome: "accepted" }, level: "DEFAULT", statusMessage: "accepted" }),
+      end({ name: "assistant.message", output: { role: "assistant", text: "done" } }),
       emit({ output: { result: 12 }, level: "DEFAULT" }),
     ];
     for (const op of ops) {

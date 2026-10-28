@@ -21,7 +21,7 @@ const context: BridgeContext = {
 };
 
 describe("bridgeAgentEvent", () => {
-  it("exports an assistant message_end as a generation under its attempt", () => {
+  it("exports an assistant message_end as a generation span under its attempt", () => {
     const event: AgentEvent = {
       type: "message_end",
       message: { role: "assistant", content: "measured 12.3" },
@@ -31,18 +31,93 @@ describe("bridgeAgentEvent", () => {
       version: 1,
       timestamp: T,
       handle: "msg:0:measure@loop/iter-1:2",
-      op: "emit",
+      op: "start",
       type: "generation",
       name: "assistant.message",
       parent: "attempt:measure@loop/iter-1:2",
       input: { role: "assistant" },
-      output: { role: "assistant", text: "measured 12.3" },
       model: "test-model",
       metadata: expect.objectContaining({
         role: "assistant",
         sequence: 0,
         invocationId: "measure@loop/iter-1",
         attempt: 2,
+      }),
+    }, {
+      version: 1,
+      timestamp: T,
+      handle: "msg:0:measure@loop/iter-1:2",
+      op: "end",
+      name: "assistant.message",
+      output: { role: "assistant", text: "measured 12.3" },
+      metadata: expect.objectContaining({ role: "assistant", sequence: 0 }),
+    }]);
+  });
+
+  it("opens the generation span when the harness starts streaming it", () => {
+    const started: AgentEvent = {
+      type: "message_start",
+      message: { role: "assistant", content: "" },
+      workflow,
+    };
+    expect(bridgeAgentEvent(started, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "msg:0:measure@loop/iter-1:2",
+      op: "start",
+      type: "generation",
+      name: "assistant.message",
+      parent: "attempt:measure@loop/iter-1:2",
+      input: { role: "assistant" },
+      model: "test-model",
+      metadata: expect.objectContaining({ role: "assistant", sequence: 0 }),
+    }]);
+  });
+
+  it("closes an already-open generation without restating its start", () => {
+    const ended: AgentEvent = {
+      type: "message_end",
+      message: { role: "assistant", content: "measured 12.3" },
+      workflow,
+    };
+    const open: BridgeContext = { ...context, messageSpanOpened: true };
+    expect(bridgeAgentEvent(ended, open, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "msg:0:measure@loop/iter-1:2",
+      op: "end",
+      name: "assistant.message",
+      output: { role: "assistant", text: "measured 12.3" },
+      metadata: expect.objectContaining({ role: "assistant", sequence: 0 }),
+    }]);
+  });
+
+  it("exports the retry boundary as its own point event", () => {
+    const scheduled: AgentEvent = {
+      type: "retry",
+      event: "scheduled",
+      attempt: 1,
+      nextAttempt: 2,
+      totalAttempts: 3,
+      delayMs: 1500,
+      errorType: "ProviderError",
+      message: "rate limited",
+      workflow,
+    };
+    expect(bridgeAgentEvent(scheduled, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "retry:0:measure@loop/iter-1:2",
+      op: "emit",
+      type: "event",
+      name: "agent.retry",
+      parent: "attempt:measure@loop/iter-1:2",
+      metadata: expect.objectContaining({
+        event: "scheduled",
+        attempt: 1,
+        nextAttempt: 2,
+        totalAttempts: 3,
+        delayMs: 1500,
       }),
     }]);
   });
@@ -56,7 +131,7 @@ describe("bridgeAgentEvent", () => {
     expect(bridgeAgentEvent(user, context, () => T)).toEqual([{
       version: 1,
       timestamp: T,
-      handle: "user:0:measure@loop/iter-1:2",
+      handle: "msg:0:measure@loop/iter-1:2",
       op: "emit",
       type: "event",
       name: "user.message",
@@ -224,5 +299,21 @@ describe("advanceBridgeContext", () => {
     }, state);
     expect(state.sequence).toBe(1);
     expect(state.model).toBe("test-model");
+  });
+
+  it("opens the generation flag on message_start and closes it on message_end", () => {
+    let state: BridgeContext = { sequence: 0 };
+    state = advanceBridgeContext({
+      type: "message_start",
+      message: { role: "assistant", content: "" },
+    }, state);
+    expect(state.messageSpanOpened).toBe(true);
+
+    state = advanceBridgeContext({
+      type: "message_end",
+      message: { role: "assistant", content: "done" },
+    }, state);
+    expect(state.messageSpanOpened).toBeUndefined();
+    expect(state.sequence).toBe(1);
   });
 });

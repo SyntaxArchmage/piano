@@ -2,6 +2,7 @@ import {
   AGENT_CONTEXT_NAME,
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
+  AGENT_RETRY_NAME,
   AGENT_USAGE_NAME,
   attemptHandle,
   contextCounts,
@@ -21,6 +22,10 @@ import type { AgentEvent } from "./events.js";
 export interface BridgeContext {
   readonly model?: string;
   readonly sequence: number;
+  /** True while an assistant generation span is open, so `message_end` closes
+   * it instead of re-stating the `start`, and a repeated `message_start` (the
+   * subprocess adapter re-arms one per text block) emits nothing. */
+  readonly messageSpanOpened?: boolean;
 }
 
 function usageDetails(usage: {
@@ -44,6 +49,36 @@ function attemptSuffix(event: AgentEvent): string {
   return `${workflow?.invocationId ?? "root"}:${workflow?.attempt ?? 0}`;
 }
 
+/** The handle one conversation turn's facts share. Role is not part of the
+ * handle — `name` / `metadata.role` carry it. */
+function messageHandle(event: AgentEvent, context: BridgeContext): string {
+  return `msg:${context.sequence}:${attemptSuffix(event)}`;
+}
+
+/** Open the generation span an assistant turn is spoken into. */
+function generationStart(
+  event: AgentEvent,
+  context: BridgeContext,
+  timestamp: () => string,
+): ObservationOp {
+  return {
+    version: 1,
+    timestamp: timestamp(),
+    handle: messageHandle(event, context),
+    op: "start",
+    type: "generation",
+    name: messageName("assistant"),
+    ...(event.workflow === undefined ? {} : { parent: attemptHandle(event.workflow) }),
+    input: { role: "assistant" },
+    ...(context.model === undefined ? {} : { model: context.model }),
+    metadata: {
+      ...(event.workflow ?? {}),
+      role: "assistant",
+      sequence: context.sequence,
+    },
+  };
+}
+
 /**
  * Map one harness agent event to observation ops.
  *
@@ -61,31 +96,41 @@ export function bridgeAgentEvent(
   timestamp: () => string,
 ): readonly ObservationOp[] {
   switch (event.type) {
+    case "message_start": {
+      // An assistant turn is a generation span, not a point: open it when the
+      // harness starts streaming so the close carries a real duration. User
+      // turns stay born-closed points at `message_end`.
+      if (event.message.role !== "assistant" || context.messageSpanOpened === true) return [];
+      return [generationStart(event, context, timestamp)];
+    }
     case "message_end": {
       const role = event.message.role;
       // Only the two conversation roles are facts of the ledger. Tool-result
       // turns (and any other role) belong to the transcript.
       if (role !== "assistant" && role !== "user") return [];
-      const assistant = role === "assistant";
       const text = messageText(event.message);
-      const parent = event.workflow === undefined ? undefined : attemptHandle(event.workflow);
-      return [{
-        version: 1,
+      const close = {
+        version: 1 as const,
         timestamp: timestamp(),
-        handle: `${assistant ? "msg" : "user"}:${context.sequence}:${attemptSuffix(event)}`,
-        op: "emit" as const,
-        type: assistant ? ("generation" as const) : ("event" as const),
+        handle: messageHandle(event, context),
         name: messageName(role),
-        ...(parent === undefined ? {} : { parent }),
-        ...(assistant ? { input: { role: "assistant" } } : {}),
         ...(text === undefined ? {} : { output: { role, text } }),
-        ...(assistant && context.model !== undefined ? { model: context.model } : {}),
-        metadata: {
-          ...(event.workflow ?? {}),
-          role,
-          sequence: context.sequence,
-        },
-      }];
+        metadata: { ...(event.workflow ?? {}), role, sequence: context.sequence },
+      };
+      if (role === "user") {
+        return [{
+          ...close,
+          op: "emit" as const,
+          type: "event" as const,
+          ...(event.workflow === undefined ? {} : { parent: attemptHandle(event.workflow) }),
+        }];
+      }
+      // Close the generation. A harness that skipped `message_start` gets the
+      // `start` synthesized here so the pair is still complete.
+      return [
+        ...(context.messageSpanOpened === true ? [] : [generationStart(event, context, timestamp)]),
+        { ...close, op: "end" as const },
+      ];
     }
     case "usage": {
       // One API call's counters are a point fact of the turn. The SDK emits
@@ -116,6 +161,21 @@ export function bridgeAgentEvent(
           errorType: event.errorType,
           message: event.message,
         },
+      }];
+    }
+    case "retry": {
+      // The retry boundary is its own fact: `error` says what broke, this says
+      // what Piano is doing about it. The chat reads both.
+      const { type: _type, workflow, ...notice } = event;
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: `retry:${context.sequence}:${attemptSuffix(event)}`,
+        op: "emit",
+        type: "event",
+        name: AGENT_RETRY_NAME,
+        ...(workflow === undefined ? {} : { parent: attemptHandle(workflow) }),
+        metadata: { ...(workflow ?? {}), sequence: context.sequence, ...notice },
       }];
     }
     case "spawn": {
@@ -185,8 +245,9 @@ export function bridgeAgentEvent(
   }
 }
 
-/** Carry `spawn`'s model forward to the next message. Usage is its own op, so
- * it is not carried: the SDK emits it after `message_end`. */
+/** Carry `spawn`'s model forward to the next message, and track whether an
+ * assistant generation span is open. Usage is its own op, so it is not
+ * carried: the SDK emits it after `message_end`. */
 export function advanceBridgeContext(
   event: AgentEvent,
   context: BridgeContext,
@@ -194,8 +255,16 @@ export function advanceBridgeContext(
   if (event.type === "spawn" && typeof event.model === "string") {
     return { ...context, model: event.model };
   }
+  if (event.type === "message_start") {
+    return event.message.role === "assistant"
+      ? { ...context, messageSpanOpened: true }
+      : context;
+  }
   if (event.type === "message_end") {
-    return { ...context, sequence: context.sequence + 1 };
+    return {
+      sequence: context.sequence + 1,
+      ...(context.model === undefined ? {} : { model: context.model }),
+    };
   }
   return context;
 }

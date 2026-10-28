@@ -211,6 +211,50 @@ describe("applyObservationOps", () => {
     });
   });
 
+  it("folds a generation span into one agent message row", () => {
+    const state = applyObservationOps(emptyTrajectoryState(), [
+      start({
+        input: { stageId: "loop.measure", attempt: 1 },
+        metadata: { worker: "benchmark-worker", invocationId: "measure@loop/iter-0" },
+      }),
+      {
+        version: 1,
+        timestamp: T(1_100),
+        handle: "msg:0:measure@loop/iter-1:1",
+        op: "start",
+        type: "generation",
+        name: "assistant.message",
+        parent: "attempt:measure@loop/iter-1:1",
+        input: { role: "assistant" },
+      },
+      {
+        version: 1,
+        timestamp: T(1_400),
+        handle: "msg:0:measure@loop/iter-1:1",
+        op: "end",
+        name: "assistant.message",
+        output: { role: "assistant", text: "measured 12.3" },
+      },
+    ]);
+    expect(state.entries.map((entry) => entry.kind)).toEqual(["spawn", "agent_message"]);
+    expect(state.entries[1]).toMatchObject({ label: "agent", detail: "measured 12.3" });
+  });
+
+  it("drops the retry boundary the way the AgentEvent reducer does", () => {
+    const state = applyObservationOps(emptyTrajectoryState(), [
+      {
+        version: 1,
+        timestamp: T(1),
+        handle: "retry:0:root:0",
+        op: "emit",
+        type: "event",
+        name: "agent.retry",
+        metadata: { event: "scheduled", attempt: 1, totalAttempts: 2 },
+      },
+    ]);
+    expect(state.entries).toEqual([]);
+  });
+
   it("drops structural ops that carry no single-action row", () => {
     const state = applyObservationOps(emptyTrajectoryState(), [
       start(),
