@@ -15,7 +15,7 @@ import {
   type EditorTheme,
   type Terminal,
 } from "@earendil-works/pi-tui";
-import { type AgentEvent, type SteerDelivery } from "@piano/harness";
+import { bridgeAgentEvents, type AgentEvent, type SteerDelivery } from "@piano/harness";
 import { failureDetails, fanoutObservationOps, isCancellation, type FailureDetails, type ObservationOpSink } from "@piano/logging";
 import {
   WorkflowError,
@@ -984,7 +984,14 @@ export function runTui(
           }
           for (const turn of result.turns) {
             missionScreen.transcript.renderUserMessage(turn.prompt);
-            for (const event of turn.events) missionScreen.transcript.renderEvent(event);
+            // Under `--langfuse` the chat and the panel project the op
+            // vocabulary the live path does; the `AgentEvent` feed stays the
+            // non-`--langfuse` path.
+            if (opsFed) {
+              missionScreen.transcript.routeOps(bridgeAgentEvents(turn.events));
+            } else {
+              for (const event of turn.events) missionScreen.transcript.renderEvent(event);
+            }
             if (turn.error !== undefined) {
               missionScreen.transcript.appendError(turn.status === "cancelled" ? "interrupted" : "run failed", turn.error);
             }
@@ -997,7 +1004,8 @@ export function runTui(
             // When an op sink feeds the panel, the user turn arrives as a
             // `user.message` op; seeding it here would double the ledger.
             missionScreen.trajectory.start(opsFed ? undefined : last.prompt);
-            if (!opsFed) {
+            if (opsFed) missionScreen.trajectory.recordOps(bridgeAgentEvents(last.events));
+            else {
               for (const event of last.events) missionScreen.trajectory.record(event);
             }
             missionScreen.trajectory.complete({

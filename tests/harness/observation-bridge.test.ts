@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceBridgeContext,
+  agentEventExporter,
   bridgeAgentEvent,
+  bridgeAgentEvents,
   type AgentEvent,
   type BridgeContext,
 } from "@piano/harness";
@@ -221,7 +223,7 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
-  it("leaves tool executions to the workflow mapper so one fact has one elevation", () => {
+  it("emits tool facts with the attempt as parent when the turn is attributed", () => {
     const started: AgentEvent = {
       type: "tool_execution_start",
       toolCallId: "call-1",
@@ -229,16 +231,17 @@ describe("bridgeAgentEvent", () => {
       args: { command: "ls" },
       workflow,
     };
-    const ended: AgentEvent = {
-      type: "tool_execution_end",
-      toolCallId: "call-1",
-      toolName: "bash",
-      result: "ok",
-      isError: true,
-      workflow,
-    };
-    expect(bridgeAgentEvent(started, context, () => T)).toEqual([]);
-    expect(bridgeAgentEvent(ended, context, () => T)).toEqual([]);
+    expect(bridgeAgentEvent(started, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "tool:call-1",
+      op: "start",
+      type: "tool",
+      name: "bash",
+      parent: "attempt:measure@loop/iter-1:2",
+      input: { command: "ls" },
+      metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
+    }]);
   });
 
   it("streams text deltas as display-only updates and still skips tool noise", () => {
@@ -416,5 +419,53 @@ describe("advanceBridgeContext", () => {
       transcriptPath: "/t",
     }, state);
     expect(state.agentSpanHandle).toBeUndefined();
+  });
+});
+
+describe("agentEventExporter", () => {
+  it("bridges then advances, so a turn's handles never interleave", () => {
+    const batches: string[][] = [];
+    const emit = agentEventExporter(
+      (ops) => batches.push(ops.map((op) => `${op.op}:${op.handle}`)),
+      { timestamp: () => T },
+    );
+    emit({ type: "spawn", harness: "pi", skills: [] });
+    emit({ type: "message_end", message: { role: "assistant", content: "hi" } });
+    expect(batches).toEqual([
+      ["start:agent:0:root:0"],
+      ["start:msg:0:root:0", "end:msg:0:root:0"],
+    ]);
+  });
+
+  it("drops an attributed turn's tool facts the live workflow mapper already speaks", () => {
+    const batches: string[][] = [];
+    const emit = agentEventExporter(
+      (ops) => batches.push(ops.map((op) => `${op.op}:${op.handle}`)),
+      { timestamp: () => T },
+    );
+    emit({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {}, workflow });
+    emit({ type: "tool_execution_start", toolCallId: "c2", toolName: "bash", args: {} });
+    expect(batches).toEqual([["start:tool:c2"]]);
+  });
+});
+
+describe("bridgeAgentEvents", () => {
+  it("projects a recorded conversation the way the live path does", () => {
+    const events: AgentEvent[] = [
+      { type: "spawn", harness: "pi", skills: [] },
+      { type: "message_end", message: { role: "user", content: "go" } },
+      { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {}, workflow },
+      { type: "message_end", message: { role: "assistant", content: "hi" } },
+    ];
+    const ops = bridgeAgentEvents(events, () => T);
+    // Replay owns the tool facts too — no workflow mapper runs on a recording.
+    expect(ops.map((op) => op.op)).toEqual(["start", "emit", "start", "start", "end"]);
+    expect(ops.map((op) => op.handle)).toEqual([
+      "agent:0:root:0",
+      "msg:0:root:0",
+      "tool:c1",
+      "msg:1:root:0",
+      "msg:1:root:0",
+    ]);
   });
 });

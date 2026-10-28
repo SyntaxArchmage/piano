@@ -58,15 +58,11 @@ import {
   withoutDeltas,
   type ObservationOpSink,
 } from "@piano/logging";
-import {
-  advanceBridgeContext,
-  bridgeAgentEvent,
-  type BridgeContext,
-} from "@piano/harness";
 import { observationStreamPath } from "@piano/base";
 import { mapWorkflowObservation } from "@piano/langfuse";
 import type { WorkflowObservation } from "@piano/trajectory";
 import {
+  agentEventExporter,
   createSteeringChannel,
   executeAgent,
   prepareHarnessHomes,
@@ -221,18 +217,6 @@ function opsSinks(input: {
   }
   if (langfuseExport !== undefined) sinks.push(withoutDeltas(langfuseExport.onOps));
   return sinks;
-}
-
-/** Bridge one conversation's `AgentEvent`s onto the op stream. Each caller
- * owns its context, so a side turn and a workflow attempt cannot interleave
- * handles. */
-function agentEventExporter(emitOps: ObservationOpSink): (event: AgentEvent) => void {
-  let context: BridgeContext = { sequence: 0 };
-  const now = () => new Date().toISOString();
-  return (event) => {
-    emitOps(bridgeAgentEvent(event, context, now));
-    context = advanceBridgeContext(event, context);
-  };
 }
 
 /** Turn a live logging session into a replay loop: run the headless prompt or

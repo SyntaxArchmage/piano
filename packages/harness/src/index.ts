@@ -89,6 +89,8 @@ export {
 } from "./events.js";
 export {
   advanceBridgeContext,
+  agentEventExporter,
   bridgeAgentEvent,
+  bridgeAgentEvents,
   type BridgeContext,
 } from "./observation-bridge.js";

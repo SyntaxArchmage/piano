@@ -11,6 +11,7 @@ import {
   toolCallEndOp,
   toolCallStartOp,
   type ObservationOp,
+  type ObservationOpSink,
 } from "@piano/logging";
 import { messageText, textDelta } from "./events.js";
 import type { AgentEvent } from "./events.js";
@@ -50,6 +51,9 @@ function usageDetails(usage: {
   if (usage.totalTokens !== undefined) details.total = usage.totalTokens;
   return Object.keys(details).length === 0 ? undefined : details;
 }
+
+/** The one wall-clock spelling every op timestamp uses. */
+const wallClock = (): string => new Date().toISOString();
 
 function attemptSuffix(event: AgentEvent): string {
   const workflow = event.workflow;
@@ -96,12 +100,12 @@ function generationStart(
  * Map one harness agent event to observation ops.
  *
  * High-frequency `*_update` events stay in the transcript and are skipped,
- * matching `shouldPersistAgentEvent`. Tool facts have one elevation per turn:
- * an attributed attempt's ride `mapWorkflowObservation`, an unattributed
- * turn's (the side agent) ride here — both spelling the same ops. Per-call
- * `usage` is its own `emit` op (the SDK emits it after `message_end`, so it
- * cannot ride the generation it belongs to); attempt totals stay on
- * `token_usage`.
+ * matching `shouldPersistAgentEvent`, except the text deltas the chat
+ * streams. Every fact a turn produces is one op here, tools included —
+ * whether a live workflow mapper also observes the same event is a wiring
+ * question `agentEventExporter` answers, not this mapper. Per-call `usage`
+ * is its own `emit` op (the SDK emits it after `message_end`, so it cannot
+ * ride the generation it belongs to); attempt totals stay on `token_usage`.
  */
 export function bridgeAgentEvent(
   event: AgentEvent,
@@ -247,17 +251,15 @@ export function bridgeAgentEvent(
     }
     case "tool_execution_start":
     case "tool_execution_end": {
-      // Only for turns no workflow mapper observes. A workflow attempt's tools
-      // are already `tool_call_*` observations, and one fact keeps one
-      // elevation. Both producers wear the same op shape.
-      if (event.workflow !== undefined) return [];
-      const metadata = { sequence: context.sequence };
+      const parent = event.workflow === undefined ? undefined : attemptHandle(event.workflow);
+      const metadata = { ...(event.workflow ?? {}), sequence: context.sequence };
       return [event.type === "tool_execution_start"
         ? toolCallStartOp({
           timestamp: timestamp(),
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
+          ...(parent === undefined ? {} : { parent }),
           metadata,
         })
         : toolCallEndOp({
@@ -358,4 +360,47 @@ export function advanceBridgeContext(
     return { ...context, agentSpanHandle: undefined };
   }
   return context;
+}
+
+/** Bridge one conversation's events onto an op sink as they arrive. Each
+ * caller owns its context, so two conversations cannot interleave handles —
+ * this is the one place the bridge-then-advance protocol lives. */
+export function agentEventExporter(
+  emitOps: ObservationOpSink,
+  options?: {
+    readonly timestamp?: () => string;
+    /** True when a live workflow mapper also observes these events and owns
+     * an attributed turn's tool facts. Replay has none running, so it takes
+     * them from here. */
+    readonly mapperOwnsToolFacts?: boolean;
+  },
+): (event: AgentEvent) => void {
+  const timestamp = options?.timestamp ?? wallClock;
+  const mapperOwnsTools = options?.mapperOwnsToolFacts ?? true;
+  let context: BridgeContext = { sequence: 0 };
+  return (event) => {
+    // Decided at the source: an attributed tool execution is already a
+    // `tool_call_*` observation, and one fact keeps one elevation.
+    const attributedTool = mapperOwnsTools
+      && event.workflow !== undefined
+      && (event.type === "tool_execution_start" || event.type === "tool_execution_end");
+    if (!attributedTool) emitOps(bridgeAgentEvent(event, context, timestamp));
+    context = advanceBridgeContext(event, context);
+  };
+}
+
+/** Bridge a recorded conversation's events to ops. Replay uses this so the
+ * chat and the panel project the same vocabulary the live path does — and,
+ * with no workflow mapper running on a recording, own the tool facts too. */
+export function bridgeAgentEvents(
+  events: readonly AgentEvent[],
+  timestamp: () => string = wallClock,
+): readonly ObservationOp[] {
+  const ops: ObservationOp[] = [];
+  const emit = agentEventExporter((batch) => ops.push(...batch), {
+    timestamp,
+    mapperOwnsToolFacts: false,
+  });
+  for (const event of events) emit(event);
+  return ops;
 }
