@@ -55,6 +55,7 @@ import {
   appendJsonlLine,
   fanoutObservationOps,
   observationStreamSink,
+  withoutDeltas,
   type ObservationOpSink,
 } from "@piano/logging";
 import {
@@ -187,7 +188,8 @@ function langfuseExportFor(
 }
 
 /** The op sinks one run fans out to. Shared by the workflow path and the side
- * agent so the two cannot disagree on what is written where. */
+ * agent so the two cannot disagree on what is written where. Evidence sinks
+ * drop `update` ops (the chat's delta stream); display sinks keep them. */
 function opsSinks(input: {
   readonly runId: string;
   readonly observationPath: string;
@@ -201,23 +203,23 @@ function opsSinks(input: {
   const sinks: ObservationOpSink[] = [];
   if (langfuse) {
     sinks.push((ops) => panelSink?.(ops));
-    sinks.push(observationStreamSink((lines) => {
+    sinks.push(withoutDeltas(observationStreamSink((lines) => {
       void Effect.runPromise(
         appendJsonlLine(fileSystem, observationPath, lines, () => undefined)
           .pipe(Effect.ignore),
       );
-    }));
+    })));
     // Headless automation reads the same ops on stdout, so the `--json` stream
     // can move to the new vocabulary without waiting for the run directory to
     // be inspected.
     if (json) {
-      sinks.push(observationStreamSink(
+      sinks.push(withoutDeltas(observationStreamSink(
         (lines) => stdout.write(lines),
         (op) => serializeLine(observationOpLine(op, runId)),
-      ));
+      )));
     }
   }
-  if (langfuseExport !== undefined) sinks.push(langfuseExport.onOps);
+  if (langfuseExport !== undefined) sinks.push(withoutDeltas(langfuseExport.onOps));
   return sinks;
 }
 

@@ -491,19 +491,23 @@ export function runTui(
         Math.max(1, terminal.rows - editor.render(terminal.columns).length - footer.render(terminal.columns).length);
       /** Build a screen. Every screen owns its chat area, transcript, ledger and
        * palette; none of them is ever handed to the other. */
-      // Every screen's panel draws from the fused op stream when `--langfuse`
-      // supplies one. The panel is a display sink: it never translates.
+      // Every screen's panel and chat draw from the fused op stream when
+      // `--langfuse` supplies one. Both are display sinks: they never translate.
       const opsPanels: ObservationOpSink[] = [];
       deps.attachObservationSink?.(fanoutObservationOps(opsPanels));
       const makeScreen = (kind: TuiScreenKind, screenTheme: PianoTheme): TuiScreen => {
         const chatArea = new Container();
         const trajectory = new TrajectoryPanel(screenTheme, paneRows, scrollKeys.modifier);
-        opsPanels.push((ops) => trajectory.recordOps(ops));
+        const transcript = new TranscriptView(chatArea, screenTheme);
+        opsPanels.push((ops) => {
+          trajectory.recordOps(ops);
+          transcript.routeOps(ops);
+        });
         return {
           kind,
           theme: screenTheme,
           chatArea,
-          transcript: new TranscriptView(chatArea, screenTheme),
+          transcript,
           trajectory,
           stats: emptyRunStats(),
           startedAt: Date.now(),
@@ -1259,8 +1263,12 @@ export function runTui(
           refreshFooter();
           tui.requestRender();
           const promptEffect = runner(prompt, (event) => {
-            screen.transcript.route(event);
-            if (!opsFed) screen.trajectory.record(event);
+            // Under `--langfuse` the chat and the panel draw from the op
+            // stream; the `AgentEvent` feed stays the non-`--langfuse` path.
+            if (!opsFed) {
+              screen.transcript.route(event);
+              screen.trajectory.record(event);
+            }
             const nextStats = applyRunStat(screen.stats, event);
             if (nextStats !== screen.stats) {
               screen.stats = nextStats;

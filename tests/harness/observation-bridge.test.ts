@@ -241,7 +241,7 @@ describe("bridgeAgentEvent", () => {
     expect(bridgeAgentEvent(ended, context, () => T)).toEqual([]);
   });
 
-  it("skips the high-frequency stream", () => {
+  it("streams text deltas as display-only updates and still skips tool noise", () => {
     const update: AgentEvent = {
       type: "message_update",
       message: { role: "assistant", content: "partial" },
@@ -256,7 +256,14 @@ describe("bridgeAgentEvent", () => {
       partialResult: "chunk",
       workflow,
     };
-    expect(bridgeAgentEvent(update, context, () => T)).toEqual([]);
+    expect(bridgeAgentEvent(update, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "msg:0:measure@loop/iter-1:2",
+      op: "update",
+      output: { delta: "partial" },
+      metadata: expect.objectContaining({ role: "assistant", sequence: 0 }),
+    }]);
     expect(bridgeAgentEvent(toolUpdate, context, () => T)).toEqual([]);
   });
 

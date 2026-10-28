@@ -17,6 +17,9 @@ import {
   contextDetail,
   contextFacts,
   messageName,
+  metadataNumber,
+  metadataString,
+  outputText,
   toolCallIdFromHandle,
   type ObservationOp,
 } from "@piano/logging";
@@ -289,22 +292,6 @@ function firstLine(text: string | undefined): string {
   return (text ?? "").split("\n", 1)[0] ?? "";
 }
 
-function outputText(op: ObservationOp): string | undefined {
-  const output = asRecord("output" in op ? op.output : undefined);
-  const text = output?.text;
-  return typeof text === "string" ? text : undefined;
-}
-
-function metadataString(op: ObservationOp, key: string): string | undefined {
-  const value = op.metadata?.[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function metadataNumber(op: ObservationOp, key: string): number | undefined {
-  const value = op.metadata?.[key];
-  return typeof value === "number" ? value : undefined;
-}
-
 /** Pure reducer: folds one `AgentEvent` into trajectory state, returning a
  * NEW state (never mutating the input). Events that produce no row
  * (token-level `message_update` deltas, lifecycle boundaries) return the same
@@ -425,6 +412,10 @@ export function applyObservationOps(
   ops: readonly ObservationOp[],
 ): TrajectoryState {
   if (ops.length === 0) return state;
+  // Text deltas never produce a row — the chat streams them, the ledger does
+  // not — so a delta-only batch is a no-op. Skipping the copy keeps the live
+  // `message_update` path off the O(ledger) rebuild below.
+  if (ops.every((op) => op.op === "update")) return state;
   const entries = [...state.entries];
   let changed = false;
   // Open handles and, for tools, the start time a close op turns into

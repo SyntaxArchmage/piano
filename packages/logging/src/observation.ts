@@ -341,6 +341,43 @@ export function fanoutObservationOps(
   };
 }
 
+/** Wrap a sink so the chat's text-delta stream never reaches it. Deltas wear
+ * `output.delta` (an incremental fragment); a durable `update` — a
+ * `token_usage` refinement, say — carries `output`/`usageDetails` and stays.
+ * Evidence sinks keep `shouldPersistAgentEvent`'s policy. */
+export function withoutDeltas(sink: ObservationOpSink): ObservationOpSink {
+  return (ops) => {
+    let kept: ObservationOp[] | undefined;
+    for (const op of ops) {
+      if (isTextDelta(op)) continue;
+      (kept ??= []).push(op);
+    }
+    if (kept !== undefined) sink(kept);
+  };
+}
+
+/** A display-only text delta: an `update` whose payload is `output.delta`,
+ * never the replacement output a fold would set. */
+export function isTextDelta(op: ObservationOp): boolean {
+  return op.op === "update" && asRecord(op.output)?.delta !== undefined;
+}
+
+/** `output.text` when an op carries one — a message's text. */
+export function outputText(op: ObservationOp): string | undefined {
+  const text = asRecord("output" in op ? op.output : undefined)?.text;
+  return typeof text === "string" ? text : undefined;
+}
+
+export function metadataString(op: ObservationOp, key: string): string | undefined {
+  const value = op.metadata?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+export function metadataNumber(op: ObservationOp, key: string): number | undefined {
+  const value = op.metadata?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
 /** Append ops to one JSONL stream. Best-effort by construction: a write gap is
  * an evidence gap, never a run failure. `codec` defaults to the raw op; a
  * caller that wraps ops in its own envelope passes its own line encoder. */

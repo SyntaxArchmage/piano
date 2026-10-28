@@ -10,7 +10,18 @@ import { jsonText } from "./text.js";
 import { RST, type PianoTheme } from "./theme.js";
 import { formatToolOutput } from "./tool-output.js";
 import { loopIteration } from "./trajectory.js";
-import type { FailureDetails } from "@piano/logging";
+import {
+  AGENT_DONE_NAME,
+  AGENT_ERROR_NAME,
+  AGENT_RETRY_NAME,
+  asRecord,
+  metadataNumber,
+  metadataString,
+  outputText,
+  toolCallIdFromHandle,
+  type FailureDetails,
+  type ObservationOp,
+} from "@piano/logging";
 
 export function buildMarkdownTheme(th: PianoTheme): MarkdownTheme {
   return {
@@ -48,6 +59,29 @@ export function stageTagColor(th: PianoTheme, stageId: string): string {
   let hash = 0;
   for (const ch of stageId) hash = (hash * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
   return hues[hash % hues.length] ?? th.dim;
+}
+
+/** The one `↳ …` line a spawn draws, whichever dialect fed it. Workflow
+ * spawns show the stage's worker after the stage label; plain spawns keep the
+ * whole dim harness label. */
+function formatSpawnLine(
+  th: PianoTheme,
+  facts: {
+    readonly stageId?: string;
+    readonly iteration?: number;
+    readonly worker?: string;
+    readonly harness?: string;
+    readonly model?: string;
+  },
+): string {
+  const { stageId, iteration, worker, harness, model } = facts;
+  const modelSuffix = model === undefined || model === "" ? "" : `  ${th.accent}[${model}]${RST}`;
+  if (stageId === undefined) {
+    return `  ${th.dim}↳ ${harness ?? "agent"}${RST}${modelSuffix}`;
+  }
+  const label = `${stageId}${iteration === undefined ? "" : ` #${iteration + 1}`}`;
+  const workerSuffix = worker === undefined || worker === "" ? "" : ` · ${worker}`;
+  return `  ${th.dim}↳ ${RST}${stageTagColor(th, stageId)}${label}${workerSuffix}${RST}${modelSuffix}`;
 }
 
 export function renderUserMessage(text: string, th: PianoTheme): Container {
@@ -332,6 +366,9 @@ export class TranscriptView {
   private readonly toolStartedAt = new Map<string, number>();
   /** Wall-clock start of the assistant message being streamed. */
   private responseStartedAt: number | undefined;
+  /** The `↳ …` line each agent handle has drawn, so a refining `start` (the
+   * harness's `spawn`) updates it instead of stacking a second line. */
+  private readonly spawnLines = new Map<string, Text>();
   /** Injectable clock so the timing paths are deterministic under test. */
   private readonly now: () => number;
   /** The one live Markdown block a turn is written into, open between the
@@ -372,81 +409,40 @@ export class TranscriptView {
   renderEvent(event: AgentEvent, timing?: { readonly toolDurationMs?: number }): void {
     switch (event.type) {
       case "spawn": {
-        const stage = event.workflow?.stageId;
-        const worker = event.workflow?.worker;
-        const iteration = loopIteration(event.workflow?.invocationId);
-        const hasStage = stage !== undefined;
-        const label = hasStage
-          ? `${stage}${iteration === undefined ? "" : ` #${iteration + 1}`}`
-          : event.harness;
-        // Workflow spawns show the stage's worker after the stage label, so
-        // the line says which stage worker drives this turn and (below) with
-        // which model. Each stage gets its own stable tag color; plain
-        // non-workflow spawns keep the whole dim harness label.
-        if (!hasStage) {
-          this.appendText(
-            `  ${this.th.dim}↳ ${label}${RST}` +
-              (event.model ? `  ${this.th.accent}[${event.model}]${RST}` : "")
-          );
-          break;
-        }
-        const workerSuffix = worker !== undefined && worker !== "" ? ` · ${worker}` : "";
-        this.appendText(
-          `  ${this.th.dim}↳ ${RST}${stageTagColor(this.th, stage)}${label}${workerSuffix}${RST}` +
-            (event.model ? `  ${this.th.accent}[${event.model}]${RST}` : "")
-        );
+        this.appendText(formatSpawnLine(this.th, {
+          stageId: event.workflow?.stageId,
+          iteration: loopIteration(event.workflow?.invocationId),
+          worker: event.workflow?.worker,
+          harness: event.harness,
+          model: event.model,
+        }));
         break;
       }
       case "tool_execution_start":
-        {
-          const open = this.openTools.get(event.toolCallId);
-          if (open !== undefined) {
-            open.setArgs(stringifyArg(event.args));
-            break;
-          }
-          const tool = new ToolCallBox(event.toolName, stringifyArg(event.args), this.th);
-          tool.setExpanded(this.expandedFlag);
-          this.openTools.set(event.toolCallId, tool);
-          this.toolBoxes.push(tool);
-          this.chatArea.addChild(tool.box);
-        }
+        this.drawToolCall(event.toolCallId, event.toolName, stringifyArg(event.args));
         break;
-      case "tool_execution_end": {
-        const tool = this.openTools.get(event.toolCallId);
-        if (tool !== undefined) {
-          tool.complete(stringifyResult(event.result, event.isError), event.isError, timing?.toolDurationMs);
-          this.openTools.delete(event.toolCallId);
-        } else {
-          this.appendText(`     ${this.th.dim}│ ${stringifyResult(event.result, event.isError)}${RST}`);
-        }
+      case "tool_execution_end":
+        this.completeToolCall(
+          event.toolCallId,
+          stringifyResult(event.result, event.isError),
+          event.isError,
+          timing?.toolDurationMs,
+        );
         break;
-      }
       case "message_end": {
         if (event.message.role !== undefined && event.message.role !== "assistant") break;
         const text = messageText(event.message);
-        if (text !== undefined) {
-          this.chatArea.addChild(
-            new Markdown(text, 1, 0, buildMarkdownTheme(this.th), {
-              color: (s) => this.th.primary + s + RST,
-            })
-          );
-        }
+        if (text !== undefined) this.drawAssistantMessage(text);
         break;
       }
       case "error":
-        this.appendText(`  ${this.th.error}✗${RST}  ${this.th.error}${event.message}${RST}`);
+        this.appendErrorLine(event.message);
         break;
       case "retry":
         // The transient-failure half of the story: an attempt failed but the
         // retry boundary has it. The `error` line above shows what broke;
         // these lines show what Piano is doing about it.
-        if (event.event === "scheduled") {
-          this.appendText(
-            `  ${this.th.primary}↻${RST}  ${this.th.primary}retrying in ${Math.round((event.delayMs ?? 0) / 1000)}s (attempt ${event.nextAttempt}/${event.totalAttempts}): ${event.message ?? event.errorType ?? ""}${RST}`,
-          );
-        } else {
-          this.appendText(`  ${this.th.success}✓${RST}  ${this.th.success}recovered on attempt ${event.attempt}${RST}`);
-        }
+        this.appendRetryLine(event);
         break;
       case "done":
         this.appendText(`  ${this.th.success}✓${RST}  done`);
@@ -482,6 +478,7 @@ export class TranscriptView {
     this.expandedFlag = false;
     this.liveStream = undefined;
     this.toolStartedAt.clear();
+    this.spawnLines.clear();
     this.responseStartedAt = undefined;
     this.chatArea.invalidate();
   }
@@ -506,12 +503,7 @@ export class TranscriptView {
   route(event: AgentEvent): void {
     const delta = textDelta(event);
     if (delta !== undefined) {
-      // Falls back to the first delta for a harness that opens a turn without
-      // a user echo; `renderUserMessage` normally arms this at submit time so
-      // the figure covers time-to-first-token as well as generation.
-      this.responseStartedAt ??= this.now();
-      if (this.liveStream === undefined) this.liveStream = this.newStream();
-      this.liveStream.append(delta);
+      this.appendStreamDelta(delta);
       return;
     }
     if (event.type === "message_end") {
@@ -541,6 +533,173 @@ export class TranscriptView {
     this.renderEvent(event, toolDurationMs === undefined ? undefined : { toolDurationMs });
   }
 
+  /** Grow the one live Markdown block a turn is written into. The reply clock
+   * falls back to the first delta for a harness that opens a turn without a
+   * user echo; `renderUserMessage` normally arms it at submit time so the
+   * figure covers time-to-first-token as well as generation. */
+  private appendStreamDelta(delta: string): void {
+    this.responseStartedAt ??= this.now();
+    if (this.liveStream === undefined) this.liveStream = this.newStream();
+    this.liveStream.append(delta);
+  }
+
+  /** Draw the op stream into the transcript. Under `--langfuse` this is the
+   * chat's content source — the panel and the wire read the same ops — and
+   * `route` is left unused. A `user.message` op is skipped: the prompt echo
+   * already drew the turn's heading. */
+  routeOps(ops: readonly ObservationOp[]): void {
+    for (const op of ops) {
+      if (op.op === "update") {
+        const delta = asRecord(op.output)?.delta;
+        if (typeof delta === "string") this.appendStreamDelta(delta);
+        continue;
+      }
+      if (op.op === "start" && op.type === "agent") {
+        this.closeLiveStream();
+        this.drawSpawnLine(op);
+        continue;
+      }
+      if (op.op === "start" && op.type === "tool") {
+        const toolCallId = toolCallIdFromHandle(op.handle);
+        if (toolCallId === undefined) continue;
+        this.closeLiveStream();
+        if (!this.toolStartedAt.has(toolCallId)) {
+          this.toolStartedAt.set(toolCallId, Date.parse(op.timestamp));
+        }
+        this.drawToolCall(toolCallId, op.name, stringifyArg(op.input));
+        continue;
+      }
+      if (op.op === "end") {
+        const toolCallId = toolCallIdFromHandle(op.handle);
+        if (toolCallId !== undefined) {
+          this.closeLiveStream();
+          const startedAt = this.toolStartedAt.get(toolCallId);
+          this.toolStartedAt.delete(toolCallId);
+          this.completeToolCall(
+            toolCallId,
+            stringifyResult(op.output, op.level === "ERROR"),
+            op.level === "ERROR",
+            startedAt === undefined ? undefined : Date.parse(op.timestamp) - startedAt,
+          );
+          continue;
+        }
+        if (op.name !== undefined && op.name.endsWith(".message")) {
+          const streamed = this.liveStream !== undefined;
+          const startedAt = this.responseStartedAt;
+          this.responseStartedAt = undefined;
+          this.closeLiveStream();
+          const text = outputText(op);
+          if (!streamed && text !== undefined) this.drawAssistantMessage(text);
+          this.appendTiming(startedAt);
+        }
+        continue;
+      }
+      if (op.op === "emit" && op.name === AGENT_ERROR_NAME) {
+        this.closeLiveStream();
+        this.appendErrorLine(metadataString(op, "message") ?? "");
+        continue;
+      }
+      if (op.op === "emit" && op.name === AGENT_RETRY_NAME) {
+        this.closeLiveStream();
+        this.appendRetryLine({
+          event: metadataString(op, "event"),
+          attempt: metadataNumber(op, "attempt"),
+          nextAttempt: metadataNumber(op, "nextAttempt"),
+          totalAttempts: metadataNumber(op, "totalAttempts"),
+          delayMs: metadataNumber(op, "delayMs"),
+          errorType: metadataString(op, "errorType"),
+          message: metadataString(op, "message"),
+        });
+        continue;
+      }
+      if (op.op === "emit" && op.name === AGENT_DONE_NAME) {
+        this.closeLiveStream();
+        this.appendText(`  ${this.th.success}✓${RST}  ${this.th.success}done${RST}`);
+      }
+    }
+  }
+
+  /** The `↳ …` line, updated in place when a later `start` refines the same
+   * handle (the harness's `spawn` closes what `stage_attempt_started` opened). */
+  private drawSpawnLine(op: Extract<ObservationOp, { op: "start" }>): void {
+    const input = asRecord(op.input);
+    const line = formatSpawnLine(this.th, {
+      stageId: typeof input?.stageId === "string" ? input.stageId : undefined,
+      iteration: loopIteration(metadataString(op, "invocationId")),
+      worker: metadataString(op, "worker"),
+      harness: typeof input?.harness === "string" ? input.harness : undefined,
+      model: op.model,
+    });
+    const drawn = this.spawnLines.get(op.handle);
+    if (drawn !== undefined) {
+      drawn.setText(line);
+      return;
+    }
+    const text = new Text(line, 0, 0);
+    this.spawnLines.set(op.handle, text);
+    this.chatArea.addChild(text);
+  }
+
+  private drawToolCall(toolCallId: string, toolName: string, args: string): void {
+    const open = this.openTools.get(toolCallId);
+    if (open !== undefined) {
+      open.setArgs(args);
+      return;
+    }
+    const tool = new ToolCallBox(toolName, args, this.th);
+    tool.setExpanded(this.expandedFlag);
+    this.openTools.set(toolCallId, tool);
+    this.toolBoxes.push(tool);
+    this.chatArea.addChild(tool.box);
+  }
+
+  private completeToolCall(
+    toolCallId: string,
+    result: string,
+    isError: boolean,
+    durationMs: number | undefined,
+  ): void {
+    const open = this.openTools.get(toolCallId);
+    if (open === undefined) {
+      this.appendText(`     ${this.th.dim}│ ${result}${RST}`);
+      return;
+    }
+    open.complete(result, isError, durationMs);
+    this.openTools.delete(toolCallId);
+  }
+
+  private drawAssistantMessage(text: string): void {
+    this.chatArea.addChild(new Markdown(text, 1, 0, buildMarkdownTheme(this.th), {
+      color: (s) => this.th.primary + s + RST,
+    }));
+  }
+
+  private appendErrorLine(message: string): void {
+    this.appendText(`  ${this.th.error}✗${RST}  ${this.th.error}${message}${RST}`);
+  }
+
+  /** The retry boundary: the transient-failure half of the story. The `error`
+   * line shows what broke; this shows what Piano is doing about it. */
+  private appendRetryLine(facts: {
+    readonly event?: string;
+    readonly attempt?: number;
+    readonly nextAttempt?: number;
+    readonly totalAttempts?: number;
+    readonly delayMs?: number;
+    readonly errorType?: string;
+    readonly message?: string;
+  }): void {
+    if (facts.event !== "scheduled") {
+      this.appendText(`  ${this.th.success}✓${RST}  ${this.th.success}recovered on attempt ${facts.attempt ?? 0}${RST}`);
+      return;
+    }
+    const why = facts.message ?? facts.errorType ?? "";
+    this.appendText(
+      `  ${this.th.primary}↻${RST}  ${this.th.primary}retrying in ${Math.round((facts.delayMs ?? 0) / 1000)}s ` +
+        `(attempt ${facts.nextAttempt ?? "?"}/${facts.totalAttempts ?? 0}): ${why}${RST}`,
+    );
+  }
+
   /** Elapsed time of one live tool call. Arms the clock on its start event and
    * reports the duration on the matching end; undefined for every other event.
    * A re-reported start (Claude opens a call with empty args and names them on
@@ -562,10 +721,16 @@ export class TranscriptView {
    * Only the live path calls it, so a replayed turn — whose events arrive in a
    * tight loop and carry no timestamps — never shows a fabricated duration. */
   private appendResponseTiming(event: AgentEvent, startedAt: number | undefined): void {
-    if (startedAt === undefined || event.type !== "message_end") return;
+    if (event.type !== "message_end") return;
     const role = event.message.role;
     if (role !== undefined && role !== "assistant") return;
     if (messageText(event.message) === undefined) return;
+    this.appendTiming(startedAt);
+  }
+
+  /** One dim footer under a completed assistant reply with how long it took. */
+  private appendTiming(startedAt: number | undefined): void {
+    if (startedAt === undefined) return;
     this.appendText(`  ${this.th.dim}✎ ${formatCompactDuration(this.now() - startedAt)}${RST}`);
   }
 

@@ -12,7 +12,7 @@ import {
   toolCallStartOp,
   type ObservationOp,
 } from "@piano/logging";
-import { messageText } from "./events.js";
+import { messageText, textDelta } from "./events.js";
 import type { AgentEvent } from "./events.js";
 
 /** Bridge from the harness's current `AgentEvent` dialect onto the
@@ -109,6 +109,23 @@ export function bridgeAgentEvent(
   timestamp: () => string,
 ): readonly ObservationOp[] {
   switch (event.type) {
+    case "message_update": {
+      // The live display stream: one `update` per text delta, on the same
+      // handle the generation span wears. The payload is `output.delta`, not
+      // `output.text` — a delta is the incremental fragment, never the
+      // replacement output a fold would set — and `withoutDeltas` keeps it
+      // out of the evidence sinks, matching `shouldPersistAgentEvent`.
+      const delta = textDelta(event);
+      if (delta === undefined) return [];
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: messageHandle(event, context),
+        op: "update",
+        output: { delta },
+        metadata: { role: "assistant", sequence: context.sequence },
+      }];
+    }
     case "message_start": {
       // An assistant turn is a generation span, not a point: open it when the
       // harness starts streaming so the close carries a real duration. User

@@ -5,6 +5,7 @@ import {
   parseObservationOp,
   parseObservationOps,
   stringifyObservationOp,
+  withoutDeltas,
   type ObservationOp,
 } from "../src/observation.js";
 
@@ -176,5 +177,27 @@ describe("foldObservationStream", () => {
     expect(tree).toHaveLength(1);
     expect(tree[0]?.children).toHaveLength(1);
     expect(tree[0]?.children[0]?.name).toBe("stage.accepted");
+  });
+});
+
+describe("withoutDeltas", () => {
+  it("keeps durable updates and drops the chat's text-delta stream", () => {
+    const kept: ObservationOp[] = [];
+    const sink = withoutDeltas((ops) => kept.push(...ops));
+    sink([
+      start(),
+      update({ output: { delta: "partial" } }),
+      update({ usageDetails: { input: 60, output: 40, total: 100 } }),
+      end({ name: "assistant.message", output: { role: "assistant", text: "done" } }),
+    ]);
+    expect(kept.map((op) => op.op)).toEqual(["start", "update", "end"]);
+    expect(kept[1]).toMatchObject({ usageDetails: { input: 60 } });
+  });
+
+  it("calls the wrapped sink not at all when only deltas arrive", () => {
+    let calls = 0;
+    const sink = withoutDeltas(() => { calls += 1; });
+    sink([update({ output: { delta: "a" } }), update({ output: { delta: "b" } })]);
+    expect(calls).toBe(0);
   });
 });

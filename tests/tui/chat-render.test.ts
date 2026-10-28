@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ObservationOp } from "@piano/logging";
 import {
   buildMarkdownTheme,
   ErrorBox,
@@ -576,5 +577,93 @@ describe("TranscriptView timing and tool output", () => {
     expect(rendered).toContain(darkTheme.outputNumber);
     // The content-block envelope must not survive into the view.
     expect(stripAnsi(rendered)).not.toContain('"type"');
+  });
+});
+
+describe("TranscriptView.routeOps", () => {
+  const T = (ms: number) => new Date(ms).toISOString();
+  const start = (over: Partial<Extract<ObservationOp, { op: "start" }>> = {}): Extract<ObservationOp, { op: "start" }> => ({
+    version: 1,
+    timestamp: T(1_000),
+    handle: "attempt:loop.measure:1",
+    op: "start",
+    type: "agent",
+    name: "stage.attempt:loop.measure",
+    input: { stageId: "loop.measure", attempt: 1 },
+    metadata: { worker: "benchmark-worker", invocationId: "measure@loop/iter-0" },
+    ...over,
+  });
+
+  it("streams update deltas into one block and closes it on the generation end", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([
+      { version: 1, timestamp: T(1_100), handle: "msg:0:a:1", op: "update", output: { delta: "meas" } },
+      { version: 1, timestamp: T(1_150), handle: "msg:0:a:1", op: "update", output: { delta: "ured 12.3" } },
+      { version: 1, timestamp: T(1_400), handle: "msg:0:a:1", op: "end", name: "assistant.message", output: { role: "assistant", text: "measured 12.3" } },
+    ]);
+    const out = chatArea.render(80).join("\n");
+    expect(out).toContain("measured 12.3");
+    // The streamed block is the message; the close must not stack a second one.
+    expect(out.split("measured 12.3").length - 1).toBe(1);
+  });
+
+  it("renders the message whole when the dialect never streamed it", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([
+      { version: 1, timestamp: T(1_400), handle: "msg:0:a:1", op: "end", name: "assistant.message", output: { role: "assistant", text: "measured 12.3" } },
+    ]);
+    expect(chatArea.render(80).join("\n")).toContain("measured 12.3");
+  });
+
+  it("refines the spawn line in place when the harness announces its config", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([start()]);
+    view.routeOps([start({
+      handle: "attempt:loop.measure:1",
+      model: "gpt-4o",
+      input: { stageId: "loop.measure", attempt: 1, harness: "pi" },
+    })]);
+    const out = chatArea.render(80).join("\n");
+    // One line, not two: the refining `start` updates the one already drawn.
+    expect(out.split("loop.measure").length - 1).toBe(1);
+    expect(out).toContain("gpt-4o");
+  });
+
+  it("draws tool boxes and completes them from the op pair", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([
+      { version: 1, timestamp: T(1_000), handle: "tool:c1", op: "start", type: "tool", name: "Bash", input: { command: "echo hi" } },
+      { version: 1, timestamp: T(1_300), handle: "tool:c1", op: "end", level: "DEFAULT", output: "hi" },
+    ]);
+    const out = chatArea.render(80).join("\n");
+    expect(out).toContain("Bash");
+    expect(out).toContain("echo hi");
+  });
+
+  it("speaks the error, retry, and done lines", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([
+      { version: 1, timestamp: T(1), handle: "e", op: "emit", type: "event", name: "agent.error", metadata: { message: "rate limited" } },
+      { version: 1, timestamp: T(2), handle: "r", op: "emit", type: "event", name: "agent.retry", metadata: { event: "scheduled", attempt: 1, nextAttempt: 2, totalAttempts: 3, delayMs: 1500, message: "rate limited" } },
+      { version: 1, timestamp: T(3), handle: "d", op: "emit", type: "event", name: "agent.done", metadata: { exitStatus: 0 } },
+    ]);
+    const out = chatArea.render(80).join("\n");
+    expect(out).toContain("rate limited");
+    expect(out).toContain("retrying in 2s");
+    expect(out).toContain("done");
+  });
+
+  it("leaves the prompt echo to the submit path and ignores user.message ops", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([
+      { version: 1, timestamp: T(1), handle: "user:0:a:1", op: "emit", type: "event", name: "user.message", output: { role: "user", text: "go" } },
+    ]);
+    expect(chatArea.render(80).join("\n")).not.toContain("go");
   });
 });
