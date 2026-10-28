@@ -375,15 +375,3 @@ export function agentEventExporter(
     context = advanceBridgeContext(event, context);
   };
 }
-
-/** Bridge a recorded conversation's events to ops. Replay uses this so the
- * chat and the panel project the same vocabulary the live path does. */
-export function bridgeAgentEvents(
-  events: readonly AgentEvent[],
-  timestamp: () => string = wallClock,
-): readonly ObservationOp[] {
-  const ops: ObservationOp[] = [];
-  const emit = agentEventExporter((batch) => ops.push(...batch), timestamp);
-  for (const event of events) emit(event);
-  return ops;
-}

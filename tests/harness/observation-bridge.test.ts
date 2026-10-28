@@ -3,7 +3,6 @@ import {
   advanceBridgeContext,
   agentEventExporter,
   bridgeAgentEvent,
-  bridgeAgentEvents,
   type AgentEvent,
   type BridgeContext,
 } from "@piano/harness";
@@ -437,25 +436,4 @@ describe("agentEventExporter", () => {
     ]);
   });
 
-});
-
-describe("bridgeAgentEvents", () => {
-  it("projects a recorded conversation the way the live path does", () => {
-    const events: AgentEvent[] = [
-      { type: "spawn", harness: "pi", skills: [] },
-      { type: "message_end", message: { role: "user", content: "go" } },
-      { type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {}, workflow },
-      { type: "message_end", message: { role: "assistant", content: "hi" } },
-    ];
-    const ops = bridgeAgentEvents(events, () => T);
-    // The bridge owns tool facts; nothing else spells the op shape.
-    expect(ops.map((op) => op.op)).toEqual(["start", "emit", "start", "start", "end"]);
-    expect(ops.map((op) => op.handle)).toEqual([
-      "agent:0:root:0",
-      "msg:0:root:0",
-      "tool:c1",
-      "msg:1:root:0",
-      "msg:1:root:0",
-    ]);
-  });
 });

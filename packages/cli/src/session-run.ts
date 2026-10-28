@@ -633,7 +633,9 @@ function runSessionBody(
          * conversation to replay. Nothing else changes — the next prompt goes
          * through the same `runPrompt`, which now sees the resumed run. */
         const resume = (runId: string) => Effect.gen(function* () {
-          const context = yield* readResumeContext(runsRoot, runId);
+          const context = yield* readResumeContext(runsRoot, runId, {
+            wantOps: options.langfuse === true,
+          });
           // `piano resume <run-id>` already opened the session on this run. Opening
           // a second one would leave two writers appending to the same log and
           // trace files.
@@ -711,6 +713,7 @@ function runSessionBody(
               prompt: turn.prompt,
               events: turn.events,
               status: turn.status,
+              ...(turn.ops === undefined ? {} : { ops: turn.ops }),
               ...(turn.error === undefined ? {} : { error: turn.error }),
             })),
             ...(context.workspaceCwd === undefined ? {} : { workspaceCwd: context.workspaceCwd }),

@@ -15,8 +15,15 @@ import {
   type EditorTheme,
   type Terminal,
 } from "@earendil-works/pi-tui";
-import { bridgeAgentEvents, type AgentEvent, type SteerDelivery } from "@piano/harness";
-import { failureDetails, fanoutObservationOps, isCancellation, type FailureDetails, type ObservationOpSink } from "@piano/logging";
+import { type AgentEvent, type SteerDelivery } from "@piano/harness";
+import {
+  failureDetails,
+  fanoutObservationOps,
+  isCancellation,
+  type FailureDetails,
+  type ObservationOp,
+  type ObservationOpSink,
+} from "@piano/logging";
 import {
   WorkflowError,
   type WorkflowSignoffDecision,
@@ -158,6 +165,9 @@ function suspendThisProcess(): void {
 interface TuiReplayTurn {
   readonly prompt: string;
   readonly events: readonly AgentEvent[];
+  /** The same turn in the op vocabulary, when the run recorded one. Replay
+   * draws these under `--langfuse`; `events` is the other path. */
+  readonly ops?: readonly ObservationOp[];
   /** Terminal state the turn reached. An interrupted turn is `cancelled` and
    * must replay as "interrupted", not as a failed run. */
   readonly status?: TurnOutcome;
@@ -984,14 +994,12 @@ export function runTui(
           }
           for (const turn of result.turns) {
             missionScreen.transcript.renderUserMessage(turn.prompt);
-            // Under `--langfuse` the chat and the panel project the op
-            // vocabulary the live path does; the `AgentEvent` feed stays the
-            // non-`--langfuse` path.
-            if (opsFed) {
-              missionScreen.transcript.routeOps(bridgeAgentEvents(turn.events));
-            } else {
-              for (const event of turn.events) missionScreen.transcript.renderEvent(event);
-            }
+            // Under `--langfuse` the chat projects the run's own op stream —
+            // the same facts the live panel and chat drew. A run that recorded
+            // none (or is resumed without the switch) replays its `AgentEvent`s.
+            const turnOps = opsFed ? turn.ops : undefined;
+            if (turnOps !== undefined) missionScreen.transcript.routeOps(turnOps);
+            else for (const event of turn.events) missionScreen.transcript.renderEvent(event);
             if (turn.error !== undefined) {
               missionScreen.transcript.appendError(turn.status === "cancelled" ? "interrupted" : "run failed", turn.error);
             }
@@ -1001,13 +1009,12 @@ export function runTui(
           // — the same thing it showed when that run stopped.
           const last = result.turns.at(-1);
           if (last !== undefined) {
-            // When an op sink feeds the panel, the user turn arrives as a
+            // When the panel draws ops, the user turn arrives as a
             // `user.message` op; seeding it here would double the ledger.
-            missionScreen.trajectory.start(opsFed ? undefined : last.prompt);
-            if (opsFed) missionScreen.trajectory.recordOps(bridgeAgentEvents(last.events));
-            else {
-              for (const event of last.events) missionScreen.trajectory.record(event);
-            }
+            const lastOps = opsFed ? last.ops : undefined;
+            missionScreen.trajectory.start(lastOps === undefined ? last.prompt : undefined);
+            if (lastOps !== undefined) missionScreen.trajectory.recordOps(lastOps);
+            else for (const event of last.events) missionScreen.trajectory.record(event);
             missionScreen.trajectory.complete({
               status: last.status ?? (last.error === undefined ? "completed" : "failed"),
               ...(last.error === undefined ? {} : { error: last.error }),

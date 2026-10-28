@@ -15,9 +15,18 @@
 
 import { Effect } from "effect";
 import { basename, join } from "node:path";
-import { io, type TurnOutcome } from "@piano/base";
+import { io, observationStreamPath, type TurnOutcome } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
-import { parseTrajectory, trajectoryStreamPath, type FailureDetails, type TrajectoryDocument } from "@piano/logging";
+import {
+  AGENT_CONTEXT_NAME,
+  messageName,
+  parseObservationOps,
+  parseTrajectory,
+  trajectoryStreamPath,
+  type FailureDetails,
+  type ObservationOp,
+  type TrajectoryDocument,
+} from "@piano/logging";
 import { parseRunStatus, runStatusPath, type RunStatus } from "@piano/orchestrator";
 import { LogsStorageError } from "./errors.js";
 
@@ -26,6 +35,9 @@ interface ResumeTurn {
   readonly prompt: string;
   readonly status: TurnOutcome;
   readonly events: readonly AgentEvent[];
+  /** The same turn in the op vocabulary, when the run recorded one. Replay
+   * reads these under `--langfuse` and leaves `events` for the old path. */
+  readonly ops?: readonly ObservationOp[];
   /** Recorded failure. Only the final turn can carry one: the trajectory
    * records a single `error`, overwritten each turn. */
   readonly error?: FailureDetails;
@@ -175,17 +187,62 @@ export function summarizeRun(runId: string, status: Partial<RunStatus> | undefin
   };
 }
 
+/** True for the ops that set a turn up rather than speak it: its attempt span
+ * (and the harness's own announcement of it) and the context it loaded. They
+ * sit just before the turn's `user.message` and belong with it. */
+function isTurnHeader(op: ObservationOp): boolean {
+  return op.op === "start" || (op.op === "emit" && op.name === AGENT_CONTEXT_NAME);
+}
+
+/** Slice a recorded op stream into one batch per recorded turn. `user.message`
+ * marks each turn; the header in front of it travels with it. Returns
+ * `undefined` when the stream and the turn count disagree — an unpaired turn
+ * must replay from the events rather than from a mis-cut slice.
+ *
+ * Known limit: a piano turn that ran several stage attempts (map, loop, repair)
+ * emits one `user.message` per attempt, so the counts disagree and the run
+ * falls back to its events. The durable fix is a turn extent recorded at write
+ * time (`opCount` beside `eventCount`), not a smarter sniff. */
+export function splitOpsByTurns(
+  ops: readonly ObservationOp[],
+  turnCount: number,
+): readonly (readonly ObservationOp[])[] | undefined {
+  const boundaries: number[] = [];
+  for (const [i, op] of ops.entries()) {
+    if (op.op !== "emit" || op.name !== messageName("user")) continue;
+    let start = i;
+    while (start > 0 && isTurnHeader(ops[start - 1] as ObservationOp)) start--;
+    boundaries.push(start);
+  }
+  if (boundaries.length !== turnCount) return undefined;
+  return boundaries.map((from, index) => ops.slice(from, boundaries[index + 1] ?? ops.length));
+}
+
 /** Full replay context for the run the user chose. Fails when the run has no
  * trajectory or it cannot be parsed: the user named this run, so silently
- * resuming an empty conversation would be worse than saying why. */
+ * resuming an empty conversation would be worse than saying why.
+ *
+ * `wantOps` says the caller will replay from the op vocabulary. Without it the
+ * observation stream is not read at all: parsing a whole run's ops to drop them
+ * is pure cost. */
 export function readResumeContext(
   runsRoot: string,
   runId: string,
+  options: { readonly wantOps?: boolean } = {},
 ): Effect.Effect<ResumeContext, LogsStorageError> {
-  return readTrajectory(runsRoot, runId).pipe(Effect.map((document): ResumeContext => {
+  const runDir = join(runsRoot, runId);
+  return Effect.gen(function* () {
+    const document = yield* readTrajectory(runsRoot, runId);
     const allEvents = Array.isArray(document.events) ? document.events : [];
     const recorded = document.turns ?? [];
     const failure = failureOf(document.error);
+    // Under `--langfuse` the run's own op stream is the replay source: the same
+    // facts the live panel and chat drew. Absent or unpaired, the turns keep
+    // the events they were cut from.
+    const ops = options.wantOps !== true ? [] : parseObservationOps(yield* io.readText(observationStreamPath(runDir)).pipe(
+      Effect.catchAll(() => Effect.succeed(undefined)),
+    ));
+    const slices = splitOpsByTurns(ops, recorded.length);
     const turns: ResumeTurn[] = [];
     let start = 0;
     recorded.forEach((turn, index) => {
@@ -198,6 +255,7 @@ export function readResumeContext(
         prompt: stripStageContext(turn.prompt),
         status: turn.status,
         events: allEvents.slice(start, end).filter(isEvent),
+        ...(slices === undefined ? {} : { ops: slices[index] }),
         ...(last && failure !== undefined && turn.status !== "completed" ? { error: failure } : {}),
       });
       start = end;
@@ -209,5 +267,5 @@ export function readResumeContext(
       ...(typeof document.workspaceCwd === "string" ? { workspaceCwd: document.workspaceCwd } : {}),
       turns,
     };
-  }));
+  });
 }
