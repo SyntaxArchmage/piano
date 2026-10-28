@@ -1,43 +1,9 @@
-import type { StageAttemptOutcome, TrajectoryRecordContext, WorkflowObservation } from "@piano/trajectory";
-
-/** One export intent the sink executes against Langfuse.
- *
- * Pure data: the mapper never imports OTel, so the mapping is unit-testable
- * and the sink is the only place that opens spans. */
-export type LangfuseAction =
-  | {
-    readonly action: "start";
-    readonly handle: string;
-    readonly type: "agent" | "tool" | "span";
-    readonly name: string;
-    readonly parentHandle?: string;
-    readonly input?: unknown;
-    readonly metadata: Record<string, unknown>;
-  }
-  | {
-    readonly action: "update";
-    readonly handle: string;
-    readonly metadata: Record<string, unknown>;
-  }
-  | {
-    readonly action: "end";
-    readonly handle: string;
-    readonly output?: unknown;
-    readonly level?: "DEFAULT" | "WARNING" | "ERROR";
-    readonly statusMessage?: string;
-    readonly metadata?: Record<string, unknown>;
-  }
-  | {
-    readonly action: "emit";
-    readonly type: "event" | "generation";
-    readonly name: string;
-    readonly parentHandle?: string;
-    readonly input?: unknown;
-    readonly output?: unknown;
-    readonly model?: string;
-    readonly usageDetails?: Record<string, number>;
-    readonly metadata: Record<string, unknown>;
-  };
+import type { ObservationOp, ObservationType, EmitObservationType } from "@piano/logging";
+import type {
+  StageAttemptOutcome,
+  TrajectoryRecordContext,
+  WorkflowObservation,
+} from "@piano/trajectory";
 
 export function attemptHandle(context: Pick<TrajectoryRecordContext, "invocationId" | "attempt">): string {
   return `attempt:${context.invocationId}:${context.attempt}`;
@@ -73,16 +39,19 @@ function outcomeLevel(outcome: StageAttemptOutcome): "DEFAULT" | "WARNING" | "ER
   return "WARNING";
 }
 
-/** Map one workflow observation to the export actions it implies. */
+/** Map one workflow observation to the observation ops it implies. */
 export function mapWorkflowObservation(
   observation: WorkflowObservation,
-): readonly LangfuseAction[] {
+  timestamp: string,
+): readonly ObservationOp[] {
   switch (observation.type) {
     case "stage_attempt_started": {
       const handle = attemptHandle(observation.context);
       return [{
-        action: "start",
+        version: 1,
+        timestamp,
         handle,
+        op: "start",
         type: "agent",
         name: `stage.attempt:${observation.context.stageId}`,
         input: { stageId: observation.context.stageId, attempt: observation.context.attempt },
@@ -90,10 +59,11 @@ export function mapWorkflowObservation(
       }];
     }
     case "stage_attempt_finished": {
-      const handle = attemptHandle(observation.context);
       return [{
-        action: "end",
-        handle,
+        version: 1,
+        timestamp,
+        handle: attemptHandle(observation.context),
+        op: "end",
         level: outcomeLevel(observation.outcome),
         statusMessage: observation.outcome,
         output: { outcome: observation.outcome },
@@ -102,27 +72,29 @@ export function mapWorkflowObservation(
     }
     case "token_usage": {
       return [{
-        action: "update",
+        version: 1,
+        timestamp,
         handle: attemptHandle(observation.context),
-        metadata: {
-          ...contextMetadata(observation.context),
-          usage: {
-            input: observation.usage.input,
-            output: observation.usage.output,
-            cacheRead: observation.usage.cacheRead,
-            cacheWrite: observation.usage.cacheWrite,
-            total: observation.usage.total,
-          },
+        op: "update",
+        usageDetails: {
+          input: observation.usage.input,
+          output: observation.usage.output,
+          cacheRead: observation.usage.cacheRead,
+          cacheWrite: observation.usage.cacheWrite,
+          total: observation.usage.total,
         },
+        metadata: contextMetadata(observation.context),
       }];
     }
     case "tool_call_started": {
       return [{
-        action: "start",
+        version: 1,
+        timestamp,
         handle: toolHandle(observation.toolCallId),
+        op: "start",
         type: "tool",
         name: observation.toolName,
-        parentHandle: attemptHandle(observation.context),
+        parent: attemptHandle(observation.context),
         metadata: {
           ...contextMetadata(observation.context),
           toolCallId: observation.toolCallId,
@@ -133,8 +105,10 @@ export function mapWorkflowObservation(
     }
     case "tool_call_finished": {
       return [{
-        action: "end",
+        version: 1,
+        timestamp,
         handle: toolHandle(observation.toolCallId),
+        op: "end",
         level: observation.isError ? "ERROR" : "DEFAULT",
         ...(observation.isError ? { statusMessage: "tool failed" } : {}),
         metadata: {
@@ -148,10 +122,13 @@ export function mapWorkflowObservation(
     }
     case "stage_accepted": {
       return [{
-        action: "emit",
+        version: 1,
+        timestamp,
+        handle: `accepted:${observation.context.invocationId}:${observation.context.attempt}`,
+        op: "emit",
         type: "event",
         name: "stage.accepted",
-        parentHandle: attemptHandle(observation.context),
+        parent: attemptHandle(observation.context),
         metadata: {
           ...contextMetadata(observation.context),
           metrics: observation.metrics.map((metric) => ({
@@ -163,7 +140,10 @@ export function mapWorkflowObservation(
     }
     case "selection": {
       return [{
-        action: "emit",
+        version: 1,
+        timestamp,
+        handle: `selection:${observation.runId}:${timestamp}`,
+        op: "emit",
         type: "event",
         name: "selection",
         metadata: {
@@ -179,3 +159,6 @@ export function mapWorkflowObservation(
     }
   }
 }
+
+/** Re-exported so callers can name the span kinds without importing logging. */
+export type { EmitObservationType, ObservationType };

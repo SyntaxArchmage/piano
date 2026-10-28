@@ -6,6 +6,8 @@ import {
   type AgentEventExportContext,
 } from "../src/map-agent-event.js";
 
+const T = "2026-10-28T10:00:00.000Z";
+
 const workflow = {
   stageId: "loop.measure",
   invocationId: "measure@loop/iter-1",
@@ -26,11 +28,14 @@ describe("mapAgentEvent", () => {
       message: { role: "assistant", content: "measured 12.3" },
       workflow,
     };
-    expect(mapAgentEvent(event, context)).toEqual([{
-      action: "emit",
+    expect(mapAgentEvent(event, context, T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "msg:0:measure@loop/iter-1:2",
+      op: "emit",
       type: "generation",
       name: "agent.message",
-      parentHandle: "attempt:measure@loop/iter-1:2",
+      parent: "attempt:measure@loop/iter-1:2",
       input: { role: "assistant" },
       output: { role: "assistant", text: "measured 12.3" },
       model: "test-model",
@@ -64,9 +69,9 @@ describe("mapAgentEvent", () => {
       partialResult: "chunk",
       workflow,
     };
-    expect(mapAgentEvent(user, context)).toEqual([]);
-    expect(mapAgentEvent(update, context)).toEqual([]);
-    expect(mapAgentEvent(toolUpdate, context)).toEqual([]);
+    expect(mapAgentEvent(user, context, T)).toEqual([]);
+    expect(mapAgentEvent(update, context, T)).toEqual([]);
+    expect(mapAgentEvent(toolUpdate, context, T)).toEqual([]);
   });
 
   it("skips tool executions already exported as tool_call workflow observations", () => {
@@ -77,10 +82,10 @@ describe("mapAgentEvent", () => {
       args: { command: "ls" },
       workflow,
     };
-    expect(mapAgentEvent(started, context)).toEqual([]);
+    expect(mapAgentEvent(started, context, T)).toEqual([]);
   });
 
-  it("exports error and done as run events", () => {
+  it("exports error and done as point events", () => {
     const error: AgentEvent = {
       type: "error",
       errorType: "ProviderError",
@@ -94,14 +99,20 @@ describe("mapAgentEvent", () => {
       transcriptPath: "/tmp/session-1.jsonl",
       workflow,
     };
-    expect(mapAgentEvent(error, context)).toEqual([{
-      action: "emit",
+    expect(mapAgentEvent(error, context, T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "err:0:measure@loop/iter-1:2",
+      op: "emit",
       type: "event",
       name: "agent.error",
       metadata: expect.objectContaining({ errorType: "ProviderError", message: "rate limited" }),
     }]);
-    expect(mapAgentEvent(done, context)).toEqual([{
-      action: "emit",
+    expect(mapAgentEvent(done, context, T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "done:measure@loop/iter-1:2",
+      op: "emit",
       type: "event",
       name: "agent.done",
       metadata: expect.objectContaining({ exitStatus: 0 }),

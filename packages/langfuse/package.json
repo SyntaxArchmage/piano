@@ -16,6 +16,7 @@
     "@opentelemetry/sdk-node": "^0.203.0",
     "@opentelemetry/sdk-trace-base": "^2.0.1",
     "@piano/harness": "0.1.0",
+    "@piano/logging": "0.1.0",
     "@piano/trajectory": "0.1.0",
     "effect": "3.22.1"
   }

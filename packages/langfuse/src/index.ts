@@ -12,7 +12,6 @@ export {
   contextMetadata,
   mapWorkflowObservation,
   toolHandle,
-  type LangfuseAction,
 } from "./map-workflow-observation.js";
 export {
   maskLangfusePayload,

@@ -6,9 +6,11 @@ import {
   toolHandle,
 } from "../src/map-workflow-observation.js";
 
+const T = "2026-10-28T10:00:00.000Z";
+
 const context: TrajectoryRecordContext = {
   version: 1,
-  timestamp: "2026-10-27T00:00:00.000Z",
+  timestamp: T,
   runId: "run-1",
   invocationId: "measure@loop/iter-2",
   stageId: "loop.measure",
@@ -18,6 +20,18 @@ const context: TrajectoryRecordContext = {
   iteration: 2,
   actorKey: "run-1/pi/benchmark-worker/root",
   sessionId: "session-1",
+};
+
+const metric = {
+  protocol: "benchmark/v1" as const,
+  name: "throughput",
+  unit: "ops/s",
+  direction: "higher" as const,
+  samples: [10, 12],
+  best: 12,
+  median: 11,
+  runs: 2,
+  warmup: 1,
 };
 
 describe("mapWorkflowObservation", () => {
@@ -33,9 +47,11 @@ describe("mapWorkflowObservation", () => {
       monotonicMs: 20,
       outcome: "validation_failed",
     };
-    expect(mapWorkflowObservation(started)).toEqual([{
-      action: "start",
+    expect(mapWorkflowObservation(started, T)).toEqual([{
+      version: 1,
+      timestamp: T,
       handle: attemptHandle(context),
+      op: "start",
       type: "agent",
       name: "stage.attempt:loop.measure",
       input: { stageId: "loop.measure", attempt: 3 },
@@ -46,9 +62,11 @@ describe("mapWorkflowObservation", () => {
         iteration: 2,
       }),
     }]);
-    expect(mapWorkflowObservation(finished)).toEqual([{
-      action: "end",
+    expect(mapWorkflowObservation(finished, T)).toEqual([{
+      version: 1,
+      timestamp: T,
       handle: attemptHandle(context),
+      op: "end",
       level: "WARNING",
       statusMessage: "validation_failed",
       output: { outcome: "validation_failed" },
@@ -63,9 +81,9 @@ describe("mapWorkflowObservation", () => {
       monotonicMs: 1,
       outcome,
     });
-    expect(mapWorkflowObservation(finished("accepted"))[0]).toMatchObject({ level: "DEFAULT" });
-    expect(mapWorkflowObservation(finished("failed"))[0]).toMatchObject({ level: "ERROR" });
-    expect(mapWorkflowObservation(finished("cancelled"))[0]).toMatchObject({ level: "WARNING" });
+    expect(mapWorkflowObservation(finished("accepted"), T)[0]).toMatchObject({ level: "DEFAULT" });
+    expect(mapWorkflowObservation(finished("failed"), T)[0]).toMatchObject({ level: "ERROR" });
+    expect(mapWorkflowObservation(finished("cancelled"), T)[0]).toMatchObject({ level: "WARNING" });
   });
 
   it("updates the attempt with transcript-derived token usage", () => {
@@ -74,12 +92,13 @@ describe("mapWorkflowObservation", () => {
       context,
       usage: { input: 3, output: 2, cacheRead: 1, cacheWrite: 0, total: 6 },
     };
-    expect(mapWorkflowObservation(usage)).toEqual([{
-      action: "update",
+    expect(mapWorkflowObservation(usage, T)).toEqual([{
+      version: 1,
+      timestamp: T,
       handle: attemptHandle(context),
-      metadata: expect.objectContaining({
-        usage: { input: 3, output: 2, cacheRead: 1, cacheWrite: 0, total: 6 },
-      }),
+      op: "update",
+      usageDetails: { input: 3, output: 2, cacheRead: 1, cacheWrite: 0, total: 6 },
+      metadata: expect.objectContaining({ attempt: 3 }),
     }]);
   });
 
@@ -99,63 +118,62 @@ describe("mapWorkflowObservation", () => {
       isError: true,
       monotonicMs: 9,
     };
-    expect(mapWorkflowObservation(started)).toEqual([{
-      action: "start",
+    expect(mapWorkflowObservation(started, T)).toEqual([{
+      version: 1,
+      timestamp: T,
       handle: toolHandle("call-1"),
+      op: "start",
       type: "tool",
       name: "bash",
-      parentHandle: attemptHandle(context),
+      parent: attemptHandle(context),
       metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
     }]);
-    expect(mapWorkflowObservation(finished)).toEqual([{
-      action: "end",
+    expect(mapWorkflowObservation(finished, T)).toEqual([{
+      version: 1,
+      timestamp: T,
       handle: toolHandle("call-1"),
+      op: "end",
       level: "ERROR",
       statusMessage: "tool failed",
       metadata: expect.objectContaining({ isError: true }),
     }]);
   });
 
-  it("emits acceptance metrics as an event under the attempt", () => {
-    const metric = {
-      protocol: "benchmark/v1" as const,
-      name: "throughput",
-      unit: "ops/s",
-      direction: "higher" as const,
-      samples: [10, 12],
-      best: 12,
-      median: 11,
-      runs: 2,
-      warmup: 1,
-    };
+  it("emits acceptance metrics as a point event under the attempt", () => {
     const accepted: WorkflowObservation = {
       type: "stage_accepted",
       context,
       metrics: [{ pointer: "/throughput", value: metric }],
     };
-    expect(mapWorkflowObservation(accepted)).toEqual([{
-      action: "emit",
+    expect(mapWorkflowObservation(accepted, T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: `accepted:${context.invocationId}:${context.attempt}`,
+      op: "emit",
       type: "event",
       name: "stage.accepted",
-      parentHandle: attemptHandle(context),
+      parent: attemptHandle(context),
       metadata: expect.objectContaining({
         metrics: [{ pointer: "/throughput", value: metric }],
       }),
     }]);
   });
 
-  it("emits selection as a run-level event with the referee and winner", () => {
+  it("emits selection as a run-level point with the referee and winner", () => {
     const selection: WorkflowObservation = {
       type: "selection",
       runId: "run-1",
-      timestamp: "2026-10-27T00:00:00.000Z",
+      timestamp: T,
       referee: { name: "throughput", unit: "ops/s", direction: "higher" },
       outcome: "merged",
       winnerKey: "job-1/a",
       commit: "abc123",
     };
-    expect(mapWorkflowObservation(selection)).toEqual([{
-      action: "emit",
+    expect(mapWorkflowObservation(selection, T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: `selection:run-1:${T}`,
+      op: "emit",
       type: "event",
       name: "selection",
       metadata: {

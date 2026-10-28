@@ -17,6 +17,20 @@ export {
 } from "./errors.js";
 export { errorMessage, failureDetails, isCancellation } from "./errors.js";
 export {
+  EMIT_OBSERVATION_TYPES,
+  foldObservationOps,
+  foldObservationStream,
+  OBSERVATION_TYPES,
+  parseObservationOp,
+  parseObservationOps,
+  stringifyObservationOp,
+  type EmitObservationType,
+  type ObservationLevel,
+  type ObservationNode,
+  type ObservationOp,
+  type ObservationType,
+} from "./observation.js";
+export {
   foldTrajectoryStream,
   parseTrajectory,
   trajectoryStreamPath,

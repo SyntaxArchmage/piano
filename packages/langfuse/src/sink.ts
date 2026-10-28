@@ -7,6 +7,7 @@ import {
 } from "@langfuse/tracing";
 import { Effect } from "effect";
 import type { AgentEvent } from "@piano/harness";
+import type { ObservationOp } from "@piano/logging";
 import type { WorkflowObservation, WorkflowObservationExport } from "@piano/trajectory";
 import type { LangfuseConfig } from "./config.js";
 import {
@@ -14,10 +15,7 @@ import {
   mapAgentEvent,
   type AgentEventExportContext,
 } from "./map-agent-event.js";
-import {
-  mapWorkflowObservation,
-  type LangfuseAction,
-} from "./map-workflow-observation.js";
+import { mapWorkflowObservation } from "./map-workflow-observation.js";
 import { mapAcceptedScores, postLangfuseScores } from "./scores.js";
 
 /** Synthetic remote parent that pins a deterministic trace id.
@@ -35,83 +33,70 @@ function rootParent(traceId: string): SpanContext {
 }
 
 function parentContext(
-  action: Extract<LangfuseAction, { parentHandle?: string }>,
+  parent: string | undefined,
   handles: ReadonlyMap<string, LangfuseObservation>,
   traceId: string,
 ): SpanContext {
-  const parent = action.parentHandle === undefined ? undefined : handles.get(action.parentHandle);
-  return parent === undefined ? rootParent(traceId) : parent.otelSpan.spanContext();
+  const observation = parent === undefined ? undefined : handles.get(parent);
+  return observation === undefined ? rootParent(traceId) : observation.otelSpan.spanContext();
 }
 
 function startObservationFor(
-  action: Extract<LangfuseAction, { action: "start" }>,
+  op: Extract<ObservationOp, { op: "start" | "emit" }>,
   parentSpanContext: SpanContext,
 ): LangfuseObservation {
   const attributes = {
-    ...(action.input === undefined ? {} : { input: action.input }),
-    metadata: action.metadata,
+    ...(op.input === undefined ? {} : { input: op.input }),
+    ...(op.model === undefined ? {} : { model: op.model }),
+    metadata: op.metadata ?? {},
+    ...("output" in op && op.output !== undefined ? { output: op.output } : {}),
+    ...("usageDetails" in op && op.usageDetails !== undefined ? { usageDetails: op.usageDetails } : {}),
+    ...("level" in op && op.level !== undefined ? { level: op.level } : {}),
+    ...("statusMessage" in op && op.statusMessage !== undefined ? { statusMessage: op.statusMessage } : {}),
   };
-  if (action.type === "agent") {
-    return startObservation(action.name, attributes, { asType: "agent", parentSpanContext });
+  if (op.type === "agent") {
+    return startObservation(op.name, attributes, { asType: "agent", parentSpanContext });
   }
-  if (action.type === "tool") {
-    return startObservation(action.name, attributes, { asType: "tool", parentSpanContext });
+  if (op.type === "tool") {
+    return startObservation(op.name, attributes, { asType: "tool", parentSpanContext });
   }
-  return startObservation(action.name, attributes, { parentSpanContext });
+  if (op.type === "generation") {
+    return startObservation(op.name, attributes, { asType: "generation", parentSpanContext });
+  }
+  if (op.type === "event") {
+    return startObservation(op.name, attributes, { asType: "event", parentSpanContext });
+  }
+  return startObservation(op.name, attributes, { parentSpanContext });
 }
 
-function emitObservationFor(
-  action: Extract<LangfuseAction, { action: "emit" }>,
-  parentSpanContext: SpanContext,
-): void {
-  const attributes = {
-    ...(action.input === undefined ? {} : { input: action.input }),
-    ...(action.output === undefined ? {} : { output: action.output }),
-    ...(action.model === undefined ? {} : { model: action.model }),
-    ...(action.usageDetails === undefined ? {} : { usageDetails: action.usageDetails }),
-    metadata: action.metadata,
-  };
-  if (action.type === "generation") {
-    startObservation(action.name, attributes, { asType: "generation", parentSpanContext }).end();
-    return;
-  }
-  startObservation(action.name, attributes, { asType: "event", parentSpanContext });
-}
-
-function applyAction(
-  action: LangfuseAction,
+function applyOp(
+  op: ObservationOp,
   handles: Map<string, LangfuseObservation>,
   traceId: string,
 ): void {
-  switch (action.action) {
-    case "start": {
-      handles.set(
-        action.handle,
-        startObservationFor(action, parentContext(action, handles, traceId)),
-      );
-      return;
-    }
-    case "update": {
-      handles.get(action.handle)?.updateOtelSpanAttributes({ metadata: action.metadata });
-      return;
-    }
-    case "end": {
-      const observation = handles.get(action.handle);
-      if (observation === undefined) return;
-      observation.updateOtelSpanAttributes({
-        ...(action.output === undefined ? {} : { output: action.output }),
-        metadata: action.metadata ?? {},
-        ...(action.level === undefined ? {} : { level: action.level }),
-        ...(action.statusMessage === undefined ? {} : { statusMessage: action.statusMessage }),
-      });
-      observation.end();
-      handles.delete(action.handle);
-      return;
-    }
-    case "emit": {
-      emitObservationFor(action, parentContext(action, handles, traceId));
-      return;
-    }
+  if (op.op === "start") {
+    handles.set(op.handle, startObservationFor(op, parentContext(op.parent, handles, traceId)));
+    return;
+  }
+  if (op.op === "emit") {
+    // A point fact: open and close in one op. `event` auto-ends in the SDK;
+    // `generation` is ended explicitly so its usage lands before export.
+    const observation = startObservationFor(op, parentContext(op.parent, handles, traceId));
+    if (op.type === "generation") observation.end();
+    return;
+  }
+  const observation = handles.get(op.handle);
+  if (observation === undefined) return;
+  observation.updateOtelSpanAttributes({
+    ...(op.output === undefined ? {} : { output: op.output }),
+    ...(op.level === undefined ? {} : { level: op.level }),
+    ...(op.statusMessage === undefined ? {} : { statusMessage: op.statusMessage }),
+    ...(op.usageDetails === undefined ? {} : { usageDetails: op.usageDetails }),
+    metadata: op.metadata ?? {},
+  });
+  if (op.op === "end") {
+    observation.end();
+    handles.delete(op.handle);
   }
 }
 
@@ -136,8 +121,8 @@ export async function createLangfuseExport(
   const handles = new Map<string, LangfuseObservation>();
   let eventContext: AgentEventExportContext = { sequence: 0 };
 
-  const apply = (actions: readonly LangfuseAction[]): void => {
-    for (const action of actions) applyAction(action, handles, traceId);
+  const apply = (ops: readonly ObservationOp[]): void => {
+    for (const op of ops) applyOp(op, handles, traceId);
   };
 
   return {
@@ -146,7 +131,7 @@ export async function createLangfuseExport(
       export: (observation: WorkflowObservation) =>
         Effect.sync(() => {
           try {
-            apply(mapWorkflowObservation(observation));
+            apply(mapWorkflowObservation(observation, new Date().toISOString()));
             if (config !== undefined && observation.type === "stage_accepted") {
               const scores = mapAcceptedScores(observation, traceId);
               // Fire-and-forget: a score gap never fails the run.
@@ -159,7 +144,7 @@ export async function createLangfuseExport(
     },
     onAgentEvent: (event: AgentEvent) => {
       try {
-        apply(mapAgentEvent(event, eventContext));
+        apply(mapAgentEvent(event, eventContext, new Date().toISOString()));
         eventContext = advanceAgentEventContext(event, eventContext);
       } catch {
         // Export never fails the run or the local evidence.

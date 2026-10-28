@@ -3,7 +3,7 @@ import {
   type AgentEvent,
   type AgentMessage,
 } from "@piano/harness";
-import type { LangfuseAction } from "./map-workflow-observation.js";
+import type { ObservationOp } from "@piano/logging";
 
 /** Values the sink carries across events: `spawn` names the model, `usage`
  * reports the latest per-call counters, and the next assistant `message_end`
@@ -53,29 +53,33 @@ function parentAttemptHandle(event: AgentEvent): string | undefined {
 }
 
 /**
- * Map one harness agent event to export actions.
+ * Map one harness agent event to observation ops.
  *
  * High-frequency `*_update` events stay in the transcript and are skipped,
  * matching `shouldPersistAgentEvent`. Tool executions are skipped too: they
- * already reach Langfuse as `tool_call_*` workflow observations, and a second
- * tool span would duplicate them. Attempt totals come from `token_usage`, so a
- * lone `usage` event with no following message is dropped.
+ * already arrive as `tool_call_*` workflow observations, and a second tool span
+ * would duplicate them. Attempt totals come from `token_usage`, so a lone
+ * `usage` event with no following message is dropped.
  */
 export function mapAgentEvent(
   event: AgentEvent,
   context: AgentEventExportContext,
-): readonly LangfuseAction[] {
+  timestamp: string,
+): readonly ObservationOp[] {
   switch (event.type) {
     case "message_end": {
       const role = roleOf(event.message);
       if (role !== "assistant") return [];
       const text = messageText(event.message);
-      const parentHandle = parentAttemptHandle(event);
+      const parent = parentAttemptHandle(event);
       return [{
-        action: "emit",
+        version: 1,
+        timestamp,
+        handle: `msg:${context.sequence}:${event.workflow?.invocationId ?? "root"}:${event.workflow?.attempt ?? 0}`,
+        op: "emit",
         type: "generation",
         name: "agent.message",
-        ...(parentHandle === undefined ? {} : { parentHandle }),
+        ...(parent === undefined ? {} : { parent }),
         input: { role },
         ...(text === undefined ? {} : { output: { role, text } }),
         ...(context.model === undefined ? {} : { model: context.model }),
@@ -89,7 +93,10 @@ export function mapAgentEvent(
     }
     case "error": {
       return [{
-        action: "emit",
+        version: 1,
+        timestamp,
+        handle: `err:${context.sequence}:${event.workflow?.invocationId ?? "root"}:${event.workflow?.attempt ?? 0}`,
+        op: "emit",
         type: "event",
         name: "agent.error",
         metadata: {
@@ -101,7 +108,10 @@ export function mapAgentEvent(
     }
     case "done": {
       return [{
-        action: "emit",
+        version: 1,
+        timestamp,
+        handle: `done:${event.workflow?.invocationId ?? "root"}:${event.workflow?.attempt ?? 0}`,
+        op: "emit",
         type: "event",
         name: "agent.done",
         metadata: {
