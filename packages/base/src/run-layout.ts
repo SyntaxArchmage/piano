@@ -35,6 +35,13 @@ export function invocationStreamPath(runDir: string): string {
   return join(systemLogDir(runDir), "invocations.jsonl");
 }
 
+/** The Langfuse-aligned observation op stream. `--langfuse` writes it beside
+ * the existing evidence; the old streams stay the source of truth until the
+ * migration retires them. */
+export function observationStreamPath(runDir: string): string {
+  return join(systemLogDir(runDir), "observations.jsonl");
+}
+
 /** The run's single state document, written whole and atomically. */
 export function runStatusPath(runDir: string): string {
   return join(runDir, "status.json");

@@ -16,6 +16,7 @@ export {
   invocationResultPath,
   invocationStreamPath,
   logStreamPath,
+  observationStreamPath,
   runStatusPath,
   sessionsRoot,
   traceStreamPath,

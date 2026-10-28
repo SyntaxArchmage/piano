@@ -1,21 +1,18 @@
-import {
-  messageText,
-  type AgentEvent,
-  type AgentMessage,
-} from "@piano/harness";
-import type { ObservationOp } from "@piano/logging";
+import { attemptHandle, type ObservationOp } from "@piano/logging";
+import { messageText } from "./events.js";
+import type { AgentEvent } from "./events.js";
 
-/** Values the sink carries across events: `spawn` names the model, `usage`
- * reports the latest per-call counters, and the next assistant `message_end`
- * is the generation those belong to. */
-export interface AgentEventExportContext {
+/** Bridge from the harness's current `AgentEvent` dialect onto the
+ * Langfuse-aligned `ObservationOp` vocabulary.
+ *
+ * `AgentEvent` keeps working — this is the migration seam, not a replacement.
+ * A later hop lets each harness emit ops natively and retires this translator;
+ * until then every consumer of the new model goes through here. */
+
+export interface BridgeContext {
   readonly model?: string;
   readonly usageDetails?: Record<string, number>;
   readonly sequence: number;
-}
-
-function roleOf(message: AgentMessage): string {
-  return typeof message.role === "string" ? message.role : "unknown";
 }
 
 function usageDetails(usage: {
@@ -34,22 +31,9 @@ function usageDetails(usage: {
   return Object.keys(details).length === 0 ? undefined : details;
 }
 
-function workflowMetadata(event: AgentEvent): Record<string, unknown> {
+function attemptSuffix(event: AgentEvent): string {
   const workflow = event.workflow;
-  if (workflow === undefined) return {};
-  return {
-    stageId: workflow.stageId,
-    invocationId: workflow.invocationId,
-    worker: workflow.worker,
-    attempt: workflow.attempt,
-    ...(workflow.workspaceKey === undefined ? {} : { workspaceKey: workflow.workspaceKey }),
-  };
-}
-
-function parentAttemptHandle(event: AgentEvent): string | undefined {
-  const workflow = event.workflow;
-  if (workflow === undefined) return undefined;
-  return `attempt:${workflow.invocationId}:${workflow.attempt}`;
+  return `${workflow?.invocationId ?? "root"}:${workflow?.attempt ?? 0}`;
 }
 
 /**
@@ -61,32 +45,31 @@ function parentAttemptHandle(event: AgentEvent): string | undefined {
  * would duplicate them. Attempt totals come from `token_usage`, so a lone
  * `usage` event with no following message is dropped.
  */
-export function mapAgentEvent(
+export function bridgeAgentEvent(
   event: AgentEvent,
-  context: AgentEventExportContext,
-  timestamp: string,
+  context: BridgeContext,
+  timestamp: () => string,
 ): readonly ObservationOp[] {
   switch (event.type) {
     case "message_end": {
-      const role = roleOf(event.message);
-      if (role !== "assistant") return [];
+      if (event.message.role !== "assistant") return [];
       const text = messageText(event.message);
-      const parent = parentAttemptHandle(event);
+      const parent = event.workflow === undefined ? undefined : attemptHandle(event.workflow);
       return [{
         version: 1,
-        timestamp,
-        handle: `msg:${context.sequence}:${event.workflow?.invocationId ?? "root"}:${event.workflow?.attempt ?? 0}`,
+        timestamp: timestamp(),
+        handle: `msg:${context.sequence}:${attemptSuffix(event)}`,
         op: "emit",
         type: "generation",
         name: "agent.message",
         ...(parent === undefined ? {} : { parent }),
-        input: { role },
-        ...(text === undefined ? {} : { output: { role, text } }),
+        input: { role: "assistant" },
+        ...(text === undefined ? {} : { output: { role: "assistant", text } }),
         ...(context.model === undefined ? {} : { model: context.model }),
         ...(context.usageDetails === undefined ? {} : { usageDetails: context.usageDetails }),
         metadata: {
-          ...workflowMetadata(event),
-          role,
+          ...(event.workflow ?? {}),
+          role: "assistant",
           sequence: context.sequence,
         },
       }];
@@ -94,13 +77,13 @@ export function mapAgentEvent(
     case "error": {
       return [{
         version: 1,
-        timestamp,
-        handle: `err:${context.sequence}:${event.workflow?.invocationId ?? "root"}:${event.workflow?.attempt ?? 0}`,
+        timestamp: timestamp(),
+        handle: `err:${context.sequence}:${attemptSuffix(event)}`,
         op: "emit",
         type: "event",
         name: "agent.error",
         metadata: {
-          ...workflowMetadata(event),
+          ...(event.workflow ?? {}),
           errorType: event.errorType,
           message: event.message,
         },
@@ -109,13 +92,13 @@ export function mapAgentEvent(
     case "done": {
       return [{
         version: 1,
-        timestamp,
-        handle: `done:${event.workflow?.invocationId ?? "root"}:${event.workflow?.attempt ?? 0}`,
+        timestamp: timestamp(),
+        handle: `done:${attemptSuffix(event)}`,
         op: "emit",
         type: "event",
         name: "agent.done",
         metadata: {
-          ...workflowMetadata(event),
+          ...(event.workflow ?? {}),
           exitStatus: event.exitStatus,
         },
       }];
@@ -126,10 +109,10 @@ export function mapAgentEvent(
 }
 
 /** Carry `spawn`'s model and `usage`'s counters forward to the next message. */
-export function advanceAgentEventContext(
+export function advanceBridgeContext(
   event: AgentEvent,
-  context: AgentEventExportContext,
-): AgentEventExportContext {
+  context: BridgeContext,
+): BridgeContext {
   if (event.type === "spawn" && typeof event.model === "string") {
     return { ...context, model: event.model };
   }

@@ -17,17 +17,22 @@ export {
 } from "./errors.js";
 export { errorMessage, failureDetails, isCancellation } from "./errors.js";
 export {
+  attemptHandle,
   EMIT_OBSERVATION_TYPES,
+  fanoutObservationOps,
   foldObservationOps,
   foldObservationStream,
   OBSERVATION_TYPES,
+  observationStreamSink,
   parseObservationOp,
   parseObservationOps,
   stringifyObservationOp,
+  toolHandle,
   type EmitObservationType,
   type ObservationLevel,
   type ObservationNode,
   type ObservationOp,
+  type ObservationOpSink,
   type ObservationType,
 } from "./observation.js";
 export {

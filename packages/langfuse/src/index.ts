@@ -3,11 +3,6 @@ export {
   type LangfuseConfig,
 } from "./config.js";
 export {
-  advanceAgentEventContext,
-  mapAgentEvent,
-  type AgentEventExportContext,
-} from "./map-agent-event.js";
-export {
   attemptHandle,
   contextMetadata,
   mapWorkflowObservation,
@@ -18,7 +13,9 @@ export {
 } from "./mask.js";
 export {
   mapAcceptedScores,
+  mapAcceptedScoresFromMetrics,
   postLangfuseScores,
+  type AcceptedMetric,
   type LangfuseScoreRequest,
 } from "./scores.js";
 export {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "@piano/harness";
 import {
-  advanceAgentEventContext,
-  mapAgentEvent,
-  type AgentEventExportContext,
-} from "../src/map-agent-event.js";
+  advanceBridgeContext,
+  bridgeAgentEvent,
+  type AgentEvent,
+  type BridgeContext,
+} from "@piano/harness";
 
 const T = "2026-10-28T10:00:00.000Z";
 
@@ -15,20 +15,20 @@ const workflow = {
   attempt: 2,
 } as const;
 
-const context: AgentEventExportContext = {
+const context: BridgeContext = {
   model: "test-model",
   usageDetails: { input: 3, output: 2, total: 5 },
   sequence: 0,
 };
 
-describe("mapAgentEvent", () => {
+describe("bridgeAgentEvent", () => {
   it("exports an assistant message_end as a generation under its attempt", () => {
     const event: AgentEvent = {
       type: "message_end",
       message: { role: "assistant", content: "measured 12.3" },
       workflow,
     };
-    expect(mapAgentEvent(event, context, T)).toEqual([{
+    expect(bridgeAgentEvent(event, context, () => T)).toEqual([{
       version: 1,
       timestamp: T,
       handle: "msg:0:measure@loop/iter-1:2",
@@ -49,7 +49,7 @@ describe("mapAgentEvent", () => {
     }]);
   });
 
-  it("skips user messages and high-frequency update events", () => {
+  it("keeps working from the AgentEvent dialect and skips the high-frequency stream", () => {
     const user: AgentEvent = {
       type: "message_end",
       message: { role: "user", content: "go" },
@@ -69,20 +69,18 @@ describe("mapAgentEvent", () => {
       partialResult: "chunk",
       workflow,
     };
-    expect(mapAgentEvent(user, context, T)).toEqual([]);
-    expect(mapAgentEvent(update, context, T)).toEqual([]);
-    expect(mapAgentEvent(toolUpdate, context, T)).toEqual([]);
-  });
-
-  it("skips tool executions already exported as tool_call workflow observations", () => {
-    const started: AgentEvent = {
+    const toolStart: AgentEvent = {
       type: "tool_execution_start",
       toolCallId: "call-1",
       toolName: "bash",
       args: { command: "ls" },
       workflow,
     };
-    expect(mapAgentEvent(started, context, T)).toEqual([]);
+    expect(bridgeAgentEvent(user, context, () => T)).toEqual([]);
+    expect(bridgeAgentEvent(update, context, () => T)).toEqual([]);
+    expect(bridgeAgentEvent(toolUpdate, context, () => T)).toEqual([]);
+    // Tool executions already arrive as tool_call_* workflow observations.
+    expect(bridgeAgentEvent(toolStart, context, () => T)).toEqual([]);
   });
 
   it("exports error and done as point events", () => {
@@ -99,7 +97,7 @@ describe("mapAgentEvent", () => {
       transcriptPath: "/tmp/session-1.jsonl",
       workflow,
     };
-    expect(mapAgentEvent(error, context, T)).toEqual([{
+    expect(bridgeAgentEvent(error, context, () => T)).toEqual([{
       version: 1,
       timestamp: T,
       handle: "err:0:measure@loop/iter-1:2",
@@ -108,7 +106,7 @@ describe("mapAgentEvent", () => {
       name: "agent.error",
       metadata: expect.objectContaining({ errorType: "ProviderError", message: "rate limited" }),
     }]);
-    expect(mapAgentEvent(done, context, T)).toEqual([{
+    expect(bridgeAgentEvent(done, context, () => T)).toEqual([{
       version: 1,
       timestamp: T,
       handle: "done:measure@loop/iter-1:2",
@@ -120,10 +118,10 @@ describe("mapAgentEvent", () => {
   });
 });
 
-describe("advanceAgentEventContext", () => {
+describe("advanceBridgeContext", () => {
   it("carries spawn model and usage counters into the next message, then clears them", () => {
-    let state: AgentEventExportContext = { sequence: 0 };
-    state = advanceAgentEventContext({
+    let state: BridgeContext = { sequence: 0 };
+    state = advanceBridgeContext({
       type: "spawn",
       harness: "pi",
       model: "test-model",
@@ -131,13 +129,13 @@ describe("advanceAgentEventContext", () => {
     }, state);
     expect(state.model).toBe("test-model");
 
-    state = advanceAgentEventContext({
+    state = advanceBridgeContext({
       type: "usage",
       usage: { input: 3, output: 2, totalTokens: 5 },
     }, state);
     expect(state.usageDetails).toEqual({ input: 3, output: 2, total: 5 });
 
-    state = advanceAgentEventContext({
+    state = advanceBridgeContext({
       type: "message_end",
       message: { role: "assistant", content: "done" },
     }, state);

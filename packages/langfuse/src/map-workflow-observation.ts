@@ -1,17 +1,17 @@
-import type { ObservationOp, ObservationType, EmitObservationType } from "@piano/logging";
+import {
+  attemptHandle,
+  toolHandle,
+  type ObservationOp,
+  type ObservationType,
+  type EmitObservationType,
+} from "@piano/logging";
 import type {
   StageAttemptOutcome,
   TrajectoryRecordContext,
   WorkflowObservation,
 } from "@piano/trajectory";
 
-export function attemptHandle(context: Pick<TrajectoryRecordContext, "invocationId" | "attempt">): string {
-  return `attempt:${context.invocationId}:${context.attempt}`;
-}
-
-export function toolHandle(toolCallId: string): string {
-  return `tool:${toolCallId}`;
-}
+export { attemptHandle, toolHandle };
 
 /** Identity fields every exported observation carries so a Langfuse view can
  * be joined back to `~/.piano/runs/<runId>/` and `inv-<ref>`. */

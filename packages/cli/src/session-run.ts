@@ -4,6 +4,7 @@
 // and `resume` can drive the same loop without a circular import.
 
 import { NodeFileSystem } from "@effect/platform-node";
+import { FileSystem } from "@effect/platform";
 import { Effect, Exit } from "effect";
 import { stderr, stdout } from "node:process";
 import { dirname } from "node:path";
@@ -50,6 +51,20 @@ import {
   resolveLangfuseConfig,
   type LangfuseExport,
 } from "@piano/langfuse";
+import {
+  appendJsonlLine,
+  fanoutObservationOps,
+  observationStreamSink,
+  type ObservationOpSink,
+} from "@piano/logging";
+import {
+  advanceBridgeContext,
+  bridgeAgentEvent,
+  type BridgeContext,
+} from "@piano/harness";
+import { observationStreamPath } from "@piano/base";
+import { mapWorkflowObservation } from "@piano/langfuse";
+import type { WorkflowObservation } from "@piano/trajectory";
 import {
   createSteeringChannel,
   executeAgent,
@@ -101,6 +116,10 @@ export interface SessionRunOptions {
   readonly json?: boolean;
   /** Task namespace for lane branches; skips the preflight summary. */
   readonly mnemonic?: string;
+  /** Write the Langfuse-aligned observation stream (`system-log/observations.jsonl`)
+   * alongside the existing evidence. `AgentEvent` keeps flowing to every current
+   * consumer; this is the migration switch, not a replacement. */
+  readonly langfuse?: boolean;
   /** Resume this run as soon as the TUI opens. When it is the session's own run,
    * the takeover reuses the open session instead of opening a second one. */
   readonly resumeRunId?: string;
@@ -312,6 +331,35 @@ function runSessionBody(
               // the summary.
               const allowSummary = options.agentRunner === undefined;
               const langfuseExport = yield* langfuseExportFor(current.session.id);
+              // One production point, several sinks: both mappers run once and
+              // the same ops fan out to the local stream and to Langfuse, so the
+              // two can never diverge. `AgentEvent` keeps flowing to `onEvent`.
+              const fileSystem = yield* FileSystem.FileSystem;
+              const observationPath = observationStreamPath(current.session.runDir);
+              const sinks: ObservationOpSink[] = [];
+              if (options.langfuse === true) {
+                sinks.push(observationStreamSink((lines) => {
+                  void Effect.runPromise(
+                    appendJsonlLine(fileSystem, observationPath, lines, () => undefined)
+                      .pipe(Effect.ignore),
+                  );
+                }));
+              }
+              if (langfuseExport !== undefined) sinks.push(langfuseExport.onOps);
+              const emitOps = fanoutObservationOps(sinks);
+              const now = () => new Date().toISOString();
+              const observationExport = {
+                id: "observation",
+                export: (observation: WorkflowObservation) =>
+                  Effect.sync(() => {
+                    emitOps(mapWorkflowObservation(observation, now()));
+                  }),
+              };
+              let bridgeContext: BridgeContext = { sequence: 0 };
+              const agentEventExport = (event: AgentEvent) => {
+                emitOps(bridgeAgentEvent(event, bridgeContext, now));
+                bridgeContext = advanceBridgeContext(event, bridgeContext);
+              };
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
@@ -338,12 +386,9 @@ function runSessionBody(
                 ...(options.agentRunner === undefined ? {} : { agentRunner: options.agentRunner }),
                 signoff,
                 discuss,
-                ...(langfuseExport === undefined
+                ...(sinks.length === 0
                   ? {}
-                  : {
-                    observationExport: langfuseExport.observation,
-                    agentEventExport: langfuseExport.onAgentEvent,
-                  }),
+                  : { observationExport, agentEventExport }),
                 onEvent: (event: AgentEvent) => {
                   events.push(event);
                   onEvent(event);

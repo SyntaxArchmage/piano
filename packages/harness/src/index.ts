@@ -87,3 +87,8 @@ export {
   type AgentUsage,
   type ThinkingLevel,
 } from "./events.js";
+export {
+  advanceBridgeContext,
+  bridgeAgentEvent,
+  type BridgeContext,
+} from "./observation-bridge.js";

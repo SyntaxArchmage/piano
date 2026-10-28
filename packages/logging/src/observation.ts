@@ -166,6 +166,43 @@ export function stringifyObservationOp(op: ObservationOp): string {
   return JSON.stringify(op);
 }
 
+/** Identity constructors. Handles are part of the vocabulary: every mapper
+ * builds the same `attempt:` / `tool:` names, so a child can always find its
+ * parent across streams and packages. */
+export function attemptHandle(
+  context: { readonly invocationId: string; readonly attempt: number },
+): string {
+  return `attempt:${context.invocationId}:${context.attempt}`;
+}
+
+export function toolHandle(toolCallId: string): string {
+  return `tool:${toolCallId}`;
+}
+
+/** A sink receives already-mapped ops. Sinks never translate — the mappers do
+ * that once — so several sinks can share one production point without each
+ * re-deriving the vocabulary. */
+export type ObservationOpSink = (ops: readonly ObservationOp[]) => void;
+
+export function fanoutObservationOps(
+  sinks: readonly ObservationOpSink[],
+): ObservationOpSink {
+  return (ops) => {
+    for (const sink of sinks) sink(ops);
+  };
+}
+
+/** Append ops to one JSONL stream. Best-effort by construction: a write gap is
+ * an evidence gap, never a run failure. */
+export function observationStreamSink(
+  append: (lines: string) => void,
+): ObservationOpSink {
+  return (ops) => {
+    if (ops.length === 0) return;
+    append(ops.map((op) => `${stringifyObservationOp(op)}\n`).join(""));
+  };
+}
+
 /** Every op in one JSONL stream, dropping the lines the line codec rejects. */
 export function parseObservationOps(raw: string | undefined): readonly ObservationOp[] {
   const ops: ObservationOp[] = [];

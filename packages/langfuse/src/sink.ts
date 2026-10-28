@@ -5,18 +5,9 @@ import {
   startObservation,
   type LangfuseObservation,
 } from "@langfuse/tracing";
-import { Effect } from "effect";
-import type { AgentEvent } from "@piano/harness";
 import type { ObservationOp } from "@piano/logging";
-import type { WorkflowObservation, WorkflowObservationExport } from "@piano/trajectory";
 import type { LangfuseConfig } from "./config.js";
-import {
-  advanceAgentEventContext,
-  mapAgentEvent,
-  type AgentEventExportContext,
-} from "./map-agent-event.js";
-import { mapWorkflowObservation } from "./map-workflow-observation.js";
-import { mapAcceptedScores, postLangfuseScores } from "./scores.js";
+import { mapAcceptedScoresFromMetrics, postLangfuseScores } from "./scores.js";
 
 /** Synthetic remote parent that pins a deterministic trace id.
  *
@@ -100,11 +91,13 @@ function applyOp(
   }
 }
 
-/** The two export seams of one run, sharing one Langfuse trace and one handle
- * map so agent messages nest under their stage attempt. */
+/** The Langfuse side of one run: one sink for already-mapped observation ops.
+ *
+ * Sinks never translate. The caller maps once (workflow observations and agent
+ * events both arrive as `ObservationOp`) and fans the same ops out to every
+ * sink, so the local stream and this export can never diverge. */
 export interface LangfuseExport {
-  readonly observation: WorkflowObservationExport;
-  readonly onAgentEvent: (event: AgentEvent) => void;
+  readonly onOps: (ops: readonly ObservationOp[]) => void;
 }
 
 /** Build the Langfuse export sink for one run.
@@ -119,33 +112,29 @@ export async function createLangfuseExport(
 ): Promise<LangfuseExport> {
   const traceId = await createTraceId(runId);
   const handles = new Map<string, LangfuseObservation>();
-  let eventContext: AgentEventExportContext = { sequence: 0 };
-
-  const apply = (ops: readonly ObservationOp[]): void => {
-    for (const op of ops) applyOp(op, handles, traceId);
-  };
 
   return {
-    observation: {
-      id: "langfuse",
-      export: (observation: WorkflowObservation) =>
-        Effect.sync(() => {
-          try {
-            apply(mapWorkflowObservation(observation, new Date().toISOString()));
-            if (config !== undefined && observation.type === "stage_accepted") {
-              const scores = mapAcceptedScores(observation, traceId);
+    onOps: (ops: readonly ObservationOp[]) => {
+      try {
+        for (const op of ops) {
+          applyOp(op, handles, traceId);
+          if (config !== undefined && op.op === "emit" && op.name === "stage.accepted") {
+            const metrics = op.metadata?.metrics;
+            if (Array.isArray(metrics)) {
+              const scores = mapAcceptedScoresFromMetrics(
+                metrics as Parameters<typeof mapAcceptedScoresFromMetrics>[0],
+                traceId,
+                {
+                  ...(op.metadata?.invocationId === undefined ? {} : { invocationId: op.metadata.invocationId }),
+                  ...(op.metadata?.stageId === undefined ? {} : { stageId: op.metadata.stageId }),
+                  ...(op.metadata?.attempt === undefined ? {} : { attempt: op.metadata.attempt }),
+                },
+              );
               // Fire-and-forget: a score gap never fails the run.
               void postLangfuseScores(config, scores).catch(() => undefined);
             }
-          } catch {
-            // Export never fails the run or the local evidence.
           }
-        }),
-    },
-    onAgentEvent: (event: AgentEvent) => {
-      try {
-        apply(mapAgentEvent(event, eventContext, new Date().toISOString()));
-        eventContext = advanceAgentEventContext(event, eventContext);
+        }
       } catch {
         // Export never fails the run or the local evidence.
       }
@@ -157,6 +146,6 @@ export async function createLangfuseExport(
 export async function createLangfuseObservationExport(
   runId: string,
   config?: LangfuseConfig,
-): Promise<WorkflowObservationExport> {
-  return (await createLangfuseExport(runId, config)).observation;
+): Promise<LangfuseExport> {
+  return createLangfuseExport(runId, config);
 }

@@ -11,16 +11,32 @@ export interface LangfuseScoreRequest {
   readonly metadata: Record<string, unknown>;
 }
 
+/** The metric slice an accepted stage carries: a pointer into the worker
+ * payload plus the validated `benchmark/v1` value behind it. */
+export interface AcceptedMetric {
+  readonly pointer: string;
+  readonly value: {
+    readonly name: string;
+    readonly unit: string;
+    readonly direction: "higher" | "lower";
+    readonly best: number;
+    readonly median: number;
+    readonly runs: number;
+    readonly warmup: number;
+  };
+}
+
 /** Map each accepted benchmark metric to a Langfuse numeric score.
  *
  * The score value is the metric's `best` — the number a tournament referee
  * already ranks by. Unit, direction, and the raw pointer stay in metadata so
  * a reader can join the score back to `eval-metrics/benchmark.jsonl`. */
-export function mapAcceptedScores(
-  observation: Extract<WorkflowObservation, { type: "stage_accepted" }>,
+export function mapAcceptedScoresFromMetrics(
+  metrics: readonly AcceptedMetric[],
   traceId: string,
+  identity: Record<string, unknown> = {},
 ): readonly LangfuseScoreRequest[] {
-  return observation.metrics.map(({ pointer, value }) => ({
+  return metrics.map(({ pointer, value }) => ({
     traceId,
     name: value.name,
     value: value.best,
@@ -33,12 +49,22 @@ export function mapAcceptedScores(
       median: value.median,
       runs: value.runs,
       warmup: value.warmup,
-      invocationId: observation.context.invocationId,
-      stageId: observation.context.stageId,
-      attempt: observation.context.attempt,
-      ...(observation.context.iteration === undefined ? {} : { iteration: observation.context.iteration }),
+      ...identity,
     },
   }));
+}
+
+/** Map a `stage_accepted` workflow observation to scores. */
+export function mapAcceptedScores(
+  observation: Extract<WorkflowObservation, { type: "stage_accepted" }>,
+  traceId: string,
+): readonly LangfuseScoreRequest[] {
+  return mapAcceptedScoresFromMetrics(observation.metrics, traceId, {
+    invocationId: observation.context.invocationId,
+    stageId: observation.context.stageId,
+    attempt: observation.context.attempt,
+    ...(observation.context.iteration === undefined ? {} : { iteration: observation.context.iteration }),
+  });
 }
 
 /** POST scores to the Langfuse public API. Best-effort: the caller swallows

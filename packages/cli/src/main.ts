@@ -16,15 +16,16 @@ import { CliArgumentError } from "./errors.js";
 import { programName } from "./program-name.js";
 import { runSession, type SessionRunError, type SessionRunOptions } from "./session-run.js";
 
-type MainOptions = Pick<SessionRunOptions, "workflowPath" | "prompt" | "json" | "mnemonic">;
+type MainOptions = Pick<SessionRunOptions, "workflowPath" | "prompt" | "json" | "mnemonic" | "langfuse">;
 
 function parseMainArgs(args: readonly string[]): Effect.Effect<MainOptions, CliArgumentError> {
-  const usage = `usage: ${programName()} [--workflow <path>] [--mnemonic <name>] [-p] [--prompt <text>] [--json] [<prompt>]`;
+  const usage = `usage: ${programName()} [--workflow <path>] [--mnemonic <name>] [--langfuse] [-p] [--prompt <text>] [--json] [<prompt>]`;
   let workflowPath: string | undefined;
   let mnemonic: string | undefined;
   let prompt: string | undefined;
   let json = false;
   let headless = false;
+  let langfuse = false;
   const positional: string[] = [];
   let positionalOnly = false;
   /** The value of a `--flag <value>` pair, or undefined when it is missing or
@@ -70,6 +71,10 @@ function parseMainArgs(args: readonly string[]): Effect.Effect<MainOptions, CliA
       json = true;
       continue;
     }
+    if (!positionalOnly && arg === "--langfuse") {
+      langfuse = true;
+      continue;
+    }
     if (!positionalOnly && arg.startsWith("-")) return Effect.fail(new CliArgumentError({ message: usage }));
     positional.push(arg);
   }
@@ -94,6 +99,7 @@ function parseMainArgs(args: readonly string[]): Effect.Effect<MainOptions, CliA
     ...(mnemonic === undefined ? {} : { mnemonic }),
     ...(prompt === undefined ? {} : { prompt }),
     ...(json ? { json: true } : {}),
+    ...(langfuse ? { langfuse: true } : {}),
   });
 }
 
