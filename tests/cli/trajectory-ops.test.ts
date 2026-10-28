@@ -290,29 +290,17 @@ describe("fused op stream", () => {
     };
     const events = [
       { type: "spawn", harness: "pi", model: "m", skills: [], workflow },
+      { type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: { path: "a.ts" }, workflow },
+      { type: "tool_execution_end", toolCallId: "c1", toolName: "read", result: "ok", isError: false, workflow },
       { type: "message_end", message: { role: "assistant", content: "hello" }, workflow },
       { type: "usage", usage: { input: 2, output: 3 }, workflow },
       { type: "done", exitStatus: 0, sessionId: "s", transcriptPath: "/t", workflow },
     ] as const;
 
+    // The attempt span rides the workflow mapper; the turn's facts — tools
+    // included — ride the bridge.
     let ops: ObservationOp[] = [
       ...mapWorkflowObservation({ type: "stage_attempt_started", context: workflowContext, monotonicMs: 0 }, T(0)),
-      // Tools ride the workflow mapper, not the bridge.
-      ...mapWorkflowObservation({
-        type: "tool_call_started",
-        context: workflowContext,
-        toolCallId: "c1",
-        toolName: "read",
-        monotonicMs: 1,
-      }, T(1000)),
-      ...mapWorkflowObservation({
-        type: "tool_call_finished",
-        context: workflowContext,
-        toolCallId: "c1",
-        toolName: "read",
-        isError: false,
-        monotonicMs: 2,
-      }, T(1000)),
     ];
     let ctx = { sequence: 0 };
     for (const event of events) {

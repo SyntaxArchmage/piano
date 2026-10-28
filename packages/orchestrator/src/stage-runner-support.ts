@@ -110,7 +110,6 @@ export function trajectoryAgentObservation(
       context: context(),
       toolCallId: event.toolCallId,
       toolName: event.toolName,
-      args: event.args,
       monotonicMs: performance.now(),
     };
   }
@@ -121,7 +120,6 @@ export function trajectoryAgentObservation(
       toolCallId: event.toolCallId,
       toolName: event.toolName,
       isError: event.isError,
-      result: event.result,
       monotonicMs: performance.now(),
     };
   }

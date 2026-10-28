@@ -1,8 +1,5 @@
 import {
   attemptHandle,
-  toolCallEndOp,
-  toolCallStartOp,
-  toolHandle,
   type ObservationOp,
   type ObservationType,
   type EmitObservationType,
@@ -13,7 +10,7 @@ import type {
   WorkflowObservation,
 } from "@piano/trajectory";
 
-export { attemptHandle, toolHandle };
+export { attemptHandle };
 
 /** Identity fields every exported observation carries so a Langfuse view can
  * be joined back to `~/.piano/runs/<runId>/` and `inv-<ref>`. */
@@ -88,35 +85,12 @@ export function mapWorkflowObservation(
         metadata: contextMetadata(observation.context),
       }];
     }
-    case "tool_call_started": {
-      // Tool facts for an attributed attempt are produced here. An
-      // unattributed turn (the side agent) has no workflow mapper, so the
-      // bridge emits the same ops for it — one fact, one elevation per turn.
-      return [toolCallStartOp({
-        timestamp,
-        toolCallId: observation.toolCallId,
-        toolName: observation.toolName,
-        args: observation.args,
-        parent: attemptHandle(observation.context),
-        metadata: {
-          ...contextMetadata(observation.context),
-          monotonicMs: observation.monotonicMs,
-        },
-      })];
-    }
-    case "tool_call_finished": {
-      return [toolCallEndOp({
-        timestamp,
-        toolCallId: observation.toolCallId,
-        toolName: observation.toolName,
-        result: observation.result,
-        isError: observation.isError,
-        metadata: {
-          ...contextMetadata(observation.context),
-          monotonicMs: observation.monotonicMs,
-        },
-      })];
-    }
+    // Tool ops come from `AgentEvent` in `bridgeAgentEvent` and nowhere else.
+    // These observations carry no op: they exist for the eval-metrics
+    // recorders.
+    case "tool_call_started":
+    case "tool_call_finished":
+      return [];
     case "stage_accepted": {
       return [{
         version: 1,

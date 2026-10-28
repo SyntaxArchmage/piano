@@ -101,13 +101,12 @@ describe("mapWorkflowObservation", () => {
     }]);
   });
 
-  it("nests tool calls under their attempt and marks tool failure", () => {
+  it("leaves tool facts to the bridge: every tool call is born an AgentEvent", () => {
     const started: WorkflowObservation = {
       type: "tool_call_started",
       context,
       toolCallId: "call-1",
       toolName: "bash",
-      args: { command: "ls" },
       monotonicMs: 5,
     };
     const finished: WorkflowObservation = {
@@ -116,30 +115,10 @@ describe("mapWorkflowObservation", () => {
       toolCallId: "call-1",
       toolName: "bash",
       isError: true,
-      result: "boom",
       monotonicMs: 9,
     };
-    expect(mapWorkflowObservation(started, T)).toEqual([{
-      version: 1,
-      timestamp: T,
-      handle: `tool:call-1`,
-      op: "start",
-      type: "tool",
-      name: "bash",
-      parent: attemptHandle(context),
-      input: { command: "ls" },
-      metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
-    }]);
-    expect(mapWorkflowObservation(finished, T)).toEqual([{
-      version: 1,
-      timestamp: T,
-      handle: `tool:call-1`,
-      op: "end",
-      level: "ERROR",
-      statusMessage: "tool failed",
-      output: "boom",
-      metadata: expect.objectContaining({ isError: true }),
-    }]);
+    expect(mapWorkflowObservation(started, T)).toEqual([]);
+    expect(mapWorkflowObservation(finished, T)).toEqual([]);
   });
 
   it("emits acceptance metrics as a point event under the attempt", () => {

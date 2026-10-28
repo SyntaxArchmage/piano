@@ -194,9 +194,9 @@ export function toolCallIdFromHandle(handle: string): string | undefined {
   return handle.startsWith("tool:") ? handle.slice("tool:".length) : undefined;
 }
 
-/** The one shape a tool call's two ops wear, whichever producer emits them —
- * the workflow mapper for an attributed attempt, the bridge for a turn no
- * workflow observes. Callers add their own `parent` and metadata. */
+/** The one shape a tool call's two ops wear. The bridge is the only producer
+ * — every tool execution is born an `AgentEvent` — and callers add their own
+ * `parent` and metadata. */
 export function toolCallStartOp(input: {
   readonly timestamp: string;
   readonly toolCallId: string;

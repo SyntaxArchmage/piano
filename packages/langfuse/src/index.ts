@@ -6,7 +6,6 @@ export {
   attemptHandle,
   contextMetadata,
   mapWorkflowObservation,
-  toolHandle,
 } from "./map-workflow-observation.js";
 export {
   maskLangfusePayload,

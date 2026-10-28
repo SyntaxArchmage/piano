@@ -427,7 +427,7 @@ describe("agentEventExporter", () => {
     const batches: string[][] = [];
     const emit = agentEventExporter(
       (ops) => batches.push(ops.map((op) => `${op.op}:${op.handle}`)),
-      { timestamp: () => T },
+      () => T,
     );
     emit({ type: "spawn", harness: "pi", skills: [] });
     emit({ type: "message_end", message: { role: "assistant", content: "hi" } });
@@ -437,16 +437,6 @@ describe("agentEventExporter", () => {
     ]);
   });
 
-  it("drops an attributed turn's tool facts the live workflow mapper already speaks", () => {
-    const batches: string[][] = [];
-    const emit = agentEventExporter(
-      (ops) => batches.push(ops.map((op) => `${op.op}:${op.handle}`)),
-      { timestamp: () => T },
-    );
-    emit({ type: "tool_execution_start", toolCallId: "c1", toolName: "bash", args: {}, workflow });
-    emit({ type: "tool_execution_start", toolCallId: "c2", toolName: "bash", args: {} });
-    expect(batches).toEqual([["start:tool:c2"]]);
-  });
 });
 
 describe("bridgeAgentEvents", () => {
@@ -458,7 +448,7 @@ describe("bridgeAgentEvents", () => {
       { type: "message_end", message: { role: "assistant", content: "hi" } },
     ];
     const ops = bridgeAgentEvents(events, () => T);
-    // Replay owns the tool facts too — no workflow mapper runs on a recording.
+    // The bridge owns tool facts; nothing else spells the op shape.
     expect(ops.map((op) => op.op)).toEqual(["start", "emit", "start", "start", "end"]);
     expect(ops.map((op) => op.handle)).toEqual([
       "agent:0:root:0",
