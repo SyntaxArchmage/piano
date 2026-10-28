@@ -66,7 +66,7 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
-  it("emits tool executions as tool spans under their attempt", () => {
+  it("leaves tool executions to the workflow mapper so one fact has one elevation", () => {
     const started: AgentEvent = {
       type: "tool_execution_start",
       toolCallId: "call-1",
@@ -82,25 +82,8 @@ describe("bridgeAgentEvent", () => {
       isError: true,
       workflow,
     };
-    expect(bridgeAgentEvent(started, context, () => T)).toEqual([{
-      version: 1,
-      timestamp: T,
-      handle: "tool:call-1",
-      op: "start",
-      type: "tool",
-      name: "bash",
-      parent: "attempt:measure@loop/iter-1:2",
-      metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
-    }]);
-    expect(bridgeAgentEvent(ended, context, () => T)).toEqual([{
-      version: 1,
-      timestamp: T,
-      handle: "tool:call-1",
-      op: "end",
-      level: "ERROR",
-      statusMessage: "tool failed",
-      metadata: expect.objectContaining({ isError: true }),
-    }]);
+    expect(bridgeAgentEvent(started, context, () => T)).toEqual([]);
+    expect(bridgeAgentEvent(ended, context, () => T)).toEqual([]);
   });
 
   it("skips the high-frequency stream", () => {

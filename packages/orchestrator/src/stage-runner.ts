@@ -634,6 +634,19 @@ export function executeStage(
         ...(workspace.recordPath === undefined ? {} : { workspaceRecordPath: workspace.recordPath }),
       },
     });
+    /** Collect tool observations from one agent turn and forward the event.
+     * Every turn of this actor — the stage's own and an `epilogue` follow-up —
+     * uses it, so tool facts always land on the same observation path. The
+     * type check comes first: streaming noise must not pay for a context. */
+    const collectObservation = (sink: WorkflowObservation[]) => (event: AgentEvent): void => {
+      const decorated = decorateEvent(event);
+      if (event.type === "tool_execution_start" || event.type === "tool_execution_end") {
+        const observation = trajectoryAgentObservation(decorated, trajectoryContext(attempt));
+        if (observation !== undefined) sink.push(observation);
+      }
+      request.agentEventExport?.(decorated);
+      request.onEvent?.(decorated);
+    };
     while (true) {
       const attemptObservations: WorkflowObservation[] = [];
       const loopFrame = loopFrames(frames).at(-1);
@@ -712,13 +725,7 @@ export function executeStage(
         onContinuation: (continuation: AgentContinuation) => {
           announcedContinuations.set(actorKey, continuation);
         },
-        onEvent: (event: AgentEvent) => {
-          const decorated = decorateEvent(event);
-          const observation = trajectoryAgentObservation(decorated, trajectoryContext(attempt));
-          if (observation !== undefined) attemptObservations.push(observation);
-          request.agentEventExport?.(decorated);
-          request.onEvent?.(decorated);
-        },
+        onEvent: collectObservation(attemptObservations),
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
         ...(node.stage.discuss !== true || request.discuss === undefined ? {} : {
           // The supervisor channel and the worker contract are both Effect;
@@ -1209,6 +1216,7 @@ export function executeStage(
     // never fail a stage that already passed. An interrupt here leaves the
     // accepted stage exactly as written.
     if (epilogue !== undefined && acceptedWorker.continuation !== undefined) {
+      const epilogueObservations: WorkflowObservation[] = [];
       const epilogueTimeoutSeconds = node.stage.timeout;
       const epilogueSignal = epilogueTimeoutSeconds === undefined
         ? request.signal
@@ -1234,11 +1242,7 @@ export function executeStage(
         ...(memoryEnabled ? { continuation: acceptedWorker.continuation } : {}),
         // The follow-up is still this actor's turn, so its output streams
         // under the same stage attribution as the accepted one.
-        onEvent: (event: AgentEvent) => {
-          const decorated = decorateEvent(event);
-          request.agentEventExport?.(decorated);
-          request.onEvent?.(decorated);
-        },
+        onEvent: collectObservation(epilogueObservations),
         ...(request.agentRunner === undefined ? {} : { agentRunner: request.agentRunner }),
       }, agentOptions).pipe(
         Effect.asVoid,
@@ -1246,6 +1250,14 @@ export function executeStage(
           data: { id: runtimeInvocationId(invocation), error: failureDetails(error) },
         })),
         Effect.catchAll(() => Effect.void),
+        Effect.ensuring(Effect.forEach(
+          epilogueObservations,
+          (observation) => workflowTrajectory.observe(attributeTrajectoryObservation(
+            observation,
+            acceptedWorker?.continuation ?? announcedContinuations.get(actorKey),
+          )),
+          { discard: true },
+        )),
       );
     }
     return persistedResult;

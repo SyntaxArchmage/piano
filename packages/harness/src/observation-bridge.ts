@@ -4,7 +4,6 @@ import {
   AGENT_USAGE_NAME,
   attemptHandle,
   messageName,
-  toolHandle,
   type ObservationOp,
 } from "@piano/logging";
 import { messageText } from "./events.js";
@@ -47,11 +46,12 @@ function attemptSuffix(event: AgentEvent): string {
  * Map one harness agent event to observation ops.
  *
  * High-frequency `*_update` events stay in the transcript and are skipped,
- * matching `shouldPersistAgentEvent`. Tools ride the bridge (`tool_execution_*`);
- * the workflow mapper drops its `tool_call_*` copy so one fact has one
- * elevation. Per-call `usage` is its own `update` op (the SDK emits it after
- * `message_end`, so it cannot ride the generation it belongs to); attempt
- * totals stay on `token_usage`.
+ * matching `shouldPersistAgentEvent`. Tools are not emitted here: every tool
+ * execution is already a `tool_call_*` workflow observation (including the
+ * epilogue's follow-up turn), and one fact keeps one elevation. Per-call
+ * `usage` is its own `emit` op (the SDK emits it after `message_end`, so it
+ * cannot ride the generation it belongs to); attempt totals stay on
+ * `token_usage`.
  */
 export function bridgeAgentEvent(
   event: AgentEvent,
@@ -99,38 +99,6 @@ export function bridgeAgentEvent(
         ...(event.workflow === undefined ? {} : { parent: attemptHandle(event.workflow) }),
         usageDetails: usageDetails(event.usage) ?? {},
         metadata: { ...(event.workflow ?? {}), sequence: context.sequence },
-      }];
-    }
-    case "tool_execution_start": {
-      const parent = event.workflow === undefined ? undefined : attemptHandle(event.workflow);
-      return [{
-        version: 1,
-        timestamp: timestamp(),
-        handle: toolHandle(event.toolCallId),
-        op: "start" as const,
-        type: "tool" as const,
-        name: event.toolName,
-        ...(parent === undefined ? {} : { parent }),
-        metadata: {
-          ...(event.workflow ?? {}),
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-        },
-      }];
-    }
-    case "tool_execution_end": {
-      return [{
-        version: 1,
-        timestamp: timestamp(),
-        handle: toolHandle(event.toolCallId),
-        op: "end" as const,
-        ...(event.isError ? { level: "ERROR" as const, statusMessage: "tool failed" } : {}),
-        metadata: {
-          ...(event.workflow ?? {}),
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          isError: event.isError,
-        },
       }];
     }
     case "error": {
