@@ -49,6 +49,10 @@ export type WorkflowObservation =
     readonly context: TrajectoryRecordContext;
     readonly toolCallId: string;
     readonly toolName: string;
+    /** The call's arguments. Carried so the observation op can hold the tool's
+     * `input` and the Langfuse export is not blind; the metrics recorder
+     * ignores it. */
+    readonly args?: unknown;
     readonly monotonicMs: number;
   }
   | {
@@ -57,6 +61,8 @@ export type WorkflowObservation =
     readonly toolCallId: string;
     readonly toolName: string;
     readonly isError: boolean;
+    /** The call's result, for the same reason `args` rides the start. */
+    readonly result?: unknown;
     readonly monotonicMs: number;
   }
   | {

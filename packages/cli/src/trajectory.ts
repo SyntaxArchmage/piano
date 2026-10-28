@@ -57,11 +57,14 @@ export function emptyTrajectoryState(): TrajectoryState {
   return { entries: [], maxEntries: TRAJECTORY_MAX_ENTRIES };
 }
 
-/** Serialize a tool result for a one-line detail (bounded, like the args). */
-function resultText(result: unknown, isError: boolean): string {
-  if (result === undefined) return isError ? "error" : "ok";
-  if (typeof result === "string") return result;
-  return jsonText(result);
+/** The one-line detail a tool result gets, including the failure mark. Shared
+ * by the `AgentEvent` and the op path so the two ledgers cannot drift on how a
+ * failed call is spelled. The renderer truncates; the ledger keeps the line. */
+function toolResultDetail(result: unknown, isError: boolean): string {
+  const text = result === undefined
+    ? (isError ? "error" : "ok")
+    : typeof result === "string" ? result : jsonText(result);
+  return isError ? `✗ ${text}` : text;
 }
 
 /** Serialize a tool call argument for a one-line detail. */
@@ -198,12 +201,12 @@ function toEntry(
       if (durationMs === undefined && fallbackStart !== undefined) {
         durationMs = now - fallbackStart.tsMs;
       }
-      const result = resultText(event.result, event.isError);
+      const result = toolResultDetail(event.result, event.isError);
       return {
         seq,
         kind: "tool_result",
         label: event.toolName,
-        detail: event.isError ? `✗ ${result}` : result,
+        detail: result,
         tsMs: now,
         toolCallId: event.toolCallId,
         durationMs,
@@ -345,7 +348,7 @@ function opToEntries(
       seq,
       kind: "tool_call",
       label: op.name,
-      detail: "",
+      detail: argText(op.input),
       tsMs,
       toolCallId: toolCallIdFromHandle(op.handle),
     }];
@@ -359,7 +362,7 @@ function opToEntries(
         kind: "tool_result",
         // The close op carries the tool name; the handle is the join key.
         label: metadataString(op, "toolName") ?? toolCallId,
-        detail: failed ? `✗ ${op.statusMessage ?? "error"}` : "ok",
+        detail: toolResultDetail(op.output, failed),
         tsMs,
         toolCallId,
       }];

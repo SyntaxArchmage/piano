@@ -107,6 +107,7 @@ describe("mapWorkflowObservation", () => {
       context,
       toolCallId: "call-1",
       toolName: "bash",
+      args: { command: "ls" },
       monotonicMs: 5,
     };
     const finished: WorkflowObservation = {
@@ -115,6 +116,7 @@ describe("mapWorkflowObservation", () => {
       toolCallId: "call-1",
       toolName: "bash",
       isError: true,
+      result: "boom",
       monotonicMs: 9,
     };
     expect(mapWorkflowObservation(started, T)).toEqual([{
@@ -125,6 +127,7 @@ describe("mapWorkflowObservation", () => {
       type: "tool",
       name: "bash",
       parent: attemptHandle(context),
+      input: { command: "ls" },
       metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
     }]);
     expect(mapWorkflowObservation(finished, T)).toEqual([{
@@ -134,6 +137,7 @@ describe("mapWorkflowObservation", () => {
       op: "end",
       level: "ERROR",
       statusMessage: "tool failed",
+      output: "boom",
       metadata: expect.objectContaining({ isError: true }),
     }]);
   });

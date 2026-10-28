@@ -38,6 +38,7 @@ describe("applyObservationOps", () => {
         type: "tool",
         name: "bash",
         parent: "attempt:measure@loop/iter-1:1",
+        input: { command: "ls" },
       },
       {
         version: 1,
@@ -45,6 +46,7 @@ describe("applyObservationOps", () => {
         handle: "tool:call-1",
         op: "end",
         level: "DEFAULT",
+        output: "a.ts",
         metadata: { toolName: "bash" },
       },
       {
@@ -65,8 +67,8 @@ describe("applyObservationOps", () => {
       "agent_message",
     ]);
     expect(state.entries[0]).toMatchObject({ label: "loop.measure #3", detail: "benchmark-worker" });
-    expect(state.entries[1]).toMatchObject({ label: "bash", toolCallId: "call-1" });
-    expect(state.entries[2]).toMatchObject({ label: "bash", detail: "ok", toolCallId: "call-1" });
+    expect(state.entries[1]).toMatchObject({ label: "bash", detail: '{"command":"ls"}', toolCallId: "call-1" });
+    expect(state.entries[2]).toMatchObject({ label: "bash", detail: "a.ts", toolCallId: "call-1" });
     expect(state.entries[3]).toMatchObject({ label: "agent", detail: "measured 12.3" });
   });
 

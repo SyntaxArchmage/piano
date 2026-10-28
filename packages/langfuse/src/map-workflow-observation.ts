@@ -96,6 +96,7 @@ export function mapWorkflowObservation(
         type: "tool",
         name: observation.toolName,
         parent: attemptHandle(observation.context),
+        ...(observation.args === undefined ? {} : { input: observation.args }),
         metadata: {
           ...contextMetadata(observation.context),
           toolCallId: observation.toolCallId,
@@ -112,6 +113,7 @@ export function mapWorkflowObservation(
         op: "end",
         level: observation.isError ? "ERROR" : "DEFAULT",
         ...(observation.isError ? { statusMessage: "tool failed" } : {}),
+        ...(observation.result === undefined ? {} : { output: observation.result }),
         metadata: {
           ...contextMetadata(observation.context),
           toolCallId: observation.toolCallId,

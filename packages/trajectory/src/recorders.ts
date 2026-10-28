@@ -390,13 +390,19 @@ export class ToolCallRecorder implements TrajectoryRecorder<ToolCallRecord, Tool
     schema: "piano.trajectory.tool-call/v1",
     path: "tool-calls.jsonl",
   };
-  private readonly open = new Map<string, { readonly startedAt: number; readonly context: WorkflowObservation & { readonly type: "tool_call_started" } }>();
+  // Only the fields the close/abandon rows need: an in-flight call must not
+  // pin its whole observation (and the tool's args) until it finishes.
+  private readonly open = new Map<string, { readonly startedAt: number; readonly toolCallId: string; readonly toolName: string }>();
 
   constructor(private readonly runDir: string) {}
 
   observe(observation: WorkflowObservation) {
     if (observation.type === "tool_call_started") {
-      this.open.set(toolKey(observation), { startedAt: observation.monotonicMs, context: observation });
+      this.open.set(toolKey(observation), {
+        startedAt: observation.monotonicMs,
+        toolCallId: observation.toolCallId,
+        toolName: observation.toolName,
+      });
       return Effect.void;
     }
     if (observation.type === "tool_call_finished") {
@@ -419,8 +425,8 @@ export class ToolCallRecorder implements TrajectoryRecorder<ToolCallRecord, Tool
     return Effect.forEach(abandoned, ([, call]) => appendRecord(this.runDir, this.descriptor, toolCallRecordSchema, {
       ...observation.context,
       kind: "tool_call" as const,
-      toolCallId: call.context.toolCallId,
-      toolName: call.context.toolName,
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
       status: "failed" as const,
       durationMs: Math.max(0, observation.monotonicMs - call.startedAt),
     }), { discard: true });
