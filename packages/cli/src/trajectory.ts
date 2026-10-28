@@ -45,6 +45,9 @@ export interface TrajectoryEntry {
   tsMs: number; // Date.now() when the event was observed
   toolCallId?: string; // SDK identity used to pair tool start/end events
   durationMs?: number; // tool_call → tool_result duration (optional)
+  /** The op handle that opened a `spawn` row, so a re-reported `start` can find
+   * and refine it. Tools join on `toolCallId`; nothing else is refinable. */
+  handle?: string;
 }
 
 /** Reduced panel state: the retained ledger plus its retention cap. */
@@ -92,6 +95,24 @@ function sanitizeDetail(detail: string): string {
   return detail.includes("\t") ? detail.replace(/\t/g, "   ") : detail;
 }
 
+/** The one-line detail a `spawn` row shows: harness, then worker. Shared by
+ * both feeders so the two ledgers cannot drift on the label. */
+function spawnDetail(harness: string | undefined, worker: string | undefined): string {
+  const parts: string[] = [];
+  if (harness !== undefined && harness !== "") parts.push(harness);
+  if (worker !== undefined && worker !== "") parts.push(worker);
+  return parts.join(" · ");
+}
+
+/** The spawn facts an `agent` `start` carries, whichever feeder reads it. */
+function spawnIdentity(op: Extract<ObservationOp, { op: "start" | "emit" }>): string {
+  const input = asRecord(op.input);
+  return spawnDetail(
+    typeof input?.harness === "string" ? input.harness : undefined,
+    metadataString(op, "worker"),
+  );
+}
+
 /** The zero-based loop iteration of a workflow `invocationId`, or undefined
  * for non-loop invocations. Delegates to the orchestrator's shared parser —
  * the inverse of the `iter-N` spelling `runtimeInstanceId` produces — so the
@@ -116,16 +137,13 @@ function toEntry(
   switch (event.type) {
     case "spawn": {
       const stage = event.workflow?.stageId;
-      const worker = event.workflow?.worker;
       const iteration = loopIteration(event.workflow?.invocationId);
       const stageLabel = stage === undefined ? "" : `${stage}${iteration === undefined ? "" : ` #${iteration + 1}`}`;
-      const detailParts = [event.harness];
-      if (worker !== undefined && worker !== "") detailParts.push(worker);
       return {
         seq,
         kind: "spawn",
         label: stageLabel === "" ? "agent" : stageLabel,
-        detail: detailParts.join(" · "),
+        detail: spawnDetail(event.harness, event.workflow?.worker),
         model: event.model,
         tsMs: now,
       };
@@ -373,7 +391,6 @@ function opToEntries(
   if (op.op === "start" && op.type === "agent") {
     const input = asRecord(op.input);
     const stageId = typeof input?.stageId === "string" ? input.stageId : undefined;
-    const worker = metadataString(op, "worker");
     const iteration = loopIteration(metadataString(op, "invocationId"));
     const stageLabel = stageId === undefined
       ? "agent"
@@ -382,7 +399,7 @@ function opToEntries(
       seq,
       kind: "spawn",
       label: stageLabel,
-      detail: worker ?? "",
+      detail: spawnIdentity(op),
       model: op.model,
       tsMs,
     }];
@@ -407,15 +424,17 @@ export function applyObservationOps(
   const entries = [...state.entries];
   let changed = false;
   // Open handles and, for tools, the start time a close op turns into
-  // `durationMs`. One pass over the ledger seeds both, so a close never scans.
+  // `durationMs`. Only rows a later `start` can still refine enter `open`.
   const open = new Set<string>();
   const openStarts = new Map<string, number>();
   for (const entry of entries) {
-    if (entry.toolCallId === undefined) continue;
-    const handle = `tool:${entry.toolCallId}`;
-    open.add(handle);
-    if (entry.kind === "tool_call") openStarts.set(handle, entry.tsMs);
-    else openStarts.delete(handle);
+    if (entry.kind === "tool_call" && entry.toolCallId !== undefined) {
+      const handle = `tool:${entry.toolCallId}`;
+      open.add(handle);
+      openStarts.set(handle, entry.tsMs);
+    } else if (entry.kind === "spawn" && entry.handle !== undefined) {
+      open.add(entry.handle);
+    }
   }
   for (const op of ops) {
     if (op.op === "start" || op.op === "emit") {
@@ -429,6 +448,9 @@ export function applyObservationOps(
       if (op.op === "start" && op.type === "tool") openStarts.set(op.handle, Date.parse(op.timestamp));
     }
     for (const entry of opToEntries({ entries, maxEntries: state.maxEntries }, op, openStarts)) {
+      // Only spawn rows need the op handle back: tools join on `toolCallId`,
+      // and every other row is a born-closed point nothing can refine.
+      if (entry.kind === "spawn") entry.handle = op.handle;
       appendEntry(entries, entry, state.maxEntries);
       if (entry.kind === "tool_result" && entry.toolCallId !== undefined) openStarts.delete(`tool:${entry.toolCallId}`);
       if (entry.kind === "tool_call" && entry.toolCallId !== undefined) openStarts.set(`tool:${entry.toolCallId}`, entry.tsMs);
@@ -438,18 +460,34 @@ export function applyObservationOps(
   return changed ? { entries, maxEntries: state.maxEntries } : state;
 }
 
-/** A re-reported `start` on an open tool row: fold its payload into the row
- * the first `start` already opened. Returns whether the ledger changed. */
+/** A re-reported `start` on an open row: fold its payload into the row the
+ * first `start` already opened. Tool rows take the real args (Claude names
+ * them after opening with an empty input); a spawn row takes the model and
+ * harness the later `spawn` announces. Returns whether the ledger changed. */
 function refineOpenRow(
   entries: TrajectoryEntry[],
   op: Extract<ObservationOp, { op: "start" }>,
 ): boolean {
   const toolCallId = toolCallIdFromHandle(op.handle);
-  if (toolCallId === undefined) return false;
-  const folded = foldToolReReport(entries, toolCallId, op.name, argText(op.input));
-  if (folded === undefined) return false;
-  entries[folded.index] = folded.row;
+  if (toolCallId !== undefined) {
+    const folded = foldToolReReport(entries, toolCallId, op.name, argText(op.input));
+    if (folded === undefined) return false;
+    entries[folded.index] = withModel(folded.row, op.model);
+    return true;
+  }
+  const index = entries.findIndex((entry) => entry.handle === op.handle);
+  const open = index === -1 ? undefined : entries[index];
+  if (open === undefined) return false;
+  // Only `input` replaces the detail; a bare model refine keeps the label.
+  const detail = op.input === undefined ? open.detail : spawnIdentity(op);
+  if (op.model === open.model && detail === open.detail) return false;
+  entries[index] = withModel({ ...open, detail }, op.model);
   return true;
+}
+
+/** The one model-merge write: a re-reported `start`'s model wins when present. */
+function withModel(row: TrajectoryEntry, model: string | undefined): TrajectoryEntry {
+  return model === undefined || model === row.model ? row : { ...row, model };
 }
 
 /** Index of the open `tool_call` row for `toolCallId`, or undefined when the

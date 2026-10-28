@@ -118,6 +118,31 @@ export function bridgeAgentEvent(
         },
       }];
     }
+    case "spawn": {
+      // The harness announces what it is running with. It arrives after the
+      // attempt span opened, so it refines that handle rather than opening one
+      // of its own: `startRefineFields` carries `input`/`model` — run-level
+      // config (harness, resolved model) folded onto the attempt span that is
+      // already open.
+      if (event.workflow === undefined) return [];
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: attemptHandle(event.workflow),
+        op: "start",
+        type: "agent",
+        name: `stage.attempt:${event.workflow.stageId}`,
+        ...(event.model === undefined ? {} : { model: event.model }),
+        input: {
+          stageId: event.workflow.stageId,
+          attempt: event.workflow.attempt,
+          harness: event.harness,
+          ...(event.thinkingLevel === undefined ? {} : { thinkingLevel: event.thinkingLevel }),
+          skills: event.skills,
+        },
+        metadata: { ...event.workflow, sequence: context.sequence },
+      }];
+    }
     case "context": {
       // The ledger's `context` row: what the turn loaded. Counts only — the
       // file contents stay in the transcript.

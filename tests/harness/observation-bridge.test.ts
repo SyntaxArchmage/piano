@@ -139,6 +139,34 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
+  it("refines the attempt with the harness and model the spawn announces", () => {
+    const spawned: AgentEvent = {
+      type: "spawn",
+      harness: "pi",
+      model: "gpt-4o",
+      thinkingLevel: "high",
+      skills: ["s1", "s2"],
+      workflow,
+    };
+    expect(bridgeAgentEvent(spawned, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "attempt:measure@loop/iter-1:2",
+      op: "start",
+      type: "agent",
+      name: "stage.attempt:loop.measure",
+      model: "gpt-4o",
+      input: {
+        stageId: "loop.measure",
+        attempt: 2,
+        harness: "pi",
+        thinkingLevel: "high",
+        skills: ["s1", "s2"],
+      },
+      metadata: expect.objectContaining({ worker: "benchmark-worker" }),
+    }]);
+  });
+
   it("exports what a turn loaded as a context event with counts only", () => {
     const loaded: AgentEvent = {
       type: "context",

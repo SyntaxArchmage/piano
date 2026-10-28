@@ -189,6 +189,28 @@ describe("applyObservationOps", () => {
     expect(state.entries[2]).toMatchObject({ detail: "ok", toolCallId: "c1", durationMs: 300 });
   });
 
+  it("refines the spawn row with the harness and model the spawn announces", () => {
+    const state = applyObservationOps(emptyTrajectoryState(), [
+      start({
+        input: { stageId: "loop.measure", attempt: 1 },
+        metadata: { worker: "benchmark-worker", invocationId: "measure@loop/iter-0" },
+      }),
+      start({
+        timestamp: T(1_100),
+        model: "gpt-4o",
+        input: { stageId: "loop.measure", attempt: 1, harness: "pi", skills: ["s1"] },
+        metadata: { worker: "benchmark-worker" },
+      }),
+    ]);
+
+    expect(state.entries.map((entry) => entry.kind)).toEqual(["spawn"]);
+    expect(state.entries[0]).toMatchObject({
+      label: "loop.measure #1",
+      detail: "pi · benchmark-worker",
+      model: "gpt-4o",
+    });
+  });
+
   it("drops structural ops that carry no single-action row", () => {
     const state = applyObservationOps(emptyTrajectoryState(), [
       start(),
