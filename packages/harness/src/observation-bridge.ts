@@ -2,11 +2,14 @@ import {
   AGENT_CONTEXT_NAME,
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
+  AGENT_NAME,
   AGENT_RETRY_NAME,
   AGENT_USAGE_NAME,
   attemptHandle,
   contextCounts,
   messageName,
+  toolCallEndOp,
+  toolCallStartOp,
   type ObservationOp,
 } from "@piano/logging";
 import { messageText } from "./events.js";
@@ -26,6 +29,10 @@ export interface BridgeContext {
    * it instead of re-stating the `start`, and a repeated `message_start` (the
    * subprocess adapter re-arms one per text block) emits nothing. */
   readonly messageSpanOpened?: boolean;
+  /** The unattributed agent span a `spawn` opened, so `done` can close it.
+   * Workflow attempts close theirs via `stage_attempt_finished` and never set
+   * this. */
+  readonly agentSpanHandle?: string;
 }
 
 function usageDetails(usage: {
@@ -47,6 +54,12 @@ function usageDetails(usage: {
 function attemptSuffix(event: AgentEvent): string {
   const workflow = event.workflow;
   return `${workflow?.invocationId ?? "root"}:${workflow?.attempt ?? 0}`;
+}
+
+/** The handle an unattributed agent turn's span wears. Sequence keeps two
+ * side turns apart; workflow attempts use `attempt:` handles instead. */
+function agentSpanHandle(event: AgentEvent, context: BridgeContext): string {
+  return `agent:${context.sequence}:${attemptSuffix(event)}`;
 }
 
 /** The handle one conversation turn's facts share. Role is not part of the
@@ -83,9 +96,9 @@ function generationStart(
  * Map one harness agent event to observation ops.
  *
  * High-frequency `*_update` events stay in the transcript and are skipped,
- * matching `shouldPersistAgentEvent`. Tools are not emitted here: every tool
- * execution is already a `tool_call_*` workflow observation (including the
- * epilogue's follow-up turn), and one fact keeps one elevation. Per-call
+ * matching `shouldPersistAgentEvent`. Tool facts have one elevation per turn:
+ * an attributed attempt's ride `mapWorkflowObservation`, an unattributed
+ * turn's (the side agent) ride here — both spelling the same ops. Per-call
  * `usage` is its own `emit` op (the SDK emits it after `message_end`, so it
  * cannot ride the generation it belongs to); attempt totals stay on
  * `token_usage`.
@@ -179,12 +192,30 @@ export function bridgeAgentEvent(
       }];
     }
     case "spawn": {
-      // The harness announces what it is running with. It arrives after the
-      // attempt span opened, so it refines that handle rather than opening one
-      // of its own: `startRefineFields` carries `input`/`model` — run-level
-      // config (harness, resolved model) folded onto the attempt span that is
-      // already open.
-      if (event.workflow === undefined) return [];
+      // The harness announces what it is running with. Under a workflow it
+      // arrives after the attempt span opened, so it refines that handle:
+      // `startRefineFields` carries `input`/`model` — run-level config
+      // (harness, resolved model) folded onto the attempt span that is
+      // already open. An unattributed turn (the side agent) has no attempt
+      // span, so the spawn opens one of its own.
+      const input = {
+        harness: event.harness,
+        ...(event.thinkingLevel === undefined ? {} : { thinkingLevel: event.thinkingLevel }),
+        skills: event.skills,
+      };
+      if (event.workflow === undefined) {
+        return [{
+          version: 1,
+          timestamp: timestamp(),
+          handle: agentSpanHandle(event, context),
+          op: "start",
+          type: "agent",
+          name: AGENT_NAME,
+          ...(event.model === undefined ? {} : { model: event.model }),
+          input,
+          metadata: { sequence: context.sequence },
+        }];
+      }
       return [{
         version: 1,
         timestamp: timestamp(),
@@ -193,15 +224,33 @@ export function bridgeAgentEvent(
         type: "agent",
         name: `stage.attempt:${event.workflow.stageId}`,
         ...(event.model === undefined ? {} : { model: event.model }),
-        input: {
-          stageId: event.workflow.stageId,
-          attempt: event.workflow.attempt,
-          harness: event.harness,
-          ...(event.thinkingLevel === undefined ? {} : { thinkingLevel: event.thinkingLevel }),
-          skills: event.skills,
-        },
+        input: { stageId: event.workflow.stageId, attempt: event.workflow.attempt, ...input },
         metadata: { ...event.workflow, sequence: context.sequence },
       }];
+    }
+    case "tool_execution_start":
+    case "tool_execution_end": {
+      // Only for turns no workflow mapper observes. A workflow attempt's tools
+      // are already `tool_call_*` observations, and one fact keeps one
+      // elevation. Both producers wear the same op shape.
+      if (event.workflow !== undefined) return [];
+      const metadata = { sequence: context.sequence };
+      return [event.type === "tool_execution_start"
+        ? toolCallStartOp({
+          timestamp: timestamp(),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          args: event.args,
+          metadata,
+        })
+        : toolCallEndOp({
+          timestamp: timestamp(),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          result: event.result,
+          isError: event.isError,
+          metadata,
+        })];
     }
     case "context": {
       // The ledger's `context` row: what the turn loaded. Counts only — the
@@ -227,18 +276,33 @@ export function bridgeAgentEvent(
       }];
     }
     case "done": {
-      return [{
-        version: 1,
-        timestamp: timestamp(),
-        handle: `done:${attemptSuffix(event)}`,
-        op: "emit",
-        type: "event",
-        name: AGENT_DONE_NAME,
-        metadata: {
-          ...(event.workflow ?? {}),
-          exitStatus: event.exitStatus,
+      const closed = context.agentSpanHandle;
+      return [
+        // Close the unattributed turn's span; a workflow attempt's is closed
+        // by `stage_attempt_finished` and leaves `agentSpanHandle` unset.
+        ...(closed === undefined
+          ? []
+          : [{
+            version: 1 as const,
+            timestamp: timestamp(),
+            handle: closed,
+            op: "end" as const,
+            output: { exitStatus: event.exitStatus },
+            metadata: { sequence: context.sequence, exitStatus: event.exitStatus },
+          }]),
+        {
+          version: 1,
+          timestamp: timestamp(),
+          handle: `done:${attemptSuffix(event)}`,
+          op: "emit",
+          type: "event",
+          name: AGENT_DONE_NAME,
+          metadata: {
+            ...(event.workflow ?? {}),
+            exitStatus: event.exitStatus,
+          },
         },
-      }];
+      ];
     }
     default:
       return [];
@@ -252,8 +316,14 @@ export function advanceBridgeContext(
   event: AgentEvent,
   context: BridgeContext,
 ): BridgeContext {
-  if (event.type === "spawn" && typeof event.model === "string") {
-    return { ...context, model: event.model };
+  if (event.type === "spawn") {
+    return {
+      ...context,
+      ...(typeof event.model === "string" ? { model: event.model } : {}),
+      ...(event.workflow === undefined
+        ? { agentSpanHandle: agentSpanHandle(event, context) }
+        : {}),
+    };
   }
   if (event.type === "message_start") {
     return event.message.role === "assistant"
@@ -262,9 +332,13 @@ export function advanceBridgeContext(
   }
   if (event.type === "message_end") {
     return {
+      ...context,
+      messageSpanOpened: undefined,
       sequence: context.sequence + 1,
-      ...(context.model === undefined ? {} : { model: context.model }),
     };
+  }
+  if (event.type === "done") {
+    return { ...context, agentSpanHandle: undefined };
   }
   return context;
 }

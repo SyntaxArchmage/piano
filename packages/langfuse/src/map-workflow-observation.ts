@@ -1,5 +1,7 @@
 import {
   attemptHandle,
+  toolCallEndOp,
+  toolCallStartOp,
   toolHandle,
   type ObservationOp,
   type ObservationType,
@@ -87,41 +89,33 @@ export function mapWorkflowObservation(
       }];
     }
     case "tool_call_started": {
-      // Tools are produced here and only here: the bridge does not emit them.
-      return [{
-        version: 1,
+      // Tool facts for an attributed attempt are produced here. An
+      // unattributed turn (the side agent) has no workflow mapper, so the
+      // bridge emits the same ops for it — one fact, one elevation per turn.
+      return [toolCallStartOp({
         timestamp,
-        handle: toolHandle(observation.toolCallId),
-        op: "start",
-        type: "tool",
-        name: observation.toolName,
+        toolCallId: observation.toolCallId,
+        toolName: observation.toolName,
+        args: observation.args,
         parent: attemptHandle(observation.context),
-        ...(observation.args === undefined ? {} : { input: observation.args }),
         metadata: {
           ...contextMetadata(observation.context),
-          toolCallId: observation.toolCallId,
-          toolName: observation.toolName,
           monotonicMs: observation.monotonicMs,
         },
-      }];
+      })];
     }
     case "tool_call_finished": {
-      return [{
-        version: 1,
+      return [toolCallEndOp({
         timestamp,
-        handle: toolHandle(observation.toolCallId),
-        op: "end",
-        level: observation.isError ? "ERROR" : "DEFAULT",
-        ...(observation.isError ? { statusMessage: "tool failed" } : {}),
-        ...(observation.result === undefined ? {} : { output: observation.result }),
+        toolCallId: observation.toolCallId,
+        toolName: observation.toolName,
+        result: observation.result,
+        isError: observation.isError,
         metadata: {
           ...contextMetadata(observation.context),
-          toolCallId: observation.toolCallId,
-          toolName: observation.toolName,
-          isError: observation.isError,
           monotonicMs: observation.monotonicMs,
         },
-      }];
+      })];
     }
     case "stage_accepted": {
       return [{

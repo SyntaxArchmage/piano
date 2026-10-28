@@ -122,6 +122,86 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
+  it("opens an agent span for a turn no workflow attributes", () => {
+    const spawned: AgentEvent = {
+      type: "spawn",
+      harness: "pi",
+      model: "gpt-4o",
+      skills: ["s1"],
+    };
+    expect(bridgeAgentEvent(spawned, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "agent:0:root:0",
+      op: "start",
+      type: "agent",
+      name: "agent",
+      model: "gpt-4o",
+      input: { harness: "pi", skills: ["s1"] },
+      metadata: { sequence: 0 },
+    }]);
+  });
+
+  it("exports tools for a turn no workflow mapper observes", () => {
+    const started: AgentEvent = {
+      type: "tool_execution_start",
+      toolCallId: "call-1",
+      toolName: "bash",
+      args: { command: "ls" },
+    };
+    const ended: AgentEvent = {
+      type: "tool_execution_end",
+      toolCallId: "call-1",
+      toolName: "bash",
+      result: "ok",
+      isError: false,
+    };
+    expect(bridgeAgentEvent(started, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "tool:call-1",
+      op: "start",
+      type: "tool",
+      name: "bash",
+      input: { command: "ls" },
+      metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash" }),
+    }]);
+    expect(bridgeAgentEvent(ended, context, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "tool:call-1",
+      op: "end",
+      level: "DEFAULT",
+      output: "ok",
+      metadata: expect.objectContaining({ toolCallId: "call-1", toolName: "bash", isError: false }),
+    }]);
+  });
+
+  it("closes the unattributed agent span at done and still speaks the done fact", () => {
+    const done: AgentEvent = {
+      type: "done",
+      exitStatus: 0,
+      sessionId: "session-1",
+      transcriptPath: "/tmp/session-1.jsonl",
+    };
+    expect(bridgeAgentEvent(done, { ...context, agentSpanHandle: "agent:0:root:0" }, () => T)).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "agent:0:root:0",
+      op: "end",
+      output: { exitStatus: 0 },
+      metadata: expect.objectContaining({ exitStatus: 0 }),
+    }, {
+      version: 1,
+      timestamp: T,
+      handle: "done:root:0",
+      op: "emit",
+      type: "event",
+      name: "agent.done",
+      metadata: expect.objectContaining({ exitStatus: 0 }),
+    }]);
+  });
+
   it("emits a user turn as a point event so the chat ledger can fold from ops alone", () => {
     const user: AgentEvent = {
       type: "message_end",
@@ -315,5 +395,19 @@ describe("advanceBridgeContext", () => {
     }, state);
     expect(state.messageSpanOpened).toBeUndefined();
     expect(state.sequence).toBe(1);
+  });
+
+  it("tracks an unattributed agent span from spawn to done", () => {
+    let state: BridgeContext = { sequence: 0 };
+    state = advanceBridgeContext({ type: "spawn", harness: "pi", skills: [] }, state);
+    expect(state.agentSpanHandle).toBe("agent:0:root:0");
+
+    state = advanceBridgeContext({
+      type: "done",
+      exitStatus: 0,
+      sessionId: "s",
+      transcriptPath: "/t",
+    }, state);
+    expect(state.agentSpanHandle).toBeUndefined();
   });
 });

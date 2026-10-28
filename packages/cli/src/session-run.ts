@@ -186,6 +186,53 @@ function langfuseExportFor(
   });
 }
 
+/** The op sinks one run fans out to. Shared by the workflow path and the side
+ * agent so the two cannot disagree on what is written where. */
+function opsSinks(input: {
+  readonly runId: string;
+  readonly observationPath: string;
+  readonly langfuse: boolean;
+  readonly json: boolean;
+  readonly panelSink: ObservationOpSink | undefined;
+  readonly langfuseExport: LangfuseExport | undefined;
+  readonly fileSystem: FileSystem.FileSystem;
+}): ObservationOpSink[] {
+  const { runId, observationPath, langfuse, json, panelSink, langfuseExport, fileSystem } = input;
+  const sinks: ObservationOpSink[] = [];
+  if (langfuse) {
+    sinks.push((ops) => panelSink?.(ops));
+    sinks.push(observationStreamSink((lines) => {
+      void Effect.runPromise(
+        appendJsonlLine(fileSystem, observationPath, lines, () => undefined)
+          .pipe(Effect.ignore),
+      );
+    }));
+    // Headless automation reads the same ops on stdout, so the `--json` stream
+    // can move to the new vocabulary without waiting for the run directory to
+    // be inspected.
+    if (json) {
+      sinks.push(observationStreamSink(
+        (lines) => stdout.write(lines),
+        (op) => serializeLine(observationOpLine(op, runId)),
+      ));
+    }
+  }
+  if (langfuseExport !== undefined) sinks.push(langfuseExport.onOps);
+  return sinks;
+}
+
+/** Bridge one conversation's `AgentEvent`s onto the op stream. Each caller
+ * owns its context, so a side turn and a workflow attempt cannot interleave
+ * handles. */
+function agentEventExporter(emitOps: ObservationOpSink): (event: AgentEvent) => void {
+  let context: BridgeContext = { sequence: 0 };
+  const now = () => new Date().toISOString();
+  return (event) => {
+    emitOps(bridgeAgentEvent(event, context, now));
+    context = advanceBridgeContext(event, context);
+  };
+}
+
 /** Turn a live logging session into a replay loop: run the headless prompt or
  * open the TUI, and persist each completed prompt's trajectory. */
 function runSessionBody(
@@ -343,28 +390,15 @@ function runSessionBody(
               // under `--langfuse` the TUI panel and the headless wire read the
               // ops instead, and leave that feed unused.
               const fileSystem = yield* FileSystem.FileSystem;
-              const observationPath = observationStreamPath(current.session.runDir);
-              const sinks: ObservationOpSink[] = [];
-              if (options.langfuse === true) {
-                sinks.push((ops) => panelSink?.(ops));
-                sinks.push(observationStreamSink((lines) => {
-                  void Effect.runPromise(
-                    appendJsonlLine(fileSystem, observationPath, lines, () => undefined)
-                      .pipe(Effect.ignore),
-                  );
-                }));
-                // Headless automation reads the same ops on stdout, so the
-                // `--json` stream can move to the new vocabulary without
-                // waiting for the run directory to be inspected.
-                if (options.json === true) {
-                  const runId = current.session.id;
-                  sinks.push(observationStreamSink(
-                    (lines) => stdout.write(lines),
-                    (op) => serializeLine(observationOpLine(op, runId)),
-                  ));
-                }
-              }
-              if (langfuseExport !== undefined) sinks.push(langfuseExport.onOps);
+              const sinks = opsSinks({
+                runId: current.session.id,
+                observationPath: observationStreamPath(current.session.runDir),
+                langfuse: options.langfuse === true,
+                json: options.json === true,
+                panelSink,
+                langfuseExport,
+                fileSystem,
+              });
               const emitOps = fanoutObservationOps(sinks);
               const now = () => new Date().toISOString();
               const observationExport = {
@@ -374,11 +408,7 @@ function runSessionBody(
                     emitOps(mapWorkflowObservation(observation, now()));
                   }),
               };
-              let bridgeContext: BridgeContext = { sequence: 0 };
-              const agentEventExport = (event: AgentEvent) => {
-                emitOps(bridgeAgentEvent(event, bridgeContext, now));
-                bridgeContext = advanceBridgeContext(event, bridgeContext);
-              };
+              const agentEventExport = agentEventExporter(emitOps);
               const request = {
                 runDir: current.session.runDir,
                 cwd: activeCwd,
@@ -512,18 +542,39 @@ function runSessionBody(
           Effect.andThen(beginRun),
           // Suspended so the turn reads the continuation left by the previous
           // one: consecutive `/btw` prompts are one conversation.
-          Effect.andThen(Effect.suspend(() => runAgent(
-            sideAgentRequest({
-              prompt,
-              cwd: activeCwd,
-              runDir: current.session.runDir,
-              ...(sideContinuation === undefined ? {} : { continuation: sideContinuation }),
-              signal: controller.signal,
-              steering,
-              onEvent,
-            }),
-            options.agentOptions ?? {},
-          ))),
+          Effect.andThen(Effect.suspend(() => Effect.gen(function* () {
+            // A side turn is not a workflow, so no `stage_attempt_*` observes
+            // it. Bridge its events onto the same op stream the mission uses,
+            // with its own context so the two conversations cannot interleave
+            // handles.
+            const sinks = opsSinks({
+              runId: current.session.id,
+              observationPath: observationStreamPath(current.session.runDir),
+              langfuse: options.langfuse === true,
+              json: options.json === true,
+              panelSink,
+              langfuseExport: yield* langfuseExportFor(current.session.id),
+              fileSystem: yield* FileSystem.FileSystem,
+            });
+            const sideOps = sinks.length === 0
+              ? undefined
+              : agentEventExporter(fanoutObservationOps(sinks));
+            return yield* runAgent(
+              sideAgentRequest({
+                prompt,
+                cwd: activeCwd,
+                runDir: current.session.runDir,
+                ...(sideContinuation === undefined ? {} : { continuation: sideContinuation }),
+                signal: controller.signal,
+                steering,
+                onEvent: (event) => {
+                  sideOps?.(event);
+                  onEvent(event);
+                },
+              }),
+              options.agentOptions ?? {},
+            );
+          }))),
         )).pipe(
           Effect.tap((result) => Effect.sync(() => {
             sideContinuation = result.continuation;

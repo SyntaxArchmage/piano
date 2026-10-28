@@ -194,6 +194,59 @@ export function toolCallIdFromHandle(handle: string): string | undefined {
   return handle.startsWith("tool:") ? handle.slice("tool:".length) : undefined;
 }
 
+/** The one shape a tool call's two ops wear, whichever producer emits them —
+ * the workflow mapper for an attributed attempt, the bridge for a turn no
+ * workflow observes. Callers add their own `parent` and metadata. */
+export function toolCallStartOp(input: {
+  readonly timestamp: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly args?: unknown;
+  readonly parent?: string;
+  readonly metadata?: Record<string, unknown>;
+}): ObservationOp {
+  return {
+    version: 1,
+    timestamp: input.timestamp,
+    handle: toolHandle(input.toolCallId),
+    op: "start",
+    type: "tool",
+    name: input.toolName,
+    ...(input.parent === undefined ? {} : { parent: input.parent }),
+    ...(input.args === undefined ? {} : { input: input.args }),
+    metadata: {
+      ...(input.metadata ?? {}),
+      toolCallId: input.toolCallId,
+      toolName: input.toolName,
+    },
+  };
+}
+
+export function toolCallEndOp(input: {
+  readonly timestamp: string;
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly result?: unknown;
+  readonly isError: boolean;
+  readonly metadata?: Record<string, unknown>;
+}): ObservationOp {
+  return {
+    version: 1,
+    timestamp: input.timestamp,
+    handle: toolHandle(input.toolCallId),
+    op: "end",
+    level: input.isError ? "ERROR" : "DEFAULT",
+    ...(input.isError ? { statusMessage: "tool failed" } : {}),
+    ...(input.result === undefined ? {} : { output: input.result }),
+    metadata: {
+      ...(input.metadata ?? {}),
+      toolCallId: input.toolCallId,
+      toolName: input.toolName,
+      isError: input.isError,
+    },
+  };
+}
+
 /** Emit names every mapper and reader shares. A rename lands in one place. */
 export function messageName(role: string): string {
   return `${role}.message`;
@@ -204,6 +257,9 @@ export const AGENT_DONE_NAME = "agent.done";
 export const AGENT_USAGE_NAME = "agent.usage";
 export const AGENT_CONTEXT_NAME = "agent.context";
 export const AGENT_RETRY_NAME = "agent.retry";
+/** An unattributed agent turn's span (the side agent). A workflow attempt's
+ * span is named `stage.attempt:<stageId>` instead. */
+export const AGENT_NAME = "agent";
 export const STAGE_ACCEPTED_NAME = "stage.accepted";
 export const SELECTION_NAME = "selection";
 
