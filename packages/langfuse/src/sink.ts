@@ -9,7 +9,7 @@ import type { ObservationOp } from "@piano/logging";
 import { startRefineFields } from "@piano/logging";
 import type { LangfuseConfig } from "./config.js";
 import { flushLangfuse } from "./runtime.js";
-import { mapAcceptedScoresFromMetrics, postLangfuseScores } from "./scores.js";
+import { mapAcceptedScoresFromMetrics, postLangfuseScores, stageAcceptedFacts } from "./scores.js";
 
 /** Synthetic remote parent that pins a deterministic trace id.
  *
@@ -134,20 +134,10 @@ export async function createLangfuseExport(
         for (const op of ops) {
           applyOp(op, handles, traceId);
           if (config !== undefined && op.op === "emit" && op.name === "stage.accepted") {
-            const metrics = op.metadata?.metrics;
-            if (Array.isArray(metrics)) {
-              const scores = mapAcceptedScoresFromMetrics(
-                metrics as Parameters<typeof mapAcceptedScoresFromMetrics>[0],
-                traceId,
-                {
-                  ...(op.metadata?.invocationId === undefined ? {} : { invocationId: op.metadata.invocationId }),
-                  ...(op.metadata?.stageId === undefined ? {} : { stageId: op.metadata.stageId }),
-                  ...(op.metadata?.attempt === undefined ? {} : { attempt: op.metadata.attempt }),
-                },
-              );
-              // Fire-and-forget: a score gap never fails the run.
-              void postLangfuseScores(config, scores).catch(() => undefined);
-            }
+            const { metrics, identity } = stageAcceptedFacts(op);
+            // Fire-and-forget: a score gap never fails the run.
+            void postLangfuseScores(config, mapAcceptedScoresFromMetrics(metrics, traceId, identity))
+              .catch(() => undefined);
           }
         }
       } catch {

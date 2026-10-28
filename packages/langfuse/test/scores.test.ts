@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { WorkflowObservation } from "@piano/trajectory";
 import type { LangfuseConfig } from "../src/config.js";
-import { mapAcceptedScores, postLangfuseScores } from "../src/scores.js";
+import {
+  mapAcceptedScoresFromMetrics,
+  postLangfuseScores,
+  scoreIdentity,
+  stageAcceptedFacts,
+} from "../src/scores.js";
 
 const metric = {
   protocol: "benchmark/v1" as const,
@@ -15,21 +19,12 @@ const metric = {
   warmup: 1,
 };
 
-const accepted: Extract<WorkflowObservation, { type: "stage_accepted" }> = {
-  type: "stage_accepted",
-  context: {
-    version: 1,
-    timestamp: "2026-10-27T00:00:00.000Z",
-    runId: "run-1",
-    invocationId: "measure@loop/iter-1",
-    stageId: "loop.measure",
-    stage: "measure",
-    worker: "benchmark-worker",
-    attempt: 1,
-    iteration: 1,
-  },
-  metrics: [{ pointer: "/throughput", value: metric }],
-};
+const identity = scoreIdentity({
+  invocationId: "measure@loop/iter-1",
+  stageId: "loop.measure",
+  attempt: 1,
+  iteration: 1,
+});
 
 const config: LangfuseConfig = {
   baseUrl: "https://langfuse.internal",
@@ -42,9 +37,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("mapAcceptedScores", () => {
+describe("mapAcceptedScoresFromMetrics", () => {
   it("turns each accepted metric into a numeric score keyed by the metric name", () => {
-    expect(mapAcceptedScores(accepted, "trace-1")).toEqual([{
+    expect(mapAcceptedScoresFromMetrics([{ pointer: "/throughput", value: metric }], "trace-1", identity)).toEqual([{
       traceId: "trace-1",
       name: "throughput",
       value: 12,
@@ -64,13 +59,61 @@ describe("mapAcceptedScores", () => {
       },
     }]);
   });
+
+  it("skips a metric that does not decode instead of throwing on it", () => {
+    // A `stage.accepted` op is evidence; one malformed entry must not cost
+    // the valid metrics beside it, or the export would drop the whole batch.
+    expect(mapAcceptedScoresFromMetrics(
+      [null, 7, { pointer: "/throughput" }, { pointer: "/throughput", value: metric }, "nope"],
+      "trace-1",
+    )).toHaveLength(1);
+  });
+});
+
+describe("stageAcceptedFacts", () => {
+  it("reads the metrics and the join-back identity from one op", () => {
+    expect(stageAcceptedFacts({
+      version: 1,
+      timestamp: "2026-10-27T00:00:00.000Z",
+      handle: "accepted:a:1",
+      op: "emit",
+      type: "event",
+      name: "stage.accepted",
+      metadata: {
+        metrics: [{ pointer: "/throughput", value: metric }],
+        invocationId: "measure@loop/iter-1",
+        stageId: "loop.measure",
+        attempt: 1,
+        iteration: 1,
+      },
+    })).toEqual({
+      metrics: [{ pointer: "/throughput", value: metric }],
+      identity: {
+        invocationId: "measure@loop/iter-1",
+        stageId: "loop.measure",
+        attempt: 1,
+        iteration: 1,
+      },
+    });
+  });
+
+  it("yields no metrics and no identity when the op carries neither", () => {
+    expect(stageAcceptedFacts({
+      version: 1,
+      timestamp: "2026-10-27T00:00:00.000Z",
+      handle: "accepted:a:1",
+      op: "emit",
+      type: "event",
+      name: "stage.accepted",
+    })).toEqual({ metrics: [], identity: {} });
+  });
 });
 
 describe("postLangfuseScores", () => {
   it("posts the batch to the public scores endpoint with basic auth", async () => {
     const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
-    const scores = mapAcceptedScores(accepted, "trace-1");
+    const scores = mapAcceptedScoresFromMetrics([{ pointer: "/throughput", value: metric }], "trace-1", identity);
     await postLangfuseScores(config, scores);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -78,14 +121,14 @@ describe("postLangfuseScores", () => {
     const [url, init] = call;
     expect(url.toString()).toBe("https://langfuse.internal/api/public/scores");
     expect(init.method).toBe("POST");
-    expect((init.headers as Record<string, string>).authorization).toBe(
-      `Basic ${Buffer.from("pk_test:sk_test").toString("base64")}`,
-    );
+    expect(init.headers).toMatchObject({
+      authorization: `Basic ${Buffer.from("pk_test:sk_test").toString("base64")}`,
+    });
     expect(JSON.parse(String(init.body))).toEqual(scores);
   });
 
   it("posts nothing when there are no scores", async () => {
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
     await postLangfuseScores(config, []);
     expect(fetchMock).not.toHaveBeenCalled();

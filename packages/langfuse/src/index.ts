@@ -11,9 +11,10 @@ export {
   maskLangfusePayload,
 } from "./mask.js";
 export {
-  mapAcceptedScores,
   mapAcceptedScoresFromMetrics,
   postLangfuseScores,
+  scoreIdentity,
+  stageAcceptedFacts,
   type AcceptedMetric,
   type LangfuseScoreRequest,
 } from "./scores.js";
