@@ -6,6 +6,7 @@ import {
   type LangfuseObservation,
 } from "@langfuse/tracing";
 import type { ObservationOp } from "@piano/logging";
+import { startRefineFields } from "@piano/logging";
 import type { LangfuseConfig } from "./config.js";
 import { mapAcceptedScoresFromMetrics, postLangfuseScores } from "./scores.js";
 
@@ -37,8 +38,7 @@ function startObservationFor(
   parentSpanContext: SpanContext,
 ): LangfuseObservation {
   const attributes = {
-    ...(op.input === undefined ? {} : { input: op.input }),
-    ...(op.model === undefined ? {} : { model: op.model }),
+    ...startRefineFields(op),
     metadata: op.metadata ?? {},
     ...("output" in op && op.output !== undefined ? { output: op.output } : {}),
     ...("usageDetails" in op && op.usageDetails !== undefined ? { usageDetails: op.usageDetails } : {}),
@@ -66,9 +66,17 @@ function applyOp(
   traceId: string,
 ): void {
   if (op.op === "start") {
-    // The handle is the identity: a second `start` on a live handle is a
-    // no-op, so dual mapper emission cannot open two spans.
-    if (handles.has(op.handle)) return;
+    // The handle is the identity: a second `start` opens no second span, so
+    // dual mapper emission cannot double-count. It may still fill in payload
+    // the first open lacked (`startRefineFields`).
+    const open = handles.get(op.handle);
+    if (open !== undefined) {
+      const refine = startRefineFields(op);
+      if (refine.input !== undefined || refine.model !== undefined) {
+        open.updateOtelSpanAttributes(refine);
+      }
+      return;
+    }
     handles.set(op.handle, startObservationFor(op, parentContext(op.parent, handles, traceId)));
     return;
   }

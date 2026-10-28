@@ -159,18 +159,10 @@ function toEntry(
       // empty input and the completed `assistant` record re-reports the same
       // call with real args; fold that re-report into the open ledger row
       // (mirroring the chat view's fold) instead of stacking a duplicate.
-      for (let i = state.entries.length - 1; i >= 0; i--) {
-        const prev = state.entries[i];
-        if (prev?.kind !== "tool_call" || prev.toolCallId !== event.toolCallId) continue;
-        const closed = state.entries
-          .slice(i + 1)
-          .some((entry) => entry?.kind === "tool_result" && entry.toolCallId === event.toolCallId);
-        if (!closed) {
-          prev.label = event.toolName;
-          if (args !== "") prev.detail = sanitizeDetail(args);
-          return null;
-        }
-        break;
+      const folded = foldToolReReport(state.entries, event.toolCallId, event.toolName, args);
+      if (folded !== undefined) {
+        state.entries[folded.index] = folded.row;
+        return null;
       }
       return {
         seq,
@@ -392,29 +384,84 @@ function opToEntries(
 }
 
 /** Fold a batch of observation ops into trajectory state. Same ledger and same
- * cap as `applyTrajectoryEvent`; only the vocabulary differs. A second `start`
- * or `emit` on a handle already on the ledger is dropped — the handle is the
- * identity, the first open is the fact. */
+ * cap as `applyTrajectoryEvent`; only the vocabulary differs. A second `emit`
+ * on a handle already on the ledger is dropped — a born-closed point has no
+ * payload left to refine. A second `start` opens no second row but does refine
+ * the open one's payload, which is how Claude's tool-call re-report reaches the
+ * ledger (mirroring `toEntry`). */
 export function applyObservationOps(
   state: TrajectoryState,
   ops: readonly ObservationOp[],
 ): TrajectoryState {
   if (ops.length === 0) return state;
   const entries = [...state.entries];
-  const before = entries.length;
+  let changed = false;
   const open = new Set<string>();
   for (const entry of entries) {
     if (entry.toolCallId !== undefined) open.add(`tool:${entry.toolCallId}`);
   }
   for (const op of ops) {
     if (op.op === "start" || op.op === "emit") {
-      if (open.has(op.handle)) continue;
+      if (open.has(op.handle)) {
+        // A second `start` refines the open row's payload; a second `emit` is
+        // a born-closed point with nothing left to add.
+        if (op.op === "start") changed = refineOpenRow(entries, op) || changed;
+        continue;
+      }
       open.add(op.handle);
     }
     for (const entry of opToEntries({ entries, maxEntries: state.maxEntries }, op)) {
       appendEntry(entries, entry, state.maxEntries);
+      changed = true;
     }
   }
-  if (entries.length === before) return state;
-  return { entries, maxEntries: state.maxEntries };
+  return changed ? { entries, maxEntries: state.maxEntries } : state;
+}
+
+/** A re-reported `start` on an open tool row: fold its payload into the row
+ * the first `start` already opened. Returns whether the ledger changed. */
+function refineOpenRow(
+  entries: TrajectoryEntry[],
+  op: Extract<ObservationOp, { op: "start" }>,
+): boolean {
+  const toolCallId = toolCallIdFromHandle(op.handle);
+  if (toolCallId === undefined) return false;
+  const folded = foldToolReReport(entries, toolCallId, op.name, argText(op.input));
+  if (folded === undefined) return false;
+  entries[folded.index] = folded.row;
+  return true;
+}
+
+/** Index of the open `tool_call` row for `toolCallId`, or undefined when the
+ * call is closed or absent. Shared by both ledger feeders so the pairing rule
+ * cannot drift: the newest row for the id decides, and only a `tool_call` can
+ * still be open. */
+function openToolRow(
+  entries: readonly TrajectoryEntry[],
+  toolCallId: string,
+): number | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.toolCallId !== toolCallId) continue;
+    return entry.kind === "tool_call" ? i : undefined;
+  }
+  return undefined;
+}
+
+/** The row a re-reported tool start folds into: the open row renamed and with
+ * the real args, keeping the row's detail when the re-report carries none. */
+function foldToolReReport(
+  entries: readonly TrajectoryEntry[],
+  toolCallId: string,
+  label: string,
+  args: string,
+): { readonly index: number; readonly row: TrajectoryEntry } | undefined {
+  const index = openToolRow(entries, toolCallId);
+  if (index === undefined) return undefined;
+  const open = entries[index];
+  if (open === undefined || open.kind !== "tool_call") return undefined;
+  return {
+    index,
+    row: { ...open, label, detail: args === "" ? open.detail : sanitizeDetail(args) },
+  };
 }

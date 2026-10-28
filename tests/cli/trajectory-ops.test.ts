@@ -124,6 +124,32 @@ describe("applyObservationOps", () => {
     expect(state.entries[3]).toMatchObject({ detail: "exit 0" });
   });
 
+  it("folds a re-reported tool start into the open row instead of stacking one", () => {
+    const state = applyObservationOps(emptyTrajectoryState(), [
+      {
+        version: 1,
+        timestamp: T(1_000),
+        handle: "tool:c1",
+        op: "start",
+        type: "tool",
+        name: "Read",
+        parent: "attempt:measure@loop/iter-1:1",
+        input: {},
+      },
+      {
+        version: 1,
+        timestamp: T(1_002),
+        handle: "tool:c1",
+        op: "start",
+        type: "tool",
+        name: "Read",
+        input: { path: "a.ts" },
+      },
+    ]);
+    expect(state.entries.map((entry) => entry.kind)).toEqual(["tool_call"]);
+    expect(state.entries[0]).toMatchObject({ label: "Read", detail: '{"path":"a.ts"}', toolCallId: "c1" });
+  });
+
   it("drops structural ops that carry no single-action row", () => {
     const state = applyObservationOps(emptyTrajectoryState(), [
       start(),

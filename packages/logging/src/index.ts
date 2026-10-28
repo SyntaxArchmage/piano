@@ -32,6 +32,7 @@ export {
   parseObservationOps,
   SELECTION_NAME,
   STAGE_ACCEPTED_NAME,
+  startRefineFields,
   stringifyObservationOp,
   toolCallIdFromHandle,
   toolHandle,

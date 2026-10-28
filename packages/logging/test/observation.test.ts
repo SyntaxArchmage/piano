@@ -143,6 +143,16 @@ describe("foldObservationOps", () => {
     expect(tree).toHaveLength(1);
   });
 
+  it("refines an open node's payload from a re-reported start", () => {
+    const tree = foldObservationOps([
+      start({ handle: "tool:c1", type: "tool", name: "Read", input: {}, metadata: { toolCallId: "c1" } }),
+      start({ handle: "tool:c1", type: "tool", name: "Read", input: { path: "a.ts" } }),
+    ]);
+    expect(tree).toHaveLength(1);
+    expect(tree[0]?.input).toEqual({ path: "a.ts" });
+    expect(tree[0]?.metadata).toEqual({ toolCallId: "c1" });
+  });
+
   it("promotes an orphan to a root instead of losing it", () => {
     const tree = foldObservationOps([
       start({ handle: "child", type: "generation", name: "agent.message", parent: "missing" }),

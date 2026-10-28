@@ -196,6 +196,21 @@ export const AGENT_USAGE_NAME = "agent.usage";
 export const STAGE_ACCEPTED_NAME = "stage.accepted";
 export const SELECTION_NAME = "selection";
 
+/** The payload a second `start` may add to a handle that is already open.
+ *
+ * Identity — `type`, `name`, `parent`, `metadata` — stays with the first open;
+ * only the payload the first open may have lacked is refinnable. Every consumer
+ * of an open handle asks this one function, so the field set cannot drift
+ * between the fold, the export, and the ledger. */
+export function startRefineFields(
+  op: Extract<ObservationOp, { op: "start" | "emit" }>,
+): { readonly input?: unknown; readonly model?: string } {
+  return {
+    ...(op.input === undefined ? {} : { input: op.input }),
+    ...(op.model === undefined ? {} : { model: op.model }),
+  };
+}
+
 /** A sink receives already-mapped ops. Sinks never translate — the mappers do
  * that once — so several sinks can share one production point without each
  * re-deriving the vocabulary. */
@@ -252,14 +267,23 @@ function closeNodeFields(
  *
  * Order is the stream's: an `update`/`end` for a handle not yet opened is
  * dropped (the evidence cannot name a parent that never opened), and a second
- * `start` on the same handle is dropped (the handle is the identity; the first
- * open is the fact). Children are linked after every op has been applied, so a
- * later `update` cannot leave a stale node under its parent. */
+ * `start` on the same handle opens no second node — the handle is the
+ * identity, the first open is the fact. It may still fill in payload the first
+ * open lacked (`startRefineFields`). A second `emit` stays dropped — a
+ * born-closed point has no payload left to refine.
+ * Children are linked after every op has been applied, so a later `update`
+ * cannot leave a stale node under its parent. */
 export function foldObservationOps(ops: readonly ObservationOp[]): ObservationNode[] {
   const nodes = new Map<string, ObservationNode>();
   for (const op of ops) {
     if (op.op === "start") {
-      if (nodes.has(op.handle)) continue;
+      const open = nodes.get(op.handle);
+      if (open !== undefined) {
+        const refine = startRefineFields(op);
+        if (refine.input === undefined && refine.model === undefined) continue;
+        nodes.set(op.handle, { ...open, ...refine });
+        continue;
+      }
       nodes.set(op.handle, {
         handle: op.handle,
         type: op.type,
