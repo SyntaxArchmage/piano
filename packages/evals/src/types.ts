@@ -1,5 +1,6 @@
 import type { Effect as EffectType } from "effect/Effect";
 import type { TurnOutcome } from "@piano/base";
+import type { ObservationType } from "@piano/logging";
 import type {
   BenchmarkScore,
   DurationScore,
@@ -173,6 +174,11 @@ export interface RunTrace {
   readonly selection?: SelectionScore;
   /** Per-invocation stage observations. */
   readonly stages: readonly StageObservation[];
+  /** Span counts of the Langfuse-aligned observation stream, when the run
+   * opted into `--langfuse`. Counts only: the full tree stays in
+   * `system-log/observations.jsonl`, and a run's chat/tool facts can be
+   * checked against the export without pinning every payload on the report. */
+  readonly observationCounts?: Readonly<Record<ObservationType, number>>;
 }
 
 /** What one concrete stage invocation did, assembled from recorder records

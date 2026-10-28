@@ -90,6 +90,45 @@ describe("run-reader", () => {
       tokens: { input: 7, output: 3, total: 10 },
       durationMs: 10,
     });
+    // No `--langfuse` stream: the observation counts stay absent.
+    expect(result.observationCounts).toBeUndefined();
+  });
+
+  it("counts the observation stream when the run opted into --langfuse", async () => {
+    const runDir = await baseRunDir("piano-run-reader-obs-");
+    const trajectory = await run(WorkflowTrajectory.open(runDir, "eval-run"));
+    await run(trajectory.observe({ type: "stage_attempt_started", context, monotonicMs: 10 }));
+    await run(trajectory.observe({ type: "stage_attempt_finished", context, monotonicMs: 20, outcome: "accepted" }));
+    await run(trajectory.close("completed"));
+    await writeFile(join(runDir, "system-log", "observations.jsonl"), [
+      JSON.stringify({
+        version: 1,
+        timestamp: "2026-09-02T00:00:00.000Z",
+        handle: "attempt:measure@loop/iter-0:1",
+        op: "start",
+        type: "agent",
+        name: "stage.attempt:loop.measure",
+      }),
+      JSON.stringify({
+        version: 1,
+        timestamp: "2026-09-02T00:00:01.000Z",
+        handle: "tool:call-1",
+        op: "start",
+        type: "tool",
+        name: "bash",
+        parent: "attempt:measure@loop/iter-0:1",
+        input: { command: "ls" },
+      }),
+    ].join("\n") + "\n");
+
+    const result = await run(readRunTrace(runDir));
+    expect(result.observationCounts).toEqual({
+      agent: 1,
+      tool: 1,
+      generation: 0,
+      event: 0,
+      span: 0,
+    });
   });
 
   it("surfaces per-iteration series and hyperbolic score for a multi-iteration trajectory", async () => {

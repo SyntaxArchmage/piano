@@ -83,6 +83,18 @@ function trajectoryToolCalls(kase: CaseResult): number {
   return kase.trace?.tools.count ?? 0;
 }
 
+/** Span counts of the observation stream, for runs that opted into
+ * `--langfuse`. Reads the Langfuse vocabulary directly, so the report can be
+ * checked against the export without going through the recorder streams. */
+function formatObservationLine(kase: CaseResult): string | undefined {
+  const counts = kase.trace?.observationCounts;
+  if (counts === undefined) return undefined;
+  const parts = Object.entries(counts)
+    .filter(([, count]) => count > 0)
+    .map(([type, count]) => `${count} ${type}`);
+  return parts.length === 0 ? undefined : `observations: ${parts.join(" · ")}`;
+}
+
 /** Whole-run cost scores for a native trajectory. Both numbers are
  * intrinsic ratios needing no reference: tool-ok is the share of opened
  * calls that did not fail, first-pass the share of finished stage
@@ -1033,6 +1045,10 @@ export function formatReport(
     const costLine = formatCostLine(kase);
     if (costLine !== undefined) {
       lines.push(`    ${DIM}${costLine}${RST}`);
+    }
+    const observationLine = formatObservationLine(kase);
+    if (observationLine !== undefined) {
+      lines.push(`    ${DIM}${observationLine}${RST}`);
     }
     const points = kase.trace?.benchmarks ?? [];
     // A native multi-iteration trajectory renders the collapsed per-iteration

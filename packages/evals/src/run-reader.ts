@@ -6,7 +6,8 @@
  */
 import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
-import { evalMetricsDir, io } from "@piano/base";
+import { evalMetricsDir, io, observationStreamPath } from "@piano/base";
+import { OBSERVATION_TYPES, parseObservationOps, type ObservationType } from "@piano/logging";
 import {
   BenchmarkRecorder,
   DurationRecorder,
@@ -45,6 +46,21 @@ function foldMessages(transcripts: Iterable<TranscriptMetrics>): MessageCounts {
   return { count, rounds };
 }
 
+function asDriverError(cause: unknown): DriverError {
+  return new DriverError({ message: String(cause), cause });
+}
+
+/** How many nodes of each kind the observation stream opened. `start` and
+ * `emit` are the only ops that open a node, so one pass over the ops is the
+ * tree's shape without retaining it. */
+function countObservationTypes(raw: string): Readonly<Record<ObservationType, number>> {
+  const counts = Object.fromEntries(OBSERVATION_TYPES.map((type) => [type, 0])) as Record<ObservationType, number>;
+  for (const op of parseObservationOps(raw)) {
+    if (op.op === "start" || op.op === "emit") counts[op.type] += 1;
+  }
+  return counts;
+}
+
 /** Assemble the canonical trace of one run directory. Fails only when the
  * recorder metrics directory cannot be read; every stream-level anomaly is an
  * issue on the returned trace, never a lost run. */
@@ -55,7 +71,7 @@ export function readRunTrace(
     const fileSystem = yield* FileSystem.FileSystem;
     const metricsDir = evalMetricsDir(runDir);
     const directoryExists = yield* fileSystem.exists(metricsDir).pipe(
-      Effect.mapError((cause) => new DriverError({ message: String(cause), cause })),
+      Effect.mapError(asDriverError),
     );
     if (!directoryExists) {
       return yield* Effect.fail(new DriverError({
@@ -84,7 +100,7 @@ export function readRunTrace(
     // declared stream that fails to read is an evidence issue like the rest.
     const selectionPath = streamPath(runDir, selectionRecorder.descriptor);
     const hasSelectionStream = yield* fileSystem.exists(selectionPath).pipe(
-      Effect.mapError((cause) => new DriverError({ message: String(cause), cause })),
+      Effect.mapError(asDriverError),
     );
     const selectionResult = hasSelectionStream
       ? yield* selectionRecorder.read(runDir).pipe(Effect.either)
@@ -214,6 +230,19 @@ export function readRunTrace(
       worker: record.worker,
     }));
 
+    // The Langfuse-aligned stream is opt-in (`--langfuse`): absent means the
+    // run stayed on the recorder streams, which is normal, not an issue.
+    // Counts only: every node is opened by exactly one `start`/`emit`, so the
+    // type tally is the tree's shape without retaining the payloads.
+    const observationPath = observationStreamPath(runDir);
+    const observationCounts = yield* fileSystem.exists(observationPath).pipe(
+      Effect.mapError(asDriverError),
+      Effect.flatMap((present) => present
+        ? fileSystem.readFileString(observationPath).pipe(Effect.mapError(asDriverError))
+        : Effect.succeed(undefined)),
+      Effect.map((raw) => raw === undefined ? undefined : countObservationTypes(raw)),
+    );
+
     return {
       complete: status?.status === "completed" && issues.length === 0,
       issues,
@@ -227,6 +256,7 @@ export function readRunTrace(
         ? {}
         : { selection: selectionRecorder.score(selections) }),
       stages,
+      ...(observationCounts === undefined ? {} : { observationCounts }),
     } satisfies RunTrace;
   });
 }
