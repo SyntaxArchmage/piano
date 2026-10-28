@@ -5,7 +5,7 @@
  */
 import { Effect, Fiber } from "effect";
 import { FileSystem } from "@effect/platform";
-import { evalMetricsDir, io, sessionsRoot } from "@piano/base";
+import { evalMetricsDir, io, observationStreamPath, sessionsRoot } from "@piano/base";
 import { join } from "node:path";
 import { hasPerformanceReadout } from "./case-config.js";
 import { workloadsDir } from "./case-loader.js";
@@ -293,16 +293,21 @@ export function runCase(
 
 export function evidencePaths(
   runDir: string,
-): Effect.Effect<Pick<CaseResult, "runDir" | "trajectoryPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript">> {
+): Effect.Effect<Pick<CaseResult, "runDir" | "trajectoryPath" | "observationPath" | "logPath" | "tracePath" | "transcriptPath" | "transcript">> {
   return Effect.gen(function* () {
     // The stream is the run's trajectory record; the document it used to be
     // folded into is gone, so the path names the stream.
     const trajectoryPath = trajectoryStreamPath(runDir);
+    const observationPath = observationStreamPath(runDir);
     const transcriptPath = yield* findTranscriptPath(runDir);
     const hasTrajectory = yield* io.exists(trajectoryPath);
+    const hasObservations = yield* io.exists(observationPath);
     return {
       runDir,
       ...(hasTrajectory ? { trajectoryPath } : {}),
+      // The Langfuse-aligned op stream (`--langfuse`). Present only on runs
+      // that opted in; the AgentEvent stream stays the source until it is retired.
+      ...(hasObservations ? { observationPath } : {}),
       logPath: logStreamPath(runDir),
       tracePath: traceStreamPath(runDir),
       ...(transcriptPath === undefined

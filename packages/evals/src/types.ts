@@ -432,6 +432,8 @@ export interface CaseResult {
   timing?: TimingSummary;
   scorecard?: CaseScorecard;
   trajectoryPath?: string;
+  /** The Langfuse-aligned op stream, when the run opted into `--langfuse`. */
+  observationPath?: string;
   logPath?: string;
   tracePath?: string;
   /** The recorder-metrics directory (`runDir/eval-metrics`) produced by the run. */

@@ -47,10 +47,26 @@ describe("evals evidence discovery across run layouts", () => {
       for (const name of ["log.jsonl", "trace.jsonl", "trajectory.jsonl"]) {
         await writeFile(join(runDir, "system-log", name), "{}\n");
       }
-      expect(await Effect.runPromise(evidencePaths(runDir))).toMatchObject({
+      const evidence = await Effect.runPromise(evidencePaths(runDir));
+      expect(evidence).toMatchObject({
         logPath: join(runDir, "system-log", "log.jsonl"),
         tracePath: join(runDir, "system-log", "trace.jsonl"),
         trajectoryPath: join(runDir, "system-log", "trajectory.jsonl"),
+      });
+      // The op stream is opt-in (`--langfuse`); a run without it reports none.
+      expect(evidence.observationPath).toBeUndefined();
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the observation stream on a run that opted into --langfuse", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "piano-evals-observations-"));
+    try {
+      await mkdir(join(runDir, "system-log"), { recursive: true });
+      await writeFile(join(runDir, "system-log", "observations.jsonl"), "{}\n");
+      expect(await Effect.runPromise(evidencePaths(runDir))).toMatchObject({
+        observationPath: join(runDir, "system-log", "observations.jsonl"),
       });
     } finally {
       await rm(runDir, { recursive: true, force: true });
