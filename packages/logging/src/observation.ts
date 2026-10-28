@@ -193,8 +193,58 @@ export function messageName(role: string): string {
 export const AGENT_ERROR_NAME = "agent.error";
 export const AGENT_DONE_NAME = "agent.done";
 export const AGENT_USAGE_NAME = "agent.usage";
+export const AGENT_CONTEXT_NAME = "agent.context";
 export const STAGE_ACCEPTED_NAME = "stage.accepted";
 export const SELECTION_NAME = "selection";
+
+/** How many context files/skills a turn loaded (0 when absent). Path list
+ * first, then the loaded file records. */
+export function contextCounts(context: {
+  readonly contextFiles?: readonly unknown[];
+  readonly contextFilePaths?: readonly unknown[];
+  readonly skills?: readonly unknown[];
+}): { readonly files: number; readonly skills: number } {
+  return {
+    files: context.contextFilePaths?.length ?? context.contextFiles?.length ?? 0,
+    skills: context.skills?.length ?? 0,
+  };
+}
+
+/** The context facts one `agent.context` op carries. The key set is the
+ * vocabulary: the producer writes these metadata keys, the reader asks for
+ * them here, and neither side spells them twice. */
+export interface ContextFacts {
+  readonly systemPromptPath?: string;
+  readonly files: number;
+  readonly skills: number;
+  readonly userMessageLength?: number;
+}
+
+/** Decode one `agent.context` op's facts. */
+export function contextFacts(op: { readonly metadata?: Record<string, unknown> }): ContextFacts {
+  const meta = op.metadata ?? {};
+  const number = (key: string): number | undefined => {
+    const value = meta[key];
+    return typeof value === "number" ? value : undefined;
+  };
+  return {
+    ...(typeof meta.systemPromptPath === "string" ? { systemPromptPath: meta.systemPromptPath } : {}),
+    files: number("files") ?? 0,
+    skills: number("skills") ?? 0,
+    ...(number("userMessageLength") === undefined ? {} : { userMessageLength: number("userMessageLength") }),
+  };
+}
+
+/** The one-line detail a `context` row shows. Shared by the `AgentEvent` and
+ * the op path so the two ledgers cannot drift on wording. */
+export function contextDetail(facts: ContextFacts): string {
+  const parts: string[] = [];
+  if (facts.systemPromptPath !== undefined) parts.push("sys prompt");
+  if (facts.files > 0) parts.push(`${facts.files} file${facts.files === 1 ? "" : "s"}`);
+  if (facts.skills > 0) parts.push(`${facts.skills} skill${facts.skills === 1 ? "" : "s"}`);
+  if (facts.userMessageLength !== undefined) parts.push(`user ${facts.userMessageLength}ch`);
+  return parts.join(" · ") || "loaded";
+}
 
 /** The payload a second `start` may add to a handle that is already open.
  *

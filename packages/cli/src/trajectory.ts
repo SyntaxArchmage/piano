@@ -8,10 +8,14 @@
 
 import { messageText, type AgentEvent } from "@piano/harness";
 import {
+  AGENT_CONTEXT_NAME,
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
   AGENT_USAGE_NAME,
   asRecord,
+  contextCounts,
+  contextDetail,
+  contextFacts,
   messageName,
   toolCallIdFromHandle,
   type ObservationOp,
@@ -88,17 +92,6 @@ function sanitizeDetail(detail: string): string {
   return detail.includes("\t") ? detail.replace(/\t/g, "   ") : detail;
 }
 
-/** How many context files/skills did an event carry (0 when absent). */
-function contextCounts(context: { contextFiles?: readonly unknown[]; contextFilePaths?: readonly unknown[]; skills?: readonly unknown[] }): {
-  files: number;
-  skills: number;
-} {
-  return {
-    files: context.contextFilePaths?.length ?? context.contextFiles?.length ?? 0,
-    skills: context.skills?.length ?? 0,
-  };
-}
-
 /** The zero-based loop iteration of a workflow `invocationId`, or undefined
  * for non-loop invocations. Delegates to the orchestrator's shared parser —
  * the inverse of the `iter-N` spelling `runtimeInstanceId` produces — so the
@@ -146,12 +139,18 @@ function toEntry(
     }
     case "context": {
       const { files, skills } = contextCounts(event.context);
-      const parts: string[] = [];
-      if (event.context.systemPromptPath !== undefined) parts.push("sys prompt");
-      if (files > 0) parts.push(`${files} file${files === 1 ? "" : "s"}`);
-      if (skills > 0) parts.push(`${skills} skill${skills === 1 ? "" : "s"}`);
-      if (event.context.userMessage !== undefined) parts.push(`user ${event.context.userMessage.length}ch`);
-      return { seq, kind: "context", label: "context", detail: parts.join(" · ") || "loaded", tsMs: now };
+      return {
+        seq,
+        kind: "context",
+        label: "context",
+        detail: contextDetail({
+          systemPromptPath: event.context.systemPromptPath,
+          files,
+          skills,
+          ...(event.context.userMessage === undefined ? {} : { userMessageLength: event.context.userMessage.length }),
+        }),
+        tsMs: now,
+      };
     }
     case "tool_execution_start": {
       const args = argText(event.args);
@@ -283,6 +282,11 @@ function metadataString(op: ObservationOp, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function metadataNumber(op: ObservationOp, key: string): number | undefined {
+  const value = op.metadata?.[key];
+  return typeof value === "number" ? value : undefined;
+}
+
 /** Pure reducer: folds one `AgentEvent` into trajectory state, returning a
  * NEW state (never mutating the input). Events that produce no row
  * (token-level `message_update` deltas, lifecycle boundaries) return the same
@@ -308,6 +312,7 @@ export function applyTrajectoryEvent(
 function opToEntries(
   state: TrajectoryState,
   op: ObservationOp,
+  openStarts: ReadonlyMap<string, number>,
 ): TrajectoryEntry[] {
   const tsMs = Date.parse(op.timestamp);
   const seq = nextSeq(state);
@@ -326,13 +331,16 @@ function opToEntries(
       tsMs,
     }];
   }
+  if (op.op === "emit" && op.name === AGENT_CONTEXT_NAME) {
+    return [{ seq, kind: "context", label: "context", detail: contextDetail(contextFacts(op)), tsMs }];
+  }
   if (op.op === "emit" && op.name === AGENT_ERROR_NAME) {
     const errorType = metadataString(op, "errorType") ?? "error";
     const message = metadataString(op, "message") ?? "";
     return [{ seq, kind: "error", label: "error", detail: `${errorType}: ${message}`, tsMs }];
   }
   if (op.op === "emit" && op.name === AGENT_DONE_NAME) {
-    const exitStatus = typeof op.metadata?.exitStatus === "number" ? op.metadata.exitStatus : 0;
+    const exitStatus = metadataNumber(op, "exitStatus") ?? 0;
     return [{ seq, kind: "done", label: "done", detail: `exit ${exitStatus}`, tsMs }];
   }
   if (op.op === "start" && op.type === "tool") {
@@ -349,6 +357,7 @@ function opToEntries(
     const toolCallId = toolCallIdFromHandle(op.handle);
     if (toolCallId !== undefined) {
       const failed = op.level === "ERROR";
+      const startedAt = openStarts.get(op.handle);
       return [{
         seq,
         kind: "tool_result",
@@ -357,6 +366,7 @@ function opToEntries(
         detail: toolResultDetail(op.output, failed),
         tsMs,
         toolCallId,
+        ...(startedAt === undefined ? {} : { durationMs: tsMs - startedAt }),
       }];
     }
   }
@@ -396,9 +406,16 @@ export function applyObservationOps(
   if (ops.length === 0) return state;
   const entries = [...state.entries];
   let changed = false;
+  // Open handles and, for tools, the start time a close op turns into
+  // `durationMs`. One pass over the ledger seeds both, so a close never scans.
   const open = new Set<string>();
+  const openStarts = new Map<string, number>();
   for (const entry of entries) {
-    if (entry.toolCallId !== undefined) open.add(`tool:${entry.toolCallId}`);
+    if (entry.toolCallId === undefined) continue;
+    const handle = `tool:${entry.toolCallId}`;
+    open.add(handle);
+    if (entry.kind === "tool_call") openStarts.set(handle, entry.tsMs);
+    else openStarts.delete(handle);
   }
   for (const op of ops) {
     if (op.op === "start" || op.op === "emit") {
@@ -409,9 +426,12 @@ export function applyObservationOps(
         continue;
       }
       open.add(op.handle);
+      if (op.op === "start" && op.type === "tool") openStarts.set(op.handle, Date.parse(op.timestamp));
     }
-    for (const entry of opToEntries({ entries, maxEntries: state.maxEntries }, op)) {
+    for (const entry of opToEntries({ entries, maxEntries: state.maxEntries }, op, openStarts)) {
       appendEntry(entries, entry, state.maxEntries);
+      if (entry.kind === "tool_result" && entry.toolCallId !== undefined) openStarts.delete(`tool:${entry.toolCallId}`);
+      if (entry.kind === "tool_call" && entry.toolCallId !== undefined) openStarts.set(`tool:${entry.toolCallId}`, entry.tsMs);
       changed = true;
     }
   }

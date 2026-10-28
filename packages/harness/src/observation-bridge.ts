@@ -1,8 +1,10 @@
 import {
+  AGENT_CONTEXT_NAME,
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
   AGENT_USAGE_NAME,
   attemptHandle,
+  contextCounts,
   messageName,
   type ObservationOp,
 } from "@piano/logging";
@@ -113,6 +115,29 @@ export function bridgeAgentEvent(
           ...(event.workflow ?? {}),
           errorType: event.errorType,
           message: event.message,
+        },
+      }];
+    }
+    case "context": {
+      // The ledger's `context` row: what the turn loaded. Counts only — the
+      // file contents stay in the transcript.
+      const { contextFilePaths, contextFiles, skills, systemPromptPath, userMessage } = event.context;
+      const counts = contextCounts({ contextFilePaths, contextFiles, skills });
+      return [{
+        version: 1,
+        timestamp: timestamp(),
+        handle: `ctx:${context.sequence}:${attemptSuffix(event)}`,
+        op: "emit",
+        type: "event",
+        name: AGENT_CONTEXT_NAME,
+        ...(event.workflow === undefined ? {} : { parent: attemptHandle(event.workflow) }),
+        metadata: {
+          ...(event.workflow ?? {}),
+          sequence: context.sequence,
+          ...(systemPromptPath === undefined ? {} : { systemPromptPath }),
+          files: counts.files,
+          skills: counts.skills,
+          ...(userMessage === undefined ? {} : { userMessageLength: userMessage.length }),
         },
       }];
     }

@@ -17,10 +17,14 @@ export {
 } from "./errors.js";
 export { errorMessage, failureDetails, isCancellation } from "./errors.js";
 export {
+  AGENT_CONTEXT_NAME,
   AGENT_DONE_NAME,
   AGENT_ERROR_NAME,
   AGENT_USAGE_NAME,
   attemptHandle,
+  contextCounts,
+  contextDetail,
+  contextFacts,
   EMIT_OBSERVATION_TYPES,
   fanoutObservationOps,
   foldObservationOps,
@@ -36,6 +40,7 @@ export {
   stringifyObservationOp,
   toolCallIdFromHandle,
   toolHandle,
+  type ContextFacts,
   type EmitObservationType,
   type ObservationLevel,
   type ObservationNode,

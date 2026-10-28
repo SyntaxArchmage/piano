@@ -150,6 +150,45 @@ describe("applyObservationOps", () => {
     expect(state.entries[0]).toMatchObject({ label: "Read", detail: '{"path":"a.ts"}', toolCallId: "c1" });
   });
 
+  it("folds context loads and tool durations the way the AgentEvent reducer does", () => {
+    const state = applyObservationOps(emptyTrajectoryState(), [
+      {
+        version: 1,
+        timestamp: T(1_000),
+        handle: "ctx:0:root:0",
+        op: "emit",
+        type: "event",
+        name: "agent.context",
+        metadata: { systemPromptPath: "/sys.md", files: 2, skills: 1, userMessageLength: 11 },
+      },
+      {
+        version: 1,
+        timestamp: T(1_100),
+        handle: "tool:c1",
+        op: "start",
+        type: "tool",
+        name: "bash",
+        parent: "attempt:measure@loop/iter-1:1",
+      },
+      {
+        version: 1,
+        timestamp: T(1_400),
+        handle: "tool:c1",
+        op: "end",
+        level: "DEFAULT",
+        output: "ok",
+        metadata: { toolName: "bash" },
+      },
+    ]);
+
+    expect(state.entries.map((entry) => entry.kind)).toEqual(["context", "tool_call", "tool_result"]);
+    expect(state.entries[0]).toMatchObject({
+      label: "context",
+      detail: "sys prompt · 2 files · 1 skill · user 11ch",
+    });
+    expect(state.entries[2]).toMatchObject({ detail: "ok", toolCallId: "c1", durationMs: 300 });
+  });
+
   it("drops structural ops that carry no single-action row", () => {
     const state = applyObservationOps(emptyTrajectoryState(), [
       start(),

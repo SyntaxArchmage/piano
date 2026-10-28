@@ -138,6 +138,38 @@ describe("bridgeAgentEvent", () => {
       metadata: expect.objectContaining({ exitStatus: 0 }),
     }]);
   });
+
+  it("exports what a turn loaded as a context event with counts only", () => {
+    const loaded: AgentEvent = {
+      type: "context",
+      context: {
+        systemPromptPath: "/sys.md",
+        contextFilePaths: ["a.ts", "b.ts"],
+        skills: ["s1"],
+        userMessage: "hello world",
+        contextFiles: [{ path: "a.ts", content: "secret" }],
+      },
+      workflow,
+    };
+    const ops = bridgeAgentEvent(loaded, context, () => T);
+    expect(ops).toEqual([{
+      version: 1,
+      timestamp: T,
+      handle: "ctx:0:measure@loop/iter-1:2",
+      op: "emit",
+      type: "event",
+      name: "agent.context",
+      parent: "attempt:measure@loop/iter-1:2",
+      metadata: expect.objectContaining({
+        systemPromptPath: "/sys.md",
+        files: 2,
+        skills: 1,
+        userMessageLength: 11,
+      }),
+    }]);
+    // File contents stay in the transcript, not on the op.
+    expect(JSON.stringify(ops)).not.toContain("secret");
+  });
 });
 
 describe("advanceBridgeContext", () => {
