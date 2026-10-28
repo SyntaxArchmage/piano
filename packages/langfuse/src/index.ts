@@ -18,7 +18,6 @@ export {
   type LangfuseScoreRequest,
 } from "./scores.js";
 export {
-  flushLangfuse,
   shutdownLangfuse,
   startLangfuseRuntime,
   startLangfuseRuntimeFromEnv,
@@ -26,6 +25,5 @@ export {
 } from "./runtime.js";
 export {
   createLangfuseExport,
-  createLangfuseObservationExport,
   type LangfuseExport,
 } from "./sink.js";

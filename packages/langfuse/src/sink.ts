@@ -8,6 +8,7 @@ import {
 import type { ObservationOp } from "@piano/logging";
 import { startRefineFields } from "@piano/logging";
 import type { LangfuseConfig } from "./config.js";
+import { flushLangfuse } from "./runtime.js";
 import { mapAcceptedScoresFromMetrics, postLangfuseScores } from "./scores.js";
 
 /** Synthetic remote parent that pins a deterministic trace id.
@@ -109,6 +110,9 @@ function applyOp(
  * sink, so the local stream and this export can never diverge. */
 export interface LangfuseExport {
   readonly onOps: (ops: readonly ObservationOp[]) => void;
+  /** Push pending spans now. Never rejects: a flush gap is an evidence gap,
+   * never a run failure. */
+  readonly flush: () => Promise<void>;
 }
 
 /** Build the Langfuse export sink for one run.
@@ -150,13 +154,6 @@ export async function createLangfuseExport(
         // Export never fails the run or the local evidence.
       }
     },
+    flush: () => flushLangfuse().catch(() => undefined),
   };
-}
-
-/** Observation-only sink. Kept for callers that have no agent-event stream. */
-export async function createLangfuseObservationExport(
-  runId: string,
-  config?: LangfuseConfig,
-): Promise<LangfuseExport> {
-  return createLangfuseExport(runId, config);
 }

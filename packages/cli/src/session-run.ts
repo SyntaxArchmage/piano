@@ -393,6 +393,12 @@ function runSessionBody(
                   Effect.sync(() => {
                     emitOps(mapWorkflowObservation(observation, now()));
                   }),
+                // The orchestrator already flushes every export at
+                // `closeWorkflowTrajectory`; speaking the port here is what
+                // makes the mission's turn end durable without a second hook.
+                ...(langfuseExport === undefined
+                  ? {}
+                  : { flush: () => Effect.promise(langfuseExport.flush) }),
               };
               const projectAgentEvent = sinks.length === 0
                 ? undefined
@@ -534,13 +540,14 @@ function runSessionBody(
             // it. Bridge its events onto the same op stream the mission uses,
             // with its own context so the two conversations cannot interleave
             // handles.
+            const langfuseExport = yield* langfuseExportFor(current.session.id);
             const sinks = opsSinks({
               runId: current.session.id,
               observationPath: observationStreamPath(current.session.runDir),
               langfuse: options.langfuse === true,
               json: options.json === true,
               panelSink,
-              langfuseExport: yield* langfuseExportFor(current.session.id),
+              langfuseExport,
               fileSystem: yield* FileSystem.FileSystem,
             });
             const projectAgentEvent = sinks.length === 0
@@ -560,6 +567,13 @@ function runSessionBody(
                 },
               }),
               options.agentOptions ?? {},
+            ).pipe(
+              // No workflow trajectory owns this turn, so the session closes
+              // the export itself — through the same handle the mission's
+              // `WorkflowObservationExport.flush` reaches.
+              Effect.onExit(() => langfuseExport === undefined
+                ? Effect.void
+                : Effect.promise(langfuseExport.flush)),
             );
           }))),
         )).pipe(
