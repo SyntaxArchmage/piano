@@ -18,7 +18,6 @@ import {
 import { type AgentEvent, type SteerDelivery } from "@piano/harness";
 import {
   failureDetails,
-  fanoutObservationOps,
   isCancellation,
   type FailureDetails,
   type ObservationOp,
@@ -116,7 +115,10 @@ export interface TuiOptions {
   /** Register a sink for the fused observation-op stream. `--langfuse` wires
    * the trajectory panel to it so the ledger draws from `ObservationOp`
    * instead of `AgentEvent`. */
-  readonly attachObservationSink?: (sink: ObservationOpSink) => void;
+  /** Hand the session the sink for one conversation's screen. Ops carry no
+   * screen of their own, so the producer routes by the conversation they came
+   * from — the mission's chat must not draw `/btw`'s replies. */
+  readonly attachObservationSink?: (sink: ObservationOpSink, target: TuiScreenKind) => void;
   readonly onWorkspaceChange?: (cwd: string) => Effect.Effect<void, unknown>;
   readonly onWorkflowChange?: (workflowPath: string, builtinName?: string) => Effect.Effect<WorkflowGraphDefinition, unknown>;
   /** Runs root the `/resume` picker enumerates. `/resume` needs both this and
@@ -503,16 +505,14 @@ export function runTui(
        * palette; none of them is ever handed to the other. */
       // Every screen's panel and chat draw from the fused op stream when
       // `--langfuse` supplies one. Both are display sinks: they never translate.
-      const opsPanels: ObservationOpSink[] = [];
-      deps.attachObservationSink?.(fanoutObservationOps(opsPanels));
       const makeScreen = (kind: TuiScreenKind, screenTheme: PianoTheme): TuiScreen => {
         const chatArea = new Container();
         const trajectory = new TrajectoryPanel(screenTheme, paneRows, scrollKeys.modifier);
         const transcript = new TranscriptView(chatArea, screenTheme);
-        opsPanels.push((ops) => {
+        deps.attachObservationSink?.((ops) => {
           trajectory.recordOps(ops);
           transcript.routeOps(ops);
-        });
+        }, kind);
         return {
           kind,
           theme: screenTheme,

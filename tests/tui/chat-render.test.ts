@@ -623,6 +623,28 @@ describe("TranscriptView.routeOps", () => {
     expect(out.split("let me check").length - 1).toBe(1);
   });
 
+  it("draws a fresh spawn line for a later turn that reruns the same attempt", () => {
+    // An attempt handle repeats across prompts: the attempt restarts at 1 and
+    // the invocation id is stable. The second turn must get its own line, not
+    // rewrite the first one in place.
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("one");
+    view.routeOps([start()]);
+    view.routeOps([{
+      version: 1,
+      timestamp: T(1_400),
+      handle: "msg:0:measure@loop/iter-0:1",
+      op: "end",
+      name: "assistant.message",
+      output: { role: "assistant", text: "first answer" },
+    }]);
+    view.renderUserMessage("two");
+    view.routeOps([start()]);
+    const out = chatArea.render(80).join("\n");
+    expect(out.split("loop.measure").length - 1).toBe(2);
+  });
+
   it("draws no reply clock when replaying a recorded turn", () => {
     const chatArea = new Container();
     const view = new TranscriptView(chatArea, darkTheme);

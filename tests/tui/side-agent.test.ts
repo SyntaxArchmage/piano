@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { Terminal } from "@earendil-works/pi-tui";
 import { runTui } from "../../packages/cli/src/tui.js";
 import { detectTheme, sideTheme } from "../../packages/cli/src/theme.js";
+import type { ObservationOpSink } from "@piano/logging";
+import type { TuiScreenKind } from "../../packages/cli/src/tui.js";
 import type { WorkflowSignoffRequest } from "@piano/orchestrator";
 
 class FakeTerminal implements Terminal {
@@ -127,6 +129,53 @@ describe(" TUI /btw side agent", () => {
     expect(side).toEqual(["what does this flag do"]);
     // The side agent's answer is not mixed into the run's conversation.
     expect(terminal.output.slice(afterLeave)).not.toContain("side answer");
+
+    terminal.onInput?.("/exit");
+    terminal.onInput?.("\r");
+    await expect(running).resolves.toEqual({ type: "closed" });
+  });
+
+  it("keeps the two conversations' ops on their own screens", async () => {
+    // Ops carry no screen of their own; the producer routes them. Without
+    // that, `/btw` would draw the mission's replies and vice versa.
+    const terminal = new FakeTerminal();
+    const sinks: Partial<Record<TuiScreenKind, ObservationOpSink>> = {};
+    const reply = (target: TuiScreenKind, text: string) =>
+      (): Effect.Effect<string> => Effect.sync(() => {
+        sinks[target]?.([{
+          version: 1,
+          timestamp: new Date(1_000).toISOString(),
+          handle: target === "mission" ? "msg:0:agent@root:1" : "msg:0:root:0",
+          op: "end",
+          name: "assistant.message",
+          output: { role: "assistant", text },
+        }]);
+        return text;
+      });
+    const running = Effect.runPromise(runTui({
+      terminal,
+      runPrompt: reply("mission", "mission secret"),
+      runSideAgent: reply("side", "side secret"),
+      attachObservationSink: (sink, target) => {
+        sinks[target] = sink;
+      },
+    }));
+    await settle();
+
+    terminal.onInput?.("build the thing");
+    terminal.onInput?.("\r");
+    await waitFor(() => terminal.output.includes("mission secret"), "the mission reply to paint");
+
+    terminal.onInput?.("/btw");
+    terminal.onInput?.("\r");
+    await settle();
+    const afterEnter = terminal.output.length;
+    terminal.onInput?.("what changed");
+    terminal.onInput?.("\r");
+    await waitFor(() => terminal.output.includes("side secret"), "the side reply to paint");
+    const painted = terminal.output.slice(afterEnter);
+    expect(painted).not.toContain("mission secret");
+    expect(painted).toContain("side secret");
 
     terminal.onInput?.("/exit");
     terminal.onInput?.("\r");

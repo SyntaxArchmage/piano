@@ -213,13 +213,15 @@ function opsSinks(input: {
   readonly writer: ReturnType<typeof observationWriter>;
   readonly langfuse: boolean;
   readonly json: boolean;
-  readonly panelSink: ObservationOpSink | undefined;
+  /** The conversation whose screen these ops draw on. */
+  readonly screen: TuiScreenKind;
+  readonly panelSinks: Readonly<Partial<Record<TuiScreenKind, ObservationOpSink>>>;
   readonly langfuseExport: LangfuseExport | undefined;
 }): { readonly sinks: ObservationOpSink[]; readonly flush: () => Promise<void> } {
-  const { runId, writer, langfuse, json, panelSink, langfuseExport } = input;
+  const { runId, writer, langfuse, json, screen, panelSinks, langfuseExport } = input;
   const sinks: ObservationOpSink[] = [];
   if (langfuse) {
-    sinks.push((ops) => panelSink?.(ops));
+    sinks.push((ops) => panelSinks[screen]?.(ops));
     sinks.push(withoutDeltas(observationStreamSink(writer.append)));
     // Headless automation reads the same ops on stdout, so the `--json` stream
     // can move to the new vocabulary without waiting for the run directory to
@@ -258,9 +260,10 @@ function runSessionBody(
     )
     : undefined;
   return Effect.gen(function* () {
-    // The TUI registers one fused-op display sink when `--langfuse` is on; the
-    // per-prompt fanout reaches it through this slot.
-    let panelSink: ObservationOpSink | undefined;
+    // Each TUI screen registers its own fused-op display sink when `--langfuse`
+    // is on; the per-prompt fanout reaches the one for the conversation it is
+    // writing, so the mission and `/btw` never draw each other's turns.
+    const panelSinks: Partial<Record<TuiScreenKind, ObservationOpSink>> = {};
     // One writer per observation stream: the mission and the side agent write
     // the same run's file and their batches must not overtake each other.
     const writers = new Map<string, ReturnType<typeof observationWriter>>();
@@ -413,7 +416,8 @@ function runSessionBody(
                 writer: writerFor(observationStreamPath(current.session.runDir), fileSystem),
                 langfuse: options.langfuse === true,
                 json: options.json === true,
-                panelSink,
+                screen: "mission",
+                panelSinks,
                 langfuseExport,
               });
               const emitOps = fanoutObservationOps(sinks);
@@ -576,7 +580,8 @@ function runSessionBody(
               writer: writerFor(observationStreamPath(current.session.runDir), fileSystem),
               langfuse: options.langfuse === true,
               json: options.json === true,
-              panelSink,
+              screen: "side",
+              panelSinks,
               langfuseExport,
             });
             const projectAgentEvent = sinks.length === 0
@@ -769,7 +774,7 @@ function runSessionBody(
           runPrompt,
           runSideAgent,
           attachObservationSink: options.langfuse === true
-            ? (sink: ObservationOpSink) => { panelSink = sink; }
+            ? (sink, target) => { panelSinks[target] = sink; }
             : undefined,
           // The job-level commands are the same prompt path with a different
           // instruction to the engine: resolve the job, then run it. The

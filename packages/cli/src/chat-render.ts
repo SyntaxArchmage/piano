@@ -378,6 +378,10 @@ export class TranscriptView {
    * which a tool box forces mid-turn: the closing frame must know the reply
    * was already drawn, not re-draw it whole. */
   private turnStreamed = false;
+  /** Bumped at every closing frame, so a spawn line is keyed by the reply it
+   * belongs to and not only by its handle — an attempt handle repeats across
+   * prompts (the attempt restarts at 1 and the invocation id is stable). */
+  private replyGeneration = 0;
 
   constructor(chatArea: Container, th: PianoTheme, now: () => number = () => Date.now()) {
     this.chatArea = chatArea;
@@ -501,6 +505,7 @@ export class TranscriptView {
     const state = { streamed: this.turnStreamed, startedAt: this.responseStartedAt };
     this.turnStreamed = false;
     this.responseStartedAt = undefined;
+    this.replyGeneration += 1;
     this.closeLiveStream();
     return state;
   }
@@ -644,13 +649,14 @@ export class TranscriptView {
       harness: typeof input?.harness === "string" ? input.harness : undefined,
       model: op.model,
     });
-    const drawn = this.spawnLines.get(op.handle);
+    const key = `${this.replyGeneration}:${op.handle}`;
+    const drawn = this.spawnLines.get(key);
     if (drawn !== undefined) {
       drawn.setText(line);
       return;
     }
     const text = new Text(line, 0, 0);
-    this.spawnLines.set(op.handle, text);
+    this.spawnLines.set(key, text);
     this.chatArea.addChild(text);
   }
 
