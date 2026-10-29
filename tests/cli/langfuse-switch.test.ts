@@ -54,7 +54,9 @@ import { main } from "../../packages/cli/src/main.js";
  * same turn is appended to `system-log/observations.jsonl`, which is what
  * resume and the Langfuse export read. The plan's regression check, pinned. */
 
-async function runWith(args: readonly string[], runDir: string): Promise<void> {
+async function runWith(args: readonly string[], runDir: string): Promise<readonly unknown[]> {
+  /** Everything the harness's own `AgentEvent` ledger was handed. */
+  const trajectoryWrite = vi.fn((_record: unknown) => Effect.void);
   const session = {
     id: "switch-run",
     root: "/tmp/piano",
@@ -70,7 +72,7 @@ async function runWith(args: readonly string[], runDir: string): Promise<void> {
     },
     trajectory: {
       path: join(runDir, "trajectory.json"),
-      write: () => Effect.void,
+      write: trajectoryWrite,
       flush: () => Effect.void,
     },
   } as never;
@@ -104,6 +106,7 @@ async function runWith(args: readonly string[], runDir: string): Promise<void> {
   } finally {
     (process.stdout as { write: unknown }).write = real;
   }
+  return trajectoryWrite.mock.calls.map(([record]) => record);
 }
 
 describe("--langfuse evidence switch", () => {
@@ -145,5 +148,15 @@ describe("--langfuse evidence switch", () => {
       return ops;
     });
     expect(recorded.some((op) => op.metadata?.invocationId === "measure@loop/iter-0")).toBe(true);
+  });
+
+  it("records the AgentEvent ledger either way, adding only the op stream", async () => {
+    const off = await runWith(["--json"], runDir);
+    const on = await runWith(["--json", "--langfuse"], runDir);
+    // Two empty ledgers would compare equal while proving nothing, and rows
+    // nobody recognises would too.
+    expect(off.length).toBeGreaterThan(0);
+    expect(JSON.stringify(off)).toContain("measure@loop/iter-0");
+    expect(on).toEqual(off);
   });
 });
