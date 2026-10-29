@@ -50,10 +50,11 @@ function asDriverError(cause: unknown): DriverError {
   return new DriverError({ message: String(cause), cause });
 }
 
-/** How many nodes of each kind the observation stream opened. A handle is a
+/** How many nodes of each kind the observation stream holds. A handle is a
  * node's identity and may be opened by more than one producer (`start` from
  * the attempt mapper, then a refine from the spawn), so the tally counts
- * distinct handles — the tree's shape without retaining the payloads. */
+ * distinct handles: the shape `foldObservationStream` draws. A handle reused
+ * by a later prompt is the same node to the fold, and counts once here. */
 function countObservationTypes(raw: string): Readonly<Record<ObservationType, number>> {
   const counts = Object.fromEntries(OBSERVATION_TYPES.map((type) => [type, 0])) as Record<ObservationType, number>;
   const seen = new Set<string>();

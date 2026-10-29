@@ -194,13 +194,16 @@ function observationWriter(
   fileSystem: FileSystem.FileSystem,
 ): { readonly append: (lines: string) => void; readonly flush: () => Promise<void> } {
   let writes: Promise<unknown> = Promise.resolve();
+  // One write failing must not poison the chain: the next batch still reaches
+  // the file. A gap is an evidence gap, never a run failure.
+  const settled = (): Promise<void> => writes.then(() => undefined, () => undefined);
   return {
     append: (lines) => {
-      writes = writes.then(() => Effect.runPromise(
+      writes = settled().then(() => Effect.runPromise(
         appendJsonlLine(fileSystem, observationPath, lines, () => undefined).pipe(Effect.ignore),
       ));
     },
-    flush: () => writes.then(() => undefined),
+    flush: () => settled(),
   };
 }
 

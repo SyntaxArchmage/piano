@@ -112,12 +112,11 @@ export interface TuiOptions {
    * The effect carries no service requirements (the caller provides its own). */
   readonly onRename?: (name: string) => Effect.Effect<void, unknown>;
   readonly workspaceCwd?: string;
-  /** Register a sink for the fused observation-op stream. `--langfuse` wires
-   * the trajectory panel to it so the ledger draws from `ObservationOp`
-   * instead of `AgentEvent`. */
-  /** Hand the session the sink for one conversation's screen. Ops carry no
-   * screen of their own, so the producer routes by the conversation they came
-   * from — the mission's chat must not draw `/btw`'s replies. */
+  /** Hand the session the sink for one conversation's screen. `--langfuse`
+   * wires the panel and the chat to it so they draw from `ObservationOp`
+   * instead of `AgentEvent`. Ops carry no screen of their own, so the producer
+   * routes by the conversation they came from — the mission's chat must not
+   * draw `/btw`'s replies. */
   readonly attachObservationSink?: (sink: ObservationOpSink, target: TuiScreenKind) => void;
   readonly onWorkspaceChange?: (cwd: string) => Effect.Effect<void, unknown>;
   readonly onWorkflowChange?: (workflowPath: string, builtinName?: string) => Effect.Effect<WorkflowGraphDefinition, unknown>;

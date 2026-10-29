@@ -214,6 +214,15 @@ function attemptSpanSuffix(op: ObservationOp): string | undefined {
   return op.op === "start" ? attemptSuffixFromHandle(op.handle) : undefined;
 }
 
+/** Whether a fact that opens no attempt belongs to one: its own handle wears
+ * the attempt's tail, or it hangs off the attempt's span. Both go through the
+ * handle vocabulary, so the `attempt:` prefix is spelled in one place. */
+function belongsToAttempt(op: ObservationOp, suffix: string): boolean {
+  const parent = "parent" in op ? op.parent : undefined;
+  return op.handle.endsWith(`:${suffix}`)
+    || (parent !== undefined && attemptSuffixFromHandle(parent) === suffix);
+}
+
 /** Slice a recorded op stream into one batch per recorded turn.
  *
  * The unit is the attempt: one stage attempt speaks one run of facts, and a
@@ -223,11 +232,16 @@ function attemptSpanSuffix(op: ObservationOp): string | undefined {
  * turns that re-run the same stage stay apart even though they wear the same
  * attempt handle.
  *
- * Returns `undefined` when the stream and the turns do not describe each other:
- * a run that matches no turn still owing it, a turn left owing part of what it
- * ran, or a turn that spoke nothing after one that did — the last being the
- * tell that an earlier turn swallowed its run. An unpaired turn must replay
- * from the events rather than from a mis-cut slice. */
+ * An attempt speaks more than one `start` on its handle: the attempt mapper
+ * opens it and the harness's spawn refines it, and a stage epilogue may spawn
+ * it again after its `end`. Those are the same run, not new turns' worth.
+ *
+ * Returns `undefined` when the stream and the turns do not describe each
+ * other: a fact that names no attempt this run opened (another conversation's,
+ * which shares the file), a turn left owing part of what it ran, or a turn
+ * that spoke nothing after one that did — the last being the tell that an
+ * earlier turn swallowed its run. An unpaired turn must replay from the events
+ * rather than from a mis-cut slice. */
 export function splitOpsByTurns(
   ops: readonly ObservationOp[],
   attemptsByTurn: readonly (readonly Attempt[])[],
@@ -241,21 +255,48 @@ export function splitOpsByTurns(
     ops: [] as ObservationOp[],
   }));
   let turn = 0;
-  let opened = false;
+  /** Whether an attempt's span is open, and the tail the last one opened under.
+   * `last` outlives `open` so an epilogue may re-spawn the run it just closed. */
+  let open = false;
+  let last = "";
+
   for (const op of ops) {
     const suffix = attemptSpanSuffix(op);
+    const here = turns[turn];
+    if (here === undefined) return undefined;
+
     if (suffix !== undefined) {
-      while (turn < turns.length && !(turns[turn]?.owed.has(suffix) ?? false)) turn += 1;
-      const target = turns[turn];
-      if (target === undefined) return undefined;
-      target.owed.delete(suffix);
-      target.ops.push(op);
-      opened = true;
+      if (open && suffix === last) {
+        // The spawn refining the attempt already open.
+        here.ops.push(op);
+        continue;
+      }
+      let next = turn;
+      while (next < turns.length && !(turns[next]?.owed.has(suffix) ?? false)) next += 1;
+      const owner = turns[next];
+      if (owner === undefined) {
+        // No turn owes it: the epilogue spawning an attempt whose `end` has
+        // already been spoken. It belongs to the run that opened it, and its
+        // facts follow.
+        if (suffix !== last) return undefined;
+        here.ops.push(op);
+        open = true;
+        continue;
+      }
+      owner.owed.delete(suffix);
+      owner.ops.push(op);
+      turn = next;
+      open = true;
+      last = suffix;
       continue;
     }
-    // Everything until the next span belongs to the attempt already open.
-    if (!opened) return undefined;
-    (turns[turn]?.ops ?? []).push(op);
+
+    // Everything else belongs to the attempt already open. A fact of another
+    // conversation — `/btw` shares the run's stream — names no attempt this
+    // run opened, and must not be folded into it.
+    if (!open || !belongsToAttempt(op, last)) return undefined;
+    here.ops.push(op);
+    if (op.op === "end" && attemptSuffixFromHandle(op.handle) === last) open = false;
   }
 
   let spoke = false;

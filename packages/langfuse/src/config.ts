@@ -4,6 +4,7 @@
  * the local evidence it always has and never loads the OTel SDK. */
 
 export interface LangfuseConfig {
+  /** No trailing slash: spans and scores both join paths onto this. */
   readonly baseUrl: string;
   readonly publicKey: string;
   readonly secretKey: string;
@@ -54,7 +55,9 @@ export function resolveLangfuseConfig(
   const environment = value(env, "ENVIRONMENT");
   const release = value(env, "RELEASE");
   return {
-    baseUrl,
+    // Spans and scores join paths onto this differently, so a trailing slash
+    // would send them to two URLs. One spelling here, both behave.
+    baseUrl: baseUrl.replace(/\/+$/, ""),
     publicKey,
     secretKey,
     ...(environment === undefined ? {} : { environment }),

@@ -69,6 +69,13 @@ function agentSpanHandle(event: AgentEvent, context: BridgeContext): string {
   return `agent:${context.sequence}:${attemptTail(event)}`;
 }
 
+/** `AgentMessage.role` is optional and every other reader takes a missing one
+ * as the assistant's. Both directions of the bridge-then-advance protocol read
+ * it here, or `message_end` restates a `start` the context never saw. */
+function messageRole(event: { readonly message: { readonly role?: string } }): string {
+  return event.message.role ?? "assistant";
+}
+
 /** The handle one conversation turn's facts share. Role is not part of the
  * handle — `name` / `metadata.role` carry it. */
 function messageHandle(event: AgentEvent, context: BridgeContext): string {
@@ -137,13 +144,11 @@ export function bridgeAgentEvent(
       // An assistant turn is a generation span, not a point: open it when the
       // harness starts streaming so the close carries a real duration. User
       // turns stay born-closed points at `message_end`.
-      if ((event.message.role ?? "assistant") !== "assistant" || context.messageSpanOpened === true) return [];
+      if (messageRole(event) !== "assistant" || context.messageSpanOpened === true) return [];
       return [generationStart(event, context, timestamp)];
     }
     case "message_end": {
-      // `AgentMessage.role` is optional and every other reader takes a missing
-      // one as the assistant's, so the bridge must not drop the message over it.
-      const role = event.message.role ?? "assistant";
+      const role = messageRole(event);
       // Only the two conversation roles are facts of the ledger. Tool-result
       // turns (and any other role) belong to the transcript.
       if (role !== "assistant" && role !== "user") return [];
@@ -350,7 +355,7 @@ export function advanceBridgeContext(
     };
   }
   if (event.type === "message_start") {
-    return event.message.role === "assistant"
+    return messageRole(event) === "assistant"
       ? { ...context, messageSpanOpened: true }
       : context;
   }

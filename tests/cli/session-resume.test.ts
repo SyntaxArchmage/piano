@@ -109,6 +109,10 @@ function emit(handle: string, name: string): Extract<ObservationOp, { op: "emit"
   return { version: 1, timestamp: T, handle, op: "emit", type: "event", name };
 }
 
+function attemptEnd(suffix: string): ObservationOp {
+  return { version: 1, timestamp: T, handle: attemptHandle(attempt(suffix)), op: "end" };
+}
+
 function user(suffix: string, text: string): ObservationOp {
   return { ...emit(msgHandle(suffix), "user.message"), output: { role: "user", text } };
 }
@@ -414,18 +418,21 @@ describe("splitOpsByTurns", () => {
 
   it("keeps two turns that re-run the same attempt apart", () => {
     // The attempt restarts at 1 and the invocation id is stable, so a second
-    // prompt re-runs a stage wearing exactly the handle the first one did.
-    const ops = [
+    // prompt re-runs a stage wearing exactly the handle the first one did —
+    // and each attempt speaks its `start` twice (the mapper opens it, the
+    // harness's spawn refines it).
+    const oneTurn = [
+      start("agent@root:1"),
       start("agent@root:1"),
       user("agent@root:1", "one"),
       assistant("agent@root:1", "first"),
-      start("agent@root:1"),
-      user("agent@root:1", "two"),
-      assistant("agent@root:1", "second"),
+      attemptEnd("agent@root:1"),
     ];
+    const ops = [...oneTurn, ...oneTurn.map((op) => ({ ...op, timestamp: T }))];
     const slices = splitOpsByTurns(ops, [[attempt("agent@root:1")], [attempt("agent@root:1")]]);
 
-    expect(slices?.map((slice) => slice.length)).toEqual([3, 3]);
+    expect(slices?.map((slice) => slice.length)).toEqual([5, 5]);
+    expect(slices?.[0]?.map((op) => op.handle)).toEqual(slices?.[1]?.map((op) => op.handle));
   });
 
   it("keeps every attempt a turn ran, however many it spawned", () => {
@@ -441,6 +448,20 @@ describe("splitOpsByTurns", () => {
     ]);
 
     expect(slices?.map((slice) => slice.length)).toEqual([6, 2]);
+  });
+
+  it("keeps an epilogue's re-spawn in the run it belongs to", () => {
+    // A stage epilogue spawns the attempt again after its `end`. That is the
+    // same run, not a new turn's worth of facts.
+    const ops = [
+      start("agent@root:1"),
+      start("agent@root:1"),
+      user("agent@root:1", "one"),
+      attemptEnd("agent@root:1"),
+      start("agent@root:1"),
+      assistant("agent@root:1", "epilogue"),
+    ];
+    expect(splitOpsByTurns(ops, [[attempt("agent@root:1")]])?.map((s) => s.length)).toEqual([6]);
   });
 
   it("refuses to guess which turn a run belongs to when both owe it", () => {

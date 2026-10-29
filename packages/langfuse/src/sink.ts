@@ -38,13 +38,14 @@ function parentContext(
 /** Mask where the payload is still structured: the SDK hands the processor's
  * `mask` hook values it has already stringified, which hides the key names a
  * secret hides behind. */
-function masked(data: unknown): unknown {
-  return maskLangfusePayload({ data });
+function masked(data: Record<string, unknown>, mask: boolean): Record<string, unknown> {
+  return mask ? (maskLangfusePayload({ data }) as Record<string, unknown>) : data;
 }
 
 function startObservationFor(
   op: Extract<ObservationOp, { op: "start" | "emit" }>,
   parentSpanContext: SpanContext,
+  mask: boolean,
 ): LangfuseObservation {
   const attributes = masked({
     ...startRefineFields(op),
@@ -53,7 +54,7 @@ function startObservationFor(
     ...("usageDetails" in op && op.usageDetails !== undefined ? { usageDetails: op.usageDetails } : {}),
     ...("level" in op && op.level !== undefined ? { level: op.level } : {}),
     ...("statusMessage" in op && op.statusMessage !== undefined ? { statusMessage: op.statusMessage } : {}),
-  }) as Record<string, unknown>;
+  }, mask);
   if (op.type === "agent") {
     return startObservation(op.name, attributes, { asType: "agent", parentSpanContext });
   }
@@ -73,6 +74,7 @@ function applyOp(
   op: ObservationOp,
   handles: Map<string, LangfuseObservation>,
   traceId: string,
+  mask: boolean,
 ): void {
   if (op.op === "start") {
     // The handle is the identity: a second `start` opens no second span, so
@@ -82,17 +84,18 @@ function applyOp(
     if (open !== undefined) {
       const refine = startRefineFields(op);
       if (refine.input !== undefined || refine.model !== undefined) {
-        open.updateOtelSpanAttributes(refine);
+        // The only path that hands the SDK a payload: mask it like the rest.
+        open.updateOtelSpanAttributes(masked(refine, mask));
       }
       return;
     }
-    handles.set(op.handle, startObservationFor(op, parentContext(op.parent, handles, traceId)));
+    handles.set(op.handle, startObservationFor(op, parentContext(op.parent, handles, traceId), mask));
     return;
   }
   if (op.op === "emit") {
     // A point fact: open and close in one op. `event` auto-ends in the SDK;
     // `generation` is ended explicitly so its usage lands before export.
-    const observation = startObservationFor(op, parentContext(op.parent, handles, traceId));
+    const observation = startObservationFor(op, parentContext(op.parent, handles, traceId), mask);
     if (op.type === "generation") observation.end();
     return;
   }
@@ -104,7 +107,7 @@ function applyOp(
     ...(op.statusMessage === undefined ? {} : { statusMessage: op.statusMessage }),
     ...(op.usageDetails === undefined ? {} : { usageDetails: op.usageDetails }),
     metadata: op.metadata ?? {},
-  }) as Record<string, unknown>);
+  }, mask));
   if (op.op === "end") {
     // The handle stays: a fact the attempt closes *after* its `end`
     // (`stage_accepted`, an epilogue) still names this span as parent, and the
@@ -137,12 +140,14 @@ export async function createLangfuseExport(
 ): Promise<LangfuseExport> {
   const traceId = await createTraceId(runId);
   const handles = new Map<string, LangfuseObservation>();
+  // `PIANO_LANGFUSE_MASK=0` turns masking off deliberately; the default is on.
+  const mask = config?.mask !== false;
 
   return {
     onOps: (ops: readonly ObservationOp[]) => {
       try {
         for (const op of ops) {
-          applyOp(op, handles, traceId);
+          applyOp(op, handles, traceId, mask);
           if (config !== undefined && op.op === "emit" && op.name === "stage.accepted") {
             const { metrics, identity } = stageAcceptedFacts(op);
             // Fire-and-forget: a score gap never fails the run.

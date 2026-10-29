@@ -563,12 +563,11 @@ export class TranscriptView {
     this.liveStream.append(delta);
   }
 
-  /** Draw the op stream into the transcript. Under `--langfuse` this is the
+  /** Draw the chat from the op vocabulary. Under `--langfuse` this is the
    * chat's content source — the panel and the wire read the same ops — and
    * `route` is left unused. A `user.message` op is skipped: the prompt echo
-   * already drew the turn's heading. */
-  /** Draw the chat from the op vocabulary. `replay` draws a recorded turn
-   * back: no reply clock, because nothing is being waited on. */
+   * already drew the turn's heading. `replay` draws a recorded turn back: no
+   * reply clock, because nothing is being waited on. */
   routeOps(ops: readonly ObservationOp[], replay = false): void {
     for (const op of ops) {
       if (op.op === "update") {
@@ -747,9 +746,8 @@ export class TranscriptView {
     this.appendTiming(startedAt, messageText(event.message));
   }
 
-  /** One dim footer under a completed assistant reply with how long it took. */
-  /** Time a reply that has text. A message with no reply to show has no reply
-   * to time. */
+  /** One dim footer under a completed assistant reply with how long it took.
+   * A message with no reply to show has no reply to time. */
   private appendTiming(startedAt: number | undefined, text: string | undefined): void {
     if (startedAt === undefined || text === undefined) return;
     this.appendText(`  ${this.th.dim}✎ ${formatCompactDuration(this.now() - startedAt)}${RST}`);
