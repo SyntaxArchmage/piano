@@ -25,6 +25,7 @@ export {
   AGENT_USAGE_NAME,
   attemptHandle,
   attemptSuffix,
+  attemptSuffixFromHandle,
   contextCounts,
   contextDetail,
   contextFacts,

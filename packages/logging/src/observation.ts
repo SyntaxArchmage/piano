@@ -194,6 +194,12 @@ export function attemptHandle(
   return `attempt:${attemptSuffix(context)}`;
 }
 
+/** The inverse of `attemptHandle`: the attempt suffix behind an `attempt:`
+ * handle, or `undefined` when the handle names something else. */
+export function attemptSuffixFromHandle(handle: string): string | undefined {
+  return handle.startsWith("attempt:") ? handle.slice("attempt:".length) : undefined;
+}
+
 export function toolHandle(toolCallId: string): string {
   return `tool:${toolCallId}`;
 }

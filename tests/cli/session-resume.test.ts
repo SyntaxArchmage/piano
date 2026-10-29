@@ -395,10 +395,9 @@ describe("readResumeContext", () => {
 });
 
 describe("splitOpsByTurns", () => {
-  it("attributes each fact to the attempt its handle or parent names", () => {
+  it("splits at the attempt count each turn recorded", () => {
     const ops = [
       start("measure@loop/iter-0:1"),
-      { ...emit("ctx:0:measure@loop/iter-0:1", "agent.context"), metadata: { files: 1 } },
       user("measure@loop/iter-0:1", "one"),
       assistant("measure@loop/iter-0:1", "first"),
       start("measure@loop/iter-1:1"),
@@ -408,42 +407,56 @@ describe("splitOpsByTurns", () => {
     const slices = splitOpsByTurns(ops, [[attempt("measure@loop/iter-0:1")], [attempt("measure@loop/iter-1:1")]]);
 
     expect(slices?.map((slice) => slice.map((op) => op.handle))).toEqual([
-      [
-        "attempt:measure@loop/iter-0:1",
-        "ctx:0:measure@loop/iter-0:1",
-        "msg:0:measure@loop/iter-0:1",
-        "msg:0:measure@loop/iter-0:1",
-      ],
-      [
-        "attempt:measure@loop/iter-1:1",
-        "msg:0:measure@loop/iter-1:1",
-        "msg:0:measure@loop/iter-1:1",
-      ],
+      ["attempt:measure@loop/iter-0:1", "msg:0:measure@loop/iter-0:1", "msg:0:measure@loop/iter-0:1"],
+      ["attempt:measure@loop/iter-1:1", "msg:0:measure@loop/iter-1:1", "msg:0:measure@loop/iter-1:1"],
     ]);
   });
 
-  it("attributes a fact by its parent when the handle names no attempt", () => {
-    const tool = {
-      version: 1 as const,
-      timestamp: T,
-      handle: "tool:c1",
-      op: "end" as const,
-      output: "ok",
-      parent: attemptHandle(attempt("measure@loop/iter-0:1")),
-    };
-    expect(splitOpsByTurns(
-      [tool],
-      [[attempt("measure@loop/iter-0:1")], [attempt("measure@loop/iter-1:1")]],
-    ))?.toEqual([[tool], []]);
+  it("keeps two turns that re-run the same attempt apart", () => {
+    // The attempt restarts at 1 and the invocation id is stable, so a second
+    // prompt re-runs a stage wearing exactly the handle the first one did.
+    const ops = [
+      start("agent@root:1"),
+      user("agent@root:1", "one"),
+      assistant("agent@root:1", "first"),
+      start("agent@root:1"),
+      user("agent@root:1", "two"),
+      assistant("agent@root:1", "second"),
+    ];
+    const slices = splitOpsByTurns(ops, [[attempt("agent@root:1")], [attempt("agent@root:1")]]);
+
+    expect(slices?.map((slice) => slice.length)).toEqual([3, 3]);
   });
 
-  it("returns undefined when a fact belongs to no turn, or arrives out of turn order", () => {
-    expect(splitOpsByTurns([user("nobody:1", "only")], [[attempt("a:1")]])).toBeUndefined();
+  it("keeps every attempt a turn ran, however many it spawned", () => {
+    const ops = [
+      start("plan@map/0:1"), user("plan@map/0:1", "plan"),
+      start("build@map/1:1"), user("build@map/1:1", "build"),
+      start("test@map/2:1"), user("test@map/2:1", "test"),
+      start("measure@loop/iter-1:1"), user("measure@loop/iter-1:1", "two"),
+    ];
+    const slices = splitOpsByTurns(ops, [
+      [attempt("plan@map/0:1"), attempt("build@map/1:1"), attempt("test@map/2:1")],
+      [attempt("measure@loop/iter-1:1")],
+    ]);
+
+    expect(slices?.map((slice) => slice.length)).toEqual([6, 2]);
+  });
+
+  it("refuses to guess which turn a run belongs to when both owe it", () => {
+    // A run recorded before `--langfuse` was switched on leaves the earlier
+    // turn owing an attempt it never spoke. Assigning the later turn's run to
+    // it would show the wrong conversation under the right prompt.
+    const ops = [start("agent@root:1"), user("agent@root:1", "one")];
+    expect(splitOpsByTurns(ops, [[attempt("agent@root:1")], [attempt("agent@root:1")]])).toBeUndefined();
+  });
+
+  it("returns undefined when the stream's attempts do not line up with the turns", () => {
+    expect(splitOpsByTurns([user("a:1", "only")], [[attempt("a:1")], [attempt("b:1")]])).toBeUndefined();
     expect(splitOpsByTurns(
-      [user("b:1", "early"), user("a:1", "late")],
-      [[attempt("a:1")], [attempt("b:1")]],
+      [start("a:1"), start("b:1")],
+      [[attempt("a:1")]],
     )).toBeUndefined();
-    expect(splitOpsByTurns([user("a:1", "orphan")], [[], [attempt("b:1")]])).toBeUndefined();
     expect(splitOpsByTurns([], [])).toEqual([]);
   });
 });
