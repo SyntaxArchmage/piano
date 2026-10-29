@@ -106,8 +106,10 @@ function applyOp(
     metadata: op.metadata ?? {},
   }) as Record<string, unknown>);
   if (op.op === "end") {
+    // The handle stays: a fact the attempt closes *after* its `end`
+    // (`stage_accepted`, an epilogue) still names this span as parent, and the
+    // fold keeps the node for exactly the same reason.
     observation.end();
-    handles.delete(op.handle);
   }
 }
 

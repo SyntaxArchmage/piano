@@ -608,6 +608,31 @@ describe("TranscriptView.routeOps", () => {
     expect(out.split("measured 12.3").length - 1).toBe(1);
   });
 
+  it("does not re-draw a reply a tool box already interrupted", () => {
+    // claude/dsh order deltas, then a tool, then the closing frame. The tool
+    // closes the live block; the close must still know the reply was drawn.
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.routeOps([
+      { version: 1, timestamp: T(1_100), handle: "msg:0:a:1", op: "update", output: { delta: "let me check" } },
+      { version: 1, timestamp: T(1_200), handle: "tool:c1", op: "start", type: "tool", name: "Bash", input: { command: "ls" } },
+      { version: 1, timestamp: T(1_300), handle: "tool:c1", op: "end", level: "DEFAULT", output: "a.ts" },
+      { version: 1, timestamp: T(1_400), handle: "msg:0:a:1", op: "end", name: "assistant.message", output: { role: "assistant", text: "let me check" } },
+    ]);
+    const out = chatArea.render(80).join("\n");
+    expect(out.split("let me check").length - 1).toBe(1);
+  });
+
+  it("draws no reply clock when replaying a recorded turn", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("one");
+    view.routeOps([
+      { version: 1, timestamp: T(1_400), handle: "msg:0:a:1", op: "end", name: "assistant.message", output: { role: "assistant", text: "measured 12.3" } },
+    ], true);
+    expect(chatArea.render(80).join("\n")).not.toContain("✎");
+  });
+
   it("renders the message whole when the dialect never streamed it", () => {
     const chatArea = new Container();
     const view = new TranscriptView(chatArea, darkTheme);

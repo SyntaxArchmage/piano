@@ -327,9 +327,12 @@ export function readResumeContext(
       ...(typeof document.name === "string" ? { name: document.name } : {}),
       ...(typeof document.workflowPath === "string" ? { workflowPath: document.workflowPath } : {}),
       ...(typeof document.workspaceCwd === "string" ? { workspaceCwd: document.workspaceCwd } : {}),
-      turns: slices === undefined
-        ? turns
-        : turns.map((turn, index) => ({ ...turn, ops: slices[index] })),
+      // A turn with no facts of its own keeps its events: replaying an empty
+      // op batch would show the prompt and nothing else.
+      turns: turns.map((turn, index) => {
+        const ops = slices?.[index];
+        return ops === undefined || ops.length === 0 ? turn : { ...turn, ops };
+      }),
     };
   });
 }

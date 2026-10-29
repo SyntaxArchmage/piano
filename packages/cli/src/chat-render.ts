@@ -374,6 +374,10 @@ export class TranscriptView {
   /** The one live Markdown block a turn is written into, open between the
    * first `text_delta` and the `message_end` that closes it. */
   private liveStream: TranscriptStream | undefined;
+  /** Whether this turn has streamed any text yet. Survives `closeLiveStream`,
+   * which a tool box forces mid-turn: the closing frame must know the reply
+   * was already drawn, not re-draw it whole. */
+  private turnStreamed = false;
 
   constructor(chatArea: Container, th: PianoTheme, now: () => number = () => Date.now()) {
     this.chatArea = chatArea;
@@ -460,6 +464,7 @@ export class TranscriptView {
     // closing frame) would otherwise leave the block open, and the next
     // prompt's deltas would append into the previous answer.
     this.closeLiveStream();
+    this.turnStreamed = false;
     // Arm the reply clock at submit so the footer measures the whole wait, not
     // just the streaming tail.
     this.responseStartedAt = this.now();
@@ -477,6 +482,7 @@ export class TranscriptView {
     this.errorBoxes.length = 0;
     this.expandedFlag = false;
     this.liveStream = undefined;
+    this.turnStreamed = false;
     this.toolStartedAt.clear();
     this.spawnLines.clear();
     this.responseStartedAt = undefined;
@@ -486,6 +492,17 @@ export class TranscriptView {
   private closeLiveStream(): void {
     this.liveStream?.finalize();
     this.liveStream = undefined;
+  }
+
+  /** Close the turn's live block and hand back what it held, so the closing
+   * frame draws only what was never streamed — and cannot lose that fact to
+   * the block teardown. */
+  private endTurn(): { readonly streamed: boolean; readonly startedAt: number | undefined } {
+    const state = { streamed: this.turnStreamed, startedAt: this.responseStartedAt };
+    this.turnStreamed = false;
+    this.responseStartedAt = undefined;
+    this.closeLiveStream();
+    return state;
   }
 
   /** Route one streamed event into the transcript, keeping the live block
@@ -507,10 +524,7 @@ export class TranscriptView {
       return;
     }
     if (event.type === "message_end") {
-      const startedAt = this.responseStartedAt;
-      this.responseStartedAt = undefined;
-      const streamed = this.liveStream !== undefined;
-      this.closeLiveStream();
+      const { streamed, startedAt } = this.endTurn();
       if (!streamed) this.renderEvent(event);
       this.appendResponseTiming(event, startedAt);
       return;
@@ -539,6 +553,7 @@ export class TranscriptView {
    * figure covers time-to-first-token as well as generation. */
   private appendStreamDelta(delta: string): void {
     this.responseStartedAt ??= this.now();
+    this.turnStreamed = true;
     if (this.liveStream === undefined) this.liveStream = this.newStream();
     this.liveStream.append(delta);
   }
@@ -547,7 +562,9 @@ export class TranscriptView {
    * chat's content source — the panel and the wire read the same ops — and
    * `route` is left unused. A `user.message` op is skipped: the prompt echo
    * already drew the turn's heading. */
-  routeOps(ops: readonly ObservationOp[]): void {
+  /** Draw the chat from the op vocabulary. `replay` draws a recorded turn
+   * back: no reply clock, because nothing is being waited on. */
+  routeOps(ops: readonly ObservationOp[], replay = false): void {
     for (const op of ops) {
       if (op.op === "update") {
         const delta = asRecord(op.output)?.delta;
@@ -584,13 +601,10 @@ export class TranscriptView {
           continue;
         }
         if (op.name !== undefined && op.name.endsWith(".message")) {
-          const streamed = this.liveStream !== undefined;
-          const startedAt = this.responseStartedAt;
-          this.responseStartedAt = undefined;
-          this.closeLiveStream();
+          const { streamed, startedAt } = this.endTurn();
           const text = outputText(op);
           if (!streamed && text !== undefined) this.drawAssistantMessage(text);
-          this.appendTiming(startedAt);
+          if (!replay) this.appendTiming(startedAt, text);
         }
         continue;
       }
@@ -724,13 +738,14 @@ export class TranscriptView {
     if (event.type !== "message_end") return;
     const role = event.message.role;
     if (role !== undefined && role !== "assistant") return;
-    if (messageText(event.message) === undefined) return;
-    this.appendTiming(startedAt);
+    this.appendTiming(startedAt, messageText(event.message));
   }
 
   /** One dim footer under a completed assistant reply with how long it took. */
-  private appendTiming(startedAt: number | undefined): void {
-    if (startedAt === undefined) return;
+  /** Time a reply that has text. A message with no reply to show has no reply
+   * to time. */
+  private appendTiming(startedAt: number | undefined, text: string | undefined): void {
+    if (startedAt === undefined || text === undefined) return;
     this.appendText(`  ${this.th.dim}✎ ${formatCompactDuration(this.now() - startedAt)}${RST}`);
   }
 

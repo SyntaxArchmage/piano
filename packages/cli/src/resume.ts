@@ -20,12 +20,13 @@ import { listRunIds } from "./runs.js";
 import { programName } from "./program-name.js";
 import { runSession, type SessionRunError } from "./session-run.js";
 
-const usage = `usage: ${programName()} resume [<run-id>] [--list]`;
+const usage = `usage: ${programName()} resume [<run-id>] [--list] [--langfuse]`;
 
 interface ResumeOptions {
   runsRoot: string;
   runId?: string;
   list: boolean;
+  langfuse: boolean;
 }
 
 interface ResumeDeps {
@@ -38,14 +39,18 @@ function parseResumeArgs(
 ): Effect.Effect<ResumeOptions, CliArgumentError> {
   let runId: string | undefined;
   let list = false;
+  let langfuse = false;
   for (const arg of args) {
     if (arg === "--list") list = true;
+    // The switch must survive a resume: a run recorded under `--langfuse` keeps
+    // appending to its op stream, and its replay reads that stream.
+    else if (arg === "--langfuse") langfuse = true;
     else if (arg.startsWith("-")) return Effect.fail(new CliArgumentError({ message: `unknown option: ${arg}\n${usage}` }));
     else if (runId === undefined) runId = arg;
     else return Effect.fail(new CliArgumentError({ message: usage }));
   }
   if (runId !== undefined && list) return Effect.fail(new CliArgumentError({ message: usage }));
-  return Effect.succeed({ runsRoot: deps.runsRoot ?? defaultRunsRoot(), runId, list });
+  return Effect.succeed({ runsRoot: deps.runsRoot ?? defaultRunsRoot(), runId, list, langfuse });
 }
 
 /** Reject an unknown run id before opening a session on it: `createSession`
@@ -87,7 +92,7 @@ export function resumeCommand(
       // the picker leaves nothing on disk — a run directory (and its id) is
       // allocated only when the first prompt is actually submitted.
       const session = createStagingSession({ cwd: process.cwd(), runsRoot: options.runsRoot });
-      return yield* runSession(session, { resumePicker: true });
+      return yield* runSession(session, { resumePicker: true, langfuse: options.langfuse });
     }
     yield* requireRun(options.runsRoot, options.runId);
     // Open the session on the target run so the takeover reuses it instead of
@@ -97,6 +102,6 @@ export function resumeCommand(
       runsRoot: options.runsRoot,
       id: options.runId,
     });
-    yield* runSession(session, { resumeRunId: options.runId });
+    yield* runSession(session, { resumeRunId: options.runId, langfuse: options.langfuse });
   });
 }

@@ -998,7 +998,7 @@ export function runTui(
             // the same facts the live panel and chat drew. A run that recorded
             // none (or is resumed without the switch) replays its `AgentEvent`s.
             const turnOps = opsFed ? turn.ops : undefined;
-            if (turnOps !== undefined) missionScreen.transcript.routeOps(turnOps);
+            if (turnOps !== undefined) missionScreen.transcript.routeOps(turnOps, true);
             else for (const event of turn.events) missionScreen.transcript.renderEvent(event);
             if (turn.error !== undefined) {
               missionScreen.transcript.appendError(turn.status === "cancelled" ? "interrupted" : "run failed", turn.error);

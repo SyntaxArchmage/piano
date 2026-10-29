@@ -183,28 +183,44 @@ function langfuseExportFor(
   });
 }
 
-/** The op sinks one run fans out to. Shared by the workflow path and the side
- * agent so the two cannot disagree on what is written where. Evidence sinks
- * drop `update` ops (the chat's delta stream); display sinks keep them. */
+/** The one writer for a run's observation stream.
+ *
+ * Ordering is a property of the file, not of a caller: a batch that overtakes
+ * the one before it leaves an `end` ahead of its `start`, and the fold drops
+ * both. The mission and the side agent share one writer per run, so their
+ * facts cannot interleave either. */
+function observationWriter(
+  observationPath: string,
+  fileSystem: FileSystem.FileSystem,
+): { readonly append: (lines: string) => void; readonly flush: () => Promise<void> } {
+  let writes: Promise<unknown> = Promise.resolve();
+  return {
+    append: (lines) => {
+      writes = writes.then(() => Effect.runPromise(
+        appendJsonlLine(fileSystem, observationPath, lines, () => undefined).pipe(Effect.ignore),
+      ));
+    },
+    flush: () => writes.then(() => undefined),
+  };
+}
+
+/** The op sinks one run fans out to, plus the flush that makes its evidence
+ * durable. Shared by the workflow path and the side agent so the two cannot
+ * disagree on what is written where. Evidence sinks drop `update` ops (the
+ * chat's delta stream); display sinks keep them. */
 function opsSinks(input: {
   readonly runId: string;
-  readonly observationPath: string;
+  readonly writer: ReturnType<typeof observationWriter>;
   readonly langfuse: boolean;
   readonly json: boolean;
   readonly panelSink: ObservationOpSink | undefined;
   readonly langfuseExport: LangfuseExport | undefined;
-  readonly fileSystem: FileSystem.FileSystem;
-}): ObservationOpSink[] {
-  const { runId, observationPath, langfuse, json, panelSink, langfuseExport, fileSystem } = input;
+}): { readonly sinks: ObservationOpSink[]; readonly flush: () => Promise<void> } {
+  const { runId, writer, langfuse, json, panelSink, langfuseExport } = input;
   const sinks: ObservationOpSink[] = [];
   if (langfuse) {
     sinks.push((ops) => panelSink?.(ops));
-    sinks.push(withoutDeltas(observationStreamSink((lines) => {
-      void Effect.runPromise(
-        appendJsonlLine(fileSystem, observationPath, lines, () => undefined)
-          .pipe(Effect.ignore),
-      );
-    })));
+    sinks.push(withoutDeltas(observationStreamSink(writer.append)));
     // Headless automation reads the same ops on stdout, so the `--json` stream
     // can move to the new vocabulary without waiting for the run directory to
     // be inspected.
@@ -216,7 +232,13 @@ function opsSinks(input: {
     }
   }
   if (langfuseExport !== undefined) sinks.push(withoutDeltas(langfuseExport.onOps));
-  return sinks;
+  return {
+    sinks,
+    flush: async () => {
+      await writer.flush();
+      await langfuseExport?.flush();
+    },
+  };
 }
 
 /** Turn a live logging session into a replay loop: run the headless prompt or
@@ -239,6 +261,16 @@ function runSessionBody(
     // The TUI registers one fused-op display sink when `--langfuse` is on; the
     // per-prompt fanout reaches it through this slot.
     let panelSink: ObservationOpSink | undefined;
+    // One writer per observation stream: the mission and the side agent write
+    // the same run's file and their batches must not overtake each other.
+    const writers = new Map<string, ReturnType<typeof observationWriter>>();
+    const writerFor = (path: string, fileSystem: FileSystem.FileSystem) => {
+      const existing = writers.get(path);
+      if (existing !== undefined) return existing;
+      const writer = observationWriter(path, fileSystem);
+      writers.set(path, writer);
+      return writer;
+    };
     const initialWorkflow = yield* TRACE(
       options.workflowPath === undefined ? LOAD_SOURCE : EXPLICIT_LOAD_SOURCE,
       options.workflowPath === undefined
@@ -376,14 +408,13 @@ function runSessionBody(
               // under `--langfuse` the TUI panel and the headless wire read the
               // ops instead, and leave that feed unused.
               const fileSystem = yield* FileSystem.FileSystem;
-              const sinks = opsSinks({
+              const { sinks, flush } = opsSinks({
                 runId: current.session.id,
-                observationPath: observationStreamPath(current.session.runDir),
+                writer: writerFor(observationStreamPath(current.session.runDir), fileSystem),
                 langfuse: options.langfuse === true,
                 json: options.json === true,
                 panelSink,
                 langfuseExport,
-                fileSystem,
               });
               const emitOps = fanoutObservationOps(sinks);
               const now = () => new Date().toISOString();
@@ -396,9 +427,7 @@ function runSessionBody(
                 // The orchestrator already flushes every export at
                 // `closeWorkflowTrajectory`; speaking the port here is what
                 // makes the mission's turn end durable without a second hook.
-                ...(langfuseExport === undefined
-                  ? {}
-                  : { flush: () => Effect.promise(langfuseExport.flush) }),
+                flush: () => Effect.promise(flush),
               };
               const projectAgentEvent = sinks.length === 0
                 ? undefined
@@ -541,14 +570,14 @@ function runSessionBody(
             // with its own context so the two conversations cannot interleave
             // handles.
             const langfuseExport = yield* langfuseExportFor(current.session.id);
-            const sinks = opsSinks({
+            const fileSystem = yield* FileSystem.FileSystem;
+            const { sinks, flush } = opsSinks({
               runId: current.session.id,
-              observationPath: observationStreamPath(current.session.runDir),
+              writer: writerFor(observationStreamPath(current.session.runDir), fileSystem),
               langfuse: options.langfuse === true,
               json: options.json === true,
               panelSink,
               langfuseExport,
-              fileSystem: yield* FileSystem.FileSystem,
             });
             const projectAgentEvent = sinks.length === 0
               ? undefined
@@ -571,9 +600,7 @@ function runSessionBody(
               // No workflow trajectory owns this turn, so the session closes
               // the export itself — through the same handle the mission's
               // `WorkflowObservationExport.flush` reaches.
-              Effect.onExit(() => langfuseExport === undefined
-                ? Effect.void
-                : Effect.promise(langfuseExport.flush)),
+              Effect.onExit(() => Effect.promise(flush)),
             );
           }))),
         )).pipe(

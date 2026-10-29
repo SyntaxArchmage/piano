@@ -349,6 +349,25 @@ describe("readResumeContext", () => {
     ]);
   });
 
+  it("keeps a turn on its events when its attempts recorded no facts", async () => {
+    // Mixing a recorded `--langfuse` turn with an older one is normal; the
+    // older turn must replay its events, not an empty op batch.
+    const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
+    await writeRun(root, "run-empty-turn", twoTurns);
+    await writeOps(root, "run-empty-turn", [
+      start("measure@loop/iter-1:1"),
+      user("measure@loop/iter-1:1", "two"),
+    ]);
+
+    const context = await Effect.runPromise(
+      readResumeContext(root, "run-empty-turn", { wantOps: true }),
+    );
+
+    expect(context.turns[0]?.ops).toBeUndefined();
+    expect(context.turns[0]?.events).toHaveLength(3);
+    expect(context.turns[1]?.ops).toHaveLength(2);
+  });
+
   it("leaves turns on their events when a fact belongs to no turn's attempts", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeRun(root, "run-unpaired", twoTurns);

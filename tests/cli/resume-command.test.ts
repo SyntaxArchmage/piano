@@ -76,7 +76,7 @@ describe("piano resume command ", () => {
     await Effect.runPromise(resumeCommand([runId], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)));
 
     expect(createSession).toHaveBeenCalledWith({ cwd: process.cwd(), runsRoot: root, id: runId });
-    expect(runSession).toHaveBeenCalledWith(session, { resumeRunId: runId });
+    expect(runSession).toHaveBeenCalledWith(session, { resumeRunId: runId, langfuse: false });
   });
 
   it("opens the picker over a staging session when no run id is supplied", async () => {
@@ -86,7 +86,7 @@ describe("piano resume command ", () => {
     // so cancelling the picker strands no empty run directory.
     expect(createStagingSession).toHaveBeenCalledWith({ cwd: process.cwd(), runsRoot: root });
     expect(createSession).not.toHaveBeenCalled();
-    expect(runSession).toHaveBeenCalledWith(session, { resumePicker: true });
+    expect(runSession).toHaveBeenCalledWith(session, { resumePicker: true, langfuse: false });
   });
 
   it("rejects an unknown run id before opening a session on it", async () => {
@@ -116,6 +116,17 @@ describe("piano resume command ", () => {
       out.mockRestore();
     }
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("carries --langfuse into the resumed session", async () => {
+    // A run recorded under `--langfuse` must keep appending to its op stream,
+    // and its replay must read that stream: the switch survives the resume.
+    const root = await mkdtemp(join(tmpdir(), "piano-resume-"));
+    await mkdir(join(root, runId), { recursive: true });
+    await Effect.runPromise(
+      resumeCommand([runId, "--langfuse"], { runsRoot: root }).pipe(Effect.provide(NodeFileSystem.layer)),
+    );
+    expect(runSession).toHaveBeenCalledWith(session, { resumeRunId: runId, langfuse: true });
   });
 
   it("rejects a positional run id combined with --list", async () => {
