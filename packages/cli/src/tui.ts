@@ -1140,7 +1140,7 @@ export function runTui(
             // human's words stay visible in the transcript instead of vanishing
             // with the panel. A cancelled review never reaches this point.
             Effect.tap((decision) => Effect.sync(() => {
-              missionScreen.transcript.renderUserMessage(signoffDecisionText(request, decision));
+              missionScreen.transcript.appendUserRow(signoffDecisionText(request, decision));
               chatViewport.scrollEnd();
               tui.requestRender();
             })),
@@ -1213,7 +1213,7 @@ export function runTui(
               Effect.matchEffect({
                 onSuccess: (delivery) => Effect.sync(() => {
                   if (delivery === "delivered") {
-                    screen.transcript.renderUserMessage(prompt);
+                    screen.transcript.appendUserRow(prompt);
                     screen.transcript.appendText(`  ${screen.theme.accent}⚑ steered — ${prompt}${RST}`);
                   } else if (screen.running) {
                     // Held as the queued next turn: at terminal state the ensuring

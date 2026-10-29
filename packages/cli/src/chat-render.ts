@@ -17,11 +17,15 @@ import {
   asRecord,
   metadataNumber,
   metadataString,
+  messageName,
   outputText,
   toolCallIdFromHandle,
   type FailureDetails,
   type ObservationOp,
 } from "@piano/logging";
+
+/** The emit name a user row wears. */
+const USER_MESSAGE_NAME = messageName("user");
 
 export function buildMarkdownTheme(th: PianoTheme): MarkdownTheme {
   return {
@@ -366,8 +370,9 @@ export class TranscriptView {
   private readonly toolStartedAt = new Map<string, number>();
   /** Wall-clock start of the assistant message being streamed. */
   private responseStartedAt: number | undefined;
-  /** The `↳ …` line each agent handle has drawn, so a refining `start` (the
-   * harness's `spawn`) updates it instead of stacking a second line. */
+  /** The `↳ …` line one turn's agent handles have drawn, so a refining `start`
+   * (the harness's `spawn`) updates it instead of stacking a second line.
+   * Cleared at every turn open: an attempt handle repeats across prompts. */
   private readonly spawnLines = new Map<string, Text>();
   /** Injectable clock so the timing paths are deterministic under test. */
   private readonly now: () => number;
@@ -378,10 +383,8 @@ export class TranscriptView {
    * which a tool box forces mid-turn: the closing frame must know the reply
    * was already drawn, not re-draw it whole. */
   private turnStreamed = false;
-  /** Bumped at every closing frame, so a spawn line is keyed by the reply it
-   * belongs to and not only by its handle — an attempt handle repeats across
-   * prompts (the attempt restarts at 1 and the invocation id is stable). */
-  private replyGeneration = 0;
+  /** The user row a `user.message` op would echo back. */
+  private userEcho: string | undefined;
 
   constructor(chatArea: Container, th: PianoTheme, now: () => number = () => Date.now()) {
     this.chatArea = chatArea;
@@ -463,15 +466,25 @@ export class TranscriptView {
     }
   }
 
+  /** Open a turn with the user's own heading. */
   renderUserMessage(text: string): void {
     // A turn that ended without `message_end` (interrupted, failed before the
     // closing frame) would otherwise leave the block open, and the next
     // prompt's deltas would append into the previous answer.
-    this.closeLiveStream();
-    this.turnStreamed = false;
+    this.endTurn();
     // Arm the reply clock at submit so the footer measures the whole wait, not
     // just the streaming tail.
     this.responseStartedAt = this.now();
+    this.spawnLines.clear();
+    this.appendUserRow(text);
+  }
+
+  /** Draw a user row: the heading, a signoff echo, a steer. It records the row
+   * as the one the stream will echo back, and nothing else — a steer arrives
+   * while the reply is streaming, and resetting the turn there would make the
+   * closing frame draw that reply a second time. */
+  appendUserRow(text: string): void {
+    this.userEcho = text;
     this.chatArea.addChild(renderUserMessage(text, this.th));
   }
 
@@ -490,6 +503,7 @@ export class TranscriptView {
     this.toolStartedAt.clear();
     this.spawnLines.clear();
     this.responseStartedAt = undefined;
+    this.userEcho = undefined;
     this.chatArea.invalidate();
   }
 
@@ -505,7 +519,7 @@ export class TranscriptView {
     const state = { streamed: this.turnStreamed, startedAt: this.responseStartedAt };
     this.turnStreamed = false;
     this.responseStartedAt = undefined;
-    this.replyGeneration += 1;
+    this.userEcho = undefined;
     this.closeLiveStream();
     return state;
   }
@@ -565,9 +579,9 @@ export class TranscriptView {
 
   /** Draw the chat from the op vocabulary. Under `--langfuse` this is the
    * chat's content source — the panel and the wire read the same ops — and
-   * `route` is left unused. A `user.message` op is skipped: the prompt echo
-   * already drew the turn's heading. `replay` draws a recorded turn back: no
-   * reply clock, because nothing is being waited on. */
+   * `route` is left unused. A `user.message` op draws a user row unless it is
+   * the echo of the heading the submit drew. `replay` draws a recorded turn
+   * back: no reply clock, because nothing is being waited on. */
   routeOps(ops: readonly ObservationOp[], replay = false): void {
     for (const op of ops) {
       if (op.op === "update") {
@@ -612,6 +626,16 @@ export class TranscriptView {
         }
         continue;
       }
+      if (op.op === "emit" && op.name === USER_MESSAGE_NAME) {
+        const text = outputText(op) ?? "";
+        if (text === this.userEcho) {
+          this.userEcho = undefined;
+          continue;
+        }
+        this.closeLiveStream();
+        this.appendUserRow(text);
+        continue;
+      }
       if (op.op === "emit" && op.name === AGENT_ERROR_NAME) {
         this.closeLiveStream();
         this.appendErrorLine(metadataString(op, "message") ?? "");
@@ -648,14 +672,13 @@ export class TranscriptView {
       harness: typeof input?.harness === "string" ? input.harness : undefined,
       model: op.model,
     });
-    const key = `${this.replyGeneration}:${op.handle}`;
-    const drawn = this.spawnLines.get(key);
+    const drawn = this.spawnLines.get(op.handle);
     if (drawn !== undefined) {
       drawn.setText(line);
       return;
     }
     const text = new Text(line, 0, 0);
-    this.spawnLines.set(key, text);
+    this.spawnLines.set(op.handle, text);
     this.chatArea.addChild(text);
   }
 

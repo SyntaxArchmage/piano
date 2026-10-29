@@ -705,12 +705,87 @@ describe("TranscriptView.routeOps", () => {
     expect(out).toContain("done");
   });
 
-  it("leaves the prompt echo to the submit path and ignores user.message ops", () => {
+  it("draws a fresh spawn line for a turn that never closed the one before", () => {
+    // An interrupted turn emits no closing frame, so the boundary cannot be
+    // the close: the next turn still has to get its own line.
     const chatArea = new Container();
     const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("one");
+    view.routeOps([start()]);
+    view.renderUserMessage("two");
+    view.routeOps([start()]);
+    expect(chatArea.render(80).join("\n").split("loop.measure").length - 1).toBe(2);
+  });
+
+  it("updates the spawn line for a re-spawn after the turn closed", () => {
+    // A stage epilogue may speak another `start` on the handle after the reply
+    // closed: the same run, not a second line.
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("one");
+    view.routeOps([start()]);
+    view.routeOps([{
+      version: 1,
+      timestamp: T(1_400),
+      handle: "msg:0:measure@loop/iter-0:1",
+      op: "end",
+      name: "assistant.message",
+      output: { role: "assistant", text: "first answer" },
+    }]);
+    view.routeOps([start({ model: "gpt-4o" })]);
+    const out = chatArea.render(80).join("\n");
+    expect(out.split("loop.measure").length - 1).toBe(1);
+    expect(out).toContain("gpt-4o");
+  });
+
+  it("keeps a streamed reply whole when a user row lands mid-turn", () => {
+    // A signoff echo arrives while the reply is streaming; closing the live
+    // block there would make the closing frame draw the whole reply again.
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("go");
+    view.routeOps([{ version: 1, timestamp: T(1), handle: "msg:0:a:1", op: "update", output: { delta: "on it" } }]);
+    view.appendUserRow("ship it");
+    view.routeOps([
+      { version: 1, timestamp: T(2), handle: "msg:0:a:1", op: "update", output: { delta: ", done" } },
+      { version: 1, timestamp: T(3), handle: "msg:0:a:1", op: "end", name: "assistant.message", output: { role: "assistant", text: "on it, done" } },
+    ]);
+    const out = chatArea.render(80).join("\n");
+    expect(out).toContain("ship it");
+    expect(out.split("on it").length - 1).toBe(1);
+  });
+
+  it("draws a mid-turn steer once, not again when the stream echoes it", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("go");
+    view.appendUserRow("now try rust");
+    view.routeOps([
+      { version: 1, timestamp: T(1), handle: "user:1:a:1", op: "emit", type: "event", name: "user.message", output: { role: "user", text: "now try rust" } },
+    ]);
+    expect(chatArea.render(80).join("\n").split("now try rust").length - 1).toBe(1);
+  });
+
+  it("skips the user.message op that echoes the heading the submit drew", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("go");
     view.routeOps([
       { version: 1, timestamp: T(1), handle: "user:0:a:1", op: "emit", type: "event", name: "user.message", output: { role: "user", text: "go" } },
     ]);
-    expect(chatArea.render(80).join("\n")).not.toContain("go");
+    expect(chatArea.render(80).join("\n").split("go").length - 1).toBe(1);
+  });
+
+  it("draws a steer the submit never saw, which replay has only as an op", () => {
+    const chatArea = new Container();
+    const view = new TranscriptView(chatArea, darkTheme);
+    view.renderUserMessage("go");
+    view.routeOps([
+      { version: 1, timestamp: T(1), handle: "user:0:a:1", op: "emit", type: "event", name: "user.message", output: { role: "user", text: "go" } },
+      { version: 1, timestamp: T(2), handle: "user:1:a:1", op: "emit", type: "event", name: "user.message", output: { role: "user", text: "now try rust" } },
+    ]);
+    const out = chatArea.render(80).join("\n");
+    expect(out).toContain("now try rust");
+    expect(out.split("go").length - 1).toBe(1);
   });
 });
