@@ -6,6 +6,7 @@ import {
   AGENT_RETRY_NAME,
   AGENT_USAGE_NAME,
   attemptHandle,
+  attemptSuffix,
   contextCounts,
   messageName,
   toolCallEndOp,
@@ -55,21 +56,23 @@ function usageDetails(usage: {
 /** The one wall-clock spelling every op timestamp uses. */
 const wallClock = (): string => new Date().toISOString();
 
-function attemptSuffix(event: AgentEvent): string {
+/** The tail the bridge puts on every handle of one turn: its attempt's, or
+ * `root:0` when no workflow attributes the turn. */
+function attemptTail(event: AgentEvent): string {
   const workflow = event.workflow;
-  return `${workflow?.invocationId ?? "root"}:${workflow?.attempt ?? 0}`;
+  return workflow === undefined ? "root:0" : attemptSuffix(workflow);
 }
 
 /** The handle an unattributed agent turn's span wears. Sequence keeps two
  * side turns apart; workflow attempts use `attempt:` handles instead. */
 function agentSpanHandle(event: AgentEvent, context: BridgeContext): string {
-  return `agent:${context.sequence}:${attemptSuffix(event)}`;
+  return `agent:${context.sequence}:${attemptTail(event)}`;
 }
 
 /** The handle one conversation turn's facts share. Role is not part of the
  * handle — `name` / `metadata.role` carry it. */
 function messageHandle(event: AgentEvent, context: BridgeContext): string {
-  return `msg:${context.sequence}:${attemptSuffix(event)}`;
+  return `msg:${context.sequence}:${attemptTail(event)}`;
 }
 
 /** Open the generation span an assistant turn is spoken into. */
@@ -173,7 +176,7 @@ export function bridgeAgentEvent(
       return [{
         version: 1,
         timestamp: timestamp(),
-        handle: `usage:${context.sequence}:${attemptSuffix(event)}`,
+        handle: `usage:${context.sequence}:${attemptTail(event)}`,
         op: "emit" as const,
         type: "event" as const,
         name: AGENT_USAGE_NAME,
@@ -186,7 +189,7 @@ export function bridgeAgentEvent(
       return [{
         version: 1,
         timestamp: timestamp(),
-        handle: `err:${context.sequence}:${attemptSuffix(event)}`,
+        handle: `err:${context.sequence}:${attemptTail(event)}`,
         op: "emit",
         type: "event",
         name: AGENT_ERROR_NAME,
@@ -204,7 +207,7 @@ export function bridgeAgentEvent(
       return [{
         version: 1,
         timestamp: timestamp(),
-        handle: `retry:${context.sequence}:${attemptSuffix(event)}`,
+        handle: `retry:${context.sequence}:${attemptTail(event)}`,
         op: "emit",
         type: "event",
         name: AGENT_RETRY_NAME,
@@ -279,7 +282,7 @@ export function bridgeAgentEvent(
       return [{
         version: 1,
         timestamp: timestamp(),
-        handle: `ctx:${context.sequence}:${attemptSuffix(event)}`,
+        handle: `ctx:${context.sequence}:${attemptTail(event)}`,
         op: "emit",
         type: "event",
         name: AGENT_CONTEXT_NAME,
@@ -312,7 +315,7 @@ export function bridgeAgentEvent(
         {
           version: 1,
           timestamp: timestamp(),
-          handle: `done:${attemptSuffix(event)}`,
+          handle: `done:${attemptTail(event)}`,
           op: "emit",
           type: "event",
           name: AGENT_DONE_NAME,

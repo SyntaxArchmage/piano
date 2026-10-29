@@ -18,8 +18,8 @@ import { basename, join } from "node:path";
 import { io, observationStreamPath, type TurnOutcome } from "@piano/base";
 import type { AgentEvent } from "@piano/harness";
 import {
-  AGENT_CONTEXT_NAME,
-  messageName,
+  attemptHandle,
+  attemptSuffix,
   parseObservationOps,
   parseTrajectory,
   trajectoryStreamPath,
@@ -187,35 +187,91 @@ export function summarizeRun(runId: string, status: Partial<RunStatus> | undefin
   };
 }
 
-/** True for the ops that set a turn up rather than speak it: its attempt span
- * (and the harness's own announcement of it) and the context it loaded. They
- * sit just before the turn's `user.message` and belong with it. */
-function isTurnHeader(op: ObservationOp): boolean {
-  return op.op === "start" || (op.op === "emit" && op.name === AGENT_CONTEXT_NAME);
+/** One attempt a turn ran, as the handle vocabulary spells it. */
+interface Attempt {
+  readonly invocationId: string;
+  readonly attempt: number;
 }
 
-/** Slice a recorded op stream into one batch per recorded turn. `user.message`
- * marks each turn; the header in front of it travels with it. Returns
- * `undefined` when the stream and the turn count disagree — an unpaired turn
- * must replay from the events rather than from a mis-cut slice.
+/** The attempts one turn ran, in the order its events name them. */
+function attemptsOf(events: readonly AgentEvent[]): readonly Attempt[] {
+  const seen = new Set<string>();
+  const attempts: Attempt[] = [];
+  for (const event of events) {
+    const workflow = event.workflow;
+    if (workflow === undefined) continue;
+    const suffix = attemptSuffix(workflow);
+    if (seen.has(suffix)) continue;
+    seen.add(suffix);
+    attempts.push({ invocationId: workflow.invocationId, attempt: workflow.attempt });
+  }
+  return attempts;
+}
+
+/** The two spellings one attempt wears in the stream, built once per attempt
+ * so a fact's match is a comparison rather than a fresh template. */
+interface AttemptKey {
+  /** The `attempt:` handle this attempt's facts name as `parent`. */
+  readonly parent: string;
+  /** The tail every sequence-prefixed handle (`msg:`, `err:`, `done:`…) wears. */
+  readonly tail: string;
+  /** The turn this attempt ran in. */
+  readonly turn: number;
+}
+
+/** The turn a fact belongs to, or `undefined` when its handle and `parent`
+ * name none of `keys` — or name more than one, which the evidence cannot
+ * disambiguate. */
+function turnOfOp(op: ObservationOp, keys: readonly AttemptKey[]): number | undefined {
+  const parent = "parent" in op ? op.parent : undefined;
+  let found: number | undefined;
+  for (const key of keys) {
+    if (!op.handle.endsWith(key.tail) && parent !== key.parent) continue;
+    if (found !== undefined) return undefined;
+    found = key.turn;
+  }
+  return found;
+}
+
+/** Slice a recorded op stream into one batch per recorded turn.
  *
- * Known limit: a piano turn that ran several stage attempts (map, loop, repair)
- * emits one `user.message` per attempt, so the counts disagree and the run
- * falls back to its events. The durable fix is a turn extent recorded at write
- * time (`opCount` beside `eventCount`), not a smarter sniff. */
+ * The turn boundary is structural, not positional: a turn owns the attempts its
+ * own events name, and a fact belongs to the attempt its handle or `parent`
+ * names. A map, loop, or repair turn therefore keeps all of its attempts'
+ * facts — one `user.message` per attempt included — where counting them used
+ * to mispair the whole stream.
+ *
+ * Returns `undefined` when some fact cannot be attributed, or the facts arrive
+ * out of turn order: an unpaired turn must replay from the events rather than
+ * from a mis-cut slice. */
 export function splitOpsByTurns(
   ops: readonly ObservationOp[],
-  turnCount: number,
+  attemptsByTurn: readonly (readonly Attempt[])[],
 ): readonly (readonly ObservationOp[])[] | undefined {
-  const boundaries: number[] = [];
-  for (const [i, op] of ops.entries()) {
-    if (op.op !== "emit" || op.name !== messageName("user")) continue;
-    let start = i;
-    while (start > 0 && isTurnHeader(ops[start - 1] as ObservationOp)) start--;
-    boundaries.push(start);
+  // A turn whose events name no attempt cannot place any fact, so the whole
+  // stream falls back to events rather than leave that turn empty.
+  if (attemptsByTurn.some((attempts) => attempts.length === 0)) return undefined;
+  const keys: AttemptKey[] = [];
+  attemptsByTurn.forEach((attempts, turn) => {
+    for (const attempt of attempts) {
+      keys.push({
+        parent: attemptHandle(attempt),
+        tail: `:${attemptSuffix(attempt)}`,
+        turn,
+      });
+    }
+  });
+  const slices: ObservationOp[][] = attemptsByTurn.map(() => []);
+  let current = 0;
+  for (const op of ops) {
+    const index = turnOfOp(op, keys);
+    if (index === undefined) return undefined;
+    // Facts arrive in stream order, so a turn's slice is contiguous.
+    if (index < current) return undefined;
+    current = index;
+    (slices[index] as ObservationOp[]).push(op);
   }
-  if (boundaries.length !== turnCount) return undefined;
-  return boundaries.map((from, index) => ops.slice(from, boundaries[index + 1] ?? ops.length));
+  return slices;
 }
 
 /** Full replay context for the run the user chose. Fails when the run has no
@@ -242,7 +298,7 @@ export function readResumeContext(
     const ops = options.wantOps !== true ? [] : parseObservationOps(yield* io.readText(observationStreamPath(runDir)).pipe(
       Effect.catchAll(() => Effect.succeed(undefined)),
     ));
-    const slices = splitOpsByTurns(ops, recorded.length);
+    const eventsByTurn: (readonly AgentEvent[])[] = [];
     const turns: ResumeTurn[] = [];
     let start = 0;
     recorded.forEach((turn, index) => {
@@ -251,21 +307,29 @@ export function readResumeContext(
       // produce a reversed slice.
       const end = Math.min(Math.max(turn.eventCount, start), allEvents.length);
       const last = index === recorded.length - 1;
+      const events = allEvents.slice(start, end).filter(isEvent);
+      eventsByTurn.push(events);
       turns.push({
         prompt: stripStageContext(turn.prompt),
         status: turn.status,
-        events: allEvents.slice(start, end).filter(isEvent),
-        ...(slices === undefined ? {} : { ops: slices[index] }),
+        events,
         ...(last && failure !== undefined && turn.status !== "completed" ? { error: failure } : {}),
       });
       start = end;
     });
+    // The turn boundary is structural: a turn owns the attempts its own events
+    // name. Unpaired, the turns keep the events they were cut from.
+    const slices = ops.length === 0
+      ? undefined
+      : splitOpsByTurns(ops, eventsByTurn.map(attemptsOf));
     return {
       runId,
       ...(typeof document.name === "string" ? { name: document.name } : {}),
       ...(typeof document.workflowPath === "string" ? { workflowPath: document.workflowPath } : {}),
       ...(typeof document.workspaceCwd === "string" ? { workspaceCwd: document.workspaceCwd } : {}),
-      turns,
+      turns: slices === undefined
+        ? turns
+        : turns.map((turn, index) => ({ ...turn, ops: slices[index] })),
     };
   });
 }

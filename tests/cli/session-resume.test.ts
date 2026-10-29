@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Effect } from "effect";
 import { observationStreamPath } from "@piano/base";
-import type { ObservationOp } from "@piano/logging";
+import { attemptHandle, type ObservationOp } from "@piano/logging";
 import {
   readResumeContext,
   readRunRow,
@@ -71,23 +71,53 @@ async function writeOps(root: string, runId: string, ops: readonly ObservationOp
 
 const T = "2026-09-01T00:00:00.000Z";
 
-function start(handle: string): ObservationOp {
-  return { version: 1, timestamp: T, handle, op: "start", type: "agent", name: "stage.attempt:a" };
+/** `measure@loop/iter-0:1` → the attempt that suffix names. */
+function attempt(suffix: string): { readonly invocationId: string; readonly attempt: number } {
+  const split = suffix.lastIndexOf(":");
+  return {
+    invocationId: suffix.slice(0, split),
+    attempt: Number(suffix.slice(split + 1)),
+  };
+}
+
+/** The event a turn records for the attempt its facts wear. */
+function attemptEvent(suffix: string, content: string): Record<string, unknown> {
+  return {
+    type: "message_end",
+    message: { role: "assistant", content },
+    workflow: attempt(suffix),
+  };
+}
+
+/** Facts wear the attempt suffix their turn ran; the split attributes by it. */
+function start(suffix: string): ObservationOp {
+  return {
+    version: 1,
+    timestamp: T,
+    handle: attemptHandle(attempt(suffix)),
+    op: "start",
+    type: "agent",
+    name: `stage.attempt:${attempt(suffix).invocationId}`,
+  };
+}
+
+function msgHandle(suffix: string): string {
+  return `msg:0:${suffix}`;
 }
 
 function emit(handle: string, name: string): Extract<ObservationOp, { op: "emit" }> {
   return { version: 1, timestamp: T, handle, op: "emit", type: "event", name };
 }
 
-function user(handle: string, text: string): ObservationOp {
-  return { ...emit(handle, "user.message"), output: { role: "user", text } };
+function user(suffix: string, text: string): ObservationOp {
+  return { ...emit(msgHandle(suffix), "user.message"), output: { role: "user", text } };
 }
 
-function assistant(handle: string, text: string): ObservationOp {
+function assistant(suffix: string, text: string): ObservationOp {
   return {
     version: 1,
     timestamp: T,
-    handle,
+    handle: msgHandle(suffix),
     op: "end",
     name: "assistant.message",
     output: { role: "assistant", text },
@@ -120,10 +150,8 @@ const twoTurns = {
   workflowPath: "/repo/recipes/workflows/basic.yaml",
   workspaceCwd: "/repo/work",
   events: [
-    { type: "spawn", harness: "pi" },
-    { type: "message_end", message: { role: "assistant", content: "first" } },
-    { type: "done" },
-    { type: "message_end", message: { role: "assistant", content: "second" } },
+    ...[0, 1, 2].map(() => attemptEvent("measure@loop/iter-0:1", "first")),
+    attemptEvent("measure@loop/iter-1:1", "second"),
   ],
   turns: [
     { prompt: "one", status: "completed" as const, eventCount: 3 },
@@ -265,28 +293,66 @@ describe("readResumeContext", () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeRun(root, "run-ops", twoTurns);
     await writeOps(root, "run-ops", [
-      start("attempt:a:1"),
-      user("msg:0:a:1", "one"),
-      assistant("msg:0:a:1", "first"),
-      start("attempt:b:1"),
-      user("msg:0:b:1", "two"),
-      assistant("msg:0:b:1", "second"),
+      start("measure@loop/iter-0:1"),
+      user("measure@loop/iter-0:1", "one"),
+      assistant("measure@loop/iter-0:1", "first"),
+      start("measure@loop/iter-1:1"),
+      user("measure@loop/iter-1:1", "two"),
+      assistant("measure@loop/iter-1:1", "second"),
     ]);
 
     const context = await Effect.runPromise(readResumeContext(root, "run-ops", { wantOps: true }));
 
     expect(context.turns.map((turn) => turn.ops?.map((op) => op.handle))).toEqual([
-      ["attempt:a:1", "msg:0:a:1", "msg:0:a:1"],
-      ["attempt:b:1", "msg:0:b:1", "msg:0:b:1"],
+      ["attempt:measure@loop/iter-0:1", "msg:0:measure@loop/iter-0:1", "msg:0:measure@loop/iter-0:1"],
+      ["attempt:measure@loop/iter-1:1", "msg:0:measure@loop/iter-1:1", "msg:0:measure@loop/iter-1:1"],
     ]);
     // The event slices stay: the non-`--langfuse` path still replays them.
     expect(context.turns[0]?.events).toHaveLength(3);
   });
 
-  it("leaves turns on their events when the op stream does not pair", async () => {
+  it("keeps every attempt a turn ran, however many the turn spawned", async () => {
+    // A map/loop/repair turn runs several attempts and each speaks its own
+    // `user.message`. The split is structural, so all of them stay in the turn
+    // that spawned them instead of being counted into the next one.
+    const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
+    const mapTurn = {
+      ...twoTurns,
+      events: [
+        attemptEvent("plan@map/0:1", "plan"),
+        attemptEvent("build@map/1:1", "build"),
+        attemptEvent("test@map/2:1", "test"),
+        attemptEvent("measure@loop/iter-1:1", "second"),
+      ],
+      turns: [
+        { prompt: "optimize gemm", status: "completed" as const, eventCount: 3 },
+        { prompt: "two", status: "completed" as const, eventCount: 4 },
+      ],
+    };
+    await writeRun(root, "run-map", mapTurn);
+    await writeOps(root, "run-map", [
+      start("plan@map/0:1"), user("plan@map/0:1", "plan"),
+      start("build@map/1:1"), user("build@map/1:1", "build"),
+      start("test@map/2:1"), user("test@map/2:1", "test"),
+      start("measure@loop/iter-1:1"), user("measure@loop/iter-1:1", "two"),
+    ]);
+
+    const context = await Effect.runPromise(readResumeContext(root, "run-map", { wantOps: true }));
+
+    expect(context.turns.map((turn) => turn.ops?.map((op) => op.handle))).toEqual([
+      [
+        "attempt:plan@map/0:1", "msg:0:plan@map/0:1",
+        "attempt:build@map/1:1", "msg:0:build@map/1:1",
+        "attempt:test@map/2:1", "msg:0:test@map/2:1",
+      ],
+      ["attempt:measure@loop/iter-1:1", "msg:0:measure@loop/iter-1:1"],
+    ]);
+  });
+
+  it("leaves turns on their events when a fact belongs to no turn's attempts", async () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeRun(root, "run-unpaired", twoTurns);
-    await writeOps(root, "run-unpaired", [user("msg:0:a:1", "one")]);
+    await writeOps(root, "run-unpaired", [user("nobody:1", "one")]);
 
     const context = await Effect.runPromise(readResumeContext(root, "run-unpaired", { wantOps: true }));
 
@@ -299,8 +365,8 @@ describe("readResumeContext", () => {
     const root = await mkdtemp(join(tmpdir(), "piano-session-resume-"));
     await writeRun(root, "run-no-want", twoTurns);
     await writeOps(root, "run-no-want", [
-      start("attempt:a:1"),
-      user("msg:0:a:1", "one"),
+      start("measure@loop/iter-0:1"),
+      user("measure@loop/iter-0:1", "one"),
     ]);
 
     const context = await Effect.runPromise(readResumeContext(root, "run-no-want"));
@@ -310,28 +376,56 @@ describe("readResumeContext", () => {
 });
 
 describe("splitOpsByTurns", () => {
-  it("cuts at each user turn and carries the header in front of it", () => {
+  it("attributes each fact to the attempt its handle or parent names", () => {
     const ops = [
-      start("attempt:a:1"),
-      { ...emit("ctx:0:a:1", "agent.context"), metadata: { files: 1 } },
-      user("msg:0:a:1", "one"),
-      assistant("msg:0:a:1", "first"),
-      start("attempt:b:1"),
-      user("msg:0:b:1", "two"),
-      assistant("msg:0:b:1", "second"),
+      start("measure@loop/iter-0:1"),
+      { ...emit("ctx:0:measure@loop/iter-0:1", "agent.context"), metadata: { files: 1 } },
+      user("measure@loop/iter-0:1", "one"),
+      assistant("measure@loop/iter-0:1", "first"),
+      start("measure@loop/iter-1:1"),
+      user("measure@loop/iter-1:1", "two"),
+      assistant("measure@loop/iter-1:1", "second"),
     ];
-    const slices = splitOpsByTurns(ops, 2);
+    const slices = splitOpsByTurns(ops, [[attempt("measure@loop/iter-0:1")], [attempt("measure@loop/iter-1:1")]]);
 
     expect(slices?.map((slice) => slice.map((op) => op.handle))).toEqual([
-      ["attempt:a:1", "ctx:0:a:1", "msg:0:a:1", "msg:0:a:1"],
-      ["attempt:b:1", "msg:0:b:1", "msg:0:b:1"],
+      [
+        "attempt:measure@loop/iter-0:1",
+        "ctx:0:measure@loop/iter-0:1",
+        "msg:0:measure@loop/iter-0:1",
+        "msg:0:measure@loop/iter-0:1",
+      ],
+      [
+        "attempt:measure@loop/iter-1:1",
+        "msg:0:measure@loop/iter-1:1",
+        "msg:0:measure@loop/iter-1:1",
+      ],
     ]);
   });
 
-  it("returns undefined when the user turns and the turn count disagree", () => {
-    expect(splitOpsByTurns([user("msg:0:a:1", "only")], 2)).toBeUndefined();
-    expect(splitOpsByTurns([], 1)).toBeUndefined();
-    expect(splitOpsByTurns([], 0)).toEqual([]);
+  it("attributes a fact by its parent when the handle names no attempt", () => {
+    const tool = {
+      version: 1 as const,
+      timestamp: T,
+      handle: "tool:c1",
+      op: "end" as const,
+      output: "ok",
+      parent: attemptHandle(attempt("measure@loop/iter-0:1")),
+    };
+    expect(splitOpsByTurns(
+      [tool],
+      [[attempt("measure@loop/iter-0:1")], [attempt("measure@loop/iter-1:1")]],
+    ))?.toEqual([[tool], []]);
+  });
+
+  it("returns undefined when a fact belongs to no turn, or arrives out of turn order", () => {
+    expect(splitOpsByTurns([user("nobody:1", "only")], [[attempt("a:1")]])).toBeUndefined();
+    expect(splitOpsByTurns(
+      [user("b:1", "early"), user("a:1", "late")],
+      [[attempt("a:1")], [attempt("b:1")]],
+    )).toBeUndefined();
+    expect(splitOpsByTurns([user("a:1", "orphan")], [[], [attempt("b:1")]])).toBeUndefined();
+    expect(splitOpsByTurns([], [])).toEqual([]);
   });
 });
 

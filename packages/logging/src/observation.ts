@@ -178,10 +178,20 @@ export function stringifyObservationOp(op: ObservationOp): string {
 /** Identity constructors. Handles are part of the vocabulary: every mapper
  * builds the same `attempt:` / `tool:` names, so a child can always find its
  * parent across streams and packages. */
+
+/** The tail every fact of one attempt wears, in its handle and in the
+ * `attempt:` handle its children name as parent. */
+export function attemptSuffix(context: {
+  readonly invocationId: string;
+  readonly attempt: number;
+}): string {
+  return `${context.invocationId}:${context.attempt}`;
+}
+
 export function attemptHandle(
   context: { readonly invocationId: string; readonly attempt: number },
 ): string {
-  return `attempt:${context.invocationId}:${context.attempt}`;
+  return `attempt:${attemptSuffix(context)}`;
 }
 
 export function toolHandle(toolCallId: string): string {
