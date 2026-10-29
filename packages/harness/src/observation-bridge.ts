@@ -137,11 +137,13 @@ export function bridgeAgentEvent(
       // An assistant turn is a generation span, not a point: open it when the
       // harness starts streaming so the close carries a real duration. User
       // turns stay born-closed points at `message_end`.
-      if (event.message.role !== "assistant" || context.messageSpanOpened === true) return [];
+      if ((event.message.role ?? "assistant") !== "assistant" || context.messageSpanOpened === true) return [];
       return [generationStart(event, context, timestamp)];
     }
     case "message_end": {
-      const role = event.message.role;
+      // `AgentMessage.role` is optional and every other reader takes a missing
+      // one as the assistant's, so the bridge must not drop the message over it.
+      const role = event.message.role ?? "assistant";
       // Only the two conversation roles are facts of the ledger. Tool-result
       // turns (and any other role) belong to the transcript.
       if (role !== "assistant" && role !== "user") return [];

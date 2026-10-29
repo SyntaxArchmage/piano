@@ -75,6 +75,17 @@ describe("bridgeAgentEvent", () => {
     }]);
   });
 
+  it("reads a message with no role as the assistant's, like every other consumer", () => {
+    // `AgentMessage.role` is optional; dropping the message over it would lose
+    // the turn's closing fact on the op path while the AgentEvent path showed it.
+    const ended: AgentEvent = {
+      type: "message_end",
+      message: { content: "measured 12.3" },
+      workflow,
+    };
+    expect(bridgeAgentEvent(ended, context, () => T).map((op) => op.op)).toEqual(["start", "end"]);
+  });
+
   it("closes an already-open generation without restating its start", () => {
     const ended: AgentEvent = {
       type: "message_end",

@@ -127,7 +127,9 @@ export async function postLangfuseScores(
 ): Promise<void> {
   if (scores.length === 0) return;
   const auth = Buffer.from(`${config.publicKey}:${config.secretKey}`).toString("base64");
-  await fetch(new URL("/api/public/scores", config.baseUrl), {
+  // `new URL("/api/…", base)` drops a self-hosted path prefix (`https://host/
+  // langfuse`). Join as text so the prefix the OTel exporter keeps is kept.
+  await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/public/scores`, {
     method: "POST",
     headers: {
       "content-type": "application/json",

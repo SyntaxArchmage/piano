@@ -8,6 +8,7 @@ import {
 import type { ObservationOp } from "@piano/logging";
 import { startRefineFields } from "@piano/logging";
 import type { LangfuseConfig } from "./config.js";
+import { maskLangfusePayload } from "./mask.js";
 import { flushLangfuse } from "./runtime.js";
 import { mapAcceptedScoresFromMetrics, postLangfuseScores, stageAcceptedFacts } from "./scores.js";
 
@@ -34,18 +35,25 @@ function parentContext(
   return observation === undefined ? rootParent(traceId) : observation.otelSpan.spanContext();
 }
 
+/** Mask where the payload is still structured: the SDK hands the processor's
+ * `mask` hook values it has already stringified, which hides the key names a
+ * secret hides behind. */
+function masked(data: unknown): unknown {
+  return maskLangfusePayload({ data });
+}
+
 function startObservationFor(
   op: Extract<ObservationOp, { op: "start" | "emit" }>,
   parentSpanContext: SpanContext,
 ): LangfuseObservation {
-  const attributes = {
+  const attributes = masked({
     ...startRefineFields(op),
     metadata: op.metadata ?? {},
     ...("output" in op && op.output !== undefined ? { output: op.output } : {}),
     ...("usageDetails" in op && op.usageDetails !== undefined ? { usageDetails: op.usageDetails } : {}),
     ...("level" in op && op.level !== undefined ? { level: op.level } : {}),
     ...("statusMessage" in op && op.statusMessage !== undefined ? { statusMessage: op.statusMessage } : {}),
-  };
+  }) as Record<string, unknown>;
   if (op.type === "agent") {
     return startObservation(op.name, attributes, { asType: "agent", parentSpanContext });
   }
@@ -90,13 +98,13 @@ function applyOp(
   }
   const observation = handles.get(op.handle);
   if (observation === undefined) return;
-  observation.updateOtelSpanAttributes({
+  observation.updateOtelSpanAttributes(masked({
     ...(op.output === undefined ? {} : { output: op.output }),
     ...(op.level === undefined ? {} : { level: op.level }),
     ...(op.statusMessage === undefined ? {} : { statusMessage: op.statusMessage }),
     ...(op.usageDetails === undefined ? {} : { usageDetails: op.usageDetails }),
     metadata: op.metadata ?? {},
-  });
+  }) as Record<string, unknown>);
   if (op.op === "end") {
     observation.end();
     handles.delete(op.handle);

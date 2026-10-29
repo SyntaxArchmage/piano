@@ -50,13 +50,18 @@ function asDriverError(cause: unknown): DriverError {
   return new DriverError({ message: String(cause), cause });
 }
 
-/** How many nodes of each kind the observation stream opened. `start` and
- * `emit` are the only ops that open a node, so one pass over the ops is the
- * tree's shape without retaining it. */
+/** How many nodes of each kind the observation stream opened. A handle is a
+ * node's identity and may be opened by more than one producer (`start` from
+ * the attempt mapper, then a refine from the spawn), so the tally counts
+ * distinct handles — the tree's shape without retaining the payloads. */
 function countObservationTypes(raw: string): Readonly<Record<ObservationType, number>> {
   const counts = Object.fromEntries(OBSERVATION_TYPES.map((type) => [type, 0])) as Record<ObservationType, number>;
+  const seen = new Set<string>();
   for (const op of parseObservationOps(raw)) {
-    if (op.op === "start" || op.op === "emit") counts[op.type] += 1;
+    if (op.op !== "start" && op.op !== "emit") continue;
+    if (seen.has(op.handle)) continue;
+    seen.add(op.handle);
+    counts[op.type] += 1;
   }
   return counts;
 }
@@ -232,16 +237,22 @@ export function readRunTrace(
 
     // The Langfuse-aligned stream is opt-in (`--langfuse`): absent means the
     // run stayed on the recorder streams, which is normal, not an issue.
-    // Counts only: every node is opened by exactly one `start`/`emit`, so the
-    // type tally is the tree's shape without retaining the payloads.
+    // Counts only: a handle is a node's identity and a second `start` on it
+    // refines rather than opens, so the tally is the tree's shape without
+    // retaining the payloads.
     const observationPath = observationStreamPath(runDir);
-    const observationCounts = yield* fileSystem.exists(observationPath).pipe(
+    const observationResult = yield* fileSystem.exists(observationPath).pipe(
       Effect.mapError(asDriverError),
       Effect.flatMap((present) => present
-        ? fileSystem.readFileString(observationPath).pipe(Effect.mapError(asDriverError))
+        ? fileSystem.readFileString(observationPath).pipe(Effect.either)
         : Effect.succeed(undefined)),
-      Effect.map((raw) => raw === undefined ? undefined : countObservationTypes(raw)),
     );
+    if (observationResult !== undefined && observationResult._tag === "Left") {
+      issues.push(`observation stream could not be read: ${observationResult.left.message}`);
+    }
+    const observationCounts = observationResult !== undefined && observationResult._tag === "Right"
+      ? countObservationTypes(observationResult.right)
+      : undefined;
 
     return {
       complete: status?.status === "completed" && issues.length === 0,
