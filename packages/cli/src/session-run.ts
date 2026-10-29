@@ -188,8 +188,10 @@ function langfuseExportFor(
  * Ordering is a property of the file, not of a caller: a batch that overtakes
  * the one before it leaves an `end` ahead of its `start`, and the fold drops
  * both. The mission and the side agent share one writer per run, so their
- * facts cannot interleave either. */
-function observationWriter(
+ * facts cannot interleave either. This is the run's only fire-and-forget
+ * stream — the other writers hand back an `Effect` the caller awaits, so they
+ * order themselves — which is why the chain lives here. */
+export function observationWriter(
   observationPath: string,
   fileSystem: FileSystem.FileSystem,
 ): { readonly append: (lines: string) => void; readonly flush: () => Promise<void> } {
